@@ -12,11 +12,32 @@ import (
 	"go.uber.org/zap"
 )
 
+// info is overridable at link time via -ldflags "-X .../server.buildVersion=..."
+var (
+	buildVersion = "dev"
+	buildCommit  = ""
+)
+
 func NewEngine(cfg config.ServerConfig, logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(requestID(), zapLog(logger), gin.Recovery())
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	// Root → small welcome JSON so the boot log doesn't fill up with 404s when
+	// somebody browses to the bare host (curl / health probes / dashboard
+	// banners all hit "/").
+	r.GET("/", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"service":  "jumpserver-anonymous",
+			"version":  buildVersion,
+			"commit":   buildCommit,
+			"docs":     "/api/v1",
+			"login":    "/api/v1/auth/login",
+			"healthz":  "/healthz",
+		})
+	})
+	// Suppress noisy "no Route" 404 from favicon hits.
+	r.GET("/favicon.ico", func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	return r
 }
 
@@ -36,13 +57,29 @@ func zapLog(logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		c.Next()
-		logger.Info("http",
-			zap.String("method", c.Request.Method),
-			zap.String("path", c.Request.URL.Path),
-			zap.Int("status", c.Writer.Status()),
-			zap.Duration("latency", time.Since(start)),
+		// Demote probe-style traffic to Debug so cluster health probes don't
+		// drown out signal in INFO.
+		path := c.Request.URL.Path
+		method := c.Request.Method
+		status := c.Writer.Status()
+		latency := time.Since(start)
+		fields := []zap.Field{
+			zap.String("method", method),
+			zap.String("path", path),
+			zap.Int("status", status),
+			zap.Duration("latency", latency),
 			zap.String("ip", c.ClientIP()),
-		)
+		}
+		switch {
+		case path == "/healthz" || path == "/favicon.ico":
+			logger.Debug("http", fields...)
+		case status >= 500:
+			logger.Error("http", fields...)
+		case status >= 400:
+			logger.Warn("http", fields...)
+		default:
+			logger.Info("http", fields...)
+		}
 	}
 }
 

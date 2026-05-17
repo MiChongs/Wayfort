@@ -20,7 +20,9 @@ auth:
   access_ttl: 1h
   refresh_ttl: 168h
   bootstrap_admin: "admin"
-  bootstrap_password: "admin"
+  # 留空或填 "admin" 都会被视作未设置，首次启动时由系统生成 20 位强随机密码并
+  # 在控制台 banner 输出（只显示一次）。若填了 12 位以上的自定义密码，则原样使用。
+  bootstrap_password: ""
   lockout:
     enabled: true
     threshold: 5

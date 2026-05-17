@@ -2,6 +2,8 @@ package repo
 
 import (
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
@@ -13,9 +15,25 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
+// Open dials MySQL with a runtime logger that:
+//   - emits SLOW SQL warnings only when a query exceeds 1s (DDL during boot
+//     and one-off ALTERs commonly cross 200ms even on healthy databases, so
+//     the default threshold is too chatty),
+//   - drops record-not-found noise (bootstrap and FindByX both use it as a
+//     normal control-flow signal),
+//   - keeps actual errors and genuine slow queries visible.
 func Open(cfg config.DBConfig) (*gorm.DB, error) {
+	runtimeLogger := gormlogger.New(
+		log.New(os.Stdout, "\n", log.LstdFlags),
+		gormlogger.Config{
+			SlowThreshold:             time.Second,
+			LogLevel:                  gormlogger.Warn,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
 	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{
-		Logger:                                   gormlogger.Default.LogMode(gormlogger.Warn),
+		Logger:                                   runtimeLogger,
 		PrepareStmt:                              true,
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
@@ -35,8 +53,21 @@ func Open(cfg config.DBConfig) (*gorm.DB, error) {
 	return db, nil
 }
 
+// AutoMigrate runs schema migration under a silenced logger so the inevitable
+// CREATE TABLE / ALTER TABLE statements during a fresh install (each easily
+// 200–500 ms even on healthy MySQL) don't spam the SLOW SQL banner.
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	silent := gormlogger.New(
+		log.New(os.Stdout, "\n", log.LstdFlags),
+		gormlogger.Config{
+			SlowThreshold:             10 * time.Second,
+			LogLevel:                  gormlogger.Error,
+			IgnoreRecordNotFoundError: true,
+			Colorful:                  false,
+		},
+	)
+	scoped := db.Session(&gorm.Session{Logger: silent})
+	return scoped.AutoMigrate(
 		&model.User{},
 		&model.Credential{},
 		&model.Proxy{},
