@@ -42,6 +42,31 @@ auth:
     enabled: true
     notify_email: false
 
+ai:
+  enabled: true
+  default_permission_mode: normal   # plan / normal / bypass
+  max_iterations: 20
+  max_subagent_depth: 2
+  tool_timeout: 60s
+  approval_timeout: 2m
+  conversation_ttl_days: 90
+  ssh_exec_readonly_allow:
+    - "ls"
+    - "cat"
+    - "grep"
+    - "tail"
+    - "head"
+    - "uptime"
+    - "free"
+    - "df"
+    - "du"
+    - "ps"
+    - "top -bn1"
+    - "journalctl -n"
+    - "systemctl status"
+    - "docker ps"
+    - "kubectl get"
+
 notify:
   smtp:
     host: ""

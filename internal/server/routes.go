@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
@@ -37,6 +38,8 @@ type Routes struct {
 	Grant      *api.GrantHandler
 	Me         *api.MeHandler
 	OIDCClient *api.OIDCClientHandler
+
+	AI *ai.Set
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -186,6 +189,36 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.DELETE("/portforward/:id", perm(auth.PermPortForward), rt.TCPFwd.Delete)
 			ops.GET("/portforward", perm(auth.PermPortForward), rt.TCPFwd.List)
 		}
+	}
+
+	// AI assistant subsystem
+	if rt.AI != nil && rt.AI.Enabled {
+		aiGroup := authed.Group("/ai")
+		aiGroup.GET("/providers", perm(auth.PermAIUse), rt.AI.Provider.List)
+		aiGroup.POST("/providers", perm(auth.PermAIProviderUser), rt.AI.Provider.Create)
+		aiGroup.PATCH("/providers/:id", perm(auth.PermAIProviderUser), rt.AI.Provider.Update)
+		aiGroup.DELETE("/providers/:id", perm(auth.PermAIProviderUser), rt.AI.Provider.Delete)
+		aiGroup.POST("/providers/:id/test", perm(auth.PermAIUse), rt.AI.Provider.Test)
+		aiGroup.GET("/providers/:id/models", perm(auth.PermAIUse), rt.AI.Provider.Models)
+
+		aiGroup.GET("/agents", perm(auth.PermAIUse), rt.AI.Agent.List)
+		aiGroup.POST("/agents", perm(auth.PermAIAgentCreate), rt.AI.Agent.Create)
+		aiGroup.PATCH("/agents/:id", perm(auth.PermAIAgentCreate), rt.AI.Agent.Update)
+		aiGroup.DELETE("/agents/:id", perm(auth.PermAIAgentCreate), rt.AI.Agent.Delete)
+		aiGroup.GET("/tools", perm(auth.PermAIUse), rt.AI.Agent.Catalogue)
+
+		aiGroup.GET("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.List)
+		aiGroup.POST("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.Create)
+		aiGroup.GET("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Get)
+		aiGroup.PATCH("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Update)
+		aiGroup.DELETE("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Delete)
+		aiGroup.POST("/conversations/:id/cancel", perm(auth.PermAIUse), rt.AI.Conversation.Cancel)
+
+		aiGroup.POST("/conversations/:id/messages", perm(auth.PermAIUse), rt.AI.SSE.SendMessage)
+		aiGroup.GET("/conversations/:id/stream", perm(auth.PermAIUse), rt.AI.SSE.Stream)
+
+		aiGroup.POST("/conversations/:id/invocations/:inv_id/approve", perm(auth.PermAIUse), rt.AI.Invocation.Approve)
+		aiGroup.POST("/conversations/:id/invocations/:inv_id/reject", perm(auth.PermAIUse), rt.AI.Invocation.Reject)
 	}
 
 	// Anonymous WS uses the same middleware but allows the anonymous flag.

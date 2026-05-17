@@ -38,6 +38,13 @@ const (
 	PermDeptManage   = "department:manage"
 	PermOIDCManage   = "oidc:manage"
 	PermPortForward  = "portforward:manage"
+
+	// AI assistant
+	PermAIUse           = "ai:use"           // open conversations against allowed agents
+	PermAIAgentCreate   = "ai:agent:create"  // create personal agents
+	PermAIAgentGlobal   = "ai:agent:global"  // create global agents (admin)
+	PermAIProviderUser  = "ai:provider:user" // configure personal providers
+	PermAIProviderGlobal = "ai:provider:global" // configure global providers (admin)
 )
 
 // AllPermissions is the catalogue that gets seeded into the DB on boot so the
@@ -68,6 +75,11 @@ var AllPermissions = []struct {
 	{PermDeptManage, "user", "管理部门"},
 	{PermOIDCManage, "system", "管理 OIDC 客户端"},
 	{PermPortForward, "session", "申请/管理端口转发"},
+	{PermAIUse, "ai", "使用 AI 助手与可见 agent 对话"},
+	{PermAIAgentCreate, "ai", "创建个人 AI agent"},
+	{PermAIAgentGlobal, "ai", "创建/管理全局 AI agent（管理员）"},
+	{PermAIProviderUser, "ai", "配置个人 AI 提供商"},
+	{PermAIProviderGlobal, "ai", "配置全局 AI 提供商（管理员）"},
 }
 
 // BuiltinRoles are seeded on first boot and protected from deletion.
@@ -76,11 +88,13 @@ var BuiltinRoles = map[string][]string{
 	"operator": {
 		PermNodeList, PermNodeRead, PermSessionList, PermSessionRead,
 		PermPortForward, PermAssetGroupManage, PermTagManage,
+		PermAIUse, PermAIAgentCreate, PermAIProviderUser,
 	},
 	"auditor": {
 		PermNodeList, PermSessionList, PermSessionRead, PermAuditRead,
+		PermAIUse,
 	},
-	"guest": {},
+	"guest": {PermAIUse},
 }
 
 // HasSystem returns true when the permission set effectively grants everything.

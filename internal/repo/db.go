@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 
@@ -68,5 +69,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.WebauthnCredential{},
 		&model.LoginHistory{},
 		&model.OIDCClient{},
+
+		// AI assistant
+		&aimodel.AIProvider{},
+		&aimodel.AIAgent{},
+		&aimodel.AIConversation{},
+		&aimodel.AIMessage{},
+		&aimodel.AIToolInvocation{},
 	)
 }

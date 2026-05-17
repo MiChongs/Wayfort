@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
@@ -285,6 +286,26 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
 	}
 
+	// AI assistant subsystem
+	aiSet := ai.New(ai.Config{
+		Enabled:               cfg.AI.Enabled,
+		DefaultPermissionMode: cfg.AI.DefaultPermissionMode,
+		MaxIterations:         cfg.AI.MaxIterations,
+		MaxSubAgentDepth:      cfg.AI.MaxSubAgentDepth,
+		ToolTimeout:           cfg.AI.ToolTimeout,
+		ApprovalTimeout:       cfg.AI.ApprovalTimeout,
+		SSHExecReadOnlyAllow:  cfg.AI.SSHExecReadOnlyAllow,
+		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
+	}, ai.Deps{
+		DB: db, Sealer: sealer, Logger: logger, AuditWriter: auditWriter,
+		Asset: assetResolver, RBAC: rbacResolver,
+		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Sessions: sessionRepo, AuditRepo: auditRepo,
+		SSHResolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
+		SFTPConn: sftpConn, TCPFwd: pfManager, DialTimeout: cfg.SSHPool.DialTimeout,
+	})
+	routes.AI = aiSet
+
 	engine := server.NewEngine(cfg.Server, logger)
 	routes.Mount(engine)
 
@@ -299,6 +320,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	if mailer != nil {
 		g.Go(func() error { return mailer.Run(gctx) })
+	}
+	if aiSet != nil && aiSet.Enabled {
+		g.Go(func() error { return aiSet.Janitor(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
 

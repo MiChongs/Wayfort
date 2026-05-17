@@ -22,6 +22,18 @@ type Config struct {
 	WebSSH    WebSSHConfig    `mapstructure:"webssh"`
 	Protocols ProtocolsConfig `mapstructure:"protocols"`
 	Notify    NotifyConfig    `mapstructure:"notify"`
+	AI        AIConfig        `mapstructure:"ai"`
+}
+
+type AIConfig struct {
+	Enabled               bool          `mapstructure:"enabled"`
+	DefaultPermissionMode string        `mapstructure:"default_permission_mode"`
+	MaxIterations         int           `mapstructure:"max_iterations"`
+	MaxSubAgentDepth      int           `mapstructure:"max_subagent_depth"`
+	ToolTimeout           time.Duration `mapstructure:"tool_timeout"`
+	ApprovalTimeout       time.Duration `mapstructure:"approval_timeout"`
+	SSHExecReadOnlyAllow  []string      `mapstructure:"ssh_exec_readonly_allow"`
+	ConversationTTLDays   int           `mapstructure:"conversation_ttl_days"`
 }
 
 // ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.
@@ -241,6 +253,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("notify.worker.max_retries", 3)
 	v.SetDefault("notify.smtp.tls", "starttls")
 	v.SetDefault("notify.smtp.port", 587)
+	v.SetDefault("ai.enabled", true)
+	v.SetDefault("ai.default_permission_mode", "normal")
+	v.SetDefault("ai.max_iterations", 20)
+	v.SetDefault("ai.max_subagent_depth", 2)
+	v.SetDefault("ai.tool_timeout", 60*time.Second)
+	v.SetDefault("ai.approval_timeout", 2*time.Minute)
+	v.SetDefault("ai.conversation_ttl_days", 90)
 	v.SetDefault("storage.sessions_dir", "./var/sessions")
 	v.SetDefault("sshpool.max_sessions_per_client", 8)
 	v.SetDefault("sshpool.idle_eviction", 10*time.Minute)

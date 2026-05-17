@@ -45,6 +45,7 @@
 
 ### ✨ 核心特性
 
+- 🤖 **AI 助手 + 多 Agent 协作**：OpenAI / Anthropic / Gemini / 兼容网关（NewAPI / 硅基流动 / DeepSeek / Moonshot / 通义）；管理员/用户级 provider；全局/个人 agent；plan/normal/bypass 三种权限模式（参考 Claude Code）；SSE 流式输出；运维工具集（ssh_exec、sftp 读写、会话查询、端口转发、sub-agent）
 - 🔐 **多协议代理转发**：SSH / Telnet / RDP / VNC / MySQL / PostgreSQL / Redis / MongoDB / 任意 TCP
 - 🌐 **浏览器原生支持**：xterm.js（字符）+ guacamole-common-js（图形）即可使用
 - 🔗 **多级代理链路**：直连 / SOCKS5 / SSH 跳板 任意嵌套，统一基于 `proxy.ContextDialer`
@@ -449,6 +450,90 @@ websocat "ws://localhost:8080/api/v1/ws/ssh/anonymous?token=$TOKEN"
 
 ---
 
+## 🤖 AI 助手快速开始
+
+```bash
+# 1. admin 注册一个全局 OpenAI provider
+TOKEN=...   # admin JWT
+curl -X POST :8080/api/v1/ai/providers -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"openai","kind":"openai","api_key":"sk-...","default_model":"gpt-4o-mini","is_global":true}'
+
+# 也可注册兼容网关（硅基流动 / DeepSeek / NewAPI / 通义 ...）
+curl -X POST :8080/api/v1/ai/providers -H "Authorization: Bearer $TOKEN" \
+  -d '{"name":"siliconflow","kind":"openai_compatible",
+       "base_url":"https://api.siliconflow.cn/v1","api_key":"sk-...",
+       "default_model":"Qwen/Qwen2.5-72B-Instruct","is_global":true}'
+
+# 或 Anthropic
+curl -X POST :8080/api/v1/ai/providers -d '{"name":"claude","kind":"anthropic",
+  "api_key":"sk-ant-...","default_model":"claude-sonnet-4-5","is_global":true}'
+
+# 2. 创建一个运维 agent
+curl -X POST :8080/api/v1/ai/agents -d '{
+  "name":"sre","scope":"global",
+  "system_prompt":"你是资深 SRE，使用工具帮助用户诊断和修复问题。",
+  "allowed_tools":["list_nodes","get_node","health_check","ssh_exec_readonly","ssh_exec","sftp_list","sftp_read","session_list","audit_query"],
+  "default_provider_id":1,"default_model":"gpt-4o-mini",
+  "permission_mode":"normal","max_iterations":20}'
+
+# 3. 创建会话 + 订阅 SSE
+CID=$(curl -s -X POST :8080/api/v1/ai/conversations -d '{"agent_id":1}' | jq -r .id)
+curl -N "http://localhost:8080/api/v1/ai/conversations/$CID/stream" \
+  -H "Authorization: Bearer $TOKEN" &
+
+# 4. 另一个终端发指令
+curl -X POST :8080/api/v1/ai/conversations/$CID/messages \
+  -d '{"text":"检查节点 prod-web-1 的磁盘并告诉我是否有 >80% 的分区"}'
+
+# 期望 SSE 事件：
+#   event: text_delta       data: {"text":"我来检查..."}
+#   event: tool_call        data: {"id":"call_x","name":"health_check","arguments":{"node_id":7}}
+#   event: tool_start       data: {"id":"call_x","invocation_id":"inv_y"}
+#   event: tool_output      data: {"id":"call_x","output":"uptime ..."}
+#   event: text_delta       data: {"text":"磁盘使用..."}
+#   event: message_end      data: {"finish_reason":"stop"}
+#   event: done             data: {}
+
+# 5. 高危工具会先 permission_required，用户点同意：
+curl -X POST :8080/api/v1/ai/conversations/$CID/invocations/inv_y/approve
+
+# 6. 切到 plan 模式（所有写操作 dry-run）
+curl -X PATCH :8080/api/v1/ai/conversations/$CID -d '{"permission_mode":"plan"}'
+
+# 7. 多 agent 协作：注册一个 sub-agent，让主 agent 调用
+curl -X POST :8080/api/v1/ai/agents -d '{
+  "name":"sql-diagnose","scope":"global","is_sub_agent":true,
+  "invocation_hint":"诊断 MySQL 慢查询时调用我",
+  "system_prompt":"你是 MySQL 专家...","allowed_tools":["ssh_exec_readonly"],
+  "default_provider_id":1}'
+# 然后给主 agent 的 allowed_tools 加上 "call_subagent"
+```
+
+### 三种权限模式
+
+| 模式 | 行为 |
+| --- | --- |
+| `plan` | 危险工具一律转 `DryRun`，仅返回"将要做什么"——适合先让 AI 规划，再人工 review |
+| `normal` | 低危工具直接执行；中/高危工具弹 `permission_required`，等用户在前端点同意 |
+| `bypass` | 任何工具直接执行；只受调用者本人的资产授权拦截 |
+
+### 工具集
+
+| Tool | Danger | 用途 |
+| --- | --- | --- |
+| `list_nodes` / `get_node` | Low | 浏览资产 |
+| `health_check` | Low | 节点健康巡检 |
+| `ssh_exec_readonly` | Low | 仅白名单命令（ls/cat/uptime/free/df/ps/journalctl status…） |
+| `ssh_exec` | High | 任意命令执行（需确认） |
+| `sftp_list` / `sftp_read` | Low | 只读文件浏览（256KB 上限） |
+| `sftp_write` / `sftp_delete` | High | 改写远端文件（需确认） |
+| `session_list` / `audit_query` | Low | 历史会话与审计 |
+| `portforward_create` / `portforward_delete` | High | 端口转发管理（需确认） |
+| `call_subagent` | Medium | 委派给另一个 is_sub_agent=true 的 agent，深度上限 2 |
+
+---
+
 ## 📡 API 文档
 
 ### 认证
@@ -519,6 +604,22 @@ websocat "ws://localhost:8080/api/v1/ws/ssh/anonymous?token=$TOKEN"
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | CRUD | `/api/v1/oidc-clients` | 注册 Keycloak/Auth0/Google/Azure/飞书 等 IdP |
+
+### AI 助手
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| CRUD | `/api/v1/ai/providers` | 注册/管理 LLM 提供商（全局/个人） |
+| POST | `/api/v1/ai/providers/:id/test` | 拨测 |
+| GET | `/api/v1/ai/providers/:id/models` | 列出可用模型 |
+| CRUD | `/api/v1/ai/agents` | 全局 + 个人 agent |
+| GET | `/api/v1/ai/tools` | 工具目录（含 danger 级别 + JSON schema） |
+| CRUD | `/api/v1/ai/conversations` | 会话管理 |
+| POST | `/api/v1/ai/conversations/:id/messages` | 发用户消息（响应是 SSE 流） |
+| GET | `/api/v1/ai/conversations/:id/stream` | 重连进行中会话的 SSE |
+| POST | `/api/v1/ai/conversations/:id/cancel` | 中断生成 |
+| POST | `/api/v1/ai/conversations/:id/invocations/:inv_id/approve` | 同意危险工具 |
+| POST | `/api/v1/ai/conversations/:id/invocations/:inv_id/reject` | 拒绝 |
 
 ### 资产管理
 
