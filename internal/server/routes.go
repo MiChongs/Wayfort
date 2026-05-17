@@ -13,6 +13,16 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 )
 
+// insightsHandler returns rt.Insights if non-nil, else a stub that always
+// responds 503. Lets us register routes unconditionally so missing /
+// stale config never manifests as a 404.
+func insightsHandler(rt *Routes) *insights.Handler {
+	if rt.Insights != nil {
+		return rt.Insights
+	}
+	return insights.NewHandler(nil)
+}
+
 type Routes struct {
 	Auth       *api.AuthHandler
 	Node       *api.NodeHandler
@@ -177,11 +187,14 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/sftp/upload", rt.SFTP.Upload)
 		ops.GET("/nodes/:id/sftp/download", rt.SFTP.Download)
 		// Plan 14 — system insights endpoints (sibling to SFTP, same auth).
-		if rt.Insights != nil {
-			ops.GET("/nodes/:id/insights/system", rt.Insights.System)
-			ops.GET("/nodes/:id/insights/processes", rt.Insights.Processes)
-			ops.GET("/nodes/:id/insights/network", rt.Insights.Network)
-		}
+		// Routes are ALWAYS registered. When the manager is disabled the
+		// handler returns 503 with a structured body. This way a stale
+		// config (no `insights:` section) doesn't manifest as a 404 from
+		// gin's no-route fallback, which is impossible to distinguish on
+		// the client side from "the deploy is one version behind".
+		ops.GET("/nodes/:id/insights/system", insightsHandler(rt).System)
+		ops.GET("/nodes/:id/insights/processes", insightsHandler(rt).Processes)
+		ops.GET("/nodes/:id/insights/network", insightsHandler(rt).Network)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
 		if rt.Guacamole != nil {
