@@ -296,6 +296,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webssh.write_timeout", 10*time.Second)
 	v.SetDefault("webssh.ping_interval", 30*time.Second)
 
+	// Plan 14 — live system insights are read-only and gated by
+	// asset.ActionConnect, so they're on by default. Operators who need to
+	// hide the dashboard from the SSH page can set `insights.enabled: false`
+	// in their YAML.
+	v.SetDefault("insights.enabled", true)
+	v.SetDefault("insights.cache_ttl", 3*time.Second)
+	v.SetDefault("insights.ssh_timeout", 10*time.Second)
+	v.SetDefault("insights.process_limit", 200)
+
 	v.SetDefault("protocols.guacamole.enabled", false)
 	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")
 	v.SetDefault("protocols.guacamole.recording", true)
