@@ -21,6 +21,7 @@ type Config struct {
 	Audit     AuditConfig     `mapstructure:"audit"`
 	WebSSH    WebSSHConfig    `mapstructure:"webssh"`
 	Protocols ProtocolsConfig `mapstructure:"protocols"`
+	Notify    NotifyConfig    `mapstructure:"notify"`
 }
 
 // ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.
@@ -81,11 +82,62 @@ type RedisConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret         string        `mapstructure:"jwt_secret"`
-	AccessTTL         time.Duration `mapstructure:"access_ttl"`
-	RefreshTTL        time.Duration `mapstructure:"refresh_ttl"`
-	BootstrapAdmin    string        `mapstructure:"bootstrap_admin"`
-	BootstrapPassword string        `mapstructure:"bootstrap_password"`
+	JWTSecret         string         `mapstructure:"jwt_secret"`
+	AccessTTL         time.Duration  `mapstructure:"access_ttl"`
+	RefreshTTL        time.Duration  `mapstructure:"refresh_ttl"`
+	BootstrapAdmin    string         `mapstructure:"bootstrap_admin"`
+	BootstrapPassword string         `mapstructure:"bootstrap_password"`
+	Lockout           LockoutConfig  `mapstructure:"lockout"`
+	MFA               MFAConfig      `mapstructure:"mfa"`
+	Passkey           PasskeyConfig  `mapstructure:"passkey"`
+	Anomaly           AnomalyConfig  `mapstructure:"anomaly"`
+}
+
+type LockoutConfig struct {
+	Enabled   bool          `mapstructure:"enabled"`
+	Threshold int           `mapstructure:"threshold"`
+	Window    time.Duration `mapstructure:"window"`
+	Duration  time.Duration `mapstructure:"duration"`
+}
+
+type MFAConfig struct {
+	EnforceForAdmin    bool          `mapstructure:"enforce_for_admin"`
+	TOTPIssuer         string        `mapstructure:"totp_issuer"`
+	EmailOTPTTL        time.Duration `mapstructure:"email_otp_ttl"`
+	EmailOTPCooldown   time.Duration `mapstructure:"email_otp_cooldown"`
+	RecoveryCodesCount int           `mapstructure:"recovery_codes_count"`
+}
+
+type PasskeyConfig struct {
+	Enabled            bool     `mapstructure:"enabled"`
+	RPID               string   `mapstructure:"rp_id"`
+	RPDisplay          string   `mapstructure:"rp_display"`
+	Origins            []string `mapstructure:"rp_origins"`
+	DiscoverableLogin  bool     `mapstructure:"discoverable_login"`
+}
+
+type AnomalyConfig struct {
+	Enabled     bool `mapstructure:"enabled"`
+	NotifyEmail bool `mapstructure:"notify_email"`
+}
+
+type NotifyConfig struct {
+	SMTP   SMTPConfig          `mapstructure:"smtp"`
+	Worker NotifyWorkerConfig  `mapstructure:"worker"`
+}
+
+type SMTPConfig struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	Username string `mapstructure:"username"`
+	Password string `mapstructure:"password"`
+	From     string `mapstructure:"from"`
+	TLS      string `mapstructure:"tls"`
+}
+
+type NotifyWorkerConfig struct {
+	ChanSize   int `mapstructure:"chan_size"`
+	MaxRetries int `mapstructure:"max_retries"`
 }
 
 type CryptoConfig struct {
@@ -173,6 +225,22 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("db.conn_max_lifetime", time.Hour)
 	v.SetDefault("auth.access_ttl", time.Hour)
 	v.SetDefault("auth.refresh_ttl", 7*24*time.Hour)
+	v.SetDefault("auth.lockout.enabled", true)
+	v.SetDefault("auth.lockout.threshold", 5)
+	v.SetDefault("auth.lockout.window", 15*time.Minute)
+	v.SetDefault("auth.lockout.duration", 15*time.Minute)
+	v.SetDefault("auth.mfa.totp_issuer", "JumpServer")
+	v.SetDefault("auth.mfa.email_otp_ttl", 5*time.Minute)
+	v.SetDefault("auth.mfa.email_otp_cooldown", 60*time.Second)
+	v.SetDefault("auth.mfa.recovery_codes_count", 10)
+	v.SetDefault("auth.passkey.enabled", false)
+	v.SetDefault("auth.passkey.discoverable_login", true)
+	v.SetDefault("auth.anomaly.enabled", true)
+	v.SetDefault("auth.anomaly.notify_email", false)
+	v.SetDefault("notify.worker.chan_size", 256)
+	v.SetDefault("notify.worker.max_retries", 3)
+	v.SetDefault("notify.smtp.tls", "starttls")
+	v.SetDefault("notify.smtp.port", 587)
 	v.SetDefault("storage.sessions_dir", "./var/sessions")
 	v.SetDefault("sshpool.max_sessions_per_client", 8)
 	v.SetDefault("sshpool.idle_eviction", 10*time.Minute)

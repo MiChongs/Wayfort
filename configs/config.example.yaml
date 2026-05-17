@@ -21,6 +21,38 @@ auth:
   refresh_ttl: 168h
   bootstrap_admin: "admin"
   bootstrap_password: "admin"
+  lockout:
+    enabled: true
+    threshold: 5
+    window: 15m
+    duration: 15m
+  mfa:
+    enforce_for_admin: false
+    totp_issuer: "JumpServer"
+    email_otp_ttl: 5m
+    email_otp_cooldown: 60s
+    recovery_codes_count: 10
+  passkey:
+    enabled: false
+    rp_id: "localhost"
+    rp_display: "JumpServer"
+    rp_origins: ["http://localhost:8080"]
+    discoverable_login: true
+  anomaly:
+    enabled: true
+    notify_email: false
+
+notify:
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+    from: "JumpServer <noreply@example.com>"
+    tls: "starttls"
+  worker:
+    chan_size: 256
+    max_retries: 3
 
 crypto:
   master_key_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

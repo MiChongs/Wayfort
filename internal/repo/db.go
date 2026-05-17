@@ -43,5 +43,30 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.Session{},
 		&model.AuditLog{},
 		&model.PortForward{},
+
+		// User / org / RBAC
+		&model.Department{},
+		&model.UserGroup{},
+		&model.UserGroupMember{},
+		&model.Role{},
+		&model.Permission{},
+		&model.RolePermission{},
+		&model.UserRole{},
+
+		// Asset organisation and authorisation
+		&model.AssetGroup{},
+		&model.AssetGroupNode{},
+		&model.AssetTag{},
+		&model.NodeTag{},
+		&model.AssetGrant{},
+		&model.NodeFavorite{},
+		&model.NodeRecent{},
+
+		// MFA / Passkey / auth audit
+		&model.UserMFA{},
+		&model.UserRecoveryCode{},
+		&model.WebauthnCredential{},
+		&model.LoginHistory{},
+		&model.OIDCClient{},
 	)
 }

@@ -51,7 +51,11 @@
 - 📹 **会话录像**：asciinema v2（字符）+ Guacamole `.guac`（图形，可转 MP4）
 - 📊 **异步审计**：bounded chan + 批量写库 + 背压丢弃带 lossy 标记
 - ⚡ **高性能高并发**：每会话 3 个 goroutine + errgroup 编排，全部非阻塞
-- 🔑 **可插拔认证**：JWT + 本地账号 + 预留 OIDC/OAuth2 Provider
+- 👥 **完整 RBAC + 部门 + 用户组 + 资产组授权**：grantee×subject×action 三维授权矩阵
+- 🔑 **多因素认证**：TOTP（Google Authenticator 等）+ 邮箱 OTP + 一次性恢复码，支持多设备
+- 🛂 **Passkey/WebAuthn**：无密码登录、二因子两免，FIDO2 设备 / Touch ID / Windows Hello
+- 🌍 **OIDC 单点登录**：Keycloak/Auth0/Google/Azure AD/飞书 等，PKCE + nonce
+- 🔒 **会话安全**：登录失败锁定、JWT 主动撤销（黑名单）、异常登录检测 + 邮件告警、强制下线
 - 🐳 **匿名沙箱**：一次性 Docker 容器，资源限额 + TTL 自动销毁
 - 🚇 **临时端口转发**：网关本地监听 + WS 二进制隧道
 - 🛡️ **安全加固**：AES-GCM 凭据加密，known_hosts TOFU，bcrypt 密码哈希
@@ -451,9 +455,70 @@ websocat "ws://localhost:8080/api/v1/ws/ssh/anonymous?token=$TOKEN"
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/api/v1/auth/login` | 公开 | 用户名密码登录，返回 access + refresh token |
+| POST | `/api/v1/auth/login` | 公开 | 用户名密码登录；若启用 MFA 返回 `mfa_required` + `challenge_token` |
+| POST | `/api/v1/auth/login/totp` | challenge_token | 提交 TOTP 验证码完成登录 |
+| POST | `/api/v1/auth/login/email-otp/send` | challenge_token | 发送邮箱 OTP |
+| POST | `/api/v1/auth/login/email-otp` | challenge_token | 提交邮箱验证码完成登录 |
+| POST | `/api/v1/auth/login/recovery` | challenge_token | 用一次性恢复码登录 |
+| POST | `/api/v1/auth/login/passkey/begin` | 公开 | 获取 WebAuthn assertion challenge |
+| POST | `/api/v1/auth/login/passkey/finish` | 公开 | 提交浏览器签名完成 Passkey 登录 |
 | POST | `/api/v1/auth/refresh` | refresh token | 刷新 access token |
+| POST | `/api/v1/auth/logout` | authed | 主动登出，加入 jti 黑名单 |
 | POST | `/api/v1/auth/anonymous` | 公开（受开关） | 申请匿名 JWT |
+| GET  | `/api/v1/auth/providers` | 公开 | 列出可用的第三方 OIDC IdP |
+| GET  | `/api/v1/auth/oidc/:provider/login` | 公开 | 跳转到 IdP |
+| GET  | `/api/v1/auth/oidc/:provider/callback` | 公开 | OIDC 授权回调 |
+
+### 自助（/me）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET / PATCH | `/api/v1/me/profile` | 查看 / 修改个人资料 |
+| POST | `/api/v1/me/password` | 修改密码 |
+| GET | `/api/v1/me/mfa` | 已绑定的 MFA 设备 |
+| POST | `/api/v1/me/mfa/totp/begin` | 申请 TOTP 注册，返回 QR + secret |
+| POST | `/api/v1/me/mfa/totp/finish` | 提交 OTP 完成 TOTP 绑定 |
+| DELETE | `/api/v1/me/mfa/:id` | 解绑 MFA |
+| POST | `/api/v1/me/mfa/recovery-codes/regenerate` | 重新生成 10 个恢复码 |
+| GET | `/api/v1/me/passkeys` | 已注册的 Passkey |
+| POST | `/api/v1/me/passkeys/register/begin` | 申请 Passkey 注册 challenge |
+| POST | `/api/v1/me/passkeys/register/finish` | 提交浏览器返回的 attestation |
+| DELETE | `/api/v1/me/passkeys/:id` | 删除一个 Passkey |
+| GET / POST / DELETE | `/api/v1/me/favorites[/:node_id]` | 收藏 / 取消 |
+| GET | `/api/v1/me/recent-nodes` | 最近使用的节点 |
+| GET | `/api/v1/me/login-history` | 自己的登录历史 |
+| GET | `/api/v1/me/nodes` | 经资产授权过滤后的可见节点列表 |
+
+### 用户 / 角色 / 部门 / 组（admin）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| CRUD | `/api/v1/users` | 用户 CRUD |
+| POST | `/api/v1/users/:id/reset-password` | 重置密码 |
+| POST | `/api/v1/users/:id/unlock` | 解锁账号 |
+| POST | `/api/v1/users/:id/force-logout` | 强制踢下线（撤销全部 token） |
+| GET / PUT | `/api/v1/users/:id/roles` | 查看 / 替换角色 |
+| CRUD | `/api/v1/roles` | 角色 CRUD（系统内置角色不可删） |
+| GET | `/api/v1/permissions` | 列出所有权限点 |
+| CRUD | `/api/v1/departments` | 部门 CRUD（树形） |
+| CRUD | `/api/v1/groups` | 用户组 CRUD |
+| POST/DELETE | `/api/v1/groups/:id/members[/:uid]` | 增删成员 |
+
+### 资产授权
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| CRUD | `/api/v1/asset-groups` | 资产组（树形） |
+| POST/DELETE | `/api/v1/asset-groups/:id/nodes[/:nid]` | 节点入/出组 |
+| CRUD | `/api/v1/tags` | 标签 |
+| POST/DELETE | `/api/v1/nodes/:id/tags[/:tid]` | 给节点贴/撕标签 |
+| CRUD | `/api/v1/asset-grants` | 资产授权（用户/角色/组 × 节点/组/标签 × 动作） |
+
+### OIDC 客户端管理（admin）
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| CRUD | `/api/v1/oidc-clients` | 注册 Keycloak/Auth0/Google/Azure/飞书 等 IdP |
 
 ### 资产管理
 

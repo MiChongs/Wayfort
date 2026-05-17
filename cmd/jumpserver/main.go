@@ -9,14 +9,19 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
+	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/jumpserver-anonymous/internal/notify"
+	"github.com/michongs/jumpserver-anonymous/internal/passkey"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
@@ -82,15 +87,73 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
+	roleRepo := repo.NewRoleRepo(db)
+	deptRepo := repo.NewDepartmentRepo(db)
+	groupRepo := repo.NewUserGroupRepo(db)
+	mfaRepo := repo.NewUserMFARepo(db)
+	recoveryRepo := repo.NewRecoveryCodeRepo(db)
+	webauthnRepo := repo.NewWebauthnRepo(db)
+	historyRepo := repo.NewLoginHistoryRepo(db)
+	oidcRepo := repo.NewOIDCClientRepo(db)
+	assetGroupRepo := repo.NewAssetGroupRepo(db)
+	tagRepo := repo.NewTagRepo(db)
+	grantRepo := repo.NewGrantRepo(db)
+	favoriteRepo := repo.NewFavoriteRepo(db)
+	recentRepo := repo.NewRecentRepo(db)
 
 	if err := bootstrapAdmin(rootCtx, userRepo, cfg.Auth); err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
+	}
+	if err := seedRBAC(rootCtx, roleRepo, userRepo, cfg.Auth.BootstrapAdmin); err != nil {
+		return fmt.Errorf("seed rbac: %w", err)
 	}
 
 	issuer := auth.NewIssuer(cfg.Auth.JWTSecret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
 	registry := auth.NewRegistry()
 	registry.Register(auth.NewLocalProvider(userRepo))
 	registry.Register(auth.NewOIDCProvider())
+
+	// Auth security helpers
+	blocklist := auth.NewBlocklist(rc.Client())
+	lockout := auth.NewLockoutPolicy(rc.Client(), cfg.Auth.Lockout.Threshold, cfg.Auth.Lockout.Window, cfg.Auth.Lockout.Duration)
+	rbacResolver := auth.NewResolver(userRepo, roleRepo, rc.Client())
+	oidcManager := auth.NewOIDCManager(oidcRepo, rc.Client(), sealer)
+
+	// MFA + Passkey
+	totpSvc := mfa.NewTOTPService(cfg.Auth.MFA.TOTPIssuer, mfaRepo, sealer)
+	recoverySvc := mfa.NewRecoveryService(recoveryRepo, cfg.Auth.MFA.RecoveryCodesCount)
+	var mailer *notify.Mailer
+	if cfg.Notify.SMTP.Host != "" {
+		m, err := notify.New(notify.Config{
+			Host: cfg.Notify.SMTP.Host, Port: cfg.Notify.SMTP.Port,
+			Username: cfg.Notify.SMTP.Username, Password: cfg.Notify.SMTP.Password,
+			From: cfg.Notify.SMTP.From, UseTLS: cfg.Notify.SMTP.TLS,
+			ChanSize: cfg.Notify.Worker.ChanSize, MaxRetries: cfg.Notify.Worker.MaxRetries,
+		}, logger)
+		if err != nil {
+			logger.Warn("smtp mailer disabled", zap.Error(err))
+		} else {
+			mailer = m
+		}
+	}
+	emailOTP := mfa.NewEmailOTPService(rc.Client(), mailer, cfg.Auth.MFA.EmailOTPTTL, cfg.Auth.MFA.EmailOTPCooldown)
+	var passkeySvc *passkey.Service
+	if cfg.Auth.Passkey.Enabled {
+		ps, err := passkey.New(passkey.Config{
+			RPID: cfg.Auth.Passkey.RPID, RPDisplay: cfg.Auth.Passkey.RPDisplay,
+			Origins: cfg.Auth.Passkey.Origins, Discoverable: cfg.Auth.Passkey.DiscoverableLogin,
+		}, userRepo, webauthnRepo, rc.Client())
+		if err != nil {
+			logger.Warn("passkey disabled", zap.Error(err))
+		} else {
+			passkeySvc = ps
+		}
+	}
+	var anomalyDetector *anomaly.Detector
+	if cfg.Auth.Anomaly.Enabled {
+		anomalyDetector = anomaly.New(historyRepo, mailer, logger, cfg.Auth.Anomaly.NotifyEmail)
+	}
+	assetResolver := asset.NewResolver(grantRepo, groupRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, rc.Client())
 
 	resolver := pkgssh.NewResolver(sealer)
 	hostKeyChecker, err := pkgssh.NewHostKeyChecker("", false)
@@ -182,20 +245,44 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 
 	routes := &server.Routes{
 		Auth: &api.AuthHandler{
-			Registry: registry, Issuer: issuer, Audit: auditWriter,
+			Registry: registry, Issuer: issuer,
+			Users: userRepo, MFA: mfaRepo, History: historyRepo,
+			Lockout: lockout, Blocklist: blocklist,
+			TOTP: totpSvc, Email: emailOTP, Recovery: recoverySvc,
+			Passkey: passkeySvc, OIDC: oidcManager, OIDCRepo: oidcRepo,
+			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:      &api.NodeHandler{Repo: nodeRepo},
-		Proxy:     &api.ProxyHandler{Repo: proxyRepo},
-		Cred:      &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
-		Session:   &api.SessionHandler{Repo: sessionRepo},
-		SFTP:      sftpHandler,
-		WS:        wsGateway,
-		Guacamole: guacHandler,
-		DBCLI:     dbcliHandler,
-		TCPFwd:    pfHandler,
-		TCPRelay:  pfRelay,
-		Issuer:    issuer,
+		Node:       &api.NodeHandler{Repo: nodeRepo},
+		Proxy:      &api.ProxyHandler{Repo: proxyRepo},
+		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
+		Session:    &api.SessionHandler{Repo: sessionRepo},
+		SFTP:       sftpHandler,
+		WS:         wsGateway,
+		Guacamole:  guacHandler,
+		DBCLI:      dbcliHandler,
+		TCPFwd:     pfHandler,
+		TCPRelay:   pfRelay,
+		Issuer:     issuer,
+		Blocklist:  blocklist,
+		Resolver:   rbacResolver,
+		User: &api.UserHandler{
+			Repo: userRepo, Roles: roleRepo, Lockout: lockout,
+			Blocklist: blocklist, Resolver: rbacResolver,
+		},
+		Role: &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
+		Dept: &api.DepartmentHandler{Repo: deptRepo},
+		Group: &api.GroupHandler{Repo: groupRepo},
+		AssetGroup: &api.AssetGroupHandler{Repo: assetGroupRepo, Resolver: assetResolver},
+		Tag:   &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
+		Grant: &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
+		Me: &api.MeHandler{
+			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,
+			Email: emailOTP, Recovery: recoverySvc,
+			Favorites: favoriteRepo, Recent: recentRepo,
+			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
+		},
+		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
 	}
 
 	engine := server.NewEngine(cfg.Server, logger)
@@ -209,6 +296,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	if pfManager != nil {
 		g.Go(func() error { return pfManager.Run(gctx) })
+	}
+	if mailer != nil {
+		g.Go(func() error { return mailer.Run(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
 
@@ -241,4 +331,48 @@ func bootstrapAdmin(ctx context.Context, users *repo.UserRepo, cfg config.AuthCo
 		IsAdmin:      true,
 	}
 	return users.Create(ctx, u)
+}
+
+// seedRBAC inserts the permission catalogue and built-in roles, then attaches
+// the admin role to the bootstrap user. Safe to run repeatedly.
+func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, bootstrapAdmin string) error {
+	perms := make([]model.Permission, 0, len(auth.AllPermissions))
+	for _, p := range auth.AllPermissions {
+		perms = append(perms, model.Permission{Code: p.Code, Category: p.Category, Description: p.Description})
+	}
+	if err := roles.SyncPermissions(ctx, perms); err != nil {
+		return err
+	}
+	for name, codes := range auth.BuiltinRoles {
+		existing, err := roles.FindByName(ctx, name)
+		if err != nil {
+			return err
+		}
+		var roleID uint64
+		if existing == nil {
+			row := &model.Role{Name: name, IsSystem: true, Description: "Built-in role: " + name}
+			if err := roles.Create(ctx, row); err != nil {
+				return err
+			}
+			roleID = row.ID
+		} else {
+			roleID = existing.ID
+		}
+		if err := roles.SetPermissions(ctx, roleID, codes); err != nil {
+			return err
+		}
+	}
+	// Make sure the bootstrap admin user has the admin role attached.
+	if bootstrapAdmin != "" {
+		u, err := users.FindByUsername(ctx, bootstrapAdmin)
+		if err != nil || u == nil {
+			return err
+		}
+		adminRole, err := roles.FindByName(ctx, "admin")
+		if err != nil || adminRole == nil {
+			return err
+		}
+		return roles.AssignToUser(ctx, u.ID, adminRole.ID, nil)
+	}
+	return nil
 }
