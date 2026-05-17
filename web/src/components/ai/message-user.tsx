@@ -1,9 +1,10 @@
 "use client"
 
+import * as React from "react"
 import { User } from "lucide-react"
 import { CopyButton } from "@/components/common/copy-button"
 
-export function UserBubble({ text }: { text: string }) {
+export const UserBubble = React.memo(function UserBubble({ text }: { text: string }) {
   return (
     <div className="flex justify-end gap-3 group">
       <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-start pt-1">
@@ -17,4 +18,4 @@ export function UserBubble({ text }: { text: string }) {
       </div>
     </div>
   )
-}
+})

@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { Users, ChevronDown } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -10,7 +11,7 @@ import {
 } from "@/components/ui/collapsible"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-export function SubAgentCard({
+export const SubAgentCard = React.memo(function SubAgentCard({
   agent,
   eventKind,
   text,
@@ -79,4 +80,4 @@ export function SubAgentCard({
       </motion.div>
     </div>
   )
-}
+})

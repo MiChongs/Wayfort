@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { ChevronDown, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -51,7 +52,7 @@ const STATUS_STYLES: Record<
   },
 }
 
-export function ToolCard({
+export const ToolCard = React.memo(function ToolCard({
   name,
   status,
   output,
@@ -152,4 +153,4 @@ export function ToolCard({
       </motion.div>
     </div>
   )
-}
+})

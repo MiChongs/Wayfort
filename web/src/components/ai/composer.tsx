@@ -2,9 +2,18 @@
 
 import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
-import { Loader2, Send, Pause, CornerDownLeft } from "lucide-react"
+import {
+  Command as CommandIcon,
+  CornerDownLeft,
+  Loader2,
+  Pause,
+  Send,
+  SlashIcon,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card } from "@/components/ui/card"
+import { Separator } from "@/components/ui/separator"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Popover,
@@ -41,15 +50,15 @@ export const Composer = React.forwardRef<
     cancel?: () => void
     running: boolean
     placeholder?: string
-    rightSlot?: React.ReactNode
+    leftSlot?: React.ReactNode
   }
 >(function Composer(
-  { draft, setDraft, send, cancel, running, placeholder, rightSlot },
+  { draft, setDraft, send, cancel, running, placeholder, leftSlot },
   ref,
 ) {
   const innerRef = React.useRef<HTMLTextAreaElement | null>(null)
   React.useImperativeHandle(ref, () => innerRef.current as HTMLTextAreaElement)
-  useAutosizeTextarea(innerRef, draft, 240)
+  useAutosizeTextarea(innerRef, draft, 220)
   const reduce = useReducedMotion()
 
   const slashOpen = draft.startsWith("/")
@@ -59,90 +68,143 @@ export const Composer = React.forwardRef<
   }, [slashOpen, draft])
 
   const charCount = draft.length
+  const overLimit = charCount > 8000
+  const canSend = draft.trim().length > 0 && !running
 
   function pickCommand(cmd: string) {
     setDraft(cmd)
-    // keep focus on the textarea
     requestAnimationFrame(() => innerRef.current?.focus())
   }
 
   return (
-    <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 px-3 md:px-4 pt-3 pb-3 relative">
+    <div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/70 px-3 md:px-4 pt-3 pb-3 relative">
       <Popover open={slashOpen && filteredCommands.length > 0}>
         <PopoverAnchor asChild>
-          <div className="rounded-2xl border bg-background shadow-sm focus-within:ring-2 focus-within:ring-ring/40 focus-within:border-ring/40 transition-all">
-            <Textarea
-              ref={innerRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (
-                  e.key === "Enter" &&
-                  !e.shiftKey &&
-                  !e.nativeEvent.isComposing
-                ) {
-                  e.preventDefault()
-                  send()
+          <Card
+            className={cn(
+              "p-0 gap-0 rounded-2xl shadow-sm transition-all overflow-hidden",
+              "border-border/70 bg-background",
+              "focus-within:border-ring/40 focus-within:ring-2 focus-within:ring-ring/30 focus-within:shadow-md",
+            )}
+          >
+            <div className="px-3 pt-2.5">
+              <Textarea
+                ref={innerRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (
+                    e.key === "Enter" &&
+                    !e.shiftKey &&
+                    !e.nativeEvent.isComposing
+                  ) {
+                    e.preventDefault()
+                    send()
+                  }
+                }}
+                placeholder={
+                  placeholder ||
+                  "输入你的指令…（Enter 发送 · Shift+Enter 换行 · / 看快捷命令）"
                 }
-              }}
-              placeholder={
-                placeholder ||
-                "输入你的指令… （Enter 发送，Shift+Enter 换行，斜杠开头查看快捷命令）"
-              }
-              rows={1}
-              className="resize-none border-0 bg-transparent shadow-none focus-visible:ring-0 px-4 pt-3 pb-1 min-h-[44px]"
-            />
-            <div className="flex items-center justify-between gap-2 px-2 pb-2 pt-1">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground pl-2">
-                {rightSlot}
-                <span className="hidden md:inline-flex items-center gap-1 opacity-70">
-                  <CornerDownLeft className="w-3 h-3" /> 发送
-                </span>
+                rows={1}
+                className={cn(
+                  "resize-none border-0 bg-transparent shadow-none px-1 py-1.5",
+                  "min-h-[28px] text-sm leading-relaxed",
+                  "focus-visible:ring-0 focus-visible:ring-offset-0",
+                  "placeholder:text-muted-foreground/70",
+                )}
+              />
+            </div>
+            <Separator className="opacity-40" />
+            <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+              <div className="flex items-center gap-1.5 pl-1 min-w-0">
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2 text-muted-foreground hover:text-foreground gap-1"
+                      onClick={() => {
+                        setDraft("/")
+                        innerRef.current?.focus()
+                      }}
+                    >
+                      <SlashIcon className="w-3.5 h-3.5" />
+                      <span className="text-[11px]">命令</span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">查看快捷命令</TooltipContent>
+                </Tooltip>
+                {leftSlot}
               </div>
-              <div className="flex items-center gap-2">
-                <span
+              <div className="flex items-center gap-2 shrink-0">
+                <Badge
+                  variant={overLimit ? "warning" : "secondary"}
                   className={cn(
-                    "text-[10px] font-mono",
-                    charCount > 4000
-                      ? "text-amber-600 dark:text-amber-400"
-                      : "text-muted-foreground/70",
+                    "h-5 px-1.5 text-[10px] font-mono tabular-nums transition-colors",
+                    !overLimit && charCount > 0
+                      ? "bg-muted text-muted-foreground"
+                      : "",
+                    charCount === 0 && "opacity-0 pointer-events-none",
                   )}
                 >
                   {charCount}
+                </Badge>
+                <span className="hidden md:inline-flex items-center gap-1 text-[10px] text-muted-foreground/70">
+                  <CornerDownLeft className="w-3 h-3" />
+                  发送
                 </span>
                 {running && cancel ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <motion.div whileTap={reduce ? undefined : { scale: 0.96 }}>
-                        <Button size="sm" variant="outline" onClick={cancel}>
-                          <Pause className="w-4 h-4" /> 停止
+                      <motion.div whileTap={reduce ? undefined : { scale: 0.95 }}>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={cancel}
+                          className="h-8 px-3"
+                        >
+                          <Pause className="w-3.5 h-3.5" />
+                          <span>停止</span>
                         </Button>
                       </motion.div>
                     </TooltipTrigger>
                     <TooltipContent side="top">
-                      中断当前生成（Esc 也可）
+                      中断生成（Esc）
                     </TooltipContent>
                   </Tooltip>
                 ) : (
-                  <motion.div whileTap={reduce ? undefined : { scale: 0.96 }}>
-                    <Button
-                      size="sm"
-                      onClick={send}
-                      disabled={running || !draft.trim()}
-                      className="px-4"
-                    >
-                      {running ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Send className="w-4 h-4" />
-                      )}
-                      发送
-                    </Button>
-                  </motion.div>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <motion.div
+                        whileTap={reduce || !canSend ? undefined : { scale: 0.94 }}
+                      >
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={send}
+                          disabled={!canSend}
+                          className="h-8 px-3 gap-1.5 rounded-lg"
+                        >
+                          {running ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Send className="w-3.5 h-3.5" />
+                          )}
+                          <span>发送</span>
+                        </Button>
+                      </motion.div>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="flex items-center gap-1">
+                      Enter <Separator orientation="vertical" className="h-3 mx-0.5" /> 发送
+                    </TooltipContent>
+                  </Tooltip>
                 )}
               </div>
             </div>
-          </div>
+          </Card>
         </PopoverAnchor>
 
         <PopoverContent
@@ -151,7 +213,7 @@ export const Composer = React.forwardRef<
           sideOffset={10}
           onOpenAutoFocus={(e) => e.preventDefault()}
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="w-[min(420px,calc(100vw-2rem))] p-0"
+          className="w-[min(420px,calc(100vw-2rem))] p-0 border-border/70"
         >
           <Command shouldFilter={false}>
             <CommandList className="max-h-[260px]">
@@ -162,11 +224,10 @@ export const Composer = React.forwardRef<
                     key={c.cmd}
                     value={c.cmd}
                     onSelect={() => pickCommand(c.cmd)}
-                    className="flex items-center gap-2"
+                    className="flex items-center gap-2 cursor-pointer"
                   >
-                    <code className="font-mono text-xs text-foreground">
-                      {c.cmd}
-                    </code>
+                    <CommandIcon className="w-3.5 h-3.5 text-muted-foreground" />
+                    <code className="font-mono text-xs text-foreground">{c.cmd}</code>
                     <span className="text-xs text-muted-foreground truncate">
                       {c.desc}
                     </span>

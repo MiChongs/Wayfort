@@ -196,6 +196,33 @@ export default function ConversationPage({
     return false
   }
 
+  // Text deltas can fire 30-60 events/sec. We coalesce them into one setLive
+  // per animation frame so React doesn't re-render the whole message tree on
+  // every byte. Other events (tool_call, tool_output, etc.) flush immediately
+  // because they're rare and individually meaningful.
+  const pendingTextRef = React.useRef("")
+  const flushScheduledRef = React.useRef(false)
+  const flushText = React.useCallback(() => {
+    flushScheduledRef.current = false
+    const buffered = pendingTextRef.current
+    if (!buffered) return
+    pendingTextRef.current = ""
+    setLive((l) => {
+      const next = l.slice()
+      const last = next[next.length - 1]
+      if (last && last.kind === "assistant") {
+        next[next.length - 1] = {
+          ...last,
+          chunks: [...last.chunks, buffered],
+          streaming: true,
+        }
+      } else {
+        next.push({ kind: "assistant", chunks: [buffered], streaming: true })
+      }
+      return next
+    })
+  }, [])
+
   function dispatchEvent(ev: StreamEvent) {
     // Stop the "thinking" spinner once any concrete event arrives.
     if (
@@ -266,26 +293,26 @@ export default function ConversationPage({
         return
     }
 
+    if (ev.kind === "text_delta") {
+      // Buffer + RAF flush — see flushText above.
+      pendingTextRef.current += ev.text
+      if (!flushScheduledRef.current) {
+        flushScheduledRef.current = true
+        requestAnimationFrame(flushText)
+      }
+      return
+    }
+
+    // Flush any buffered text before structural changes so the order on
+    // screen matches the order on the wire (text → tool_call, not the other
+    // way around).
+    if (pendingTextRef.current) {
+      flushText()
+    }
+
     setLive((l) => {
       const next = l.slice()
       switch (ev.kind) {
-        case "text_delta": {
-          const last = next[next.length - 1]
-          if (last && last.kind === "assistant") {
-            next[next.length - 1] = {
-              ...last,
-              chunks: [...last.chunks, ev.text],
-              streaming: true,
-            }
-          } else {
-            next.push({
-              kind: "assistant",
-              chunks: [ev.text],
-              streaming: true,
-            })
-          }
-          break
-        }
         case "tool_call":
           next.push({
             kind: "tool",
@@ -414,27 +441,33 @@ export default function ConversationPage({
     }
   }
 
-  async function approve(invId: string) {
-    try {
-      await aiConversationService.approve(id, invId)
-    } catch (e: unknown) {
-      toast.error("同意失败", { description: (e as Error).message })
-    }
-  }
-  async function reject(invId: string) {
-    try {
-      await aiConversationService.reject(id, invId)
-    } catch (e: unknown) {
-      toast.error("拒绝失败", { description: (e as Error).message })
-    }
-  }
-  function cancel() {
+  const approve = React.useCallback(
+    async (invId: string) => {
+      try {
+        await aiConversationService.approve(id, invId)
+      } catch (e: unknown) {
+        toast.error("同意失败", { description: (e as Error).message })
+      }
+    },
+    [id],
+  )
+  const reject = React.useCallback(
+    async (invId: string) => {
+      try {
+        await aiConversationService.reject(id, invId)
+      } catch (e: unknown) {
+        toast.error("拒绝失败", { description: (e as Error).message })
+      }
+    },
+    [id],
+  )
+  const cancel = React.useCallback(() => {
     abortRef.current?.abort()
     aiConversationService.cancel(id).catch(() => {
       /* ignore */
     })
     toast("已请求中断")
-  }
+  }, [id])
 
   function lastUserText(): string | null {
     // Prefer last persisted user message; fall back to live user bubble.

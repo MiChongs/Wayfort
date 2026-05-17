@@ -246,7 +246,10 @@ function LiveBubbleView({
 }) {
   if (b.kind === "user") return <UserBubble text={b.text} />
   if (b.kind === "assistant") {
-    if (b.chunks.length === 0 && b.streaming) return null
+    // Hide totally empty assistant bubbles (we eagerly push one after every
+    // tool_output to anticipate the continuation; if none arrives we don't
+    // want a blank card sitting there).
+    if (b.chunks.length === 0) return null
     return <AssistantBubble chunks={b.chunks} streaming={b.streaming} agent={agent} />
   }
   if (b.kind === "tool")

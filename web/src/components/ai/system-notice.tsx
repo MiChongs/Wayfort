@@ -1,5 +1,6 @@
 "use client"
 
+import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
 import { AlertCircle, AlertTriangle, Info, RefreshCw } from "lucide-react"
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert"
@@ -19,7 +20,7 @@ const VARIANT_BY_LEVEL: Record<NoticeLevel, "info" | "warning" | "destructive"> 
   error: "destructive",
 }
 
-export function SystemNotice({
+export const SystemNotice = React.memo(function SystemNotice({
   level,
   title,
   description,
@@ -64,4 +65,4 @@ export function SystemNotice({
       </motion.div>
     </div>
   )
-}
+})
