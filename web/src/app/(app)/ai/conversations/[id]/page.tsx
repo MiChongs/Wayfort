@@ -5,6 +5,8 @@ import { use } from "react"
 import { motion } from "motion/react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
+import { ArrowLeft, SearchX } from "lucide-react"
 import { toast } from "sonner"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -544,6 +546,18 @@ export default function ConversationPage({
     return () => window.removeEventListener("keydown", onKey)
   }, [running])
 
+  // If the API returned 404 (or any error) and we have no cached detail,
+  // render a friendly not-found screen instead of an empty header + composer
+  // shell that pretends the conversation exists.
+  const notFound =
+    !detail.isLoading &&
+    !detail.data &&
+    (detail.error || detail.isError)
+
+  if (notFound) {
+    return <NotFoundView id={id} />
+  }
+
   return (
     <div className="flex flex-col h-full bg-background overflow-hidden min-w-0">
       <ConversationHeader
@@ -665,4 +679,38 @@ function tryStringify(v: unknown): string {
   } catch {
     return String(v)
   }
+}
+
+function NotFoundView({ id }: { id: string }) {
+  return (
+    <div className="h-full w-full flex items-center justify-center bg-background p-6">
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: "spring", stiffness: 380, damping: 32 }}
+        className="max-w-md w-full text-center space-y-5"
+      >
+        <div className="mx-auto w-14 h-14 rounded-2xl bg-muted/70 border border-border/60 flex items-center justify-center">
+          <SearchX className="w-6 h-6 text-muted-foreground" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="text-lg font-semibold tracking-tight">找不到这条对话</h2>
+          <p className="text-sm text-muted-foreground">
+            可能已被删除，或者链接里的 ID 不对。
+          </p>
+          <p className="text-[11px] font-mono text-muted-foreground break-all px-3 pt-1">
+            {id}
+          </p>
+        </div>
+        <div className="flex justify-center gap-2 pt-1">
+          <Link
+            href={"/ai" as Parameters<typeof Link>[0]["href"]}
+            className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md text-sm font-medium bg-primary text-primary-foreground shadow hover:bg-primary/90 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          >
+            <ArrowLeft className="w-4 h-4" /> 返回 AI 助手
+          </Link>
+        </div>
+      </motion.div>
+    </div>
+  )
 }
