@@ -18,10 +18,14 @@ export function StreamingText({
   chunks: string[]
   done: boolean
 }) {
+  // All hooks must run on every render — no early return above them.
   const reduce = useReducedMotion()
+  const full = React.useMemo(() => chunks.join(""), [chunks])
+  // Split long chunks into ~10-char sub-chunks so a single delta doesn't pop
+  // in as a wall of text.
+  const segments = React.useMemo(() => splitChunks(chunks), [chunks])
 
   if (done) {
-    const full = chunks.join("")
     return (
       <motion.div
         initial={{ opacity: 0 }}
@@ -32,10 +36,6 @@ export function StreamingText({
       </motion.div>
     )
   }
-
-  // Split long chunks into ~10-char sub-chunks so a single delta doesn't pop
-  // in as a wall of text.
-  const segments = React.useMemo(() => splitChunks(chunks), [chunks])
 
   return (
     <div className="whitespace-pre-wrap break-words text-sm leading-relaxed font-sans">
