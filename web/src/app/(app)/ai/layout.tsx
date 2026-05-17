@@ -17,8 +17,13 @@ export default function AILayout({ children }: { children: React.ReactNode }) {
   const reduce = useReducedMotion()
   const [open, setOpen] = React.useState(false)
 
+  // Pin the entire AI shell to the viewport minus the global TopBar (h-14).
+  // We can't rely on h-full propagating cleanly because the parent <main>
+  // uses overflow-y-auto, so any descendant momentarily taller than its
+  // computed height would let main scroll the whole page (composer
+  // included). dvh handles mobile chrome resizing.
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex w-full overflow-hidden h-[calc(100dvh-56px)] max-h-[calc(100dvh-56px)]">
       {isDesktop && (
         <motion.div
           initial={reduce ? false : { x: -20, opacity: 0 }}
