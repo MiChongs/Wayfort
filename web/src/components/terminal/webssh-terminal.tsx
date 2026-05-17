@@ -115,6 +115,10 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
         cursorBlink: true,
         convertEol: true,
         scrollback: 5000,
+        // Plan 14.C.1 — Unicode11Addon + `term.unicode.activeVersion = "11"`
+        // both touch xterm's proposed API surface, which is gated behind
+        // this flag. Without it the addon throws on load.
+        allowProposedApi: true,
         // Plan 14.C.3 — bell handled in JS via term.onBell. xterm v5 dropped
         // the bellStyle option; the default behaviour is to fire onBell and
         // do nothing else, which is exactly what we want.
