@@ -122,21 +122,33 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 			args strings.Builder
 		}
 		toolByIndex := map[int64]*pending{}
+		// Track which content blocks are extended-thinking so we can emit
+		// reasoning events only for those. Anthropic interleaves thinking +
+		// tool_use + text blocks; each has its own index.
+		thinkingBlocks := map[int64]bool{}
 		finish := ""
 
 		for stream.Next() {
 			ev := stream.Current()
 			switch ev.Type {
 			case "content_block_start":
-				if ev.ContentBlock.Type == "tool_use" {
+				switch ev.ContentBlock.Type {
+				case "tool_use":
 					toolByIndex[ev.Index] = &pending{
 						id:   ev.ContentBlock.ID,
 						name: ev.ContentBlock.Name,
 					}
 					emit(out, ctx, Event{Type: EvtToolCallStart, ToolCallID: ev.ContentBlock.ID, ToolName: ev.ContentBlock.Name})
+				case "thinking":
+					thinkingBlocks[ev.Index] = true
+					emit(out, ctx, Event{Type: EvtReasoningStart})
 				}
 			case "content_block_delta":
 				switch ev.Delta.Type {
+				case "thinking_delta":
+					if ev.Delta.Thinking != "" {
+						emit(out, ctx, Event{Type: EvtReasoningDelta, Text: ev.Delta.Thinking})
+					}
 				case "text_delta":
 					if ev.Delta.Text != "" {
 						emit(out, ctx, Event{Type: EvtTextDelta, Text: ev.Delta.Text})
@@ -151,6 +163,10 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 				if p, ok := toolByIndex[ev.Index]; ok {
 					emit(out, ctx, Event{Type: EvtToolCallEnd, ToolCallID: p.id, ToolName: p.name, ToolArgs: p.args.String()})
 					delete(toolByIndex, ev.Index)
+				}
+				if thinkingBlocks[ev.Index] {
+					emit(out, ctx, Event{Type: EvtReasoningEnd})
+					delete(thinkingBlocks, ev.Index)
 				}
 			case "message_delta":
 				if ev.Delta.StopReason != "" {

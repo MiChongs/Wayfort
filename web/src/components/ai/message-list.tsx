@@ -15,6 +15,10 @@ import { SystemNotice, type NoticeLevel } from "./system-notice"
 import { SubAgentCard } from "./subagent-card"
 import { MessageSkeleton } from "./message-skeleton"
 import { isDangerName } from "./tool-icons"
+import { ReasoningBlock } from "./reasoning-block"
+import { ToolGroupCard } from "./tool-group-card"
+import { AgentInfoCard } from "./agent-info-card"
+import { groupTools, type ToolLike } from "@/lib/ai/group-tools"
 import type { AIAgent, AIMessage, AIToolInvocation } from "@/lib/api/types"
 
 export type LiveBubble =
@@ -53,6 +57,14 @@ export type LiveBubble =
       text?: string
       payload?: string
     }
+  | {
+      kind: "reasoning"
+      id: string
+      chunks: string[]
+      streaming: boolean
+      startedAt: number
+      endedAt?: number
+    }
 
 interface MessageListProps {
   messages: AIMessage[]
@@ -65,6 +77,7 @@ interface MessageListProps {
   onApprove: (id: string) => void
   onReject: (id: string) => void
   onRetry?: () => void
+  onRegenerateFrom?: (msg: AIMessage) => void
 }
 
 export function MessageList({
@@ -78,6 +91,7 @@ export function MessageList({
   onApprove,
   onReject,
   onRetry,
+  onRegenerateFrom,
 }: MessageListProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const reduce = useReducedMotion()
@@ -112,8 +126,29 @@ export function MessageList({
   }
 
   const historyBubbles = React.useMemo(
-    () => renderHistory(messages, invocations, agent),
-    [messages, invocations, agent],
+    () => renderHistory(messages, invocations, agent, onRegenerateFrom),
+    [messages, invocations, agent, onRegenerateFrom],
+  )
+
+  // Group consecutive ≥3 same-name tools in the live stream for visual density.
+  const liveGrouped = React.useMemo(
+    () =>
+      groupTools<LiveBubble>(
+        live,
+        (b) => b.kind === "tool",
+        (b) => {
+          const t = b as Extract<LiveBubble, { kind: "tool" }>
+          return {
+            id: t.id,
+            name: t.name,
+            status: t.status,
+            output: t.output,
+            error: t.error,
+            danger: t.danger,
+          } as ToolLike
+        },
+      ),
+    [live],
   )
 
   const showSkeleton = loading && historyBubbles.length === 0 && live.length === 0
@@ -134,12 +169,16 @@ export function MessageList({
         {showSkeleton && <MessageSkeleton />}
 
         {emptyState && (
-          <div className="py-16">
-            <EmptyState
-              icon={Sparkles}
-              title="开始一段对话"
-              description="在下方输入指令，Agent 会按当前模式协助你；高危工具会请求你的确认。"
-            />
+          <div className="py-8 max-w-3xl mx-auto w-full space-y-4">
+            {agent ? (
+              <AgentInfoCard agent={agent} />
+            ) : (
+              <EmptyState
+                icon={Sparkles}
+                title="开始一段对话"
+                description="在下方输入指令，Agent 会按当前模式协助你；高危工具会请求你的确认。"
+              />
+            )}
           </div>
         )}
 
@@ -161,11 +200,11 @@ export function MessageList({
             </motion.div>
           ))}
 
-          {live.map((b, i) => {
-            const k = liveKey(b, i)
+          {liveGrouped.map((entry, i) => {
+            const key = entryKey(entry, i)
             return (
               <motion.div
-                key={`l-${k}`}
+                key={`l-${key}`}
                 layout={reduce ? false : "position"}
                 initial={reduce ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -177,13 +216,17 @@ export function MessageList({
                 }
                 className="min-w-0"
               >
-                <LiveBubbleView
-                  b={b}
-                  agent={agent}
-                  onApprove={onApprove}
-                  onReject={onReject}
-                  onRetry={onRetry}
-                />
+                {isGroup(entry) ? (
+                  <ToolGroupCard name={entry.name} items={entry.items} />
+                ) : (
+                  <LiveBubbleView
+                    b={entry as LiveBubble}
+                    agent={agent}
+                    onApprove={onApprove}
+                    onReject={onReject}
+                    onRetry={onRetry}
+                  />
+                )}
               </motion.div>
             )
           })}
@@ -291,6 +334,17 @@ function LiveBubbleView({
         payload={b.payload}
       />
     )
+  if (b.kind === "reasoning") {
+    const seconds = Math.max(
+      0,
+      Math.round(((b.endedAt ?? Date.now()) - b.startedAt) / 1000),
+    )
+    return b.streaming ? (
+      <ReasoningBlock state="thinking" chunks={b.chunks} />
+    ) : (
+      <ReasoningBlock state="thought" chunks={b.chunks} durationSec={seconds} />
+    )
+  }
   return null
 }
 
@@ -308,7 +362,24 @@ function liveKey(b: LiveBubble, i: number): string {
       return `n-${b.id}`
     case "subagent":
       return `s-${b.id}`
+    case "reasoning":
+      return `r-${b.id}`
   }
+}
+
+// `groupTools` returns either a passthrough LiveBubble or a synthetic group.
+// Helpers to discriminate + key.
+function isGroup(
+  e: LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] },
+): e is { __kind: "group"; name: string; groupKey: string; items: ToolLike[] } {
+  return (e as { __kind?: string }).__kind === "group"
+}
+function entryKey(
+  e: LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] },
+  i: number,
+): string {
+  if (isGroup(e)) return `g-${e.groupKey}`
+  return liveKey(e, i)
 }
 
 // ---------- Persisted history rendering ----------
@@ -319,20 +390,26 @@ function renderHistory(
   messages: AIMessage[],
   invocations: AIToolInvocation[],
   agent?: AIAgent,
+  onRegenerateFrom?: (msg: AIMessage) => void,
 ): RenderedBubble[] {
-  const out: RenderedBubble[] = []
+  // First pass: build flat list of either AIMessage-derived ToolLike entries
+  // (with tool meta) or other bubbles, so groupTools can fold runs.
+  type HistoryItem =
+    | { kind: "user"; msg: AIMessage; text: string }
+    | { kind: "assistant"; msg: AIMessage; text: string }
+    | {
+        kind: "tool"
+        key: string
+        tool: ToolLike & { msgId: number; callId: string }
+      }
+  const flat: HistoryItem[] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     const text = parseContentText(m.content)
     if (m.role === "user") {
-      out.push({ key: `u-${m.id}`, node: <UserBubble text={text} /> })
+      flat.push({ kind: "user", msg: m, text })
     } else if (m.role === "assistant") {
-      if (text) {
-        out.push({
-          key: `a-${m.id}`,
-          node: <AssistantBubble text={text} agent={agent} />,
-        })
-      }
+      if (text) flat.push({ kind: "assistant", msg: m, text })
       if (m.tool_calls) {
         try {
           const tcs = JSON.parse(m.tool_calls) as {
@@ -360,24 +437,79 @@ function renderHistory(
                 : inv?.status === "pending" || inv?.status === "running"
                 ? "running"
                 : "output"
-            out.push({
+            flat.push({
+              kind: "tool",
               key: `t-${m.id}-${tc.id}`,
-              node: (
-                <ToolCard
-                  name={tc.name}
-                  status={status}
-                  output={result || inv?.output}
-                  error={inv?.error}
-                  danger={isDangerName(tc.name)}
-                  defaultExpanded={false}
-                />
-              ),
+              tool: {
+                id: tc.id,
+                name: tc.name,
+                status,
+                output: result || inv?.output,
+                error: inv?.error,
+                danger: isDangerName(tc.name),
+                msgId: m.id,
+                callId: tc.id,
+              },
             })
           }
         } catch {
           /* ignore */
         }
       }
+    }
+  }
+
+  // Second pass: group runs of ≥3 consecutive tools with the same name.
+  const grouped = groupTools<HistoryItem>(
+    flat,
+    (it) => it.kind === "tool",
+    (it) => (it as Extract<HistoryItem, { kind: "tool" }>).tool,
+  )
+
+  const out: RenderedBubble[] = []
+  for (const entry of grouped) {
+    if ((entry as { __kind?: string }).__kind === "group") {
+      const g = entry as {
+        __kind: "group"
+        name: string
+        groupKey: string
+        items: ToolLike[]
+      }
+      out.push({
+        key: `tg-${g.groupKey}`,
+        node: <ToolGroupCard name={g.name} items={g.items} />,
+      })
+      continue
+    }
+    const it = entry as HistoryItem
+    if (it.kind === "user") {
+      out.push({ key: `u-${it.msg.id}`, node: <UserBubble text={it.text} /> })
+    } else if (it.kind === "assistant") {
+      out.push({
+        key: `a-${it.msg.id}`,
+        node: (
+          <AssistantBubble
+            text={it.text}
+            agent={agent}
+            message={it.msg}
+            onRegenerateFrom={onRegenerateFrom}
+          />
+        ),
+      })
+    } else {
+      out.push({
+        key: it.key,
+        node: (
+          <ToolCard
+            name={it.tool.name}
+            status={it.tool.status}
+            output={it.tool.output}
+            error={it.tool.error}
+            danger={it.tool.danger}
+            defaultExpanded={false}
+          />
+        ),
+      })
     }
   }
   return out

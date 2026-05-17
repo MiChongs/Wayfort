@@ -27,6 +27,13 @@ const (
 	KindDone               EventKind = "done"
 	KindPing               EventKind = "ping"
 	KindSubAgent           EventKind = "subagent_event"
+	// Reasoning / extended-thinking traces. Emitted by providers whose models
+	// support them (Anthropic Extended Thinking, OpenAI o-series reasoning_content).
+	// Frontend renders these in a dedicated "thinking" bubble that auto-collapses
+	// once main text starts streaming.
+	KindReasoningStart EventKind = "reasoning_start"
+	KindReasoningDelta EventKind = "reasoning_delta"
+	KindReasoningEnd   EventKind = "reasoning_end"
 )
 
 // Event is the payload pushed through the Sink. Data marshals to JSON for SSE.

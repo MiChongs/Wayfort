@@ -129,6 +129,13 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		}
 		toolByIndex := map[int64]*pending{}
 		finish := ""
+		// o-series models + many OpenAI-compatible gateways (DeepSeek-R1,
+		// Moonshot k1, 通义 qwq) put their chain-of-thought in
+		// `delta.reasoning_content`. SDK v1.12 doesn't expose it as a typed
+		// field, so we sniff the raw delta JSON. Switching from reasoning
+		// to main content emits a reasoning_end so the UI can collapse the
+		// "thinking" card.
+		reasoningOpen := false
 
 		for stream.Next() {
 			chunk := stream.Current()
@@ -136,6 +143,31 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 				continue
 			}
 			choice := chunk.Choices[0]
+
+			// Sniff reasoning_content from raw delta JSON.
+			if raw := choice.Delta.RawJSON(); raw != "" {
+				var probe struct {
+					ReasoningContent string `json:"reasoning_content"`
+					Reasoning        string `json:"reasoning"`
+				}
+				if json.Unmarshal([]byte(raw), &probe) == nil {
+					rc := probe.ReasoningContent
+					if rc == "" {
+						rc = probe.Reasoning
+					}
+					if rc != "" {
+						if !reasoningOpen {
+							reasoningOpen = true
+							emit(out, ctx, Event{Type: EvtReasoningStart})
+						}
+						emit(out, ctx, Event{Type: EvtReasoningDelta, Text: rc})
+					} else if reasoningOpen && choice.Delta.Content != "" {
+						reasoningOpen = false
+						emit(out, ctx, Event{Type: EvtReasoningEnd})
+					}
+				}
+			}
+
 			if choice.Delta.Content != "" {
 				emit(out, ctx, Event{Type: EvtTextDelta, Text: choice.Delta.Content})
 			}
@@ -171,6 +203,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		// Flush completed tool calls.
 		for _, p := range toolByIndex {
 			emit(out, ctx, Event{Type: EvtToolCallEnd, ToolCallID: p.id, ToolName: p.name, ToolArgs: p.args.String()})
+		}
+		// If reasoning never transitioned to main content (e.g. answer was all
+		// reasoning, or stream cut off), close the reasoning block now so the
+		// UI can collapse it.
+		if reasoningOpen {
+			emit(out, ctx, Event{Type: EvtReasoningEnd})
 		}
 		if err := stream.Err(); err != nil && !errors.Is(err, context.Canceled) {
 			emit(out, ctx, Event{Type: EvtError, Err: err})

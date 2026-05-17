@@ -318,6 +318,14 @@ func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Even
 	finish := ""
 	for ev := range stream {
 		switch ev.Type {
+		case provider.EvtReasoningStart:
+			sink.Emit(Event{Kind: KindReasoningStart, Data: map[string]any{}})
+		case provider.EvtReasoningDelta:
+			if ev.Text != "" {
+				sink.Emit(Event{Kind: KindReasoningDelta, Data: map[string]string{"text": ev.Text}})
+			}
+		case provider.EvtReasoningEnd:
+			sink.Emit(Event{Kind: KindReasoningEnd, Data: map[string]any{}})
 		case provider.EvtTextDelta:
 			if ev.Text != "" {
 				text.WriteString(ev.Text)

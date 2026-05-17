@@ -12,9 +12,15 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { ModeSwitcher } from "./mode-switcher"
 import { AgentAvatar } from "./agent-avatar"
+import { AgentInfoCard } from "./agent-info-card"
 import type { AIAgent, AIConversation, PermissionMode } from "@/lib/api/types"
 
 export function ConversationHeader({
@@ -22,6 +28,7 @@ export function ConversationHeader({
   agent,
   liveTokensIn,
   liveTokensOut,
+  liveToolCount,
   onModeChange,
   onRegenerate,
   onRename,
@@ -33,6 +40,7 @@ export function ConversationHeader({
   agent?: AIAgent
   liveTokensIn: number
   liveTokensOut: number
+  liveToolCount?: number
   onModeChange: (m: PermissionMode) => void
   onRegenerate: () => void
   onRename: (title: string) => void
@@ -58,9 +66,41 @@ export function ConversationHeader({
   }
 
   return (
-    <div className="border-b px-4 md:px-6 py-3 flex items-center justify-between gap-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+    <div className="relative border-b px-4 md:px-6 py-3 flex items-center justify-between gap-3 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/70">
       <div className="min-w-0 flex-1 flex items-center gap-3">
-        <AgentAvatar agent={agent} />
+        {agent ? (
+          <Popover>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    className="rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 transition-shadow hover:ring-2 hover:ring-ring/20"
+                    aria-label="查看 Agent 信息"
+                  >
+                    <AgentAvatar agent={agent} />
+                  </button>
+                </PopoverTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">点击查看 Agent 信息</TooltipContent>
+            </Tooltip>
+            <PopoverContent
+              align="start"
+              side="bottom"
+              sideOffset={8}
+              className="w-[420px] max-w-[calc(100vw-2rem)] p-3"
+            >
+              <AgentInfoCard
+                agent={agent}
+                model={conversation?.model}
+                variant="compact"
+                className="border-0 shadow-none"
+              />
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <AgentAvatar agent={agent} />
+        )}
         <div className="min-w-0 flex-1">
           <div className="font-medium flex items-center gap-2 truncate">
             <motion.div
@@ -125,6 +165,15 @@ export function ConversationHeader({
                 生成中
               </motion.span>
             )}
+            {running && liveToolCount && liveToolCount > 0 && (
+              <span className="inline-flex items-center gap-1 text-muted-foreground">
+                <span>·</span>
+                <span>
+                  工具调用 {liveToolCount}
+                  {agent?.max_iterations ? ` / ${agent.max_iterations}` : ""}
+                </span>
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -182,6 +231,20 @@ export function ConversationHeader({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {running && (
+        <motion.div
+          aria-hidden
+          className="absolute bottom-0 left-0 h-0.5 bg-primary/70"
+          initial={{ width: "0%" }}
+          animate={{
+            width:
+              agent?.max_iterations && liveToolCount && liveToolCount > 0
+                ? `${Math.min(100, Math.round((liveToolCount / agent.max_iterations) * 100))}%`
+                : "30%",
+          }}
+          transition={{ duration: 0.4, ease: "easeOut" }}
+        />
+      )}
     </div>
   )
 }

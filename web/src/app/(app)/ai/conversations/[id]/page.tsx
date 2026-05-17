@@ -49,6 +49,9 @@ type StreamEvent =
       text?: string
       [k: string]: unknown
     }
+  | { kind: "reasoning_start" }
+  | { kind: "reasoning_delta"; text: string }
+  | { kind: "reasoning_end" }
   | { kind: "done" }
   | { kind: "ping" }
 
@@ -223,6 +226,41 @@ export default function ConversationPage({
     })
   }, [])
 
+  // Same RAF-batch pattern for reasoning deltas (which can come at OpenAI
+  // o-series / Claude extended-thinking rates too). We append to the latest
+  // open reasoning bubble (one with streaming=true).
+  const pendingReasoningRef = React.useRef("")
+  const reasoningFlushScheduledRef = React.useRef(false)
+  const reasoningSeqRef = React.useRef(0)
+  const flushReasoning = React.useCallback(() => {
+    reasoningFlushScheduledRef.current = false
+    const buffered = pendingReasoningRef.current
+    if (!buffered) return
+    pendingReasoningRef.current = ""
+    setLive((l) => {
+      const next = l.slice()
+      // Look for the latest streaming reasoning bubble.
+      for (let i = next.length - 1; i >= 0; i--) {
+        const b = next[i]
+        if (b.kind === "reasoning" && b.streaming) {
+          next[i] = { ...b, chunks: [...b.chunks, buffered] }
+          return next
+        }
+      }
+      // No open reasoning bubble: open one (defensive — usually reasoning_start
+      // already created it).
+      reasoningSeqRef.current += 1
+      next.push({
+        kind: "reasoning",
+        id: `rs-${Date.now()}-${reasoningSeqRef.current}`,
+        chunks: [buffered],
+        streaming: true,
+        startedAt: Date.now(),
+      })
+      return next
+    })
+  }, [])
+
   function dispatchEvent(ev: StreamEvent) {
     // Stop the "thinking" spinner once any concrete event arrives.
     if (
@@ -237,6 +275,43 @@ export default function ConversationPage({
     if (ev.kind !== "ping") lastEventAtRef.current = Date.now()
 
     switch (ev.kind) {
+      case "reasoning_start":
+        setThinking(false)
+        reasoningSeqRef.current += 1
+        setLive((l) => [
+          ...l,
+          {
+            kind: "reasoning",
+            id: `rs-${Date.now()}-${reasoningSeqRef.current}`,
+            chunks: [],
+            streaming: true,
+            startedAt: Date.now(),
+          },
+        ])
+        return
+      case "reasoning_delta":
+        setThinking(false)
+        pendingReasoningRef.current += ev.text
+        if (!reasoningFlushScheduledRef.current) {
+          reasoningFlushScheduledRef.current = true
+          requestAnimationFrame(flushReasoning)
+        }
+        return
+      case "reasoning_end":
+        // Flush any pending text first so order on screen matches the wire.
+        if (pendingReasoningRef.current) flushReasoning()
+        setLive((l) => {
+          const next = l.slice()
+          for (let i = next.length - 1; i >= 0; i--) {
+            const b = next[i]
+            if (b.kind === "reasoning" && b.streaming) {
+              next[i] = { ...b, streaming: false, endedAt: Date.now() }
+              break
+            }
+          }
+          return next
+        })
+        return
       case "message_start":
       case "ping":
         return
@@ -294,6 +369,22 @@ export default function ConversationPage({
     }
 
     if (ev.kind === "text_delta") {
+      // If any reasoning bubble is still open, close it now — the main
+      // response has started, so the "thinking" card should auto-collapse
+      // into its "已思考 Xs" form.
+      setLive((l) => {
+        let changed = false
+        const next = l.slice()
+        for (let i = next.length - 1; i >= 0; i--) {
+          const b = next[i]
+          if (b.kind === "reasoning" && b.streaming) {
+            next[i] = { ...b, streaming: false, endedAt: Date.now() }
+            changed = true
+            break
+          }
+        }
+        return changed ? next : l
+      })
       // Buffer + RAF flush — see flushText above.
       pendingTextRef.current += ev.text
       if (!flushScheduledRef.current) {
@@ -303,11 +394,14 @@ export default function ConversationPage({
       return
     }
 
-    // Flush any buffered text before structural changes so the order on
-    // screen matches the order on the wire (text → tool_call, not the other
-    // way around).
+    // Flush any buffered text/reasoning before structural changes so the order
+    // on screen matches the order on the wire (text → tool_call, not the
+    // other way around).
     if (pendingTextRef.current) {
       flushText()
+    }
+    if (pendingReasoningRef.current) {
+      flushReasoning()
     }
 
     setLive((l) => {
@@ -426,13 +520,21 @@ export default function ConversationPage({
     } finally {
       setRunning(false)
       setThinking(false)
-      // Mark trailing assistant bubble as no longer streaming so caret hides.
+      // Flush any pending text/reasoning before finalising.
+      if (pendingTextRef.current) flushText()
+      if (pendingReasoningRef.current) flushReasoning()
+      // Mark trailing assistant + any still-open reasoning as no-longer-streaming
+      // so caret hides and reasoning collapses to its "已思考 Xs" form.
       setLive((l) => {
         if (l.length === 0) return l
         const next = l.slice()
-        const last = next[next.length - 1]
-        if (last && last.kind === "assistant" && last.streaming) {
-          next[next.length - 1] = { ...last, streaming: false }
+        for (let i = next.length - 1; i >= 0; i--) {
+          const b = next[i]
+          if (b.kind === "assistant" && b.streaming) {
+            next[i] = { ...b, streaming: false }
+          } else if (b.kind === "reasoning" && b.streaming) {
+            next[i] = { ...b, streaming: false, endedAt: Date.now() }
+          }
         }
         return next
       })
@@ -494,6 +596,25 @@ export default function ConversationPage({
     if (!t) return
     send(t)
   }
+
+  const regenerateFromMessage = React.useCallback(
+    (msg: import("@/lib/api/types").AIMessage) => {
+      if (running) return
+      const all = detail.data?.messages || []
+      // Find the most recent user message preceding `msg.id`.
+      let prev: import("@/lib/api/types").AIMessage | null = null
+      for (const m of all) {
+        if (m.id === msg.id) break
+        if (m.role === "user") prev = m
+      }
+      if (!prev) return
+      const text = parseContentText(prev.content)
+      if (!text) return
+      setDraft(text)
+      setTimeout(() => composerRef.current?.focus(), 50)
+    },
+    [running, detail.data],
+  )
 
   async function askDelete() {
     const ok = await confirmDialog({
@@ -598,6 +719,7 @@ export default function ConversationPage({
         agent={agent}
         liveTokensIn={usageIn}
         liveTokensOut={usageOut}
+        liveToolCount={live.filter((b) => b.kind === "tool").length}
         onModeChange={(m) => changeMode.mutate(m)}
         onRegenerate={regenerate}
         onRename={(t) => renameConv.mutate(t)}
@@ -646,6 +768,7 @@ export default function ConversationPage({
             onApprove={approve}
             onReject={reject}
             onRetry={retry}
+            onRegenerateFrom={regenerateFromMessage}
           />
           <Composer
             ref={composerRef}

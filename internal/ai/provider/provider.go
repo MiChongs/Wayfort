@@ -81,14 +81,17 @@ type Request struct {
 type EventType string
 
 const (
-	EvtMessageStart  EventType = "message_start"
-	EvtTextDelta     EventType = "text_delta"
-	EvtToolCallStart EventType = "tool_call_start"
-	EvtToolArgsDelta EventType = "tool_args_delta"
-	EvtToolCallEnd   EventType = "tool_call_end"
-	EvtUsage         EventType = "usage"
-	EvtMessageEnd    EventType = "message_end"
-	EvtError         EventType = "error"
+	EvtMessageStart   EventType = "message_start"
+	EvtTextDelta      EventType = "text_delta"
+	EvtToolCallStart  EventType = "tool_call_start"
+	EvtToolArgsDelta  EventType = "tool_args_delta"
+	EvtToolCallEnd    EventType = "tool_call_end"
+	EvtUsage          EventType = "usage"
+	EvtMessageEnd     EventType = "message_end"
+	EvtError          EventType = "error"
+	EvtReasoningStart EventType = "reasoning_start"
+	EvtReasoningDelta EventType = "reasoning_delta"
+	EvtReasoningEnd   EventType = "reasoning_end"
 )
 
 // Event is the streaming payload yielded on the chan returned by Stream.
