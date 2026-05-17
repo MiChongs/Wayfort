@@ -260,6 +260,12 @@ export interface AIConversation {
   message_count: number
   status: "active" | "running" | "idle" | "archived"
   archived?: boolean
+  pinned?: boolean
+  // Per-conversation override of model parameters; null falls back to the
+  // owning agent's default.
+  temperature?: number | null
+  top_p?: number | null
+  max_tokens?: number | null
   created_at: string
   updated_at: string
 }

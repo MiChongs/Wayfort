@@ -208,11 +208,14 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		aiGroup.GET("/tools", perm(auth.PermAIUse), rt.AI.Agent.Catalogue)
 
 		aiGroup.GET("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.List)
+		aiGroup.GET("/conversations/search", perm(auth.PermAIUse), rt.AI.Conversation.Search)
 		aiGroup.POST("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.Create)
 		aiGroup.GET("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Get)
 		aiGroup.PATCH("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Update)
 		aiGroup.DELETE("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Delete)
 		aiGroup.POST("/conversations/:id/cancel", perm(auth.PermAIUse), rt.AI.Conversation.Cancel)
+		aiGroup.GET("/conversations/:id/export.md", perm(auth.PermAIUse), rt.AI.Conversation.ExportMarkdown)
+		aiGroup.PATCH("/conversations/:id/messages/:msg_id", perm(auth.PermAIUse), rt.AI.Conversation.EditMessage)
 
 		aiGroup.POST("/conversations/:id/messages", perm(auth.PermAIUse), rt.AI.SSE.SendMessage)
 		aiGroup.GET("/conversations/:id/stream", perm(auth.PermAIUse), rt.AI.SSE.Stream)

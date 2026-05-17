@@ -17,6 +17,12 @@ import { cn } from "@/lib/utils"
 import { ConversationListItem } from "./conversation-list-item"
 import { NewConversationDialog } from "./new-conversation-dialog"
 import { SidebarSkeleton } from "./sidebar-skeleton"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import { Archive, ChevronDown, Pin } from "lucide-react"
 
 export function ConversationSidebar({
   className,
@@ -49,6 +55,9 @@ export function ConversationSidebar({
     return m
   }, [agents.data])
 
+  // Client-side filter on title + agent name (instant). For longer queries
+  // we ALSO hit the server's /conversations/search endpoint to surface hits
+  // that live in message content, not just titles.
   const filtered = React.useMemo(() => {
     const list = convs.data?.conversations || []
     const q = filter.trim().toLowerCase()
@@ -62,7 +71,40 @@ export function ConversationSidebar({
     })
   }, [convs.data, filter, agentMap])
 
-  const buckets = React.useMemo(() => groupConversations(filtered), [filtered])
+  // Split into pinned / active / archived for visual grouping.
+  const { pinned, active, archived } = React.useMemo(() => {
+    const pinned: typeof filtered = []
+    const active: typeof filtered = []
+    const archived: typeof filtered = []
+    for (const c of filtered) {
+      if (c.archived) archived.push(c)
+      else if (c.pinned) pinned.push(c)
+      else active.push(c)
+    }
+    return { pinned, active, archived }
+  }, [filtered])
+
+  const buckets = React.useMemo(() => groupConversations(active), [active])
+
+  // Debounced full-text search across messages — only kicks in for queries
+  // ≥ 2 chars, ignored on empty.
+  const [debouncedFilter, setDebouncedFilter] = React.useState("")
+  React.useEffect(() => {
+    const handle = setTimeout(() => setDebouncedFilter(filter.trim()), 300)
+    return () => clearTimeout(handle)
+  }, [filter])
+
+  const search = useQuery({
+    queryKey: ["ai", "convs", "search", debouncedFilter],
+    queryFn: () => aiConversationService.search(debouncedFilter),
+    enabled: debouncedFilter.length >= 2,
+    staleTime: 10_000,
+  })
+
+  const searchExtraIDs = React.useMemo(() => {
+    const have = new Set(filtered.map((c) => c.id))
+    return (search.data?.conversations || []).filter((c) => !have.has(c.id))
+  }, [search.data, filtered])
 
   return (
     <aside
@@ -122,8 +164,29 @@ export function ConversationSidebar({
               )}
             </div>
           )}
+          {pinned.length > 0 && (
+            <section className="mt-3">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1 sticky top-0 bg-muted/60 backdrop-blur py-1 z-10 rounded inline-flex items-center gap-1">
+                <Pin className="w-2.5 h-2.5" /> 置顶
+              </div>
+              <ul className="space-y-1">
+                <AnimatePresence initial={false}>
+                  {pinned.map((c) => (
+                    <ConversationListItem
+                      key={c.id}
+                      conv={c}
+                      agent={agentMap.get(c.agent_id)}
+                      active={c.id === activeId}
+                      onSelect={onAfterPick}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ul>
+              <Separator className="my-2 opacity-40" />
+            </section>
+          )}
           {buckets.map((bucket, idx) => (
-            <section key={bucket.key} className={idx === 0 ? "mt-3" : "mt-4"}>
+            <section key={bucket.key} className={idx === 0 && pinned.length === 0 ? "mt-3" : "mt-4"}>
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1 sticky top-0 bg-muted/60 backdrop-blur py-1 z-10 rounded">
                 {bucket.label}
               </div>
@@ -143,6 +206,56 @@ export function ConversationSidebar({
               {idx < buckets.length - 1 && <Separator className="my-2 opacity-40" />}
             </section>
           ))}
+          {searchExtraIDs.length > 0 && (
+            <section className="mt-4">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1 py-1 inline-flex items-center gap-1">
+                <Search className="w-2.5 h-2.5" /> 全文匹配 ({searchExtraIDs.length})
+              </div>
+              <ul className="space-y-1">
+                <AnimatePresence initial={false}>
+                  {searchExtraIDs.map((c) => (
+                    <ConversationListItem
+                      key={c.id}
+                      conv={c}
+                      agent={agentMap.get(c.agent_id)}
+                      active={c.id === activeId}
+                      onSelect={onAfterPick}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ul>
+            </section>
+          )}
+          {archived.length > 0 && (
+            <section className="mt-4">
+              <Collapsible>
+                <CollapsibleTrigger asChild>
+                  <button
+                    type="button"
+                    className="group w-full px-3 py-1 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-muted-foreground font-semibold hover:text-foreground rounded"
+                  >
+                    <ChevronDown className="w-3 h-3 transition-transform group-data-[state=closed]:-rotate-90" />
+                    <Archive className="w-2.5 h-2.5" /> 已归档 ({archived.length})
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <ul className="space-y-1 mt-1">
+                    <AnimatePresence initial={false}>
+                      {archived.map((c) => (
+                        <ConversationListItem
+                          key={c.id}
+                          conv={c}
+                          agent={agentMap.get(c.agent_id)}
+                          active={c.id === activeId}
+                          onSelect={onAfterPick}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </ul>
+                </CollapsibleContent>
+              </Collapsible>
+            </section>
+          )}
         </div>
       </ScrollArea>
 

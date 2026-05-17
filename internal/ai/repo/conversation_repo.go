@@ -38,15 +38,63 @@ func (r *ConversationRepo) FindByID(ctx context.Context, id string) (*aimodel.AI
 	}
 	return &c, err
 }
+// ListByUser returns every conversation the user owns (including archived
+// and pinned). The frontend is responsible for visual grouping; the API
+// always returns the full set so search / filter UIs aren't crippled.
 func (r *ConversationRepo) ListByUser(ctx context.Context, userID uint64, limit int) ([]aimodel.AIConversation, error) {
 	if limit <= 0 {
-		limit = 50
+		limit = 200
 	}
 	var out []aimodel.AIConversation
 	err := r.db.WithContext(ctx).
-		Where("user_id = ? AND archived = ?", userID, false).
-		Order("updated_at DESC").Limit(limit).Find(&out).Error
+		Where("user_id = ?", userID).
+		Order("pinned DESC, updated_at DESC").Limit(limit).Find(&out).Error
 	return out, err
+}
+
+// Search runs a full-text-ish LIKE across the user's own conversations:
+// either the title matches the query OR at least one of the conversation's
+// messages has matching content. Returns up to `limit` rows, ordered by
+// recency. Good enough for the dataset sizes we expect; swap to MySQL
+// FULLTEXT or Postgres TS if it ever costs.
+func (r *ConversationRepo) Search(ctx context.Context, userID uint64, q string, limit int) ([]aimodel.AIConversation, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q = "%" + escapeLike(q) + "%"
+	// Subquery: conversation IDs with a matching message.
+	var ids []string
+	if err := r.db.WithContext(ctx).
+		Model(&aimodel.AIMessage{}).
+		Distinct("conversation_id").
+		Where("content LIKE ?", q).
+		Pluck("conversation_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	tx := r.db.WithContext(ctx).
+		Model(&aimodel.AIConversation{}).
+		Where("user_id = ?", userID)
+	if len(ids) > 0 {
+		tx = tx.Where("title LIKE ? OR id IN ?", q, ids)
+	} else {
+		tx = tx.Where("title LIKE ?", q)
+	}
+	var out []aimodel.AIConversation
+	err := tx.Order("updated_at DESC").Limit(limit).Find(&out).Error
+	return out, err
+}
+
+func escapeLike(q string) string {
+	// minimal escape so the user's _ and % don't act as wildcards
+	out := make([]byte, 0, len(q))
+	for i := 0; i < len(q); i++ {
+		c := q[i]
+		if c == '\\' || c == '_' || c == '%' {
+			out = append(out, '\\')
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 // PurgeOlderThan removes conversations + their messages/invocations older than

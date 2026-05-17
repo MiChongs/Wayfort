@@ -641,6 +641,46 @@ export default function ConversationPage({
     toast.success("已导出 JSON")
   }
 
+  function exportMarkdown() {
+    // Token-in-query so the browser's plain GET still authenticates.
+    const url = aiConversationService.exportMarkdownURL(id)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `conversation-${id}.md`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    toast.success("已导出 Markdown")
+  }
+
+  function changeModel(providerID: number, model: string) {
+    aiConversationService
+      .update(id, { provider_id: providerID, model })
+      .then(() => {
+        qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
+        qc.invalidateQueries({ queryKey: ["ai", "convs"] })
+        toast.success(`已切到模型 ${model}`)
+      })
+      .catch((e: unknown) =>
+        toast.error("切换失败", { description: (e as Error).message }),
+      )
+  }
+
+  async function editUserMessage(msg: import("@/lib/api/types").AIMessage, newText: string) {
+    if (running) {
+      toast.error("正在生成中，请先停止")
+      return
+    }
+    try {
+      await aiConversationService.editMessage(id, msg.id, newText)
+      qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
+      // Auto-trigger the next turn with the edited text.
+      setTimeout(() => send(newText), 50)
+    } catch (e: unknown) {
+      toast.error("编辑失败", { description: (e as Error).message })
+    }
+  }
+
   // Live bubbles mirror the current turn's SSE stream. Once the persisted
   // history catches up (refetch lands with a higher message_count), the
   // server is the source of truth — drop the live overlay so we don't render
@@ -725,6 +765,8 @@ export default function ConversationPage({
         onRename={(t) => renameConv.mutate(t)}
         onDelete={askDelete}
         onExport={exportJSON}
+        onExportMarkdown={exportMarkdown}
+        onModelChange={changeModel}
         running={running}
       />
 
@@ -769,6 +811,7 @@ export default function ConversationPage({
             onReject={reject}
             onRetry={retry}
             onRegenerateFrom={regenerateFromMessage}
+            onEditUser={editUserMessage}
           />
           <Composer
             ref={composerRef}

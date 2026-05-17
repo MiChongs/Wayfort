@@ -78,6 +78,7 @@ interface MessageListProps {
   onReject: (id: string) => void
   onRetry?: () => void
   onRegenerateFrom?: (msg: AIMessage) => void
+  onEditUser?: (msg: AIMessage, newText: string) => void
 }
 
 export function MessageList({
@@ -92,6 +93,7 @@ export function MessageList({
   onReject,
   onRetry,
   onRegenerateFrom,
+  onEditUser,
 }: MessageListProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
   const reduce = useReducedMotion()
@@ -126,8 +128,8 @@ export function MessageList({
   }
 
   const historyBubbles = React.useMemo(
-    () => renderHistory(messages, invocations, agent, onRegenerateFrom),
-    [messages, invocations, agent, onRegenerateFrom],
+    () => renderHistory(messages, invocations, agent, onRegenerateFrom, onEditUser),
+    [messages, invocations, agent, onRegenerateFrom, onEditUser],
   )
 
   // Group consecutive ≥3 same-name tools in the live stream for visual density.
@@ -396,6 +398,7 @@ function renderHistory(
   invocations: AIToolInvocation[],
   agent?: AIAgent,
   onRegenerateFrom?: (msg: AIMessage) => void,
+  onEditUser?: (msg: AIMessage, newText: string) => void,
 ): RenderedBubble[] {
   // First pass: build flat list of either AIMessage-derived ToolLike entries
   // (with tool meta) or other bubbles, so groupTools can fold runs.
@@ -488,7 +491,16 @@ function renderHistory(
     }
     const it = entry as HistoryItem
     if (it.kind === "user") {
-      out.push({ key: `u-${it.msg.id}`, node: <UserBubble text={it.text} /> })
+      out.push({
+        key: `u-${it.msg.id}`,
+        node: (
+          <UserBubble
+            text={it.text}
+            message={it.msg}
+            onEdit={onEditUser}
+          />
+        ),
+      })
     } else if (it.kind === "assistant") {
       out.push({
         key: `a-${it.msg.id}`,

@@ -26,6 +26,11 @@ type AIConversation struct {
 	MessageCount       int                `json:"message_count"`
 	Status             ConversationStatus `gorm:"size:16;index" json:"status"`
 	Archived           bool               `gorm:"index" json:"archived"`
+	Pinned             bool               `gorm:"index;default:false" json:"pinned"`
+	// Optional per-conversation overrides; NULL falls back to the agent's default.
+	Temperature        *float64           `gorm:"column:temperature" json:"temperature,omitempty"`
+	TopP               *float64           `gorm:"column:top_p" json:"top_p,omitempty"`
+	MaxTokens          *int               `gorm:"column:max_tokens" json:"max_tokens,omitempty"`
 	ParentConversation *string            `gorm:"size:64;index" json:"parent_conversation,omitempty"`
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`

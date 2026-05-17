@@ -37,7 +37,17 @@ export default function AIProvidersPage() {
   })
 
   const [editing, setEditing] = React.useState<AIProvider | null>(null)
-  const [models, setModels] = React.useState<{ provider: AIProvider; list: { id: string; label: string }[] } | null>(null)
+  const [models, setModels] = React.useState<{
+    provider: AIProvider
+    list: Array<{
+      id: string
+      label?: string
+      context_window?: number
+      max_output?: number
+      tools?: boolean
+      vision?: boolean
+    }>
+  } | null>(null)
   const loadModels = useMutation({
     mutationFn: (p: AIProvider) => aiProviderService.models(p.id).then((r) => ({ provider: p, list: r.models })),
     onSuccess: (r) => setModels(r),

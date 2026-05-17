@@ -2,7 +2,17 @@
 
 import * as React from "react"
 import { motion } from "motion/react"
-import { MoreHorizontal, RefreshCw, Sparkles, Trash2, Download, Edit3 } from "lucide-react"
+import {
+  MoreHorizontal,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+  Download,
+  Edit3,
+  FileJson,
+  FileText as FileTextIcon,
+  Wand2,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -10,6 +20,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
@@ -21,6 +32,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ModeSwitcher } from "./mode-switcher"
 import { AgentAvatar } from "./agent-avatar"
 import { AgentInfoCard } from "./agent-info-card"
+import { ModelPicker } from "./model-picker"
+import { TuningSheet } from "./tuning-sheet"
 import type { AIAgent, AIConversation, PermissionMode } from "@/lib/api/types"
 
 export function ConversationHeader({
@@ -34,6 +47,8 @@ export function ConversationHeader({
   onRename,
   onDelete,
   onExport,
+  onExportMarkdown,
+  onModelChange,
   running,
 }: {
   conversation?: AIConversation
@@ -46,8 +61,11 @@ export function ConversationHeader({
   onRename: (title: string) => void
   onDelete: () => void
   onExport: () => void
+  onExportMarkdown?: () => void
+  onModelChange?: (providerID: number, model: string) => void
   running: boolean
 }) {
+  const [tuningOpen, setTuningOpen] = React.useState(false)
   const [editing, setEditing] = React.useState(false)
   const [draft, setDraft] = React.useState(conversation?.title || "")
 
@@ -148,7 +166,16 @@ export function ConversationHeader({
                 <span>·</span>
               </>
             )}
-            <span className="font-mono">{conversation?.model || "—"}</span>
+            {onModelChange ? (
+              <ModelPicker
+                currentProviderID={conversation?.provider_id}
+                currentModel={conversation?.model}
+                onPick={onModelChange}
+                disabled={running}
+              />
+            ) : (
+              <span className="font-mono">{conversation?.model || "—"}</span>
+            )}
             <span>·</span>
             <span>↑ {tokensIn.toLocaleString()}</span>
             <span>/</span>
@@ -214,13 +241,25 @@ export function ConversationHeader({
             </TooltipTrigger>
             <TooltipContent>更多操作</TooltipContent>
           </Tooltip>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="min-w-[180px]">
             <DropdownMenuItem onClick={() => setEditing(true)}>
               <Edit3 className="w-3.5 h-3.5" /> 重命名
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={onExport}>
-              <Download className="w-3.5 h-3.5" /> 导出 JSON
+            <DropdownMenuItem onClick={() => setTuningOpen(true)} disabled={!conversation}>
+              <Wand2 className="w-3.5 h-3.5" /> 模型调参
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground py-1">
+              导出
+            </DropdownMenuLabel>
+            <DropdownMenuItem onClick={onExport}>
+              <FileJson className="w-3.5 h-3.5" /> 导出 JSON
+            </DropdownMenuItem>
+            {onExportMarkdown && (
+              <DropdownMenuItem onClick={onExportMarkdown}>
+                <FileTextIcon className="w-3.5 h-3.5" /> 导出 Markdown
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
               className="text-destructive focus:text-destructive"
@@ -243,6 +282,14 @@ export function ConversationHeader({
                 : "30%",
           }}
           transition={{ duration: 0.4, ease: "easeOut" }}
+        />
+      )}
+      {conversation && (
+        <TuningSheet
+          open={tuningOpen}
+          onOpenChange={setTuningOpen}
+          conversation={conversation}
+          agent={agent}
         />
       )}
     </div>

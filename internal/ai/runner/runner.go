@@ -235,13 +235,23 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 			Messages: messages,
 			Tools:    toolSchemas,
 		}
-		if agent.Temperature > 0 {
+		// Conversation-level overrides (per-turn knobs) trump the agent defaults.
+		if conv.Temperature != nil {
+			t := *conv.Temperature
+			req.Temperature = &t
+		} else if agent.Temperature > 0 {
 			t := agent.Temperature
 			req.Temperature = &t
 		}
-		if agent.TopP > 0 {
+		if conv.TopP != nil {
+			t := *conv.TopP
+			req.TopP = &t
+		} else if agent.TopP > 0 {
 			t := agent.TopP
 			req.TopP = &t
+		}
+		if conv.MaxTokens != nil {
+			req.MaxTokens = *conv.MaxTokens
 		}
 		stream, err := prov.Stream(ctx, req)
 		if err != nil {

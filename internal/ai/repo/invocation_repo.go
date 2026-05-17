@@ -26,6 +26,14 @@ func (r *InvocationRepo) FindByID(ctx context.Context, id string) (*aimodel.AITo
 	}
 	return &v, err
 }
+// DeleteAfter removes every invocation in convID whose owning message id > afterID.
+// Used by the edit-message flow to garbage-collect orphan tool runs.
+func (r *InvocationRepo) DeleteAfter(ctx context.Context, convID string, afterID uint64) error {
+	return r.db.WithContext(ctx).
+		Where("conversation_id = ? AND message_id > ?", convID, afterID).
+		Delete(&aimodel.AIToolInvocation{}).Error
+}
+
 func (r *InvocationRepo) ListByConv(ctx context.Context, convID string) ([]aimodel.AIToolInvocation, error) {
 	var out []aimodel.AIToolInvocation
 	err := r.db.WithContext(ctx).

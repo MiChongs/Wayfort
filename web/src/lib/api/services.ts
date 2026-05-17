@@ -238,7 +238,17 @@ export const aiProviderService = {
     api<{ id: number }>("PATCH", `/ai/providers/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/ai/providers/${id}`),
   test: (id: number) => api<{ ok: boolean }>("POST", `/ai/providers/${id}/test`),
-  models: (id: number) => api<{ models: { id: string; label: string }[] }>("GET", `/ai/providers/${id}/models`),
+  models: (id: number) =>
+    api<{
+      models: Array<{
+        id: string
+        label?: string
+        context_window?: number
+        max_output?: number
+        tools?: boolean
+        vision?: boolean
+      }>
+    }>("GET", `/ai/providers/${id}/models`),
 }
 export const aiAgentService = {
   list: () => api<{ agents: AIAgent[] }>("GET", "/ai/agents"),
@@ -249,6 +259,11 @@ export const aiAgentService = {
 }
 export const aiConversationService = {
   list: () => api<{ conversations: AIConversation[] }>("GET", "/ai/conversations"),
+  search: (q: string) =>
+    api<{ conversations: AIConversation[]; count: number; query: string }>(
+      "GET",
+      `/ai/conversations/search?q=${encodeURIComponent(q)}`,
+    ),
   create: (body: { agent_id: number; provider_id?: number; model?: string; permission_mode?: string; title?: string }) =>
     api<AIConversation>("POST", "/ai/conversations", { body }),
   get: (id: string) =>
@@ -256,11 +271,22 @@ export const aiConversationService = {
       "GET",
       `/ai/conversations/${id}`
     ),
-  update: (id: string, body: Partial<AIConversation>) => api<AIConversation>("PATCH", `/ai/conversations/${id}`, { body }),
+  update: (
+    id: string,
+    body: Partial<AIConversation> & { reset_overrides?: boolean },
+  ) => api<AIConversation>("PATCH", `/ai/conversations/${id}`, { body }),
   remove: (id: string) => api<void>("DELETE", `/ai/conversations/${id}`),
   cancel: (id: string) => api<void>("POST", `/ai/conversations/${id}/cancel`),
   approve: (id: string, invId: string) =>
     api<void>("POST", `/ai/conversations/${id}/invocations/${invId}/approve`),
   reject: (id: string, invId: string) =>
     api<void>("POST", `/ai/conversations/${id}/invocations/${invId}/reject`),
+  editMessage: (id: string, msgId: number, text: string) =>
+    api<{ ok: boolean; message_count: number; edited_message_id: number; text: string }>(
+      "PATCH",
+      `/ai/conversations/${id}/messages/${msgId}`,
+      { body: { text } },
+    ),
+  exportMarkdownURL: (id: string) =>
+    withTokenQuery(`/api/proxy/api/v1/ai/conversations/${id}/export.md`),
 }
