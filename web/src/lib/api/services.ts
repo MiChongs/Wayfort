@@ -160,7 +160,7 @@ export const sftpService = {
 
 // ----- users / roles / groups / departments (admin) -----
 export const userService = {
-  list: (opts: { search?: string; limit?: number; offset?: number } = {}) =>
+  list: (opts: { search?: string; disabled?: "true" | "false"; department_id?: number; limit?: number; offset?: number } = {}) =>
     api<{ users: User[] }>("GET", "/users", { query: opts }),
   create: (body: Partial<User> & { password: string }) => api<User>("POST", "/users", { body }),
   update: (id: number, body: Partial<User>) => api<User>("PATCH", `/users/${id}`, { body }),

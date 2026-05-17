@@ -6,6 +6,7 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { ThemeProvider as NextThemesProvider } from "next-themes"
 import { Toaster } from "sonner"
 import { TooltipProvider } from "@radix-ui/react-tooltip"
+import { ConfirmDialogHost } from "@/components/common/confirm-dialog"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = React.useState(
@@ -30,6 +31,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <TooltipProvider delayDuration={200}>
           {children}
           <Toaster richColors position="top-right" closeButton />
+          <ConfirmDialogHost />
         </TooltipProvider>
         <ReactQueryDevtools initialIsOpen={false} />
       </QueryClientProvider>

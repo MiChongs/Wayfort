@@ -1,20 +1,15 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // The backend lives on a separate origin during dev; we proxy /api/* through
-  // a Route Handler (see src/app/api/proxy/[...path]/route.ts) so the browser
-  // sees a same-origin URL and there's no CORS dance.
-  experimental: {
-    typedRoutes: false,
-  },
-  // Long-running SSE responses must not be statically optimised.
+  // typedRoutes lifted out of experimental in Next.js 16; we keep it off for
+  // now since `Parameters<typeof Link>[0]["href"]` casts cover the dynamic
+  // routes (sessions/[id], nodes/[id]/ssh) end to end.
+  typedRoutes: false,
   async headers() {
     return [
       {
-        source: '/api/proxy/:path*',
-        headers: [
-          { key: 'X-Accel-Buffering', value: 'no' },
-        ],
+        source: "/api/proxy/:path*",
+        headers: [{ key: "X-Accel-Buffering", value: "no" }],
       },
     ]
   },
