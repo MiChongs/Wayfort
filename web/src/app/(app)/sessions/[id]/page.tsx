@@ -77,7 +77,10 @@ export default function SessionDetail({ params }: { params: Promise<{ id: string
   )
 }
 
-/** asciinema-player ESM 通过 dynamic import 加载，避免 SSR 报错 */
+/** asciinema-player ESM 通过 dynamic import 加载，避免 SSR 报错。
+ *  样式由 globals.css 的 @import "asciinema-player/...css" 提供。
+ *  容器需要一个最小高度，否则 fit="width" 会塌成 0 px。
+ */
 function CastPlayer({ url }: { url: string }) {
   const ref = React.useRef<HTMLDivElement | null>(null)
   React.useEffect(() => {
@@ -87,7 +90,14 @@ function CastPlayer({ url }: { url: string }) {
       try {
         const player = await import("asciinema-player")
         if (disposed || !ref.current) return
-        inst = player.create(url, ref.current, { fit: "width", theme: "monokai", autoPlay: false, preload: true })
+        inst = player.create(url, ref.current, {
+          fit: "width",
+          theme: "monokai",
+          autoPlay: false,
+          preload: true,
+          terminalFontSize: "14px",
+          idleTimeLimit: 2,
+        })
       } catch (e) {
         if (ref.current) ref.current.textContent = "录像播放器加载失败：" + String(e)
       }
@@ -97,5 +107,9 @@ function CastPlayer({ url }: { url: string }) {
       inst?.dispose?.()
     }
   }, [url])
-  return <div ref={ref} className="w-full bg-zinc-950 rounded-md" />
+  return (
+    <div className="rounded-md overflow-hidden border bg-black">
+      <div ref={ref} className="ap-host w-full min-h-[420px]" />
+    </div>
+  )
 }
