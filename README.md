@@ -694,6 +694,59 @@ JWT token 可通过三种方式传递（按优先级）：
 
 ---
 
+## 🖥️ 前端（Next.js 16 + shadcn/ui）
+
+完整 Web 控制台位于 `web/` 子目录，覆盖登录 / MFA / Passkey / OIDC / Dashboard /
+节点列表 / WebSSH / Telnet / RDP / VNC / DB CLI / SFTP / 会话录像 / 端口转发 /
+AI 助手（SSE 流 + 工具确认）/ 个人设置 / 管理员全套 CRUD（用户、角色、部门、
+用户组、节点、凭据、代理、资产组、标签、资产授权、OIDC、AI provider、AI agent）。
+
+### 技术栈
+
+- Next.js 16 App Router + React 19 + TypeScript
+- Tailwind CSS v4 + shadcn/ui（zinc 主题，明/暗双色）+ sonner（toast）
+- TanStack Query v5 + React Hook Form + zod
+- xterm.js（终端）、guacamole-common-js（图形协议）、@simplewebauthn/browser（Passkey）
+- react-markdown + remark-gfm + rehype-highlight（AI 输出）
+- asciinema-player（录像回放）、@monaco-editor/react（文件编辑）
+- motion、next-themes、lucide-react、cmdk、vaul、react-resizable-panels、react-virtuoso、recharts、nuqs、react-hotkeys-hook
+
+### 启动
+
+```bash
+cd web
+cp .env.example .env.local
+# .env.local：
+#   BACKEND_HTTP_URL=http://127.0.0.1:8080
+#   NEXT_PUBLIC_BACKEND_WS_URL=ws://127.0.0.1:8080
+#   NEXT_PUBLIC_API_BASE=/api/proxy/api/v1
+npm install
+npm run dev         # localhost:3000
+```
+
+### API 代理与 IP 透传
+
+`web/src/app/api/proxy/[...path]/route.ts` 是 REST / SSE 反向代理：把浏览器对
+`/api/proxy/api/v1/...` 的请求转发到 `BACKEND_HTTP_URL`，自动附加
+`X-Forwarded-For` / `X-Real-IP` / `X-Forwarded-Host`，后端的 `c.ClientIP()` 因此能
+拿到真实客户端 IP。SSE 不缓冲：流式 ReadableStream 直接管道转发。
+
+**WebSocket 不走 Next.js 代理**（Route Handler 不支持 upgrade），浏览器通过
+`NEXT_PUBLIC_BACKEND_WS_URL` 直连后端 `/api/v1/ws/...`，token 走 query string。
+生产建议挂在 Nginx 后做统一反代 + TLS。
+
+### 部署
+
+```bash
+docker build -t jumpserver-web ./web
+docker run -d -p 3000:3000 \
+  -e BACKEND_HTTP_URL=http://app:8080 \
+  -e NEXT_PUBLIC_BACKEND_WS_URL=wss://your.domain \
+  jumpserver-web
+```
+
+---
+
 ## ⚙️ 配置参考
 
 完整示例见 `configs/config.example.yaml`，关键字段说明：
