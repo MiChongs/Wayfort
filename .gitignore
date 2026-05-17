@@ -1,0 +1,6 @@
+/bin/
+/var/
+/configs/config.yaml
+*.log
+*.cast
+.DS_Store

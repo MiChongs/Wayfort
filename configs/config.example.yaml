@@ -1,0 +1,59 @@
+server:
+  addr: ":8080"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+db:
+  dsn: "jumpserver:jumpserver@tcp(127.0.0.1:3306)/jumpserver?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open: 50
+  max_idle: 10
+  conn_max_lifetime: 1h
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+
+auth:
+  jwt_secret: "change-me-to-a-secret-at-least-32-bytes-long"
+  access_ttl: 1h
+  refresh_ttl: 168h
+  bootstrap_admin: "admin"
+  bootstrap_password: "admin"
+
+crypto:
+  master_key_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+storage:
+  sessions_dir: "./var/sessions"
+
+sshpool:
+  max_sessions_per_client: 8
+  idle_eviction: 10m
+  dial_timeout: 15s
+  keepalive: 30s
+
+anonymous:
+  enabled: true
+  image: "alpine:latest"
+  ttl: 10m
+  cpu: 0.5
+  memory_mb: 128
+  pids_limit: 64
+  network: "none"
+  shell: ["/bin/sh"]
+
+recorder:
+  chan_size: 1024
+  flush_interval: 250ms
+
+audit:
+  chan_size: 4096
+  batch_size: 64
+  batch_interval: 200ms
+
+webssh:
+  read_buffer: 8192
+  write_timeout: 10s
+  ping_interval: 30s

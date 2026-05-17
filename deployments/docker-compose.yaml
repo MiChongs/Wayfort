@@ -1,0 +1,56 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: jumpserver
+      MYSQL_USER: jumpserver
+      MYSQL_PASSWORD: jumpserver
+    ports: ["3306:3306"]
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -ujumpserver -pjumpserver"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Test target for end-to-end verification. Username: testuser, password: testpass.
+  sshd-target:
+    image: linuxserver/openssh-server:latest
+    environment:
+      USER_NAME: testuser
+      USER_PASSWORD: testpass
+      PASSWORD_ACCESS: "true"
+      SUDO_ACCESS: "false"
+    ports: ["2222:2222"]
+
+  app:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      JUMPSERVER_DB_DSN: "jumpserver:jumpserver@tcp(mysql:3306)/jumpserver?charset=utf8mb4&parseTime=True&loc=Local"
+      JUMPSERVER_REDIS_ADDR: "redis:6379"
+      JUMPSERVER_ANONYMOUS_ENABLED: "false"
+    ports: ["8080:8080"]
+    # Mount the docker socket only when anonymous mode is enabled.
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  mysql: {}
