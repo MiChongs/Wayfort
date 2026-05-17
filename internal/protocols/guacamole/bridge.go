@@ -65,14 +65,27 @@ func (b *Bridge) Serve(ctx context.Context, ws *websocket.Conn, p ConnectParams)
 	if b.cfg.GuacdAddr == "" {
 		return errors.New("guacd_addr not configured")
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// 20s gives NLA-mode RDP enough room for slow Windows boxes during the
+	// guacd-side TLS / NLA negotiation phase.
+	dialCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", b.cfg.GuacdAddr)
+	dialer := &net.Dialer{
+		Timeout:   20 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	conn, err := dialer.DialContext(dialCtx, "tcp", b.cfg.GuacdAddr)
 	if err != nil {
 		return fmt.Errorf("dial guacd: %w", err)
 	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		// RDP can sit silent for minutes between user inputs; explicit TCP
+		// keep-alive avoids middleboxes (firewalls, NAT) silently dropping
+		// the connection.
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
 	defer conn.Close()
-	br := bufio.NewReader(conn)
+	br := bufio.NewReaderSize(conn, 128*1024)
 	bw := bufio.NewWriter(conn)
 	if err := handshake(br, bw, p); err != nil {
 		return fmt.Errorf("guacd handshake: %w", err)
@@ -241,7 +254,9 @@ func copyWSToGuacd(ctx context.Context, ws *websocket.Conn, dst io.Writer) error
 }
 
 func copyGuacdToWS(ctx context.Context, src io.Reader, ws *websocket.Conn) error {
-	buf := make([]byte, 32*1024)
+	// 128 KB matches the bufio reader above and absorbs full-frame RDP
+	// updates without 4× fragmentation through the WebSocket.
+	buf := make([]byte, 128*1024)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
