@@ -1,19 +1,22 @@
 "use client"
 
-import { Bot } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { CopyButton } from "@/components/common/copy-button"
 import { Markdown } from "./markdown"
 import { StreamingText } from "./streaming-text"
+import { AgentAvatar } from "./agent-avatar"
+import type { AIAgent } from "@/lib/api/types"
 
 export function AssistantBubble({
   text,
   chunks,
   streaming = false,
+  agent,
 }: {
   text?: string
   chunks?: string[]
   streaming?: boolean
+  agent?: AIAgent
 }) {
   // When streaming: render the chunk-based smoothed view. When done (chunks
   // supplied but streaming=false), still use StreamingText with done=true so
@@ -24,9 +27,7 @@ export function AssistantBubble({
 
   return (
     <div className="flex gap-3 group">
-      <div className="w-7 h-7 rounded-full bg-card border flex items-center justify-center shrink-0 shadow-sm">
-        <Bot className="w-4 h-4" />
-      </div>
+      <AgentAvatar agent={agent} />
       <Card className="flex-1 max-w-3xl border-border/60 bg-card/80 backdrop-blur-sm">
         <CardContent className="pt-4 pb-4 relative">
           {value.length > 0 && (

@@ -5,14 +5,16 @@ import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { useQuery } from "@tanstack/react-query"
 import { usePathname } from "next/navigation"
 import Link from "next/link"
-import { Loader2, Plus, Search, Sparkles, Bot, Cpu } from "lucide-react"
+import { Plus, Search, Sparkles, Bot, Cpu } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { aiAgentService, aiConversationService } from "@/lib/api/services"
 import { groupConversations } from "@/lib/ai/group"
 import { cn } from "@/lib/utils"
 import { ConversationListItem } from "./conversation-list-item"
 import { NewConversationDialog } from "./new-conversation-dialog"
+import { SidebarSkeleton } from "./sidebar-skeleton"
 
 export function ConversationSidebar({
   className,
@@ -101,14 +103,16 @@ export function ConversationSidebar({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-        {convs.isLoading && (
-          <div className="text-xs text-muted-foreground py-6 text-center">
-            <Loader2 className="inline w-3.5 h-3.5 mr-1 animate-spin" /> 加载中…
-          </div>
-        )}
+        {convs.isLoading && !convs.data && <SidebarSkeleton rows={5} />}
         {!convs.isLoading && filtered.length === 0 && (
-          <div className="text-xs text-muted-foreground py-6 text-center px-3">
-            {filter ? "没有匹配的对话" : "还没有对话，点击上方新建"}
+          <div className="text-xs text-muted-foreground py-8 text-center px-3 leading-relaxed">
+            {filter ? (
+              <>
+                没有匹配「<span className="font-mono">{filter}</span>」的对话
+              </>
+            ) : (
+              <>还没有对话，<br />点击上方<span className="text-foreground">新对话</span>开始</>
+            )}
           </div>
         )}
         {buckets.map((bucket) => (
@@ -134,20 +138,30 @@ export function ConversationSidebar({
       </div>
 
       <div className="border-t px-2 py-2 bg-background/30 space-y-0.5">
-        <Link
-          href={"/ai/agents" as Parameters<typeof Link>[0]["href"]}
-          onClick={onAfterPick}
-          className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 rounded px-2 py-1.5 flex items-center gap-2"
-        >
-          <Bot className="w-3.5 h-3.5" /> Agent 库
-        </Link>
-        <Link
-          href={"/ai/providers" as Parameters<typeof Link>[0]["href"]}
-          onClick={onAfterPick}
-          className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 rounded px-2 py-1.5 flex items-center gap-2"
-        >
-          <Cpu className="w-3.5 h-3.5" /> 提供商
-        </Link>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              href={"/ai/agents" as Parameters<typeof Link>[0]["href"]}
+              onClick={onAfterPick}
+              className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 rounded px-2 py-1.5 flex items-center gap-2"
+            >
+              <Bot className="w-3.5 h-3.5" /> Agent 库
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="right">浏览或创建 Agent</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              href={"/ai/providers" as Parameters<typeof Link>[0]["href"]}
+              onClick={onAfterPick}
+              className="text-xs text-muted-foreground hover:text-foreground hover:bg-accent/60 rounded px-2 py-1.5 flex items-center gap-2"
+            >
+              <Cpu className="w-3.5 h-3.5" /> 提供商
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="right">管理模型提供商与密钥</TooltipContent>
+        </Tooltip>
       </div>
 
       <NewConversationDialog open={open} onOpenChange={setOpen} />

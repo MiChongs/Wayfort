@@ -1,0 +1,57 @@
+"use client"
+
+import * as React from "react"
+import { Bot } from "lucide-react"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { cn } from "@/lib/utils"
+import type { AIAgent } from "@/lib/api/types"
+
+const PALETTE = [
+  "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+  "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
+]
+
+function initialOf(name?: string): string | null {
+  if (!name) return null
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  // First non-whitespace char — handles CJK and Latin alike.
+  const first = Array.from(trimmed)[0]
+  return first.toUpperCase()
+}
+
+function paletteFor(seed: string): string {
+  let h = 0
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return PALETTE[h % PALETTE.length]
+}
+
+export function AgentAvatar({
+  agent,
+  size = "md",
+  className,
+}: {
+  agent?: Pick<AIAgent, "name"> | null
+  size?: "sm" | "md"
+  className?: string
+}) {
+  const initial = initialOf(agent?.name)
+  const colors = agent?.name ? paletteFor(agent.name) : "bg-card text-foreground border"
+  const sizeCls = size === "sm" ? "w-6 h-6 text-[10px]" : "w-7 h-7 text-xs"
+  return (
+    <Avatar className={cn(sizeCls, "shrink-0 shadow-sm", className)}>
+      <AvatarFallback
+        className={cn(
+          "font-semibold rounded-full border",
+          initial ? colors : "bg-card",
+        )}
+      >
+        {initial ?? <Bot className={cn(size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5")} />}
+      </AvatarFallback>
+    </Avatar>
+  )
+}

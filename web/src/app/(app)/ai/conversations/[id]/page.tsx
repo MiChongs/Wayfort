@@ -2,11 +2,12 @@
 
 import * as React from "react"
 import { use } from "react"
+import { motion } from "motion/react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { aiConversationService } from "@/lib/api/services"
+import { aiAgentService, aiConversationService } from "@/lib/api/services"
 import { streamSSE } from "@/lib/sse/eventsource"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { ConversationHeader } from "@/components/ai/conversation-header"
@@ -17,24 +18,87 @@ import { isDangerName } from "@/components/ai/tool-icons"
 import type { PermissionMode } from "@/lib/api/types"
 
 type StreamEvent =
+  | { kind: "message_start"; conversation_id?: string; message_id?: string }
   | { kind: "text_delta"; text: string }
-  | { kind: "tool_call"; id: string; name: string }
-  | { kind: "permission_required"; invocation_id: string; tool: string; summary: string }
+  | { kind: "tool_call"; id: string; name: string; arguments?: string }
   | { kind: "tool_start"; id: string; invocation_id: string }
-  | { kind: "tool_output"; id: string; output: string; dry_run?: boolean; truncated?: boolean }
+  | {
+      kind: "tool_output"
+      id: string
+      output: string
+      dry_run?: boolean
+      truncated?: boolean
+    }
   | { kind: "tool_error"; id: string; error: string }
+  | {
+      kind: "permission_required"
+      invocation_id: string
+      tool: string
+      summary: string
+    }
   | { kind: "usage"; input_tokens: number; output_tokens: number }
   | { kind: "message_end"; finish_reason: string }
   | { kind: "error"; error: string }
+  | {
+      kind: "subagent_event"
+      agent: string
+      kind_inner?: string
+      text?: string
+      [k: string]: unknown
+    }
+  | { kind: "done" }
+  | { kind: "ping" }
 
-export default function ConversationPage({ params }: { params: Promise<{ id: string }> }) {
+const FINISH_REASON_NOTICES: Record<
+  string,
+  { level: "info" | "warning"; title: string; description?: string; retryable?: boolean }
+> = {
+  length: {
+    level: "warning",
+    title: "输出已被模型截断",
+    description: "达到模型的 max_tokens 上限；可重新发送让 Agent 继续。",
+    retryable: true,
+  },
+  content_filter: {
+    level: "warning",
+    title: "内容被模型过滤",
+    description: "提供商安全策略拦截了部分内容。",
+  },
+  max_iterations: {
+    level: "warning",
+    title: "已达到最大工具调用轮次",
+    description: "本轮 Agent 调用次数已达 max_iterations 上限。",
+    retryable: true,
+  },
+  tool_call_limit: {
+    level: "warning",
+    title: "工具调用次数超限",
+    retryable: true,
+  },
+}
+
+export default function ConversationPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
   const { id } = use(params)
   const qc = useQueryClient()
   const router = useRouter()
+
   const detail = useQuery({
     queryKey: ["ai", "conv", id],
     queryFn: () => aiConversationService.get(id),
   })
+  const agentsQuery = useQuery({
+    queryKey: ["ai", "agents"],
+    queryFn: aiAgentService.list,
+  })
+  const agent = React.useMemo(() => {
+    const aid = detail.data?.conversation.agent_id
+    if (!aid) return undefined
+    return agentsQuery.data?.agents.find((a) => a.id === aid)
+  }, [detail.data, agentsQuery.data])
 
   const [draft, setDraft] = React.useState("")
   const [live, setLive] = React.useState<LiveBubble[]>([])
@@ -43,8 +107,40 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
   const [usageIn, setUsageIn] = React.useState(0)
   const [usageOut, setUsageOut] = React.useState(0)
   const abortRef = React.useRef<AbortController | null>(null)
+  const noticeSeqRef = React.useRef(0)
+  const lastEventAtRef = React.useRef<number>(0)
   const [tab, setTab] = React.useState<"chat" | "invocations">("chat")
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null)
+
+  function nextNoticeId(): string {
+    noticeSeqRef.current += 1
+    return `n-${Date.now()}-${noticeSeqRef.current}`
+  }
+
+  function pushNotice(
+    level: "info" | "warning" | "error",
+    title: string,
+    description?: string,
+    retryable?: boolean,
+    dedupeTitle?: string,
+  ) {
+    setLive((l) => {
+      if (dedupeTitle && l.some((b) => b.kind === "system_notice" && b.title === dedupeTitle)) {
+        return l
+      }
+      return [
+        ...l,
+        {
+          kind: "system_notice",
+          id: nextNoticeId(),
+          level,
+          title,
+          description,
+          retryable,
+        },
+      ]
+    })
+  }
 
   const changeMode = useMutation({
     mutationFn: (mode: PermissionMode) =>
@@ -97,53 +193,76 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
     return false
   }
 
-  async function send() {
-    if (!draft.trim() || running) return
-    const text = draft.trim()
-    setDraft("")
-    if (await handleSlash(text)) return
-    setLive((l) => [
-      ...l,
-      { kind: "user", text },
-      { kind: "assistant", chunks: [], streaming: true },
-    ])
-    setRunning(true)
-    setThinking(true)
-    setUsageIn(0)
-    setUsageOut(0)
-    const ctrl = new AbortController()
-    abortRef.current = ctrl
-    try {
-      await streamSSE(
-        `/api/proxy/api/v1/ai/conversations/${id}/messages`,
-        { method: "POST", body: { text }, signal: ctrl.signal },
-        (kind, data) => onEvent({ kind, ...(data as object) } as StreamEvent),
-      )
-    } catch (e: unknown) {
-      if (!ctrl.signal.aborted)
-        toast.error("流式失败", { description: (e as Error).message })
-    } finally {
-      setRunning(false)
+  function dispatchEvent(ev: StreamEvent) {
+    // Stop the "thinking" spinner once any concrete event arrives.
+    if (
+      ev.kind === "text_delta" ||
+      ev.kind === "tool_call" ||
+      ev.kind === "tool_output" ||
+      ev.kind === "message_start" ||
+      ev.kind === "permission_required"
+    ) {
       setThinking(false)
-      // Mark trailing assistant bubble as no longer streaming so caret hides.
-      setLive((l) => {
-        if (l.length === 0) return l
-        const next = l.slice()
-        const last = next[next.length - 1]
-        if (last && last.kind === "assistant") {
-          next[next.length - 1] = { ...last, streaming: false }
-        }
-        return next
-      })
-      qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
-      qc.invalidateQueries({ queryKey: ["ai", "convs"] })
     }
-  }
+    if (ev.kind !== "ping") lastEventAtRef.current = Date.now()
 
-  function onEvent(ev: StreamEvent) {
-    if (ev.kind === "text_delta" || ev.kind === "tool_call" || ev.kind === "tool_output") {
-      setThinking(false)
+    switch (ev.kind) {
+      case "message_start":
+      case "ping":
+        return
+      case "done":
+        // Mark trailing assistant as no-longer-streaming. Finally-block also
+        // does this, but `done` is the explicit signal.
+        setLive((l) => {
+          if (l.length === 0) return l
+          const next = l.slice()
+          const last = next[next.length - 1]
+          if (last && last.kind === "assistant" && last.streaming) {
+            next[next.length - 1] = { ...last, streaming: false }
+          }
+          return next
+        })
+        return
+      case "message_end": {
+        const reason = ev.finish_reason || "stop"
+        const map = FINISH_REASON_NOTICES[reason]
+        if (map) {
+          pushNotice(map.level, map.title, map.description, map.retryable)
+        } else if (reason && reason !== "stop") {
+          pushNotice(
+            "info",
+            "本轮结束",
+            `finish_reason: ${reason}`,
+            false,
+          )
+        }
+        return
+      }
+      case "error":
+        pushNotice("error", "生成失败", ev.error, true)
+        return
+      case "usage":
+        setUsageIn((v) => v + ev.input_tokens)
+        setUsageOut((v) => v + ev.output_tokens)
+        return
+      case "subagent_event":
+        setLive((l) => [
+          ...l,
+          {
+            kind: "subagent",
+            id: `sa-${Date.now()}-${l.length}`,
+            agent: ev.agent,
+            eventKind:
+              typeof ev.kind_inner === "string"
+                ? ev.kind_inner
+                : (ev as { type?: string }).type,
+            text: ev.text,
+            payload: tryStringify({ ...ev, agent: undefined, kind: undefined }),
+          },
+        ])
+        return
     }
+
     setLive((l) => {
       const next = l.slice()
       switch (ev.kind) {
@@ -156,7 +275,11 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
               streaming: true,
             }
           } else {
-            next.push({ kind: "assistant", chunks: [ev.text], streaming: true })
+            next.push({
+              kind: "assistant",
+              chunks: [ev.text],
+              streaming: true,
+            })
           }
           break
         }
@@ -179,14 +302,23 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
           })
           break
         case "tool_start": {
-          const idx = next.findIndex((x) => x.kind === "tool" && x.id === ev.id)
+          const idx = next.findIndex(
+            (x) => x.kind === "tool" && x.id === ev.id,
+          )
           if (idx >= 0) {
             const t = next[idx] as Extract<LiveBubble, { kind: "tool" }>
-            next[idx] = { ...t, status: "running", invocationId: ev.invocation_id }
+            next[idx] = {
+              ...t,
+              status: "running",
+              invocationId: ev.invocation_id,
+            }
           }
           for (let i = next.length - 1; i >= 0; i--) {
             const b = next[i]
-            if (b.kind === "permission" && b.invocationId === ev.invocation_id) {
+            if (
+              b.kind === "permission" &&
+              b.invocationId === ev.invocation_id
+            ) {
               next.splice(i, 1)
               break
             }
@@ -194,7 +326,9 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
           break
         }
         case "tool_output": {
-          const idx = next.findIndex((x) => x.kind === "tool" && x.id === ev.id)
+          const idx = next.findIndex(
+            (x) => x.kind === "tool" && x.id === ev.id,
+          )
           if (idx >= 0) {
             const t = next[idx] as Extract<LiveBubble, { kind: "tool" }>
             next[idx] = {
@@ -208,20 +342,73 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
           break
         }
         case "tool_error": {
-          const idx = next.findIndex((x) => x.kind === "tool" && x.id === ev.id)
+          const idx = next.findIndex(
+            (x) => x.kind === "tool" && x.id === ev.id,
+          )
           if (idx >= 0) {
             const t = next[idx] as Extract<LiveBubble, { kind: "tool" }>
             next[idx] = { ...t, status: "error", error: ev.error }
           }
           break
         }
-        case "usage":
-          setUsageIn((v) => v + ev.input_tokens)
-          setUsageOut((v) => v + ev.output_tokens)
-          break
       }
       return next
     })
+  }
+
+  async function send(textOverride?: string) {
+    const text = (textOverride ?? draft).trim()
+    if (!text || running) return
+    setDraft("")
+    if (await handleSlash(text)) return
+    setLive((l) => [
+      ...l,
+      { kind: "user", text },
+      { kind: "assistant", chunks: [], streaming: true },
+    ])
+    setRunning(true)
+    setThinking(true)
+    setUsageIn(0)
+    setUsageOut(0)
+    lastEventAtRef.current = Date.now()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    try {
+      await streamSSE(
+        `/api/proxy/api/v1/ai/conversations/${id}/messages`,
+        { method: "POST", body: { text }, signal: ctrl.signal },
+        (kind, data) => {
+          const ev = { kind, ...(data as object) } as StreamEvent
+          dispatchEvent(ev)
+        },
+      )
+    } catch (e: unknown) {
+      if (ctrl.signal.aborted) {
+        pushNotice(
+          "info",
+          "已中止生成",
+          "用户取消了本轮回复，可点重新发送上一条消息。",
+          true,
+        )
+      } else {
+        pushNotice("error", "连接失败", (e as Error).message, true)
+      }
+    } finally {
+      setRunning(false)
+      setThinking(false)
+      // Mark trailing assistant bubble as no longer streaming so caret hides.
+      setLive((l) => {
+        if (l.length === 0) return l
+        const next = l.slice()
+        const last = next[next.length - 1]
+        if (last && last.kind === "assistant" && last.streaming) {
+          next[next.length - 1] = { ...last, streaming: false }
+        }
+        return next
+      })
+      qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
+      qc.invalidateQueries({ queryKey: ["ai", "convs"] })
+    }
   }
 
   async function approve(invId: string) {
@@ -246,15 +433,30 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
     toast("已请求中断")
   }
 
-  async function regenerate() {
+  function lastUserText(): string | null {
+    // Prefer last persisted user message; fall back to live user bubble.
+    const persisted = [...(detail.data?.messages || [])]
+      .reverse()
+      .find((m) => m.role === "user")
+    if (persisted) return parseContentText(persisted.content)
+    const liveUser = [...live].reverse().find((b) => b.kind === "user")
+    if (liveUser && liveUser.kind === "user") return liveUser.text
+    return null
+  }
+
+  function regenerate() {
     if (running) return
-    const messages = detail.data?.messages || []
-    const lastUser = [...messages].reverse().find((m) => m.role === "user")
-    if (!lastUser) return
-    const lastText = parseContentText(lastUser.content)
-    if (!lastText) return
-    setDraft(lastText)
+    const t = lastUserText()
+    if (!t) return
+    setDraft(t)
     setTimeout(() => composerRef.current?.focus(), 50)
+  }
+
+  function retry() {
+    if (running) return
+    const t = lastUserText()
+    if (!t) return
+    send(t)
   }
 
   async function askDelete() {
@@ -286,18 +488,21 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
   // history catches up (refetch lands with a higher message_count), the
   // server is the source of truth — drop the live overlay so we don't render
   // duplicates. Guard with !running so a stray refetch mid-stream can't
-  // wipe in-flight output.
+  // wipe in-flight output. We also keep system_notice/subagent bubbles
+  // around: those are transient diagnostics not persisted by the backend.
   const prevCountRef = React.useRef(0)
   React.useEffect(() => {
     const cur = detail.data?.conversation.message_count ?? 0
     const prev = prevCountRef.current
     prevCountRef.current = cur
-    if (cur > prev && !running) setLive([])
+    if (cur > prev && !running) {
+      setLive((l) =>
+        l.filter((b) => b.kind === "system_notice" || b.kind === "subagent"),
+      )
+    }
   }, [detail.data?.conversation.message_count, running])
 
-  // Reset transient UI when switching between conversations. Without this,
-  // an in-flight stream from a previous conversation could keep showing
-  // bubbles under the new conversation if the component instance is reused.
+  // Reset transient UI when switching between conversations.
   React.useEffect(() => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -310,10 +515,39 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
     prevCountRef.current = 0
   }, [id])
 
+  // Stall detector: if 30 s pass with no event during a run, surface a
+  // single warning notice (idempotent by title).
+  React.useEffect(() => {
+    if (!running) return
+    const t = setInterval(() => {
+      if (Date.now() - lastEventAtRef.current > 30_000) {
+        pushNotice(
+          "warning",
+          "模型久未响应",
+          "已 30s 无新数据，可继续等待或点停止。",
+          false,
+          "模型久未响应",
+        )
+      }
+    }, 5_000)
+    return () => clearInterval(t)
+  }, [running])
+
+  // Esc cancels an in-flight generation.
+  React.useEffect(() => {
+    if (!running) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") cancel()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [running])
+
   return (
     <div className="flex flex-col h-full bg-background">
       <ConversationHeader
         conversation={detail.data?.conversation}
+        agent={agent}
         liveTokensIn={usageIn}
         liveTokensOut={usageOut}
         onModeChange={(m) => changeMode.mutate(m)}
@@ -330,19 +564,16 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
         className="flex-1 flex flex-col min-h-0"
       >
         <div className="border-b px-4 md:px-6">
-          <TabsList className="bg-transparent gap-2 h-9 p-0">
-            <TabsTrigger
-              value="chat"
-              className="data-[state=active]:bg-accent rounded-md"
-            >
+          <TabsList className="bg-transparent gap-1 h-10 p-0 rounded-none">
+            <AnimatedTabsTrigger value="chat" active={tab === "chat"}>
               对话
-            </TabsTrigger>
-            <TabsTrigger
-              value="invocations"
-              className="data-[state=active]:bg-accent rounded-md"
-            >
-              工具调用 ({detail.data?.invocations?.length ?? 0})
-            </TabsTrigger>
+            </AnimatedTabsTrigger>
+            <AnimatedTabsTrigger value="invocations" active={tab === "invocations"}>
+              工具调用
+              <span className="ml-1 inline-flex items-center justify-center rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {detail.data?.invocations?.length ?? 0}
+              </span>
+            </AnimatedTabsTrigger>
           </TabsList>
         </div>
 
@@ -356,15 +587,23 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
             invocations={detail.data?.invocations || []}
             live={live}
             running={running}
-            thinking={thinking && live.every((b) => b.kind !== "assistant" || b.chunks.length === 0)}
+            thinking={
+              thinking &&
+              live.every(
+                (b) => b.kind !== "assistant" || b.chunks.length === 0,
+              )
+            }
+            loading={detail.isLoading}
+            agent={agent}
             onApprove={approve}
             onReject={reject}
+            onRetry={retry}
           />
           <Composer
             ref={composerRef}
             draft={draft}
             setDraft={setDraft}
-            send={send}
+            send={() => send()}
             cancel={cancel}
             running={running}
           />
@@ -382,11 +621,45 @@ export default function ConversationPage({ params }: { params: Promise<{ id: str
   )
 }
 
+function AnimatedTabsTrigger({
+  value,
+  active,
+  children,
+}: {
+  value: string
+  active: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <TabsTrigger
+      value={value}
+      className="relative px-3 h-10 rounded-none bg-transparent text-muted-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:rounded"
+    >
+      {children}
+      {active && (
+        <motion.span
+          layoutId="ai-tab-indicator"
+          className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary rounded-full"
+          transition={{ type: "spring", stiffness: 380, damping: 30 }}
+        />
+      )}
+    </TabsTrigger>
+  )
+}
+
 function parseContentText(s: string): string {
   try {
     const parts = JSON.parse(s) as { text?: string }[]
     return parts.map((p) => p.text || "").join("")
   } catch {
     return s || ""
+  }
+}
+
+function tryStringify(v: unknown): string {
+  try {
+    return JSON.stringify(v, null, 2)
+  } catch {
+    return String(v)
   }
 }

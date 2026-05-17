@@ -16,6 +16,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { aiConversationService } from "@/lib/api/services"
 import { relTime } from "@/lib/format"
@@ -139,16 +140,22 @@ export function ConversationListItem({
           )}
         >
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-6 w-6"
-                onClick={(e) => e.preventDefault()}
-              >
-                <MoreHorizontal className="w-3.5 h-3.5" />
-              </Button>
-            </DropdownMenuTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6"
+                    onClick={(e) => e.preventDefault()}
+                    aria-label="对话操作"
+                  >
+                    <MoreHorizontal className="w-3.5 h-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="right">更多操作</TooltipContent>
+            </Tooltip>
             <DropdownMenuContent align="end" className="min-w-[140px]">
               <DropdownMenuItem onSelect={() => setEditing(true)}>
                 <Edit3 className="w-3.5 h-3.5" /> 重命名
