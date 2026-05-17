@@ -1,18 +1,27 @@
-// Guacamole client adapter. We bundle guacamole-common-js via npm (rather
-// than the previous CDN script tag that 404'd because version 1.6.0 doesn't
-// exist on jsDelivr — the highest published is 1.5.0). Dynamic import keeps
-// the ~500 KB library out of the main bundle and only loads it when a user
-// actually opens an RDP / VNC node.
+"use client"
 
+// Guacamole client adapter. Earlier attempts:
+//   1. CDN <script> at unpkg/jsDelivr → 404 because version 1.6.0 doesn't
+//      exist and CDN may be blocked in restricted networks.
+//   2. Dynamic `import("guacamole-common-js")` → Turbopack/Webpack on Next 16
+//      emitted only an SSR chunk for the dynamic-imported package and no
+//      static/chunks counterpart, so the browser hit "Cannot find module".
+//
+// Final approach: explicit `"use client"` at the top of THIS file so the
+// bundler knows everything here is browser-side, then a normal top-level
+// import of guacamole-common-js. Turbopack reliably puts it in the client
+// chunk for `guac-display.tsx`, which is the only consumer.
+// The ~500 KB cost only lands when a user actually navigates to /rdp or /vnc.
+
+import GuacamoleNS from "guacamole-common-js"
 import { getAccessToken } from "@/lib/auth/tokens"
 
 const WS_BASE =
   process.env.NEXT_PUBLIC_BACKEND_WS_URL || "ws://127.0.0.1:8080"
 
-// The package's ESM build exports `Guacamole` as default. We don't know
-// every method we'll call on it at TS compile time, so use a permissive
-// shape and rely on the runtime.
-type GuacamoleNS = Record<string, unknown> & {
+// The package's typing is `unknown` (we added a minimal d.ts). Coerce to a
+// permissive shape so call sites have ergonomic types.
+type GuacNS = {
   Client: new (tunnel: unknown) => GuacClientLike
   WebSocketTunnel: new (url: string) => unknown
   Mouse: new (el: HTMLElement) => GuacMouseLike
@@ -42,36 +51,13 @@ interface GuacKeyboardLike {
   onkeyup?: (k: number) => void
 }
 
-let nsPromise: Promise<GuacamoleNS> | null = null
+const G = GuacamoleNS as unknown as GuacNS
 
-async function loadGuacamole(): Promise<GuacamoleNS> {
-  if (typeof window === "undefined") {
-    throw new Error("guacamole only runs in the browser")
-  }
-  // Reuse the window global if some other module already set it (e.g. an
-  // older script tag in the page).
-  const w = window as unknown as { Guacamole?: GuacamoleNS }
-  if (w.Guacamole) return w.Guacamole
-  if (!nsPromise) {
-    nsPromise = (async () => {
-      try {
-        // Dynamic ESM import — Webpack/Turbopack split into its own chunk.
-        const mod = (await import("guacamole-common-js")) as unknown as {
-          default: GuacamoleNS
-        }
-        const G = mod.default
-        // Stash on window for any consumer that still expects the global.
-        w.Guacamole = G
-        return G
-      } catch (e: unknown) {
-        nsPromise = null
-        throw new Error(
-          `failed to load guacamole-common-js: ${(e as Error).message}`,
-        )
-      }
-    })()
-  }
-  return nsPromise
+// Make the loaded namespace available on `window.Guacamole` for any external
+// snippet that still expects the classic UMD-style global (e.g. dev tools
+// poking, or session-replay code reusing the loaded module).
+if (typeof window !== "undefined") {
+  ;(window as unknown as { Guacamole?: GuacNS }).Guacamole = G
 }
 
 export type GuacOpts = {
@@ -86,7 +72,12 @@ export type GuacOpts = {
 }
 
 export async function connectGuacamole(opts: GuacOpts) {
-  const G = await loadGuacamole()
+  if (typeof window === "undefined") {
+    throw new Error("guacamole only runs in the browser")
+  }
+  if (!G || typeof G.Client !== "function") {
+    throw new Error("guacamole-common-js failed to load (Client missing)")
+  }
   const token = getAccessToken() ?? ""
   const url = `${WS_BASE}/api/v1/ws/${opts.protocol}/${opts.nodeId}?token=${token}&width=${opts.width}&height=${opts.height}&dpi=${opts.dpi ?? 96}`
   const tunnel = new G.WebSocketTunnel(url)
