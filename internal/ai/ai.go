@@ -37,6 +37,7 @@ type Config struct {
 	ApprovalTimeout       time.Duration
 	SSHExecReadOnlyAllow  []string
 	ConversationTTLDays   int
+	SeedDefaultAgents     bool
 }
 
 // Deps is everything ai.New needs from the host process.
@@ -132,6 +133,18 @@ func New(cfg Config, deps Deps) *Set {
 		})
 	tdeps.AgentRunner = factory
 	tools.RegisterSubAgentTool(toolReg, tdeps)
+
+	// Seed the built-in global agents on first start. Idempotent — existing
+	// rows by the same name are left intact so operator edits stick.
+	if cfg.SeedDefaultAgents {
+		seedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if n, err := SeedDefaultAgents(seedCtx, agentRepo, deps.Logger); err != nil {
+			deps.Logger.Warn("seed default ai agents failed", zap.Error(err))
+		} else if n > 0 {
+			deps.Logger.Info("seeded default ai agents", zap.Int("count", n))
+		}
+		cancel()
+	}
 
 	return &Set{
 		Enabled: true,

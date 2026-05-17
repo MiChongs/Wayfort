@@ -34,6 +34,7 @@ type AIConfig struct {
 	ApprovalTimeout       time.Duration `mapstructure:"approval_timeout"`
 	SSHExecReadOnlyAllow  []string      `mapstructure:"ssh_exec_readonly_allow"`
 	ConversationTTLDays   int           `mapstructure:"conversation_ttl_days"`
+	SeedDefaultAgents     bool          `mapstructure:"seed_default_agents"`
 }
 
 // ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.
@@ -260,6 +261,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.tool_timeout", 60*time.Second)
 	v.SetDefault("ai.approval_timeout", 2*time.Minute)
 	v.SetDefault("ai.conversation_ttl_days", 90)
+	v.SetDefault("ai.seed_default_agents", true)
 	v.SetDefault("storage.sessions_dir", "./var/sessions")
 	v.SetDefault("sshpool.max_sessions_per_client", 8)
 	v.SetDefault("sshpool.idle_eviction", 10*time.Minute)

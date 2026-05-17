@@ -298,6 +298,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		ApprovalTimeout:       cfg.AI.ApprovalTimeout,
 		SSHExecReadOnlyAllow:  cfg.AI.SSHExecReadOnlyAllow,
 		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
+		SeedDefaultAgents:     cfg.AI.SeedDefaultAgents,
 	}, ai.Deps{
 		DB: db, Sealer: sealer, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,

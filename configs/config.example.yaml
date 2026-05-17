@@ -52,6 +52,10 @@ ai:
   tool_timeout: 60s
   approval_timeout: 2m
   conversation_ttl_days: 90
+  # 首次启动时种入 6 个全局默认 Agent（sre-copilot / health-inspector /
+  # log-analyst / security-auditor + 两个 sub-agent：db-doctor / k8s-pilot）。
+  # 同名 Agent 已存在时不会覆盖，安全打开。
+  seed_default_agents: true
   ssh_exec_readonly_allow:
     - "ls"
     - "cat"
