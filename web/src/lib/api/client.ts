@@ -85,3 +85,15 @@ export function buildURLFromAPI(path: string, query?: Record<string, string | nu
   if (typeof window === "undefined") return API_BASE + path
   return buildURL(path, query)
 }
+
+// Some asset endpoints (asciinema recording, SFTP download) are consumed by
+// the browser as plain URLs — via <a href>, <video src>, or third-party
+// players like asciinema-player that don't accept custom headers. For those
+// we append the access token as a query string; the backend's middleware
+// (extractToken) already honours ?token=.
+export function withTokenQuery(url: string): string {
+  const tok = getAccessToken()
+  if (!tok) return url
+  const sep = url.includes("?") ? "&" : "?"
+  return `${url}${sep}token=${encodeURIComponent(tok)}`
+}

@@ -3,7 +3,7 @@
 // is a thin wrapper around the api client so React Query can cache against
 // stable URLs.
 
-import { api } from "./client"
+import { api, withTokenQuery } from "./client"
 import type {
   AIAgent,
   AIConversation,
@@ -122,7 +122,7 @@ export const credentialService = {
 export const sessionService = {
   list: (opts: { status?: string; limit?: number; offset?: number } = {}) =>
     api<{ sessions: Session[] }>("GET", "/sessions", { query: opts }),
-  recordingURL: (id: string) => `/api/proxy/api/v1/sessions/${id}/recording`,
+  recordingURL: (id: string) => withTokenQuery(`/api/proxy/api/v1/sessions/${id}/recording`),
 }
 
 export const portfwdService = {
@@ -155,7 +155,7 @@ export const sftpService = {
     })
   },
   downloadURL: (nodeId: number, path: string) =>
-    `/api/proxy/api/v1/nodes/${nodeId}/sftp/download?path=${encodeURIComponent(path)}`,
+    withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/sftp/download?path=${encodeURIComponent(path)}`),
 }
 
 // ----- users / roles / groups / departments (admin) -----
