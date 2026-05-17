@@ -123,6 +123,15 @@ webssh:
   write_timeout: 10s
   ping_interval: 30s
 
+# Live system telemetry shown on the SSH page (CPU / memory / disks /
+# processes / network). The frontend polls these endpoints on a user-chosen
+# interval; the gateway dedups concurrent polls within `cache_ttl`.
+insights:
+  enabled: true
+  cache_ttl: 3s
+  ssh_timeout: 10s
+  process_limit: 200
+
 protocols:
   guacamole:
     enabled: false

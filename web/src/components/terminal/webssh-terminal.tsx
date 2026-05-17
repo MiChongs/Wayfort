@@ -1,10 +1,11 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { toast } from "sonner"
 import {
-  ALargeSmall, AArrowDown, AArrowUp, Copy, Clipboard, Eraser, Maximize, Minimize,
-  Plug, Search as SearchIcon, Square, X, RotateCw,
+  ALargeSmall, AArrowDown, AArrowUp, Bell, BellOff, Copy, Clipboard, Eraser,
+  FolderTree, Maximize, Minimize, Plug, Search as SearchIcon, Square, X, RotateCw,
 } from "lucide-react"
 import { WebSSHConnection } from "@/lib/ws/webssh-client"
 import { Button } from "@/components/ui/button"
@@ -12,6 +13,7 @@ import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
 const FONT_KEY = "webssh:fontSize"
+const BELL_KEY = "webssh:bellEnabled"
 const FONT_MIN = 10
 const FONT_MAX = 22
 const FONT_DEFAULT = 13
@@ -52,6 +54,19 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
   const [searchOpen, setSearchOpen] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
   const [bumpKey, setBumpKey] = React.useState(0)   // increment to trigger reconnect
+  // Plan 14.C — terminal polish state.
+  const [terminalTitle, setTerminalTitle] = React.useState<string>("")
+  const [bellEnabled, setBellEnabled] = React.useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    return window.localStorage.getItem(BELL_KEY) === "1"
+  })
+  const bellEnabledRef = React.useRef(bellEnabled)
+  React.useEffect(() => {
+    bellEnabledRef.current = bellEnabled
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(BELL_KEY, bellEnabled ? "1" : "0")
+    }
+  }, [bellEnabled])
 
   // Track fullscreen state from the browser API (Esc exits).
   React.useEffect(() => {
@@ -87,6 +102,9 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
       const { FitAddon } = await import("@xterm/addon-fit")
       const { WebLinksAddon } = await import("@xterm/addon-web-links")
       const { SearchAddon } = await import("@xterm/addon-search")
+      // Plan 14.C.1 — Unicode 11 addon makes CJK / emoji column widths
+      // correct. Without it, "你好🎉" overlaps with following characters.
+      const { Unicode11Addon } = await import("@xterm/addon-unicode11")
       if (disposed) return
 
       // Always paint on a known-dark surface — terminals look better dark even
@@ -97,6 +115,9 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
         cursorBlink: true,
         convertEol: true,
         scrollback: 5000,
+        // Plan 14.C.3 — bell handled in JS via term.onBell. xterm v5 dropped
+        // the bellStyle option; the default behaviour is to fire onBell and
+        // do nothing else, which is exactly what we want.
         fontFamily:
           "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
         theme: {
@@ -111,12 +132,57 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
       term.loadAddon(fit)
       term.loadAddon(new WebLinksAddon())
       term.loadAddon(search)
+      term.loadAddon(new Unicode11Addon())
+      // Switch to Unicode 11 width measurement (Plan 14.C.1).
+      try {
+        ;(term as { unicode: { activeVersion: string } }).unicode.activeVersion = "11"
+      } catch {
+        /* old library versions silently fall back to Unicode 6 */
+      }
       const el = containerRef.current!
       term.open(el)
       try { fit.fit() } catch { /* noop */ }
       termRef.current = term
       fitRef.current = fit
       searchRef.current = search
+
+      // Plan 14.C.2 — surface the OSC-set terminal title (e.g. `root@host: ~`
+      // emitted by bash's PROMPT_COMMAND) in the toolbar so users see the
+      // current pwd / user without having to look at the prompt.
+      term.onTitleChange((t) => {
+        if (!disposed) setTerminalTitle(t || "")
+      })
+
+      // Plan 14.C.3 — bell. We play a short sine-wave beep via WebAudio only
+      // when the user has explicitly opted in (default off). The Audio API
+      // requires a user-gesture to unlock — by the time the bell fires the
+      // user has already interacted with the terminal, so this works.
+      term.onBell(() => {
+        if (!bellEnabledRef.current) return
+        try {
+          const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+          const ac = new AC()
+          const o = ac.createOscillator()
+          const g = ac.createGain()
+          o.connect(g)
+          g.connect(ac.destination)
+          o.frequency.value = 880
+          g.gain.value = 0.05
+          o.start()
+          o.stop(ac.currentTime + 0.08)
+          setTimeout(() => ac.close().catch(() => {}), 200)
+        } catch {
+          /* */
+        }
+      })
+
+      // Plan 14.C.4 — click anywhere in the container focuses the terminal.
+      // xterm focuses the canvas automatically when it can, but if a
+      // sibling element claimed focus (e.g. the toolbar button) we make it
+      // easy to return.
+      el.addEventListener("click", () => {
+        try { term.focus() } catch { /* */ }
+      })
 
       const path = protocol === "ssh"
         ? `/ws/ssh/${nodeId}`
@@ -246,6 +312,11 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
     port ? `:${port}` : "",
   ].filter(Boolean).join("")
 
+  // Plan 14.C.2 — when the remote shell exports a title via OSC 0/2 (most
+  // bashrc setups do this with PROMPT_COMMAND='printf "\e]0;%s\a" ...'),
+  // surface it as the rightmost subtitle so users get live pwd / context.
+  const liveTitle = terminalTitle && terminalTitle !== displayName ? terminalTitle : ""
+
   return (
     <div
       ref={wrapRef}
@@ -265,6 +336,11 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
         {subtitle && (
           <span className="text-[11px] text-zinc-400 font-mono truncate min-w-0">
             {subtitle}
+          </span>
+        )}
+        {liveTitle && (
+          <span className="text-[11px] text-zinc-500 font-mono truncate min-w-0 hidden md:inline">
+            / {liveTitle}
           </span>
         )}
         <div className="ml-auto flex items-center gap-0.5">
@@ -292,6 +368,21 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
           <ToolbarBtn icon={Copy} onClick={() => handleCopy()} title="复制选区 (Ctrl+Shift+C)" />
           <ToolbarBtn icon={Clipboard} onClick={() => handlePaste()} title="粘贴 (Ctrl+Shift+V)" />
           <ToolbarBtn icon={Eraser} onClick={handleClear} title="清屏" />
+          <ToolbarBtn
+            icon={bellEnabled ? Bell : BellOff}
+            onClick={() => setBellEnabled((v) => !v)}
+            title={bellEnabled ? "关闭蜂鸣" : "启用蜂鸣"}
+            active={bellEnabled}
+          />
+          {protocol === "ssh" && (
+            <Link
+              href={{ pathname: `/nodes/${nodeId}/sftp` }}
+              title="打开 SFTP 文件管理"
+              className="inline-flex items-center justify-center h-7 w-7 rounded text-zinc-400 hover:text-white hover:bg-zinc-800"
+            >
+              <FolderTree className="w-3.5 h-3.5" />
+            </Link>
+          )}
           <div className="w-px h-5 bg-zinc-800 mx-0.5" />
           <ToolbarBtn icon={AArrowDown} onClick={fontDec} title="字号 -" />
           <button

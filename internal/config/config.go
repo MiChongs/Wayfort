@@ -23,6 +23,18 @@ type Config struct {
 	Protocols ProtocolsConfig `mapstructure:"protocols"`
 	Notify    NotifyConfig    `mapstructure:"notify"`
 	AI        AIConfig        `mapstructure:"ai"`
+	Insights  InsightsConfig  `mapstructure:"insights"`
+}
+
+// InsightsConfig — Plan 14: SSH-page live system dashboard. The frontend
+// polls /api/v1/nodes/:id/insights/* on a user-chosen interval; the manager
+// dedups concurrent requests inside CacheTTL and aborts a single sample
+// after SSHTimeout.
+type InsightsConfig struct {
+	Enabled      bool          `mapstructure:"enabled"`
+	CacheTTL     time.Duration `mapstructure:"cache_ttl"`
+	SSHTimeout   time.Duration `mapstructure:"ssh_timeout"`
+	ProcessLimit int           `mapstructure:"process_limit"`
 }
 
 type AIConfig struct {

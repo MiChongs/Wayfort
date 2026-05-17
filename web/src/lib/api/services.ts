@@ -290,3 +290,105 @@ export const aiConversationService = {
   exportMarkdownURL: (id: string) =>
     withTokenQuery(`/api/proxy/api/v1/ai/conversations/${id}/export.md`),
 }
+
+// ----- insights (Plan 14) -----
+//
+// Lives behind /nodes/<id>/ssh and polls these endpoints on a
+// user-configurable interval to render the right-hand system dashboard.
+// The shapes here mirror `internal/insights/types.go` field-by-field.
+export type ProcessSort = "cpu" | "mem" | "rss" | "pid"
+
+export interface InsightsHost {
+  hostname: string
+  os: string
+  kernel: string
+  arch: string
+  distro: string
+}
+export interface InsightsCPU {
+  model: string
+  cores: number
+  usage_pct: number
+}
+export interface InsightsMemory {
+  total_kb: number
+  used_kb: number
+  free_kb: number
+  buff_cache_kb: number
+  available_kb: number
+  swap_total_kb: number
+  swap_used_kb: number
+}
+export interface InsightsDisk {
+  mount: string
+  fs: string
+  total_kb: number
+  used_kb: number
+  avail_kb: number
+  used_pct: number
+  source?: string
+}
+export interface InsightsIface {
+  name: string
+  mac?: string
+  ipv4?: string
+  ipv6?: string
+  oper_state: string
+  rx_bytes: number
+  tx_bytes: number
+  rx_bps: number
+  tx_bps: number
+}
+export interface SystemSnapshot {
+  generated_at: string
+  host: InsightsHost
+  cpu: InsightsCPU
+  memory: InsightsMemory
+  load_avg: [number, number, number]
+  uptime_sec: number
+  disks: InsightsDisk[]
+  interfaces: InsightsIface[]
+  logged_in_users: number
+  partial?: boolean
+  notes?: string
+}
+export interface InsightsProcess {
+  pid: number
+  ppid: number
+  user: string
+  cpu_pct: number
+  mem_pct: number
+  rss_kb: number
+  state: string
+  comm: string
+  args: string
+}
+export interface ProcessList {
+  generated_at: string
+  total: number
+  processes: InsightsProcess[]
+  sorted_by: ProcessSort
+}
+export interface NetListen {
+  proto: string
+  local_addr: string
+  local_port: number
+  pid?: number
+  process?: string
+}
+export interface NetworkSnapshot {
+  generated_at: string
+  listeners: NetListen[]
+  established: number
+}
+
+export const insightsService = {
+  system: (nodeId: number) =>
+    api<SystemSnapshot>("GET", `/nodes/${nodeId}/insights/system`),
+  processes: (nodeId: number, sort: ProcessSort = "cpu", limit = 50) =>
+    api<ProcessList>("GET", `/nodes/${nodeId}/insights/processes`, {
+      query: { sort, limit },
+    }),
+  network: (nodeId: number) =>
+    api<NetworkSnapshot>("GET", `/nodes/${nodeId}/insights/network`),
+}

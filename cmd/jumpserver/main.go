@@ -30,6 +30,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -286,6 +287,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
 		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
+	}
+
+	// Plan 14 — wire the live system-insights service. Disabled by default;
+	// turn on with `insights.enabled: true` in config.
+	if cfg.Insights.Enabled {
+		insightsMgr := insights.NewManager(insights.Config{
+			Enabled:      true,
+			CacheTTL:     cfg.Insights.CacheTTL,
+			SSHTimeout:   cfg.Insights.SSHTimeout,
+			ProcessLimit: cfg.Insights.ProcessLimit,
+		}, insights.Deps{
+			Logger: logger, Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+			Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(),
+			Asset: assetResolver,
+		})
+		routes.Insights = insights.NewHandler(insightsMgr)
 	}
 
 	// AI assistant subsystem

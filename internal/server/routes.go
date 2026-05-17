@@ -5,6 +5,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
@@ -40,6 +41,9 @@ type Routes struct {
 	OIDCClient *api.OIDCClientHandler
 
 	AI *ai.Set
+
+	// Plan 14 — per-node live system telemetry served on the SSH page.
+	Insights *insights.Handler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -172,6 +176,12 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.DELETE("/nodes/:id/sftp/rm", rt.SFTP.Remove)
 		ops.POST("/nodes/:id/sftp/upload", rt.SFTP.Upload)
 		ops.GET("/nodes/:id/sftp/download", rt.SFTP.Download)
+		// Plan 14 — system insights endpoints (sibling to SFTP, same auth).
+		if rt.Insights != nil {
+			ops.GET("/nodes/:id/insights/system", rt.Insights.System)
+			ops.GET("/nodes/:id/insights/processes", rt.Insights.Processes)
+			ops.GET("/nodes/:id/insights/network", rt.Insights.Network)
+		}
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
 		if rt.Guacamole != nil {
