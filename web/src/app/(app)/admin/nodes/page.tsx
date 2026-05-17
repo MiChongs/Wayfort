@@ -123,7 +123,19 @@ function CreateNodeDialog({
           </div>
           <div className="space-y-1">
             <Label>协议参数 JSON（可选）</Label>
-            <Textarea placeholder='例如 {"security":"any","ignore-cert":"true"}' value={draft.proto_options || ""} onChange={(e) => setDraft({ ...draft, proto_options: e.target.value })} />
+            <Textarea
+              placeholder='RDP 示例：{"security":"any","domain":"WORKGROUP"} · VNC 示例：{}'
+              value={draft.proto_options || ""}
+              onChange={(e) => setDraft({ ...draft, proto_options: e.target.value })}
+              rows={3}
+            />
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              RDP / VNC 默认 <code className="font-mono">ignore-cert: true</code>
+              （自签证书直连）。需强制校验填
+              <code className="font-mono">"ignore-cert":"false"</code>。其它支持的键：
+              <code className="font-mono">security</code>（any/nla/tls/rdp）、
+              <code className="font-mono">domain</code>（RDP 域）。
+            </p>
           </div>
           <div className="space-y-1"><Label>描述</Label><Textarea value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
         </div>

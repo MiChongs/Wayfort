@@ -154,6 +154,15 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		SOCKSPort:     sl.Port(),
 		RecordingPath: recPath,
 		RecordingName: recName,
+		// Pragmatic default: most production RDP servers (especially Windows
+		// hosts) ship with self-signed certificates. Without ignore-cert=true
+		// guacd terminates the TLS handshake with
+		// "SSL/TLS connection failed (untrusted/self-signed certificate?)"
+		// and the user just sees a black screen. We default to permissive +
+		// allow explicit `"ignore-cert": "false"` in Node.ProtoOptions to
+		// re-enable verification per node. For VNC the flag is a no-op (VNC
+		// doesn't use X.509 by default).
+		IgnoreCert: true,
 	}
 	// Optional protocol knobs from Node.ProtoOptions JSON.
 	for k, v := range ParseOptions(node.ProtoOptions) {
@@ -163,7 +172,8 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		case "security":
 			params.Security = v
 		case "ignore-cert":
-			params.IgnoreCert = v == "true"
+			// Operator can opt back into strict verification.
+			params.IgnoreCert = v == "true" || v == "1"
 		}
 	}
 
