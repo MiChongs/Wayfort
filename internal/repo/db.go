@@ -42,5 +42,6 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.Node{},
 		&model.Session{},
 		&model.AuditLog{},
+		&model.PortForward{},
 	)
 }

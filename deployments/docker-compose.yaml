@@ -24,7 +24,7 @@ services:
       timeout: 3s
       retries: 10
 
-  # Test target for end-to-end verification. Username: testuser, password: testpass.
+  # Test SSH target. testuser / testpass.
   sshd-target:
     image: linuxserver/openssh-server:latest
     environment:
@@ -33,6 +33,16 @@ services:
       PASSWORD_ACCESS: "true"
       SUDO_ACCESS: "false"
     ports: ["2222:2222"]
+
+  # Apache Guacamole protocol daemon for RDP/VNC bridging.
+  # Mount the sessions volume so guacd can drop recording files at the same
+  # path the app sees.
+  guacd:
+    image: guacamole/guacd:1.5.5
+    ports: ["4822:4822"]
+    volumes:
+      - sessions:/var/lib/jumpserver/sessions
+    restart: unless-stopped
 
   app:
     build:
@@ -47,10 +57,15 @@ services:
       JUMPSERVER_DB_DSN: "jumpserver:jumpserver@tcp(mysql:3306)/jumpserver?charset=utf8mb4&parseTime=True&loc=Local"
       JUMPSERVER_REDIS_ADDR: "redis:6379"
       JUMPSERVER_ANONYMOUS_ENABLED: "false"
+      JUMPSERVER_PROTOCOLS_GUACAMOLE_ENABLED: "true"
+      JUMPSERVER_PROTOCOLS_GUACAMOLE_GUACD_ADDR: "guacd:4822"
+      JUMPSERVER_PROTOCOLS_DBCLI_ENABLED: "false"
     ports: ["8080:8080"]
-    # Mount the docker socket only when anonymous mode is enabled.
-    # volumes:
-    #   - /var/run/docker.sock:/var/run/docker.sock
+    volumes:
+      - sessions:/var/lib/jumpserver/sessions
+      # Uncomment when anonymous or dbcli is enabled (needs Docker SDK):
+      # - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   mysql: {}
+  sessions: {}

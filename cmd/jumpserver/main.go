@@ -17,6 +17,9 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -26,6 +29,7 @@ import (
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
 	"go.uber.org/zap"
+	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -141,18 +145,57 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	sftpHandler := &sftp.Handler{Conn: sftpConn, Audit: auditWriter, Logger: logger}
 
+	// Optional protocol handlers
+	var guacHandler *guacamole.Handler
+	if cfg.Protocols.Guacamole.Enabled {
+		guacHandler = guacamole.NewHandler(wsGateway, cfg.Protocols.Guacamole, sealer)
+	}
+	var dbcliHandler *dbcli.Handler
+	if cfg.Protocols.DBCLI.Enabled {
+		dbLauncher, err := dbcli.New(cfg.Protocols.DBCLI)
+		if err != nil {
+			logger.Warn("dbcli docker init failed", zap.Error(err))
+		} else {
+			dbcliHandler = &dbcli.Handler{GW: wsGateway, Launcher: dbLauncher, Sealer: sealer}
+		}
+	}
+	pfRepo := repo.NewPortForwardRepo(db)
+	var pfManager *tcpfwd.Manager
+	var pfHandler *tcpfwd.Handler
+	var pfRelay *tcpfwd.WSRelay
+	if cfg.Protocols.TCPFwd.Enabled {
+		factory := func(ctx context.Context, node *model.Node) (string, proxy.ContextDialer, func(), error) {
+			hops, err := wsGateway.ResolveHops(ctx, node.ProxyChain)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			dlr, rel, err := wsGateway.BuildChain(ctx, hops)
+			if err != nil {
+				return "", nil, nil, err
+			}
+			return pkgssh.AddrOf(node.Host, node.Port), dlr, rel, nil
+		}
+		pfManager = tcpfwd.NewManager(cfg.Protocols.TCPFwd, pfRepo, rc, auditWriter, logger, factory)
+		pfHandler = &tcpfwd.Handler{Manager: pfManager, Nodes: nodeRepo, Repo: pfRepo}
+		pfRelay = &tcpfwd.WSRelay{GW: wsGateway, Nodes: nodeRepo}
+	}
+
 	routes := &server.Routes{
 		Auth: &api.AuthHandler{
 			Registry: registry, Issuer: issuer, Audit: auditWriter,
 			AnonEna: anonService != nil,
 		},
-		Node:    &api.NodeHandler{Repo: nodeRepo},
-		Proxy:   &api.ProxyHandler{Repo: proxyRepo},
-		Cred:    &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
-		Session: &api.SessionHandler{Repo: sessionRepo},
-		SFTP:    sftpHandler,
-		WS:      wsGateway,
-		Issuer:  issuer,
+		Node:      &api.NodeHandler{Repo: nodeRepo},
+		Proxy:     &api.ProxyHandler{Repo: proxyRepo},
+		Cred:      &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
+		Session:   &api.SessionHandler{Repo: sessionRepo},
+		SFTP:      sftpHandler,
+		WS:        wsGateway,
+		Guacamole: guacHandler,
+		DBCLI:     dbcliHandler,
+		TCPFwd:    pfHandler,
+		TCPRelay:  pfRelay,
+		Issuer:    issuer,
 	}
 
 	engine := server.NewEngine(cfg.Server, logger)
@@ -163,6 +206,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	g.Go(func() error { return pool.Run(gctx) })
 	if anonJanitor != nil {
 		g.Go(func() error { return anonJanitor.Run(gctx) })
+	}
+	if pfManager != nil {
+		g.Go(func() error { return pfManager.Run(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
 

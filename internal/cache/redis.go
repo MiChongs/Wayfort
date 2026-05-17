@@ -12,6 +12,7 @@ import (
 const (
 	keyActiveSessions = "webssh:sessions:active"
 	keyAnonContainer  = "webssh:anon:"
+	keyPortForward    = "webssh:portfwd:"
 )
 
 type Cache struct{ r *redis.Client }
@@ -63,6 +64,14 @@ func (c *Cache) TrackAnonymous(ctx context.Context, containerID string, ttl time
 
 func (c *Cache) UntrackAnonymous(ctx context.Context, containerID string) error {
 	return c.r.Del(ctx, keyAnonContainer+containerID).Err()
+}
+
+func (c *Cache) TrackPortForward(ctx context.Context, id string, ttl time.Duration) error {
+	return c.r.Set(ctx, keyPortForward+id, time.Now().Unix(), ttl).Err()
+}
+
+func (c *Cache) UntrackPortForward(ctx context.Context, id string) error {
+	return c.r.Del(ctx, keyPortForward+id).Err()
 }
 
 // ListAnonymous returns container IDs that still have an active TTL key.

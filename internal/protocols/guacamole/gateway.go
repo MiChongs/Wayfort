@@ -1,0 +1,218 @@
+package guacamole
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/coder/websocket"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/model"
+	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"go.uber.org/zap"
+)
+
+// Handler serves the /ws/rdp/:id and /ws/vnc/:id endpoints by wiring up a
+// per-session SOCKS5 listener (backed by the gateway's proxy chain) and a
+// bridge to guacd.
+type Handler struct {
+	GW     *webssh.Gateway
+	Bridge *Bridge
+	Cfg    config.GuacamoleConfig
+	Sealer *pkgcrypto.Sealer
+}
+
+func NewHandler(gw *webssh.Gateway, cfg config.GuacamoleConfig, sealer *pkgcrypto.Sealer) *Handler {
+	return &Handler{
+		GW:     gw,
+		Bridge: NewBridge(cfg, gw.Logger()),
+		Cfg:    cfg,
+		Sealer: sealer,
+	}
+}
+
+func (h *Handler) HandleRDP(c *gin.Context) { h.handle(c, "rdp", model.NodeProtoRDP) }
+func (h *Handler) HandleVNC(c *gin.Context) { h.handle(c, "vnc", model.NodeProtoVNC) }
+
+func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodeProtocol) {
+	if !h.Cfg.Enabled {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "guacamole disabled"})
+		return
+	}
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil || claims.Anonymous {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+	nodeID, err := strconv.ParseUint(c.Param("node_id"), 10, 64)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "bad node id"})
+		return
+	}
+	node, err := h.GW.NodeRepo().FindByID(c.Request.Context(), nodeID)
+	if err != nil || node == nil {
+		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+	if node.Disabled || node.EffectiveProtocol() != expected {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node protocol mismatch"})
+		return
+	}
+	cred, err := h.GW.CredentialRepo().FindByID(c.Request.Context(), node.CredentialID)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	user, pass, err := DecodeCredential(h.Sealer, cred)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	width := atoiDefault(c.Query("width"), 1280)
+	height := atoiDefault(c.Query("height"), 720)
+	dpi := atoiDefault(c.Query("dpi"), 96)
+
+	wsConn, err := webssh.AcceptWS(c, "guacamole")
+	if err != nil {
+		h.GW.Logger().Warn("ws upgrade failed", zap.Error(err))
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sessionID := uuid.NewString()
+	clientIP := c.ClientIP()
+
+	if err := h.run(ctx, wsConn, sessionID, claims, clientIP, node, guacProto, user, pass, width, height, dpi); err != nil {
+		h.GW.Logger().Info("graphical session ended", zap.String("session", sessionID), zap.Error(err))
+		_ = wsConn.Close(websocket.StatusInternalError, truncate(err.Error(), 100))
+		return
+	}
+	_ = wsConn.Close(websocket.StatusNormalClosure, "bye")
+}
+
+func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, guacProto, user, pass string, width, height, dpi int) error {
+	// Build proxy chain → ContextDialer used by per-session SOCKS5 listener.
+	hops, err := h.GW.ResolveHops(ctx, node.ProxyChain)
+	if err != nil {
+		return fmt.Errorf("resolve hops: %w", err)
+	}
+	finalDialer, release, err := h.GW.BuildChain(ctx, hops)
+	if err != nil {
+		return fmt.Errorf("build chain: %w", err)
+	}
+	defer release()
+
+	// Per-session SOCKS5 listener, bound to the configured host (default 127.0.0.1).
+	// guacd will dial through this to reach the node, traversing whatever
+	// bastions/SOCKS5 hops the node was configured with.
+	listenHost := h.Cfg.SOCKSListenHost
+	if listenHost == "" {
+		listenHost = "127.0.0.1"
+	}
+	target := pkgssh.AddrOf(node.Host, node.Port)
+	sl, err := New(ctx, listenHost, finalDialer, target, h.GW.Logger())
+	if err != nil {
+		return fmt.Errorf("start socks listener: %w", err)
+	}
+	defer sl.Close()
+
+	// Wire up recording. The guacd container needs the recording-path as it
+	// sees the filesystem; default to host's sessions_dir.
+	var recPath, recName string
+	if h.Cfg.Recording {
+		root := h.Cfg.RecordingPathInGuacd
+		if root == "" {
+			root = h.GW.Storage()
+		}
+		recPath = JoinRecordingDir(root)
+		recName = RecordingFilename(sessionID)
+		// Also ensure the host-side directory exists so we can serve the file
+		// later through /sessions/:id/recording.
+		_ = os.MkdirAll(JoinRecordingDir(h.GW.Storage()), 0o750)
+	}
+
+	params := ConnectParams{
+		Protocol:      guacProto,
+		Hostname:      node.Host,
+		Port:          node.Port,
+		Username:      user,
+		Password:      pass,
+		Width:         width,
+		Height:        height,
+		DPI:           dpi,
+		SOCKSHost:     listenHost,
+		SOCKSPort:     sl.Port(),
+		RecordingPath: recPath,
+		RecordingName: recName,
+	}
+	// Optional protocol knobs from Node.ProtoOptions JSON.
+	for k, v := range ParseOptions(node.ProtoOptions) {
+		switch k {
+		case "domain":
+			params.Domain = v
+		case "security":
+			params.Security = v
+		case "ignore-cert":
+			params.IgnoreCert = v == "true"
+		}
+	}
+
+	hostRecPath := ""
+	if h.Cfg.Recording {
+		hostRecPath = JoinRecordingDir(h.GW.Storage()) + "/" + recName
+	}
+	row := h.GW.BeginSession(context.Background(), sessionID, model.SessionGraphical, claims, clientIP, node, hostRecPath, recordingType(h.Cfg.Recording))
+	h.GW.Audit().Log(model.AuditLog{
+		Kind:      model.AuditGraphicalStart,
+		UserID:    claims.UserID,
+		Username:  claims.Username,
+		SessionID: sessionID,
+		NodeID:    row.NodeID,
+		ClientIP:  clientIP,
+		Payload:   guacProto,
+	})
+
+	start := time.Now()
+	runErr := h.Bridge.Serve(ctx, ws, params)
+	endErr := runErr
+	if errors.Is(endErr, context.Canceled) {
+		endErr = nil
+	}
+	// No byte counters from guacd; report 0 (the user-visible bytes are in the
+	// recording file size which the session list endpoint can compute later).
+	h.GW.EndSession(context.Background(), row, claims, 0, 0, endErr)
+	_ = start
+	return runErr
+}
+
+func recordingType(on bool) model.RecordingType {
+	if on {
+		return model.RecordingGuac
+	}
+	return model.RecordingNone
+}
+
+func atoiDefault(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}

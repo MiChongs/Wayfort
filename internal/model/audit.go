@@ -16,6 +16,9 @@ const (
 	AuditLoginFailed     AuditEventKind = "auth.login_failed"
 	AuditAnonymousLaunch AuditEventKind = "anonymous.launch"
 	AuditAnonymousReap   AuditEventKind = "anonymous.reap"
+	AuditPortForwardOpen AuditEventKind = "portforward.open"
+	AuditPortForwardClose AuditEventKind = "portforward.close"
+	AuditGraphicalStart  AuditEventKind = "graphical.start"
 )
 
 type AuditLog struct {

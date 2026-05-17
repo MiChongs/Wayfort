@@ -4,19 +4,26 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 )
 
 type Routes struct {
-	Auth    *api.AuthHandler
-	Node    *api.NodeHandler
-	Proxy   *api.ProxyHandler
-	Cred    *api.CredentialHandler
-	Session *api.SessionHandler
-	SFTP    *sftp.Handler
-	WS      *webssh.Gateway
-	Issuer  *auth.Issuer
+	Auth      *api.AuthHandler
+	Node      *api.NodeHandler
+	Proxy     *api.ProxyHandler
+	Cred      *api.CredentialHandler
+	Session   *api.SessionHandler
+	SFTP      *sftp.Handler
+	WS        *webssh.Gateway
+	Guacamole *guacamole.Handler
+	DBCLI     *dbcli.Handler
+	TCPFwd    *tcpfwd.Handler
+	TCPRelay  *tcpfwd.WSRelay
+	Issuer    *auth.Issuer
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -53,13 +60,34 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops := authed.Group("")
 		ops.Use(auth.RejectAnonymous())
 		ops.GET("/sessions", rt.Session.List)
-		ops.GET("/sessions/:id/cast", rt.Session.Cast)
+		ops.GET("/sessions/:id/recording", rt.Session.Recording)
+		ops.GET("/sessions/:id/cast", rt.Session.Recording) // backward-compat alias
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
 		ops.POST("/nodes/:id/sftp/mkdir", rt.SFTP.Mkdir)
 		ops.DELETE("/nodes/:id/sftp/rm", rt.SFTP.Remove)
 		ops.POST("/nodes/:id/sftp/upload", rt.SFTP.Upload)
 		ops.GET("/nodes/:id/sftp/download", rt.SFTP.Download)
+
+		// Per-protocol WebSocket endpoints.
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
+		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
+		if rt.Guacamole != nil {
+			ops.GET("/ws/rdp/:node_id", rt.Guacamole.HandleRDP)
+			ops.GET("/ws/vnc/:node_id", rt.Guacamole.HandleVNC)
+		}
+		if rt.DBCLI != nil {
+			ops.GET("/ws/dbcli/:node_id", rt.DBCLI.Handle)
+		}
+		if rt.TCPRelay != nil {
+			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)
+		}
+
+		// TCP port-forward management.
+		if rt.TCPFwd != nil {
+			ops.POST("/portforward", rt.TCPFwd.Create)
+			ops.DELETE("/portforward/:id", rt.TCPFwd.Delete)
+			ops.GET("/portforward", rt.TCPFwd.List)
+		}
 	}
 
 	// Anonymous WS uses the same middleware but allows the anonymous flag.

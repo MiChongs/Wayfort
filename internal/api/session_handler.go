@@ -24,24 +24,30 @@ func (h *SessionHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sessions": out})
 }
 
-func (h *SessionHandler) Cast(c *gin.Context) {
+func (h *SessionHandler) Recording(c *gin.Context) {
 	id := c.Param("id")
 	row, err := h.Repo.FindByID(c.Request.Context(), id)
 	if err != nil || row == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	if row.CastPath == "" {
-		c.JSON(http.StatusNotFound, gin.H{"error": "no cast"})
+	if row.RecordingPath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no recording"})
 		return
 	}
-	f, err := os.Open(row.CastPath)
+	f, err := os.Open(row.RecordingPath)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
 	defer f.Close()
-	c.Header("Content-Type", "application/x-asciicast")
-	c.Header("Content-Disposition", "attachment; filename=\""+id+".cast\"")
-	http.ServeContent(c.Writer, c.Request, id+".cast", row.StartedAt, f)
+	ext := ".cast"
+	contentType := "application/x-asciicast"
+	if row.RecordingType == "guac" {
+		ext = ".guac"
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "attachment; filename=\""+id+ext+"\"")
+	http.ServeContent(c.Writer, c.Request, id+ext, row.StartedAt, f)
 }

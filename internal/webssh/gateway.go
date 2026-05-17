@@ -240,7 +240,8 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 		StartedAt: now, Status: model.SessionActive,
 	}
 	if rec != nil {
-		row.CastPath = rec.Path()
+		row.RecordingPath = rec.Path()
+		row.RecordingType = model.RecordingAsciicast
 	}
 	if err := g.sessions.Create(context.Background(), row); err != nil {
 		g.logger.Warn("anon session row create failed", zap.Error(err))
@@ -292,7 +293,8 @@ func (g *Gateway) recordStart(sessionID string, kind model.SessionKind, claims *
 		StartedAt: now, Status: model.SessionActive,
 	}
 	if rec != nil {
-		row.CastPath = rec.Path()
+		row.RecordingPath = rec.Path()
+		row.RecordingType = model.RecordingAsciicast
 	}
 	if err := g.sessions.Create(context.Background(), row); err != nil {
 		g.logger.Warn("session row create failed", zap.Error(err))

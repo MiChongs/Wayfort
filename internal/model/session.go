@@ -8,6 +8,19 @@ const (
 	SessionInteractive SessionKind = "interactive"
 	SessionAnonymous   SessionKind = "anonymous"
 	SessionSFTP        SessionKind = "sftp"
+	SessionGraphical   SessionKind = "graphical"
+	SessionTCPForward  SessionKind = "tcp_forward"
+)
+
+// RecordingType discriminates the format of the on-disk recording so the
+// download endpoint can set the right Content-Type and the player knows how to
+// interpret it.
+type RecordingType string
+
+const (
+	RecordingAsciicast RecordingType = "asciicast"
+	RecordingGuac      RecordingType = "guac"
+	RecordingNone      RecordingType = ""
 )
 
 type SessionStatus string
@@ -32,7 +45,10 @@ type Session struct {
 	StartedAt time.Time     `json:"started_at"`
 	EndedAt   *time.Time    `json:"ended_at,omitempty"`
 	Status    SessionStatus `gorm:"size:32" json:"status"`
-	CastPath  string        `gorm:"size:512" json:"cast_path,omitempty"`
+	// RecordingPath is the cast/.guac file on disk; the cast_path column name
+	// is retained for backward compatibility with the v1 schema.
+	RecordingPath string        `gorm:"column:cast_path;size:512" json:"recording_path,omitempty"`
+	RecordingType RecordingType `gorm:"size:16" json:"recording_type,omitempty"`
 	BytesIn   uint64        `json:"bytes_in"`
 	BytesOut  uint64        `json:"bytes_out"`
 	Reason    string        `gorm:"size:255" json:"reason,omitempty"`

@@ -20,6 +20,44 @@ type Config struct {
 	Recorder  RecorderConfig  `mapstructure:"recorder"`
 	Audit     AuditConfig     `mapstructure:"audit"`
 	WebSSH    WebSSHConfig    `mapstructure:"webssh"`
+	Protocols ProtocolsConfig `mapstructure:"protocols"`
+}
+
+// ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.
+type ProtocolsConfig struct {
+	Guacamole GuacamoleConfig `mapstructure:"guacamole"`
+	DBCLI     DBCLIConfig     `mapstructure:"dbcli"`
+	TCPFwd    TCPFwdConfig    `mapstructure:"tcpfwd"`
+	Telnet    TelnetConfig    `mapstructure:"telnet"`
+}
+
+type GuacamoleConfig struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	GuacdAddr       string `mapstructure:"guacd_addr"`
+	Recording       bool   `mapstructure:"recording"`
+	SOCKSListenHost string `mapstructure:"socks_listen_host"`
+	// RecordingPathInGuacd is what the guacd container sees for the sessions
+	// directory; defaults to the host's sessions_dir when running side-by-side.
+	RecordingPathInGuacd string `mapstructure:"recording_path_in_guacd"`
+}
+
+type DBCLIConfig struct {
+	Enabled bool              `mapstructure:"enabled"`
+	Images  map[string]string `mapstructure:"images"`
+	TTL     time.Duration     `mapstructure:"ttl"`
+}
+
+type TCPFwdConfig struct {
+	Enabled    bool          `mapstructure:"enabled"`
+	ListenHost string        `mapstructure:"listen_host"`
+	PortRange  [2]int        `mapstructure:"port_range"`
+	DefaultTTL time.Duration `mapstructure:"default_ttl"`
+	MaxPerUser int           `mapstructure:"max_per_user"`
+}
+
+type TelnetConfig struct {
+	Enabled bool          `mapstructure:"enabled"`
+	Timeout time.Duration `mapstructure:"timeout"`
 }
 
 type ServerConfig struct {
@@ -155,6 +193,26 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webssh.read_buffer", 8192)
 	v.SetDefault("webssh.write_timeout", 10*time.Second)
 	v.SetDefault("webssh.ping_interval", 30*time.Second)
+
+	v.SetDefault("protocols.guacamole.enabled", false)
+	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")
+	v.SetDefault("protocols.guacamole.recording", true)
+	v.SetDefault("protocols.guacamole.socks_listen_host", "127.0.0.1")
+	v.SetDefault("protocols.dbcli.enabled", false)
+	v.SetDefault("protocols.dbcli.images", map[string]string{
+		"mysql":    "mysql:8.0",
+		"postgres": "postgres:16-alpine",
+		"redis":    "redis:7-alpine",
+		"mongo":    "mongo:7",
+	})
+	v.SetDefault("protocols.dbcli.ttl", 30*time.Minute)
+	v.SetDefault("protocols.tcpfwd.enabled", true)
+	v.SetDefault("protocols.tcpfwd.listen_host", "127.0.0.1")
+	v.SetDefault("protocols.tcpfwd.port_range", []int{40000, 49999})
+	v.SetDefault("protocols.tcpfwd.default_ttl", time.Hour)
+	v.SetDefault("protocols.tcpfwd.max_per_user", 8)
+	v.SetDefault("protocols.telnet.enabled", true)
+	v.SetDefault("protocols.telnet.timeout", 15*time.Second)
 }
 
 func (c *Config) validate() error {

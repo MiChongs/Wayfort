@@ -57,3 +57,30 @@ webssh:
   read_buffer: 8192
   write_timeout: 10s
   ping_interval: 30s
+
+protocols:
+  guacamole:
+    enabled: false
+    guacd_addr: "127.0.0.1:4822"
+    recording: true
+    socks_listen_host: "127.0.0.1"
+    # When guacd runs in a separate container that mounts the sessions volume
+    # at a different path, override here. Empty => use storage.sessions_dir.
+    recording_path_in_guacd: ""
+  dbcli:
+    enabled: false
+    images:
+      mysql:    "mysql:8.0"
+      postgres: "postgres:16-alpine"
+      redis:    "redis:7-alpine"
+      mongo:    "mongo:7"
+    ttl: 30m
+  tcpfwd:
+    enabled: true
+    listen_host: "127.0.0.1"
+    port_range: [40000, 49999]
+    default_ttl: 1h
+    max_per_user: 8
+  telnet:
+    enabled: true
+    timeout: 15s
