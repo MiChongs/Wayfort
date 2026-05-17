@@ -160,10 +160,15 @@ export function MessageList({
     !thinking
 
   return (
-    <div className="relative flex-1 min-h-0 overflow-hidden">
+    // Natural flex column instead of absolute-positioned ScrollArea. The
+    // wrapper keeps `relative` only so the floating "jump-to-latest" button
+    // can position over it; everything else is plain flex so Radix's
+    // Viewport gets a fully-determined height and its internal scroll
+    // engages reliably.
+    <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-muted/20">
       <ScrollArea
         viewportRef={scrollRef}
-        className="absolute inset-0 bg-muted/20"
+        className="flex-1 min-h-0 w-full"
       >
         <div className="px-3 md:px-6 py-6 space-y-4 min-w-0">
         {showSkeleton && <MessageSkeleton />}
@@ -257,7 +262,7 @@ export function MessageList({
                 ? { duration: 0 }
                 : { type: "spring", stiffness: 380, damping: 28 }
             }
-            className="absolute bottom-4 left-1/2 -translate-x-1/2"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10"
           >
             <Button
               size="sm"
