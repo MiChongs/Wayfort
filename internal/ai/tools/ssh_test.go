@@ -41,6 +41,30 @@ func TestCommandAllowedReason(t *testing.T) {
 		{"awk ok", "awk '{print $1}' /etc/hosts", true, ""},
 		{"sed ok", "sed -n '1,10p' /etc/hosts", true, ""},
 		{"empty rejected", "   ", false, "empty"},
+		// Regression cases reported by the user:
+		{"docker system df", "docker system df", true, ""},
+		{"docker system info", "docker system info", true, ""},
+		{"docker system events --since 10m", "docker system events --since 10m", true, ""},
+		{"sort -h chained", "du -sh /var/log/* | sort -h | tail -20", true, ""},
+		{"find printf newline", `find /var/log -type f -printf '%TY-%Tm-%Td %s %p\n'`, true, ""},
+		{"journalctl --disk-usage", "journalctl --disk-usage", true, ""},
+	}
+
+	// Sanity: extra knob appends.
+	extra := normaliseAllow(nil, []string{"my-internal-cli"})
+	if reason := commandAllowedReason("my-internal-cli --help", extra); reason != "" {
+		t.Errorf("extra append should allow my-internal-cli; got reason=%q", reason)
+	}
+	// Sanity: explicit list still replaces default; extra appends on top.
+	merged := normaliseAllow([]string{"ls"}, []string{"my-cli"})
+	if reason := commandAllowedReason("ls", merged); reason != "" {
+		t.Errorf("ls should be allowed by explicit list; got %q", reason)
+	}
+	if reason := commandAllowedReason("cat /tmp", merged); reason == "" {
+		t.Errorf("cat should NOT be in replacement-mode allow; got allowed")
+	}
+	if reason := commandAllowedReason("my-cli --x", merged); reason != "" {
+		t.Errorf("my-cli should be allowed via extra; got %q", reason)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

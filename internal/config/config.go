@@ -33,6 +33,7 @@ type AIConfig struct {
 	ToolTimeout           time.Duration `mapstructure:"tool_timeout"`
 	ApprovalTimeout       time.Duration `mapstructure:"approval_timeout"`
 	SSHExecReadOnlyAllow  []string      `mapstructure:"ssh_exec_readonly_allow"`
+	SSHExecReadOnlyExtra  []string      `mapstructure:"ssh_exec_readonly_allow_extra"`
 	ConversationTTLDays   int           `mapstructure:"conversation_ttl_days"`
 	SeedDefaultAgents     bool          `mapstructure:"seed_default_agents"`
 }

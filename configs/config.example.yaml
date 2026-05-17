@@ -67,8 +67,13 @@ ai:
   # 缺省值（不配置或为空）使用代码内 DefaultReadonlyAllow（~140 条，覆盖
   # 文本读取 / 系统信息 / 进程 / 网络 / 容器 / k8s / systemd / 包查询 /
   # HTTP HEAD/GET / git 只读 等）。
-  # 下面只是示例，按需裁剪/扩展；要拿全集请删掉这块让代码托底。
+  # 留空 / 删除此键 = 用代码内 DefaultReadonlyAllow（~150 条）；非空 = 完全替换默认。
   ssh_exec_readonly_allow: []
+  # 在默认（或替换后的）基础上 **追加** 自定义白名单条目（不替换）。
+  # 适合"只想加几个本地工具"的场景，避免抄 150 行默认。
+  # 同样支持 binary-only（无空格）+ prefix（含空格）两种条目。
+  # 示例：开放公司内部 CLI、加几个 nodejs 工具等。
+  ssh_exec_readonly_allow_extra: []
 
 notify:
   smtp:

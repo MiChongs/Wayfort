@@ -13,8 +13,16 @@ import (
 //   - ssh_exec        : arbitrary command (HIGH danger, requires approval in normal mode)
 //   - ssh_exec_readonly: allow-list-gated commands (LOW)
 //   - health_check    : canned diagnostic bundle (LOW)
-func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string) {
-	allow := normaliseAllow(readonlyAllow)
+//
+// readonlyAllow REPLACES the curated default when non-empty.
+// readonlyExtra is always appended on top of whatever the resolved base is,
+// letting operators keep the curated default and just whitelist a few extras.
+func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string, readonlyExtra ...[]string) {
+	var extra []string
+	if len(readonlyExtra) > 0 {
+		extra = readonlyExtra[0]
+	}
+	allow := normaliseAllow(readonlyAllow, extra)
 
 	reg.Register(&Tool{
 		Name:                "ssh_exec",
@@ -131,13 +139,25 @@ func sshExecDryRun(_ context.Context, _ ToolCtx, raw json.RawMessage) (string, e
 // first sighting and tell the agent to use ssh_exec instead.
 var dangerousFragments = []string{"$(", "`", ">", "<", ";"}
 
-// normaliseAllow returns the user-configured allow list verbatim; if empty,
-// falls back to the curated default below.
-func normaliseAllow(in []string) []string {
+// normaliseAllow resolves the effective allow list. Behaviour:
+//   - if `in` is non-empty: that REPLACES the curated default (use for lock-down)
+//   - if `in` is empty: curated DefaultReadonlyAllow is used
+//   - `extra` (if any) is ALWAYS appended on top of the resolved base
+//     (use for "I want default + my custom entries" — no need to copy 140 lines)
+func normaliseAllow(in, extra []string) []string {
+	var base []string
 	if len(in) > 0 {
-		return in
+		base = in
+	} else {
+		base = DefaultReadonlyAllow
 	}
-	return DefaultReadonlyAllow
+	if len(extra) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(extra))
+	out = append(out, base...)
+	out = append(out, extra...)
+	return out
 }
 
 // DefaultReadonlyAllow is the canonical safe-command allowlist for
@@ -197,11 +217,14 @@ var DefaultReadonlyAllow = []string{
 	// --- container & orchestration (readonly subcommands only) ---
 	"docker ps", "docker images", "docker inspect", "docker logs",
 	"docker stats", "docker top", "docker version", "docker info",
-	"docker history", "docker port", "docker diff",
+	"docker history", "docker port", "docker diff", "docker events",
 	"docker network ls", "docker network inspect",
 	"docker volume ls", "docker volume inspect",
 	"docker container ls", "docker container inspect",
 	"docker image ls", "docker image inspect",
+	"docker system df", "docker system info", "docker system events",
+	"docker compose ps", "docker compose top", "docker compose images",
+	"docker compose logs", "docker compose config",
 
 	"crictl ps", "crictl images", "crictl logs", "crictl inspect",
 	"crictl version", "crictl info", "crictl stats",

@@ -41,7 +41,7 @@ function ensureKatexCSS() {
 //
 // onUseSnippet (optional): called when user clicks the "用到 composer" button
 // on a shell code block; the conversation page pipes the text into draft.
-export function Markdown({
+export const Markdown = React.memo(function Markdown({
   text,
   className,
   onUseSnippet,
@@ -68,7 +68,7 @@ export function Markdown({
       </ReactMarkdown>
     </div>
   )
-}
+})
 
 function buildComponents(onUseSnippet?: (snippet: string) => void): Components {
   return {

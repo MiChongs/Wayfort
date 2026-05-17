@@ -297,6 +297,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		ToolTimeout:           cfg.AI.ToolTimeout,
 		ApprovalTimeout:       cfg.AI.ApprovalTimeout,
 		SSHExecReadOnlyAllow:  cfg.AI.SSHExecReadOnlyAllow,
+		SSHExecReadOnlyExtra:  cfg.AI.SSHExecReadOnlyExtra,
 		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
 		SeedDefaultAgents:     cfg.AI.SeedDefaultAgents,
 	}, ai.Deps{

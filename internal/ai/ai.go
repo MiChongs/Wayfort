@@ -36,6 +36,7 @@ type Config struct {
 	ToolTimeout           time.Duration
 	ApprovalTimeout       time.Duration
 	SSHExecReadOnlyAllow  []string
+	SSHExecReadOnlyExtra  []string
 	ConversationTTLDays   int
 	SeedDefaultAgents     bool
 }
@@ -123,7 +124,7 @@ func New(cfg Config, deps Deps) *Set {
 	// Register every builtin tool except call_subagent — that one needs the
 	// factory as a SubAgentRunner.
 	tools.RegisterNodeTools(toolReg, tdeps)
-	tools.RegisterSSHTools(toolReg, tdeps, cfg.SSHExecReadOnlyAllow)
+	tools.RegisterSSHTools(toolReg, tdeps, cfg.SSHExecReadOnlyAllow, cfg.SSHExecReadOnlyExtra)
 	tools.RegisterSFTPTools(toolReg, tdeps)
 	tools.RegisterSessionTools(toolReg, tdeps)
 	tools.RegisterIdentityTools(toolReg, tdeps)
