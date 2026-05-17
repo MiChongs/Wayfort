@@ -125,12 +125,12 @@ export function MessageList({
     !thinking
 
   return (
-    <div className="relative flex-1 min-h-0">
+    <div className="relative flex-1 min-h-0 overflow-hidden">
       <ScrollArea
         viewportRef={scrollRef}
-        className="absolute inset-0 bg-gradient-to-b from-muted/20 to-muted/40"
+        className="absolute inset-0 bg-muted/20"
       >
-        <div className="px-3 md:px-6 py-6 space-y-4">
+        <div className="px-3 md:px-6 py-6 space-y-4 min-w-0">
         {showSkeleton && <MessageSkeleton />}
 
         {emptyState && (
@@ -147,14 +147,15 @@ export function MessageList({
           {historyBubbles.map((b) => (
             <motion.div
               key={`h-${b.key}`}
-              layout="position"
-              initial={reduce ? false : { opacity: 0, y: 10 }}
+              layout={reduce ? false : "position"}
+              initial={reduce ? false : { opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               transition={
                 reduce
                   ? { duration: 0 }
-                  : { type: "spring", stiffness: 320, damping: 28, mass: 0.6 }
+                  : { type: "spring", stiffness: 380, damping: 36, mass: 0.5 }
               }
+              className="min-w-0"
             >
               {b.node}
             </motion.div>
@@ -165,15 +166,16 @@ export function MessageList({
             return (
               <motion.div
                 key={`l-${k}`}
-                layout="position"
-                initial={reduce ? false : { opacity: 0, y: 12 }}
+                layout={reduce ? false : "position"}
+                initial={reduce ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.96 }}
+                exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
                 transition={
                   reduce
                     ? { duration: 0 }
-                    : { type: "spring", stiffness: 320, damping: 28, mass: 0.6 }
+                    : { type: "spring", stiffness: 380, damping: 36, mass: 0.5 }
                 }
+                className="min-w-0"
               >
                 <LiveBubbleView
                   b={b}

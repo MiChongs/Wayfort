@@ -1,16 +1,19 @@
 "use client"
 
 import * as React from "react"
-import { motion, AnimatePresence, useReducedMotion } from "motion/react"
+import { animate, motion, useReducedMotion } from "motion/react"
 import { Markdown } from "./markdown"
 
-// Smooth, segmented fade-in for streaming assistant text.
+// Smooth typewriter driven by motion's `animate`. We track how many
+// characters of the cumulative SSE text are currently displayed; whenever
+// the upstream content grows, we tween the count from "wherever we are now"
+// to the new full length over a short duration that scales with backlog.
+// Result: even a sudden 500-char burst reveals smoothly within ~500 ms; a
+// slow trickle stays in lockstep with arrival.
 //
-// During streaming we render each SSE chunk as a `motion.span` that fades in
-// (~12ms) with a tiny y/blur transition — visually it looks like text is being
-// written. We avoid rendering Markdown until the stream completes so code
-// fences / lists don't visually re-flow on every delta. A blinking caret at
-// the tail signals "still typing".
+// While streaming we render plain text — Markdown reflows would jitter on
+// every delta (code fences, headings appearing mid-render). On completion
+// we cross-fade to the final Markdown render.
 export function StreamingText({
   chunks,
   done,
@@ -18,19 +21,48 @@ export function StreamingText({
   chunks: string[]
   done: boolean
 }) {
-  // All hooks must run on every render — no early return above them.
   const reduce = useReducedMotion()
   const full = React.useMemo(() => chunks.join(""), [chunks])
-  // Split long chunks into ~10-char sub-chunks so a single delta doesn't pop
-  // in as a wall of text.
-  const segments = React.useMemo(() => splitChunks(chunks), [chunks])
+  const [displayed, setDisplayed] = React.useState("")
+  const visibleRef = React.useRef(0)
+
+  React.useEffect(() => {
+    if (done || reduce) {
+      visibleRef.current = full.length
+      setDisplayed(full)
+      return
+    }
+    const from = Math.min(visibleRef.current, full.length)
+    const to = full.length
+    if (from >= to) return
+    const backlog = to - from
+    // Tween duration: ~200 chars/sec catch-up, capped so we never lag noticeably.
+    const duration = Math.min(0.6, Math.max(0.05, backlog / 200))
+    const controls = animate(from, to, {
+      duration,
+      ease: "linear",
+      onUpdate: (v) => {
+        const n = Math.floor(v)
+        if (n !== visibleRef.current) {
+          visibleRef.current = n
+          setDisplayed(full.slice(0, n))
+        }
+      },
+      onComplete: () => {
+        visibleRef.current = to
+        setDisplayed(full)
+      },
+    })
+    return () => controls.stop()
+  }, [full, done, reduce])
 
   if (done) {
     return (
       <motion.div
-        initial={{ opacity: 0 }}
+        key="md"
+        initial={reduce ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: reduce ? 0 : 0.15 }}
+        transition={{ duration: reduce ? 0 : 0.2, ease: "easeOut" }}
       >
         <Markdown text={full} />
       </motion.div>
@@ -38,45 +70,11 @@ export function StreamingText({
   }
 
   return (
-    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed font-sans">
-      <AnimatePresence initial={false}>
-        {segments.map((seg, i) => (
-          <motion.span
-            key={i}
-            initial={reduce ? false : { opacity: 0, y: 2, filter: "blur(2px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            transition={{ duration: reduce ? 0 : 0.12, ease: "easeOut" }}
-          >
-            {seg}
-          </motion.span>
-        ))}
-      </AnimatePresence>
+    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed font-sans text-foreground">
+      {displayed}
       <Caret />
     </div>
   )
-}
-
-function splitChunks(chunks: string[]): string[] {
-  const out: string[] = []
-  for (const c of chunks) {
-    if (!c) continue
-    if (c.length <= 12) {
-      out.push(c)
-      continue
-    }
-    // Break on whitespace boundaries when possible to avoid splitting mid-word.
-    let cursor = 0
-    while (cursor < c.length) {
-      let end = Math.min(cursor + 12, c.length)
-      if (end < c.length) {
-        const ws = c.lastIndexOf(" ", end)
-        if (ws > cursor + 4) end = ws + 1
-      }
-      out.push(c.slice(cursor, end))
-      cursor = end
-    }
-  }
-  return out
 }
 
 function Caret() {
@@ -84,7 +82,7 @@ function Caret() {
   return (
     <motion.span
       aria-hidden
-      className="inline-block w-[2px] h-[1.05em] -mb-[3px] ml-[1px] bg-foreground/80 align-baseline"
+      className="inline-block w-[2px] h-[1.05em] -mb-[3px] ml-[1px] bg-foreground/80 align-baseline rounded-[1px]"
       animate={reduce ? undefined : { opacity: [1, 0, 1] }}
       transition={{ duration: 0.9, repeat: Infinity, ease: "linear" }}
     />

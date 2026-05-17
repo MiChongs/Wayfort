@@ -545,7 +545,7 @@ export default function ConversationPage({
   }, [running])
 
   return (
-    <div className="flex flex-col h-full bg-background">
+    <div className="flex flex-col h-full bg-background overflow-hidden min-w-0">
       <ConversationHeader
         conversation={detail.data?.conversation}
         agent={agent}
@@ -580,7 +580,7 @@ export default function ConversationPage({
 
         <TabsContent
           value="chat"
-          className="flex-1 min-h-0 m-0 flex flex-col data-[state=inactive]:hidden"
+          className="flex-1 min-h-0 m-0 flex flex-col overflow-hidden data-[state=inactive]:hidden"
           forceMount
         >
           <MessageList

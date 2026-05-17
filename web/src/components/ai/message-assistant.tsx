@@ -1,5 +1,6 @@
 "use client"
 
+import { motion, useReducedMotion } from "motion/react"
 import { Card, CardContent } from "@/components/ui/card"
 import { CopyButton } from "@/components/common/copy-button"
 import { Markdown } from "./markdown"
@@ -18,30 +19,40 @@ export function AssistantBubble({
   streaming?: boolean
   agent?: AIAgent
 }) {
-  // When streaming: render the chunk-based smoothed view. When done (chunks
-  // supplied but streaming=false), still use StreamingText with done=true so
-  // the final Markdown render fades in cleanly. When no chunks: classic
-  // persisted-history path, render Markdown directly.
+  const reduce = useReducedMotion()
   const hasChunks = Array.isArray(chunks) && chunks.length > 0
   const value = text ?? ""
+  const copyValue = hasChunks ? chunks!.join("") : value
 
   return (
-    <div className="flex gap-3 group">
+    <div className="flex gap-3 group min-w-0">
       <AgentAvatar agent={agent} />
-      <Card className="flex-1 max-w-3xl border-border/60 bg-card/80 backdrop-blur-sm">
-        <CardContent className="pt-4 pb-4 relative">
-          {value.length > 0 && (
-            <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-2 right-2">
-              <CopyButton value={hasChunks ? chunks!.join("") : value} variant="ghost" />
+      <motion.div
+        layout={reduce ? false : "position"}
+        transition={
+          reduce
+            ? { duration: 0 }
+            : { type: "spring", stiffness: 380, damping: 36 }
+        }
+        className="flex-1 min-w-0 max-w-3xl"
+      >
+        <Card className="relative bg-card border-border/60 overflow-hidden p-0 gap-0">
+          <CardContent className="px-4 py-3 min-w-0">
+            {copyValue.length > 0 && (
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity absolute top-1.5 right-1.5 z-10">
+                <CopyButton value={copyValue} variant="ghost" />
+              </div>
+            )}
+            <div className="min-w-0">
+              {hasChunks ? (
+                <StreamingText chunks={chunks!} done={!streaming} />
+              ) : (
+                <Markdown text={value} />
+              )}
             </div>
-          )}
-          {hasChunks ? (
-            <StreamingText chunks={chunks!} done={!streaming} />
-          ) : (
-            <Markdown text={value} />
-          )}
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </motion.div>
     </div>
   )
 }
