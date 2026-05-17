@@ -8,4 +8,4 @@ out
 .DS_Store
 .vercel
 .turbo
-.tsbuildinfo
+*.tsbuildinfo
