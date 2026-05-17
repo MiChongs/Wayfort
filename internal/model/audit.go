@@ -19,6 +19,7 @@ const (
 	AuditPortForwardOpen AuditEventKind = "portforward.open"
 	AuditPortForwardClose AuditEventKind = "portforward.close"
 	AuditGraphicalStart  AuditEventKind = "graphical.start"
+	AuditGraphicalError  AuditEventKind = "graphical.error"
 )
 
 type AuditLog struct {

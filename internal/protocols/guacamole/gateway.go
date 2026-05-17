@@ -2,11 +2,13 @@ package guacamole
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -81,6 +83,11 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	width := atoiDefault(c.Query("width"), 1280)
 	height := atoiDefault(c.Query("height"), 720)
 	dpi := atoiDefault(c.Query("dpi"), 96)
+	// Plan 13.B.2 / B.3: client-driven feature & quality toggles.
+	quality := c.Query("quality") // high / medium / low / auto
+	enableAudio := queryBool(c.Query("audio"), true)
+	enableClipboard := queryBool(c.Query("clipboard"), true)
+	keyboardLayout := c.Query("keyboard")
 
 	wsConn, err := webssh.AcceptWS(c, "guacamole")
 	if err != nil {
@@ -92,7 +99,19 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	sessionID := uuid.NewString()
 	clientIP := c.ClientIP()
 
-	if err := h.run(ctx, wsConn, sessionID, claims, clientIP, node, guacProto, user, pass, width, height, dpi); err != nil {
+	opts := runOpts{
+		guacProto:       guacProto,
+		user:            user,
+		pass:            pass,
+		width:           width,
+		height:          height,
+		dpi:             dpi,
+		quality:         quality,
+		enableAudio:     enableAudio,
+		enableClipboard: enableClipboard,
+		keyboardLayout:  keyboardLayout,
+	}
+	if err := h.run(ctx, wsConn, sessionID, claims, clientIP, node, opts); err != nil {
 		h.GW.Logger().Info("graphical session ended", zap.String("session", sessionID), zap.Error(err))
 		_ = wsConn.Close(websocket.StatusInternalError, truncate(err.Error(), 100))
 		return
@@ -100,7 +119,22 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	_ = wsConn.Close(websocket.StatusNormalClosure, "bye")
 }
 
-func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, guacProto, user, pass string, width, height, dpi int) error {
+// runOpts groups the request-scoped knobs to keep the handler signatures
+// readable as we accrete more parameters (Plan 13.B.2/3).
+type runOpts struct {
+	guacProto       string
+	user            string
+	pass            string
+	width           int
+	height          int
+	dpi             int
+	quality         string
+	enableAudio     bool
+	enableClipboard bool
+	keyboardLayout  string
+}
+
+func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, o runOpts) error {
 	// Build proxy chain → ContextDialer used by per-session SOCKS5 listener.
 	hops, err := h.GW.ResolveHops(ctx, node.ProxyChain)
 	if err != nil {
@@ -142,18 +176,21 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	}
 
 	params := ConnectParams{
-		Protocol:      guacProto,
-		Hostname:      node.Host,
-		Port:          node.Port,
-		Username:      user,
-		Password:      pass,
-		Width:         width,
-		Height:        height,
-		DPI:           dpi,
-		SOCKSHost:     listenHost,
-		SOCKSPort:     sl.Port(),
-		RecordingPath: recPath,
-		RecordingName: recName,
+		Protocol:        o.guacProto,
+		Hostname:        node.Host,
+		Port:            node.Port,
+		Username:        o.user,
+		Password:        o.pass,
+		Width:           o.width,
+		Height:          o.height,
+		DPI:             o.dpi,
+		SOCKSHost:       listenHost,
+		SOCKSPort:       sl.Port(),
+		RecordingPath:   recPath,
+		RecordingName:   recName,
+		EnableAudio:     o.enableAudio,
+		EnableClipboard: o.enableClipboard,
+		KeyboardLayout:  o.keyboardLayout,
 		// Pragmatic default: most production RDP servers (especially Windows
 		// hosts) ship with self-signed certificates. Without ignore-cert=true
 		// guacd terminates the TLS handshake with
@@ -164,6 +201,9 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		// doesn't use X.509 by default).
 		IgnoreCert: true,
 	}
+	// Plan 13.B.2: apply quality preset on top of base params. Per-node
+	// overrides via ProtoOptions still win (processed below).
+	params = ApplyQualityPreset(params, o.quality)
 	// Optional protocol knobs from Node.ProtoOptions JSON.
 	for k, v := range ParseOptions(node.ProtoOptions) {
 		switch k {
@@ -174,6 +214,8 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		case "ignore-cert":
 			// Operator can opt back into strict verification.
 			params.IgnoreCert = v == "true" || v == "1"
+		case "keyboard":
+			params.KeyboardLayout = v
 		}
 	}
 
@@ -189,20 +231,65 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		SessionID: sessionID,
 		NodeID:    row.NodeID,
 		ClientIP:  clientIP,
-		Payload:   guacProto,
+		Payload:   o.guacProto,
 	})
 
+	// Plan 13.A.2: surface guacd error instructions as audit + log entries
+	// so operators can see WHY a session failed (NLA auth, unreachable, TLS,
+	// etc.) without having to tail guacd logs separately.
+	nodeID := row.NodeID
+	params.OnError = func(code int, msg string) {
+		desc := Describe(code)
+		h.GW.Logger().Warn("guacd error instruction",
+			zap.String("session", sessionID),
+			zap.Int("code", code),
+			zap.String("desc", desc),
+			zap.String("msg", msg),
+		)
+		payload, _ := jsonMarshal(map[string]any{
+			"code":        code,
+			"description": desc,
+			"message":     msg,
+			"protocol":    o.guacProto,
+		})
+		h.GW.Audit().Log(model.AuditLog{
+			Kind:      model.AuditGraphicalError,
+			UserID:    claims.UserID,
+			Username:  claims.Username,
+			SessionID: sessionID,
+			NodeID:    nodeID,
+			ClientIP:  clientIP,
+			Payload:   string(payload),
+		})
+	}
+
 	start := time.Now()
-	runErr := h.Bridge.Serve(ctx, ws, params)
+	bytesIn, bytesOut, runErr := h.Bridge.Serve(ctx, ws, params)
 	endErr := runErr
 	if errors.Is(endErr, context.Canceled) {
 		endErr = nil
 	}
-	// No byte counters from guacd; report 0 (the user-visible bytes are in the
-	// recording file size which the session list endpoint can compute later).
-	h.GW.EndSession(context.Background(), row, claims, 0, 0, endErr)
+	// Plan 13.A.4: real byte counters (vs. previous 0,0 placeholder).
+	h.GW.EndSession(context.Background(), row, claims, bytesIn, bytesOut, endErr)
 	_ = start
 	return runErr
+}
+
+// queryBool parses a query-string boolean. "0", "false", "no", "off" → false;
+// anything else (including empty) → def.
+func queryBool(s string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return def
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
+}
+
+func jsonMarshal(v any) ([]byte, error) {
+	return json.Marshal(v)
 }
 
 func recordingType(on bool) model.RecordingType {

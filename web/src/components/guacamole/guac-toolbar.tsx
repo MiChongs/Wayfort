@@ -4,6 +4,8 @@ import * as React from "react"
 import { motion, AnimatePresence } from "motion/react"
 import {
   ArrowLeft,
+  Activity,
+  Gauge,
   KeyRound,
   LogOut,
   Maximize2,
@@ -13,8 +15,16 @@ import {
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import type { GuacMetrics, GuacQuality } from "@/lib/ws/guacamole-client"
 import type { GuacPhase } from "./guac-errors"
 import { phaseLabel } from "./guac-errors"
 
@@ -29,6 +39,13 @@ const PHASE_TONE: Record<GuacPhase, { dot: string; text: string }> = {
   error: { dot: "bg-destructive", text: "text-destructive" },
 }
 
+const QUALITY_LABELS: Record<GuacQuality, string> = {
+  auto: "自动",
+  high: "高 (32-bit + 壁纸)",
+  medium: "中 (24-bit)",
+  low: "低 (16-bit, 省带宽)",
+}
+
 export interface GuacToolbarProps {
   protocol: "rdp" | "vnc"
   nodeName?: string
@@ -37,11 +54,33 @@ export interface GuacToolbarProps {
   phase: GuacPhase
   reconnectAttempts: number
   isFullscreen: boolean
+  // Plan 13.D.1 — performance preset.
+  quality: GuacQuality
+  // Plan 13.D.2/D.3 — periodic metrics for latency + bandwidth indicators.
+  metrics?: GuacMetrics
   onSendCtrlAltDel(): void
   onReconnect(): void
   onDisconnect(): void
   onToggleFullscreen(): void
+  onQualityChange(q: GuacQuality): void
   backHref?: string
+}
+
+// Plan 13.D.2 — latency proxy: time since last sync from guacd. Green <800ms
+// (responsive), amber 800-2000ms (sluggish), red >2000ms (degraded).
+function latencyTone(ageMs?: number) {
+  if (ageMs == null) return { color: "text-muted-foreground", label: "—" }
+  if (ageMs < 800) return { color: "text-emerald-500", label: `${ageMs}ms` }
+  if (ageMs < 2000) return { color: "text-amber-500", label: `${ageMs}ms` }
+  return { color: "text-destructive", label: `${(ageMs / 1000).toFixed(1)}s` }
+}
+
+// Plan 13.D.3 — format inbound bandwidth as human-readable per-second rate.
+function formatBps(bps?: number) {
+  if (bps == null) return "—"
+  if (bps < 1024) return `${bps}B/s`
+  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)}KB/s`
+  return `${(bps / 1024 / 1024).toFixed(2)}MB/s`
 }
 
 export function GuacToolbar(props: GuacToolbarProps) {
@@ -66,6 +105,8 @@ export function GuacToolbar(props: GuacToolbarProps) {
 
   const tone = PHASE_TONE[props.phase]
   const phaseTxt = phaseLabel(props.phase)
+  const lat = latencyTone(props.metrics?.lastSyncAgeMs)
+  const showMetrics = props.phase === "connected"
 
   return (
     <AnimatePresence>
@@ -114,7 +155,60 @@ export function GuacToolbar(props: GuacToolbarProps) {
             </span>
           </div>
 
+          {/* Plan 13.D.2/D.3 — live metrics, only meaningful while connected. */}
+          {showMetrics && (
+            <>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="ml-2 flex items-center gap-1 text-[11px] font-mono">
+                    <Activity className={cn("w-3 h-3", lat.color)} />
+                    <span className={lat.color}>{lat.label}</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  距上次同步 — 服务器响应延迟代理
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="flex items-center gap-1 text-[11px] font-mono text-muted-foreground">
+                    <span>↓ {formatBps(props.metrics?.bytesPerSecIn)}</span>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">下行带宽</TooltipContent>
+              </Tooltip>
+            </>
+          )}
+
           <div className="ml-auto flex items-center gap-1">
+            {/* Plan 13.D.1 — quality preset selector. Triggers a clean
+                reconnect so the new color depth / wallpaper params take effect. */}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Select
+                    value={props.quality}
+                    onValueChange={(v) => props.onQualityChange(v as GuacQuality)}
+                  >
+                    <SelectTrigger className="h-7 px-2 gap-1 text-[11px] w-auto min-w-0 border-border/60">
+                      <Gauge className="w-3.5 h-3.5" />
+                      <SelectValue placeholder="质量" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(["auto", "high", "medium", "low"] as GuacQuality[]).map((q) => (
+                        <SelectItem key={q} value={q} className="text-xs">
+                          {QUALITY_LABELS[q]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                画质 / 带宽预设（切换会重新连接）
+              </TooltipContent>
+            </Tooltip>
+
             {props.protocol === "rdp" && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -166,7 +260,7 @@ export function GuacToolbar(props: GuacToolbarProps) {
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom">
-                {props.isFullscreen ? "退出全屏 (Esc)" : "全屏 (F11)"}
+                {props.isFullscreen ? "退出全屏 (Esc)" : "全屏 (F11，自动启用键盘锁定)"}
               </TooltipContent>
             </Tooltip>
             <Tooltip>

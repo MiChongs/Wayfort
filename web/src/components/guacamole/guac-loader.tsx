@@ -1,8 +1,9 @@
 "use client"
 
 import * as React from "react"
+import Link from "next/link"
 import { motion, useReducedMotion } from "motion/react"
-import { AlertCircle, Loader2, MonitorPlay, RefreshCw } from "lucide-react"
+import { AlertCircle, ExternalLink, Loader2, MonitorPlay, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { phaseLabel, type GuacPhase } from "./guac-errors"
@@ -13,6 +14,8 @@ export interface GuacLoaderProps {
   errorTitle?: string
   errorHint?: string
   errorCode?: number
+  // Plan 13.D.7 — actionable "go fix this" link rendered next to retry.
+  errorAction?: { label: string; href: string }
   nodeName?: string
   onRetry(): void
 }
@@ -25,6 +28,7 @@ export function GuacLoader({
   errorTitle,
   errorHint,
   errorCode,
+  errorAction,
   nodeName,
   onRetry,
 }: GuacLoaderProps) {
@@ -132,6 +136,13 @@ export function GuacLoader({
               </div>
             )}
             <div className="mt-4 flex justify-end gap-2">
+              {errorAction && (
+                <Button asChild size="sm" variant="outline">
+                  <Link href={errorAction.href as Parameters<typeof Link>[0]["href"]}>
+                    <ExternalLink className="w-3.5 h-3.5" /> {errorAction.label}
+                  </Link>
+                </Button>
+              )}
               <Button size="sm" onClick={onRetry}>
                 <RefreshCw className="w-3.5 h-3.5" /> 重试
               </Button>

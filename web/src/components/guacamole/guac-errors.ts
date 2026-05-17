@@ -4,9 +4,13 @@
 //
 // Reference: https://guacamole.apache.org/doc/gug/protocol-reference.html#status-codes
 
+// Plan 13.D.7 — FriendlyError.action attaches an "actionable next step" link
+// so the error overlay can guide the user toward a fix instead of just
+// describing the symptom. e.g. auth failures → take user to credential edit.
 export interface FriendlyError {
   title: string
   hint?: string
+  action?: { label: string; href: string }
 }
 
 export function describeGuacError(code: number | undefined, raw?: string): FriendlyError {
@@ -23,15 +27,31 @@ export function describeGuacError(code: number | undefined, raw?: string): Frien
     0x0203: { title: "请求资源忙" },
     0x0204: { title: "请求资源不可用" },
     0x0205: { title: "服务器超时" },
-    0x0207: { title: "目标主机不可达", hint: "检查节点 host / port / 网络" },
-    0x0208: { title: "目标主机超时" },
-    0x0209: { title: "目标连接被中断", hint: "目标 RDP / VNC 服务可能崩溃或被防火墙关闭" },
+    0x0207: {
+      title: "目标主机不可达",
+      hint: "检查节点 host / port / 网络",
+      action: { label: "去检查节点", href: "/admin/nodes" },
+    },
+    0x0208: {
+      title: "目标主机超时",
+      hint: "防火墙、网络抖动或目标过载",
+      action: { label: "去检查节点", href: "/admin/nodes" },
+    },
+    0x0209: {
+      title: "目标连接被中断",
+      hint: "目标 RDP / VNC 服务可能崩溃或被防火墙关闭",
+      action: { label: "去检查节点", href: "/admin/nodes" },
+    },
     0x020A: { title: "目标连接被关闭" },
     0x020B: { title: "目标 SSL/TLS 握手失败", hint: "已默认 ignore-cert，仍失败可能是协议版本不匹配" },
     0x020D: { title: "客户端连接被中断" },
     0x020E: { title: "客户端连接超时" },
     0x0300: { title: "请求格式错误" },
-    0x0301: { title: "未认证 / 凭据错误", hint: "检查节点凭据用户名 / 密码 / 域是否正确" },
+    0x0301: {
+      title: "未认证 / 凭据错误",
+      hint: "检查节点凭据用户名 / 密码 / 域是否正确",
+      action: { label: "去编辑凭据", href: "/admin/credentials" },
+    },
     0x0303: { title: "拒绝访问", hint: "权限不足或目标禁止此账户" },
     0x0308: { title: "客户端请求超时" },
     0x031D: { title: "客户端禁用此功能" },

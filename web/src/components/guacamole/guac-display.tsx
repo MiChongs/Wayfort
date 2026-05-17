@@ -3,6 +3,7 @@
 import * as React from "react"
 import { toast } from "sonner"
 import { useGuacamole } from "@/lib/hooks/use-guacamole"
+import type { GuacQuality } from "@/lib/ws/guacamole-client"
 import { GuacLoader } from "./guac-loader"
 import { GuacToolbar } from "./guac-toolbar"
 
@@ -25,11 +26,24 @@ export function GuacamoleDisplay({
 }: GuacamoleDisplayProps) {
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const wrapperRef = React.useRef<HTMLDivElement | null>(null)
+
+  // Plan 13.D.6 — when guacd pushes clipboard data, write it to the
+  // browser's clipboard so Cmd+V in any other tab pastes the remote text.
+  // navigator.clipboard.writeText needs the document to be focused; we
+  // silently swallow PermissionDenied rather than nag the user.
+  const handleRemoteClipboard = React.useCallback((text: string) => {
+    if (!text || typeof navigator === "undefined") return
+    navigator.clipboard?.writeText(text).catch(() => {
+      /* user hasn't granted clipboard-write yet, ignore */
+    })
+  }, [])
+
   const guac = useGuacamole({
     protocol,
     nodeId,
     containerRef,
     fullscreenTargetRef: wrapperRef,
+    onRemoteClipboard: handleRemoteClipboard,
   })
 
   const [isFullscreen, setIsFullscreen] = React.useState(false)
@@ -75,8 +89,44 @@ export function GuacamoleDisplay({
     return () => window.removeEventListener("keydown", onKey)
   }, [isFullscreen, guac])
 
+  // Plan 13.D.6 — browser → remote clipboard sync. We listen on the
+  // wrapper (RDP canvas isn't a textarea so the native paste target is the
+  // window). On paste, read the clipboard text and push to the remote.
+  // The Clipboard API needs the document to be focused; this happens
+  // automatically when the user interacts with the canvas.
+  React.useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const text = e.clipboardData?.getData("text/plain")
+      if (text) {
+        guac.pushClipboard(text)
+      }
+    }
+    function onCopy() {
+      // Browser → remote copy isn't typically meaningful (the canvas has
+      // no selectable content) but we still forward in case a future UI
+      // overlay puts text on the page.
+      navigator.clipboard?.readText().then((text) => {
+        if (text) guac.pushClipboard(text)
+      }).catch(() => {})
+    }
+    const wrap = wrapperRef.current
+    wrap?.addEventListener("paste", onPaste)
+    wrap?.addEventListener("copy", onCopy)
+    return () => {
+      wrap?.removeEventListener("paste", onPaste)
+      wrap?.removeEventListener("copy", onCopy)
+    }
+  }, [guac])
+
   const showLoader =
     guac.phase !== "connected" && guac.phase !== "disconnected"
+
+  const onQualityChange = React.useCallback(
+    (q: GuacQuality) => {
+      guac.setQuality(q)
+    },
+    [guac],
+  )
 
   return (
     <div
@@ -91,6 +141,8 @@ export function GuacamoleDisplay({
         phase={guac.phase}
         reconnectAttempts={guac.reconnectAttempts}
         isFullscreen={isFullscreen}
+        quality={guac.quality}
+        metrics={guac.metrics}
         onSendCtrlAltDel={guac.sendCtrlAltDel}
         onReconnect={guac.reconnect}
         onDisconnect={guac.disconnect}
@@ -98,13 +150,17 @@ export function GuacamoleDisplay({
           if (isFullscreen) guac.exitFullscreen()
           else guac.enterFullscreen()
         }}
+        onQualityChange={onQualityChange}
         backHref={backHref}
       />
 
       <div
         ref={containerRef}
         tabIndex={0}
-        className="h-full w-full flex items-center justify-center focus:outline-none cursor-default"
+        // Plan 13.D.5 — hide the browser cursor over the canvas so users
+        // see only the remote desktop cursor that guacd renders inside the
+        // canvas. cursor:none works in all evergreen browsers.
+        className="h-full w-full flex items-center justify-center focus:outline-none cursor-none"
       />
 
       {showLoader && (
@@ -114,6 +170,7 @@ export function GuacamoleDisplay({
           errorTitle={guac.error?.title}
           errorHint={guac.error?.hint}
           errorCode={guac.error?.code}
+          errorAction={guac.error?.action}
           nodeName={nodeName}
           onRetry={guac.reconnect}
         />
