@@ -8,6 +8,8 @@ import Link from "next/link"
 import { Plus, Search, Sparkles, Bot, Cpu } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { aiAgentService, aiConversationService } from "@/lib/api/services"
 import { groupConversations } from "@/lib/ai/group"
@@ -102,40 +104,47 @@ export function ConversationSidebar({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
-        {convs.isLoading && !convs.data && <SidebarSkeleton rows={5} />}
-        {!convs.isLoading && filtered.length === 0 && (
-          <div className="text-xs text-muted-foreground py-8 text-center px-3 leading-relaxed">
-            {filter ? (
-              <>
-                没有匹配「<span className="font-mono">{filter}</span>」的对话
-              </>
-            ) : (
-              <>还没有对话，<br />点击上方<span className="text-foreground">新对话</span>开始</>
-            )}
-          </div>
-        )}
-        {buckets.map((bucket) => (
-          <section key={bucket.key} className="mt-3">
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1 sticky top-0 bg-muted/60 backdrop-blur py-1 z-10 rounded">
-              {bucket.label}
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="px-2 pb-3">
+          {convs.isLoading && !convs.data && <SidebarSkeleton rows={5} />}
+          {!convs.isLoading && filtered.length === 0 && (
+            <div className="text-xs text-muted-foreground py-8 text-center px-3 leading-relaxed">
+              {filter ? (
+                <>
+                  没有匹配「<span className="font-mono">{filter}</span>」的对话
+                </>
+              ) : (
+                <>
+                  还没有对话，
+                  <br />
+                  点击上方<span className="text-foreground">新对话</span>开始
+                </>
+              )}
             </div>
-            <ul className="space-y-1">
-              <AnimatePresence initial={false}>
-                {bucket.items.map((c) => (
-                  <ConversationListItem
-                    key={c.id}
-                    conv={c}
-                    agent={agentMap.get(c.agent_id)}
-                    active={c.id === activeId}
-                    onSelect={onAfterPick}
-                  />
-                ))}
-              </AnimatePresence>
-            </ul>
-          </section>
-        ))}
-      </div>
+          )}
+          {buckets.map((bucket, idx) => (
+            <section key={bucket.key} className={idx === 0 ? "mt-3" : "mt-4"}>
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-3 mb-1 sticky top-0 bg-muted/60 backdrop-blur py-1 z-10 rounded">
+                {bucket.label}
+              </div>
+              <ul className="space-y-1">
+                <AnimatePresence initial={false}>
+                  {bucket.items.map((c) => (
+                    <ConversationListItem
+                      key={c.id}
+                      conv={c}
+                      agent={agentMap.get(c.agent_id)}
+                      active={c.id === activeId}
+                      onSelect={onAfterPick}
+                    />
+                  ))}
+                </AnimatePresence>
+              </ul>
+              {idx < buckets.length - 1 && <Separator className="my-2 opacity-40" />}
+            </section>
+          ))}
+        </div>
+      </ScrollArea>
 
       <div className="border-t px-2 py-2 bg-background/30 space-y-0.5">
         <Tooltip>

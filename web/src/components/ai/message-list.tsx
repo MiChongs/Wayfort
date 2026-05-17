@@ -4,6 +4,7 @@ import * as React from "react"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { ArrowDown, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { EmptyState } from "@/components/common/empty-state"
 import { UserBubble } from "./message-user"
 import { AssistantBubble } from "./message-assistant"
@@ -90,12 +91,18 @@ export function MessageList({
     if (el) el.scrollTop = el.scrollHeight
   }, [messages, live, running, autoFollow])
 
-  function onScroll() {
+  // scroll events don't bubble; attach the listener directly on the viewport.
+  React.useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-    setAutoFollow(atBottom)
-  }
+    function handle() {
+      if (!el) return
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      setAutoFollow(atBottom)
+    }
+    el.addEventListener("scroll", handle, { passive: true })
+    return () => el.removeEventListener("scroll", handle)
+  }, [])
 
   function jumpLatest() {
     const el = scrollRef.current
@@ -119,11 +126,11 @@ export function MessageList({
 
   return (
     <div className="relative flex-1 min-h-0">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="absolute inset-0 overflow-y-auto px-3 md:px-6 py-6 space-y-4 bg-gradient-to-b from-muted/20 to-muted/40"
+      <ScrollArea
+        viewportRef={scrollRef}
+        className="absolute inset-0 bg-gradient-to-b from-muted/20 to-muted/40"
       >
+        <div className="px-3 md:px-6 py-6 space-y-4">
         {showSkeleton && <MessageSkeleton />}
 
         {emptyState && (
@@ -191,7 +198,8 @@ export function MessageList({
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
+        </div>
+      </ScrollArea>
 
       <AnimatePresence>
         {!autoFollow && (

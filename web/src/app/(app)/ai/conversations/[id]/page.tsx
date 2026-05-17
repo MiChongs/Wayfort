@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { aiAgentService, aiConversationService } from "@/lib/api/services"
 import { streamSSE } from "@/lib/sse/eventsource"
 import { confirmDialog } from "@/components/common/confirm-dialog"
@@ -611,10 +612,12 @@ export default function ConversationPage({
 
         <TabsContent
           value="invocations"
-          className="flex-1 min-h-0 m-0 overflow-y-auto data-[state=inactive]:hidden"
+          className="flex-1 min-h-0 m-0 data-[state=inactive]:hidden"
           forceMount
         >
-          <InvocationTimeline invocations={detail.data?.invocations || []} />
+          <ScrollArea className="h-full">
+            <InvocationTimeline invocations={detail.data?.invocations || []} />
+          </ScrollArea>
         </TabsContent>
       </Tabs>
     </div>

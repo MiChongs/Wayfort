@@ -4,6 +4,11 @@ import { motion, useReducedMotion } from "motion/react"
 import { Clock, ChevronRight } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { ToolOutputView } from "./tool-output"
 import { toolIcon, isDangerName } from "./tool-icons"
 import { fmtBytes, fullTime, relTime } from "@/lib/format"
@@ -13,14 +18,18 @@ import type { AIToolInvocation } from "@/lib/api/types"
 const STATUS_COLOR: Record<AIToolInvocation["status"], string> = {
   pending: "bg-amber-500",
   approved: "bg-sky-500",
-  rejected: "bg-zinc-400",
+  rejected: "bg-muted-foreground",
   running: "bg-sky-500",
   succeeded: "bg-emerald-500",
   failed: "bg-destructive",
-  dry_run: "bg-zinc-400",
+  dry_run: "bg-muted-foreground",
 }
 
-export function InvocationTimeline({ invocations }: { invocations: AIToolInvocation[] }) {
+export function InvocationTimeline({
+  invocations,
+}: {
+  invocations: AIToolInvocation[]
+}) {
   const reduce = useReducedMotion()
 
   if (invocations.length === 0) {
@@ -34,7 +43,10 @@ export function InvocationTimeline({ invocations }: { invocations: AIToolInvocat
   return (
     <div className="px-4 md:px-6 py-6 max-w-4xl mx-auto">
       <div className="relative">
-        <div className="absolute left-[15px] top-2 bottom-2 w-px bg-border" />
+        <div
+          aria-hidden
+          className="absolute left-[15px] top-2 bottom-2 w-px bg-border"
+        />
         <div className="space-y-4">
           {invocations
             .slice()
@@ -49,7 +61,11 @@ export function InvocationTimeline({ invocations }: { invocations: AIToolInvocat
                   transition={
                     reduce
                       ? { duration: 0 }
-                      : { duration: 0.3, delay: Math.min(i * 0.04, 0.32), ease: "easeOut" }
+                      : {
+                          duration: 0.3,
+                          delay: Math.min(i * 0.04, 0.32),
+                          ease: "easeOut",
+                        }
                   }
                   className="relative pl-10"
                 >
@@ -60,14 +76,17 @@ export function InvocationTimeline({ invocations }: { invocations: AIToolInvocat
                     )}
                   />
                   <Card className="overflow-hidden">
-                    <CardContent className="pt-4 pb-4">
+                    <CardContent className="py-4">
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 text-sm font-medium flex-wrap">
                             <Icon className="w-4 h-4 text-foreground/80" />
                             <code className="font-mono">{inv.tool_name}</code>
                             {isDangerName(inv.tool_name) && (
-                              <Badge variant="destructive" className="text-[10px] h-4 px-1.5">
+                              <Badge
+                                variant="destructive"
+                                className="text-[10px] h-4 px-1.5"
+                              >
                                 高危
                               </Badge>
                             )}
@@ -83,9 +102,10 @@ export function InvocationTimeline({ invocations }: { invocations: AIToolInvocat
                               <Clock className="w-3 h-3" /> {fullTime(inv.created_at)}
                             </span>
                             <span>· {relTime(inv.created_at)}</span>
-                            {typeof inv.duration_ms === "number" && inv.duration_ms > 0 && (
-                              <span>· {inv.duration_ms} ms</span>
-                            )}
+                            {typeof inv.duration_ms === "number" &&
+                              inv.duration_ms > 0 && (
+                                <span>· {inv.duration_ms} ms</span>
+                              )}
                             {inv.output_truncated && <span>· 输出已截断</span>}
                           </div>
                         </div>
@@ -95,25 +115,40 @@ export function InvocationTimeline({ invocations }: { invocations: AIToolInvocat
                       </div>
 
                       <div className="mt-3 space-y-2">
-                        <details className="text-xs group">
-                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground flex items-center gap-1 list-none">
-                            <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
-                            输入参数
-                          </summary>
-                          <pre className="mt-1 bg-zinc-950 text-zinc-100 p-2 rounded overflow-auto text-[11px] leading-relaxed">
-                            {prettyJson(inv.input)}
-                          </pre>
-                        </details>
+                        <Collapsible>
+                          <CollapsibleTrigger asChild>
+                            <button
+                              type="button"
+                              className="group inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded"
+                            >
+                              <ChevronRight className="w-3 h-3 transition-transform group-data-[state=open]:rotate-90" />
+                              输入参数
+                            </button>
+                          </CollapsibleTrigger>
+                          <CollapsibleContent>
+                            <pre className="mt-1 rounded bg-muted text-foreground border border-border/60 p-2 overflow-auto text-[11px] leading-relaxed">
+                              {prettyJson(inv.input)}
+                            </pre>
+                          </CollapsibleContent>
+                        </Collapsible>
+
                         {inv.output && (
-                          <details className="text-xs group" open>
-                            <summary className="cursor-pointer text-muted-foreground hover:text-foreground flex items-center gap-1 list-none">
-                              <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" />
-                              输出 ({fmtBytes(inv.output.length)})
-                            </summary>
-                            <div className="mt-1">
-                              <ToolOutputView raw={inv.output} />
-                            </div>
-                          </details>
+                          <Collapsible defaultOpen>
+                            <CollapsibleTrigger asChild>
+                              <button
+                                type="button"
+                                className="group inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded"
+                              >
+                                <ChevronRight className="w-3 h-3 transition-transform group-data-[state=open]:rotate-90" />
+                                输出 ({fmtBytes(inv.output.length)})
+                              </button>
+                            </CollapsibleTrigger>
+                            <CollapsibleContent>
+                              <div className="mt-1">
+                                <ToolOutputView raw={inv.output} />
+                              </div>
+                            </CollapsibleContent>
+                          </Collapsible>
                         )}
                         {inv.error && (
                           <div className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 font-mono">

@@ -1,9 +1,13 @@
 "use client"
 
-import * as React from "react"
-import { motion, AnimatePresence, useReducedMotion } from "motion/react"
+import { motion, useReducedMotion } from "motion/react"
 import { ChevronDown, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { ToolOutputView } from "./tool-output"
@@ -66,7 +70,6 @@ export function ToolCard({
   const Icon = toolIcon(name)
   const styles = STATUS_STYLES[status]
   const hasBody = !!(output || error)
-  const [expanded, setExpanded] = React.useState(defaultExpanded)
 
   return (
     <div className="flex gap-3">
@@ -83,81 +86,69 @@ export function ToolCard({
           styles.wrap,
         )}
       >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={() => hasBody && setExpanded((v) => !v)}
-              className={cn(
-                "w-full flex items-center gap-2 px-3 py-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
-                hasBody ? "hover:bg-foreground/5 cursor-pointer" : "cursor-default",
-              )}
-              aria-label={hasBody ? (expanded ? "折叠工具输出" : "展开工具输出") : undefined}
-            >
-              <span className={cn("inline-block w-2 h-2 rounded-full", styles.dot)} />
-              <Icon className="w-4 h-4 text-foreground/80" />
-              <code className="font-mono text-xs font-medium">{name}</code>
-              {danger && (
-                <Badge variant="destructive" className="text-[10px] h-4 px-1.5">
-                  高危
-                </Badge>
-              )}
-              <Badge
-                variant="outline"
-                className={cn("ml-auto text-[10px] h-5 bg-background/60", styles.badge)}
-              >
-                {styles.label}
-              </Badge>
-              {status === "running" && (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500" />
-              )}
-              {hasBody && (
-                <motion.span
-                  animate={{ rotate: expanded ? 0 : -90 }}
-                  transition={reduce ? { duration: 0 } : { duration: 0.18 }}
-                  className="text-muted-foreground"
+        <Collapsible defaultOpen={defaultExpanded && hasBody}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  disabled={!hasBody}
+                  className={cn(
+                    "group w-full flex items-center gap-2 px-3 py-2 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+                    hasBody
+                      ? "hover:bg-foreground/5 cursor-pointer"
+                      : "cursor-default",
+                  )}
+                  aria-label={
+                    hasBody ? "切换工具输出折叠" : undefined
+                  }
                 >
-                  <ChevronDown className="w-3.5 h-3.5" />
-                </motion.span>
-              )}
-            </button>
-          </TooltipTrigger>
+                  <span
+                    className={cn(
+                      "inline-block w-2 h-2 rounded-full",
+                      styles.dot,
+                    )}
+                  />
+                  <Icon className="w-4 h-4 text-foreground/80" />
+                  <code className="font-mono text-xs font-medium">{name}</code>
+                  {danger && (
+                    <Badge variant="destructive" className="text-[10px] h-4 px-1.5">
+                      高危
+                    </Badge>
+                  )}
+                  <Badge
+                    variant="outline"
+                    className={cn(
+                      "ml-auto text-[10px] h-5 bg-background/60",
+                      styles.badge,
+                    )}
+                  >
+                    {styles.label}
+                  </Badge>
+                  {status === "running" && (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-sky-500" />
+                  )}
+                  {hasBody && (
+                    <ChevronDown className="w-3.5 h-3.5 text-muted-foreground transition-transform group-data-[state=closed]:-rotate-90" />
+                  )}
+                </button>
+              </CollapsibleTrigger>
+            </TooltipTrigger>
+            {hasBody && <TooltipContent side="top">点击折叠/展开</TooltipContent>}
+          </Tooltip>
           {hasBody && (
-            <TooltipContent side="top">
-              {expanded ? "折叠详情" : "展开详情"}
-            </TooltipContent>
-          )}
-        </Tooltip>
-        <AnimatePresence initial={false}>
-          {expanded && hasBody && (
-            <motion.div
-              key="body"
-              initial={reduce ? false : { height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={reduce ? { opacity: 0 } : { height: 0, opacity: 0 }}
-              transition={
-                reduce
-                  ? { duration: 0 }
-                  : { duration: 0.22, ease: "easeOut" }
-              }
-              className="overflow-hidden"
-            >
-              <motion.div
-                initial={reduce ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={reduce ? { duration: 0 } : { duration: 0.18, delay: 0.06 }}
-                className="px-3 pb-3"
-              >
+            <CollapsibleContent>
+              <div className="px-3 pb-3 pt-1">
                 {output && <ToolOutputView raw={output} danger={danger} />}
                 {error && (
                   <div className="mt-1 text-xs text-destructive bg-destructive/10 rounded px-2 py-1.5 font-mono whitespace-pre-wrap">
                     {error}
                   </div>
                 )}
-              </motion.div>
-            </motion.div>
+              </div>
+            </CollapsibleContent>
           )}
-        </AnimatePresence>
+        </Collapsible>
       </motion.div>
     </div>
   )

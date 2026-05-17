@@ -2,7 +2,21 @@
 
 import * as React from "react"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
-import { ChevronDown, ChevronRight } from "lucide-react"
+import { ChevronDown, ChevronRight, FileText, Folder } from "lucide-react"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
+import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
 import { cn } from "@/lib/utils"
 
 // Pretty-print a tool result. We try JSON first (most of our backend tools
@@ -31,36 +45,40 @@ export function ToolOutputView({ raw, danger }: { raw: string; danger?: boolean 
   }
 
   return (
-    <div
+    <ScrollArea
       className={cn(
-        "rounded-md text-xs font-mono whitespace-pre-wrap break-words border",
-        danger ? "bg-zinc-900 text-zinc-50 border-zinc-700" : "bg-muted text-foreground border-border/60",
-        "p-3 overflow-auto max-h-[24rem]",
+        "rounded-md border max-h-[24rem]",
+        danger
+          ? "bg-zinc-900 text-zinc-50 border-zinc-700"
+          : "bg-muted text-foreground border-border/60",
       )}
     >
-      {longText && !expanded ? (
-        <>
-          {raw.slice(0, 1200)}
-          <button
-            onClick={() => setExpanded(true)}
-            className="block mt-2 text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded"
-          >
-            <ChevronDown className="inline w-3 h-3 mr-1" /> 展开剩余 {raw.length - 1200} 字符
-          </button>
-        </>
-      ) : (
-        <AnimatePresence mode="wait">
-          <motion.span
-            key={expanded ? "full" : "preview"}
-            initial={reduce ? false : { opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={reduce ? { duration: 0 } : { duration: 0.18 }}
-          >
-            {raw}
-          </motion.span>
-        </AnimatePresence>
-      )}
-    </div>
+      <pre className="p-3 text-xs font-mono whitespace-pre-wrap break-words">
+        {longText && !expanded ? (
+          <>
+            {raw.slice(0, 1200)}
+            <button
+              onClick={() => setExpanded(true)}
+              className="block mt-2 text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded font-sans"
+            >
+              <ChevronDown className="inline w-3 h-3 mr-1" /> 展开剩余{" "}
+              {raw.length - 1200} 字符
+            </button>
+          </>
+        ) : (
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={expanded ? "full" : "preview"}
+              initial={reduce ? false : { opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={reduce ? { duration: 0 } : { duration: 0.18 }}
+            >
+              {raw}
+            </motion.span>
+          </AnimatePresence>
+        )}
+      </pre>
+    </ScrollArea>
   )
 }
 
@@ -68,7 +86,8 @@ function JsonValue({ value }: { value: unknown }) {
   if (Array.isArray(value)) return <JsonArray rows={value} />
   if (value && typeof value === "object") {
     const v = value as Record<string, unknown>
-    if (Array.isArray(v.nodes)) return <NodeTable nodes={v.nodes as Record<string, unknown>[]} />
+    if (Array.isArray(v.nodes))
+      return <NodeTable nodes={v.nodes as Record<string, unknown>[]} />
     if (Array.isArray(v.sessions)) return <Pre value={v} />
     if (Array.isArray(v.entries))
       return (
@@ -82,30 +101,37 @@ function JsonValue({ value }: { value: unknown }) {
 }
 
 function Pre({ value }: { value: unknown }) {
-  const reduce = useReducedMotion()
-  const [open, setOpen] = React.useState(false)
   const text = JSON.stringify(value, null, 2)
   const isLong = text.length > 600
+  if (!isLong) {
+    return (
+      <ScrollArea className="rounded-md border border-border/60 bg-muted max-h-[24rem]">
+        <pre className="p-3 text-xs font-mono whitespace-pre-wrap text-foreground">
+          {text}
+        </pre>
+      </ScrollArea>
+    )
+  }
   return (
-    <div className="rounded-md bg-muted text-foreground p-3 text-xs whitespace-pre-wrap overflow-auto max-h-[24rem] border border-border/60">
-      <pre className="font-mono">
-        {isLong && !open ? text.slice(0, 600) + "…" : text}
-      </pre>
-      {isLong && (
+    <Collapsible>
+      <CollapsibleContent>
+        <ScrollArea className="rounded-md border border-border/60 bg-muted max-h-[24rem]">
+          <pre className="p-3 text-xs font-mono whitespace-pre-wrap text-foreground">
+            {text}
+          </pre>
+        </ScrollArea>
+      </CollapsibleContent>
+      <CollapsibleTrigger asChild>
         <button
-          onClick={() => setOpen((v) => !v)}
-          className="mt-2 inline-flex items-center text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded"
+          type="button"
+          className="group mt-2 inline-flex items-center text-xs text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded"
         >
-          <motion.span
-            animate={{ rotate: open ? 90 : 0 }}
-            transition={reduce ? { duration: 0 } : { duration: 0.18 }}
-          >
-            <ChevronRight className="inline w-3 h-3 mr-1" />
-          </motion.span>
-          {open ? "收起" : "展开"}
+          <ChevronRight className="w-3 h-3 mr-1 transition-transform group-data-[state=open]:rotate-90" />
+          <span className="group-data-[state=open]:hidden">展开 ({text.length} 字符)</span>
+          <span className="group-data-[state=closed]:hidden">收起</span>
         </button>
-      )}
-    </div>
+      </CollapsibleTrigger>
+    </Collapsible>
   )
 }
 
@@ -119,32 +145,36 @@ function NodeTable({ nodes }: { nodes: Record<string, unknown>[] }) {
   if (nodes.length === 0)
     return <div className="text-xs text-muted-foreground">没有节点</div>
   return (
-    <div className="rounded-md border border-border/60 overflow-x-auto bg-card">
-      <table className="w-full text-xs">
-        <thead className="bg-muted">
-          <tr>
-            <th className="text-left px-2 py-1.5 font-medium">ID</th>
-            <th className="text-left px-2 py-1.5 font-medium">名称</th>
-            <th className="text-left px-2 py-1.5 font-medium">协议</th>
-            <th className="text-left px-2 py-1.5 font-medium">地址</th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="rounded-md border border-border/60 bg-card overflow-hidden">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-16">ID</TableHead>
+            <TableHead>名称</TableHead>
+            <TableHead className="w-20">协议</TableHead>
+            <TableHead>地址</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {nodes.slice(0, 100).map((n, i) => (
-            <tr key={i} className="border-t border-border/40 hover:bg-muted/40">
-              <td className="px-2 py-1 font-mono">{String(n.id ?? "")}</td>
-              <td className="px-2 py-1">{String(n.name ?? "")}</td>
-              <td className="px-2 py-1">{String(n.protocol ?? "")}</td>
-              <td className="px-2 py-1 font-mono">
+            <TableRow key={i}>
+              <TableCell className="font-mono text-xs py-1.5">
+                {String(n.id ?? "")}
+              </TableCell>
+              <TableCell className="py-1.5">{String(n.name ?? "")}</TableCell>
+              <TableCell className="py-1.5 text-xs">
+                {String(n.protocol ?? "")}
+              </TableCell>
+              <TableCell className="py-1.5 font-mono text-xs">
                 {String(n.host ?? "")}:{String(n.port ?? "")}
-              </td>
-            </tr>
+              </TableCell>
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
       {nodes.length > 100 && (
-        <div className="px-2 py-1 text-[10px] text-muted-foreground">
-          仅显示前 100 条…
+        <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-t">
+          仅显示前 100 条，共 {nodes.length} 条
         </div>
       )}
     </div>
@@ -161,43 +191,49 @@ function FileTable({
   return (
     <div>
       {pathLabel && (
-        <div className="text-xs text-muted-foreground mb-1 font-mono">
+        <div className="text-xs text-muted-foreground mb-1 font-mono px-1">
           {pathLabel}
         </div>
       )}
-      <div className="rounded-md border border-border/60 overflow-x-auto bg-card">
-        <table className="w-full text-xs">
-          <thead className="bg-muted">
-            <tr>
-              <th className="text-left px-2 py-1.5 font-medium">名称</th>
-              <th className="text-left px-2 py-1.5 font-medium">大小</th>
-              <th className="text-left px-2 py-1.5 font-medium">权限</th>
-              <th className="text-left px-2 py-1.5 font-medium">修改时间</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="rounded-md border border-border/60 bg-card overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>名称</TableHead>
+              <TableHead className="w-20 text-right">大小</TableHead>
+              <TableHead className="w-24">权限</TableHead>
+              <TableHead>修改时间</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {entries.slice(0, 50).map((e, i) => (
-              <tr key={i} className="border-t border-border/40 hover:bg-muted/40">
-                <td className="px-2 py-1">
-                  {Boolean(e.is_dir) ? "📁 " : "📄 "}
-                  {String(e.name ?? "")}
-                </td>
-                <td className="px-2 py-1 text-right font-mono">
+              <TableRow key={i}>
+                <TableCell className="py-1.5">
+                  <span className="inline-flex items-center gap-1.5">
+                    {Boolean(e.is_dir) ? (
+                      <Folder className="w-3.5 h-3.5 text-sky-500" />
+                    ) : (
+                      <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                    )}
+                    {String(e.name ?? "")}
+                  </span>
+                </TableCell>
+                <TableCell className="py-1.5 text-right font-mono text-xs">
                   {Number(e.size || 0)}
-                </td>
-                <td className="px-2 py-1 font-mono text-muted-foreground">
+                </TableCell>
+                <TableCell className="py-1.5 font-mono text-xs text-muted-foreground">
                   {String(e.mode ?? "")}
-                </td>
-                <td className="px-2 py-1 text-muted-foreground">
+                </TableCell>
+                <TableCell className="py-1.5 text-xs text-muted-foreground">
                   {String(e.mod_time ?? "").slice(0, 19)}
-                </td>
-              </tr>
+                </TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
         {entries.length > 50 && (
-          <div className="px-2 py-1 text-[10px] text-muted-foreground">
-            仅显示前 50 条…
+          <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-t">
+            仅显示前 50 条，共 {entries.length} 项
           </div>
         )}
       </div>
