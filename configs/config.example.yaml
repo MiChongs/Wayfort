@@ -52,26 +52,23 @@ ai:
   tool_timeout: 60s
   approval_timeout: 2m
   conversation_ttl_days: 90
-  # 首次启动时种入 6 个全局默认 Agent（sre-copilot / health-inspector /
-  # log-analyst / security-auditor + 两个 sub-agent：db-doctor / k8s-pilot）。
+  # 首次启动时种入默认全局 Agent（sre-copilot / health-inspector /
+  # log-analyst / security-auditor / incident-responder / cost-optimizer
+  # + 三个 sub-agent：db-doctor / k8s-pilot / network-engineer）。
   # 同名 Agent 已存在时不会覆盖，安全打开。
   seed_default_agents: true
-  ssh_exec_readonly_allow:
-    - "ls"
-    - "cat"
-    - "grep"
-    - "tail"
-    - "head"
-    - "uptime"
-    - "free"
-    - "df"
-    - "du"
-    - "ps"
-    - "top -bn1"
-    - "journalctl -n"
-    - "systemctl status"
-    - "docker ps"
-    - "kubectl get"
+  # ssh_exec_readonly_allow: 允许的只读命令。
+  # - 不带空格的条 = "binary-only"：命令首个 token 完全匹配即放行
+  #   （e.g. "ss" 放行所有 ss xxx 子命令）
+  # - 带空格的条 = "前缀匹配"：必须以"该前缀+空格"开头（e.g. "systemctl status"
+  #   放行 systemctl status nginx，但不放行 systemctl restart nginx）
+  # 自动按 | 和 && 拆段，每段独立判定；含 $()、反引号、; 、>、<、单独 &
+  # 一律拒绝（用 ssh_exec 走人工确认）。
+  # 缺省值（不配置或为空）使用代码内 DefaultReadonlyAllow（~140 条，覆盖
+  # 文本读取 / 系统信息 / 进程 / 网络 / 容器 / k8s / systemd / 包查询 /
+  # HTTP HEAD/GET / git 只读 等）。
+  # 下面只是示例，按需裁剪/扩展；要拿全集请删掉这块让代码托底。
+  ssh_exec_readonly_allow: []
 
 notify:
   smtp:

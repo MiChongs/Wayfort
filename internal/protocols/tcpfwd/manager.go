@@ -47,6 +47,38 @@ func NewManager(cfg config.TCPFwdConfig, r *repo.PortForwardRepo, c *cache.Cache
 	}
 }
 
+// SnapshotEntry is a point-in-time view of one active forwarder, returned by
+// ListForUser. Stable across releases — used by callers outside this package.
+type SnapshotEntry struct {
+	ID         string
+	NodeID     uint64
+	LocalHost  string
+	LocalPort  int
+	TargetHost string
+	TargetPort int
+	ExpiresAt  time.Time
+	CreatedAt  time.Time
+}
+
+// ListForUser returns a snapshot of the active forwarders the user owns.
+func (m *Manager) ListForUser(uid uint64) []SnapshotEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]SnapshotEntry, 0)
+	for _, e := range m.entries {
+		if e.row.UserID != uid || e.row.Status != model.PortForwardActive {
+			continue
+		}
+		out = append(out, SnapshotEntry{
+			ID: e.row.ID, NodeID: e.row.NodeID,
+			LocalHost: e.row.LocalHost, LocalPort: e.row.LocalPort,
+			TargetHost: e.row.TargetHost, TargetPort: e.row.TargetPort,
+			ExpiresAt: e.expiresAt, CreatedAt: e.row.CreatedAt,
+		})
+	}
+	return out
+}
+
 // CountForUser returns how many active forwarders the user owns; used to
 // enforce TCPFwdConfig.MaxPerUser.
 func (m *Manager) CountForUser(uid uint64) int {

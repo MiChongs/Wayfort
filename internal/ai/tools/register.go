@@ -7,5 +7,6 @@ func RegisterAll(reg *Registry, deps Deps, sshReadonlyAllow []string) {
 	RegisterSSHTools(reg, deps, sshReadonlyAllow)
 	RegisterSFTPTools(reg, deps)
 	RegisterSessionTools(reg, deps)
+	RegisterIdentityTools(reg, deps)
 	RegisterSubAgentTool(reg, deps)
 }

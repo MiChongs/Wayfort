@@ -304,6 +304,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Asset: assetResolver, RBAC: rbacResolver,
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
 		Sessions: sessionRepo, AuditRepo: auditRepo,
+		LoginHist: historyRepo, Users: userRepo,
 		SSHResolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
 		SFTPConn: sftpConn, TCPFwd: pfManager, DialTimeout: cfg.SSHPool.DialTimeout,
 	})

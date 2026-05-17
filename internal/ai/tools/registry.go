@@ -135,17 +135,19 @@ func (r *Registry) ProviderSchemas(allowed []string) []provider.ToolSchema {
 // Deps is the set of cross-package services that concrete tool implementations
 // need. Bundled into a single struct so RegisterAll has a clean signature.
 type Deps struct {
-	Asset      *asset.Resolver
-	RBAC       *auth.Resolver
-	Audit      *audit.Writer
-	Nodes      *repo.NodeRepo
-	Creds      *repo.CredentialRepo
-	Proxies    *repo.ProxyRepo
-	Sessions   *repo.SessionRepo
-	AuditRepo  *repo.AuditRepo
-	PortFwdMgr PortForwardManager
-	NodeRunner NodeRunner
-	SFTPRunner SFTPRunner
+	Asset       *asset.Resolver
+	RBAC        *auth.Resolver
+	Audit       *audit.Writer
+	Nodes       *repo.NodeRepo
+	Creds       *repo.CredentialRepo
+	Proxies     *repo.ProxyRepo
+	Sessions    *repo.SessionRepo
+	AuditRepo   *repo.AuditRepo
+	LoginHist   *repo.LoginHistoryRepo
+	Users       *repo.UserRepo
+	PortFwdMgr  PortForwardManager
+	NodeRunner  NodeRunner
+	SFTPRunner  SFTPRunner
 	AgentRunner SubAgentRunner
 }
 
@@ -154,6 +156,17 @@ type Deps struct {
 type PortForwardManager interface {
 	Create(ctx context.Context, userID uint64, username string, nodeID uint64, ttlSeconds int) (string, string, int, error)
 	Close(ctx context.Context, id string) error
+	ListByUser(ctx context.Context, userID uint64) ([]PortForwardEntry, error)
+}
+
+// PortForwardEntry is the minimal view of an active port forward returned by
+// PortForwardManager.ListByUser, used by the port_forward_list tool.
+type PortForwardEntry struct {
+	ID        string `json:"id"`
+	NodeID    uint64 `json:"node_id"`
+	LocalHost string `json:"local_host"`
+	LocalPort int    `json:"local_port"`
+	ExpiresAt string `json:"expires_at,omitempty"`
 }
 
 type NodeRunner interface {

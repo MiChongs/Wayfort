@@ -11,15 +11,15 @@ import (
 
 // RegisterSSHTools adds the three SSH-execution tools:
 //   - ssh_exec        : arbitrary command (HIGH danger, requires approval in normal mode)
-//   - ssh_exec_readonly: whitelisted prefix-only commands (LOW)
+//   - ssh_exec_readonly: allow-list-gated commands (LOW)
 //   - health_check    : canned diagnostic bundle (LOW)
 func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string) {
 	allow := normaliseAllow(readonlyAllow)
 
 	reg.Register(&Tool{
-		Name:        "ssh_exec",
-		Description: "在指定节点上执行任意 shell 命令。会产生实际变更，需用户确认。",
-		Danger:      DangerHigh,
+		Name:                "ssh_exec",
+		Description:         "在指定节点上执行任意 shell 命令。会产生实际变更，需用户确认。",
+		Danger:              DangerHigh,
 		RequiredAssetAction: asset.ActionConnect,
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"node_id":{"type":"integer"},
@@ -31,22 +31,22 @@ func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string) {
 	})
 
 	reg.Register(&Tool{
-		Name:        "ssh_exec_readonly",
-		Description: "只允许预设白名单（ls/cat/grep/uptime/free/df/du/ps/top/journalctl/systemctl status/docker ps/kubectl get 等）开头的命令，安全的只读诊断使用。",
-		Danger:      DangerLow,
+		Name:                "ssh_exec_readonly",
+		Description:         "在指定节点上执行预设白名单内的只读命令。支持管道（|）与 && 串接，每段都会被独立校验；禁止重定向 / 命令替换 / 后台执行。常见命令如 ls/cat/grep/awk/sed/find/ps/top -bn1/free/df/du/journalctl/systemctl status/docker ps/kubectl get/ss/ip/netstat 等均已允许。",
+		Danger:              DangerLow,
 		RequiredAssetAction: asset.ActionConnect,
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"node_id":{"type":"integer"},
-			"command":{"type":"string"},
+			"command":{"type":"string","description":"shell 命令；允许 | 和 && 组合，每段必须命中白名单"},
 			"timeout_sec":{"type":"integer","minimum":1,"maximum":120}},
 			"required":["node_id","command"]}`),
 		Run: sshExecRunner(deps, true, allow),
 	})
 
 	reg.Register(&Tool{
-		Name:        "health_check",
-		Description: "一次性收集节点的系统健康指标：uptime / free -m / df -h / 负载 / 当前登录会话。",
-		Danger:      DangerLow,
+		Name:                "health_check",
+		Description:         "一次性收集节点的系统健康指标：uptime / load / 内存 / 各分区磁盘 / 当前登录 / 网络监听端口 / 系统服务异常状态。",
+		Danger:              DangerLow,
 		RequiredAssetAction: asset.ActionConnect,
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"node_id":{"type":"integer"}},
@@ -58,7 +58,17 @@ func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string) {
 			if err := json.Unmarshal(raw, &a); err != nil || a.NodeID == 0 {
 				return "", fmt.Errorf("node_id required")
 			}
-			cmd := "echo '== uptime ==' && uptime && echo '== free ==' && free -m 2>/dev/null && echo '== df ==' && df -h 2>/dev/null && echo '== load ==' && cat /proc/loadavg 2>/dev/null && echo '== who ==' && who 2>/dev/null"
+			cmd := strings.Join([]string{
+				"echo '== uptime =='", "uptime",
+				"echo '== load =='", "cat /proc/loadavg 2>/dev/null",
+				"echo '== free =='", "free -m 2>/dev/null",
+				"echo '== df =='", "df -h 2>/dev/null",
+				"echo '== top5_cpu =='", "ps -eo pid,user,%cpu,%mem,comm --sort=-%cpu 2>/dev/null | head -6",
+				"echo '== top5_mem =='", "ps -eo pid,user,%cpu,%mem,comm --sort=-%mem 2>/dev/null | head -6",
+				"echo '== who =='", "who 2>/dev/null",
+				"echo '== ss_listen =='", "ss -tunlp 2>/dev/null | head -20",
+				"echo '== failed_units =='", "systemctl --failed --no-legend 2>/dev/null",
+			}, " && ")
 			out, errOut, exit, err := deps.NodeRunner.Exec(ctx, tctx.UserID, a.NodeID, cmd, 30)
 			if err != nil {
 				return "", err
@@ -82,8 +92,10 @@ func sshExecRunner(deps Deps, readonly bool, allow []string) RunFn {
 		if a.NodeID == 0 || strings.TrimSpace(a.Command) == "" {
 			return "", fmt.Errorf("node_id and command required")
 		}
-		if readonly && !commandAllowed(a.Command, allow) {
-			return "", fmt.Errorf("command %q not in readonly allow-list", firstToken(a.Command))
+		if readonly {
+			if reason := commandAllowedReason(a.Command, allow); reason != "" {
+				return "", fmt.Errorf("%s", reason)
+			}
 		}
 		if a.Timeout <= 0 {
 			a.Timeout = 30
@@ -110,23 +122,201 @@ func sshExecDryRun(_ context.Context, _ ToolCtx, raw json.RawMessage) (string, e
 	return fmt.Sprintf("[plan mode] would execute on node %d: %s", a.NodeID, a.Command), nil
 }
 
+// ===== readonly allow-list engine =====
+
+// dangerousFragments are shell metacharacters that, if present anywhere in the
+// command, would let the agent escape the readonly contract: command
+// substitution ($(), backticks), redirection (>, <), statement separators (;),
+// or bare backgrounding (& not part of &&). We reject the whole command on
+// first sighting and tell the agent to use ssh_exec instead.
+var dangerousFragments = []string{"$(", "`", ">", "<", ";"}
+
+// normaliseAllow returns the user-configured allow list verbatim; if empty,
+// falls back to the curated default below.
 func normaliseAllow(in []string) []string {
-	if len(in) == 0 {
-		return []string{
-			"ls", "cat", "grep", "tail", "head", "uptime", "free", "df", "du",
-			"ps", "top -bn1", "journalctl -n", "systemctl status",
-			"docker ps", "docker images", "kubectl get", "kubectl describe",
-			"ip a", "ip r", "ss -tunlp", "iostat", "vmstat", "netstat -tunlp",
-		}
+	if len(in) > 0 {
+		return in
 	}
-	return in
+	return DefaultReadonlyAllow
 }
 
-func commandAllowed(cmd string, allow []string) bool {
+// DefaultReadonlyAllow is the canonical safe-command allowlist for
+// ssh_exec_readonly. Two flavours of entries:
+//
+//   - **binary-only** (no spaces): the very first token of a segment must
+//     equal this. Use for binaries that are wholly readonly regardless of
+//     arguments (e.g. ls, cat, ss, ip, netstat, journalctl).
+//   - **prefix** (contains spaces): the segment must start with "<entry> "
+//     or equal "<entry>". Use for binaries with mixed safety where only
+//     specific subcommands are readonly (e.g. "systemctl status",
+//     "docker ps", "kubectl get").
+//
+// Operators can override the whole list via configs/config.yaml's
+// `ai.ssh_exec_readonly_allow`. Adding to (not replacing) the default is
+// not currently supported — copy the list and edit.
+var DefaultReadonlyAllow = []string{
+	// --- text reading / filtering ---
+	"ls", "dir", "cat", "tac", "nl", "grep", "egrep", "fgrep", "zgrep", "zcat",
+	"tail", "head", "awk", "gawk", "sed", "wc", "sort", "uniq", "cut", "tr",
+	"column", "tee", "tsort", "rev", "expand", "fold", "fmt", "paste",
+	"xxd", "od", "hexdump", "base64",
+	"strings", "find", "locate", "file", "stat", "tree", "less", "more",
+	"readlink", "realpath", "dirname", "basename",
+	"md5sum", "sha1sum", "sha256sum", "sha512sum", "cksum",
+	"diff", "comm", "cmp",
+
+	// --- system info ---
+	"uptime", "free", "df", "du", "echo", "printf",
+	"date", "cal", "ncal",
+	"id", "whoami", "who", "w", "users", "groups",
+	"last", "lastlog", "loginctl",
+	"uname", "hostname", "hostnamectl", "localectl", "timedatectl", "arch",
+	"env", "printenv", "locale", "getent",
+	"which", "type", "command", "hash",
+	"pwd",
+
+	// --- process / kernel ---
+	"ps", "pgrep", "pidof", "pstree", "jobs",
+	"dmesg", "lsmod", "lsof", "lscpu", "lsblk", "lspci", "lsusb",
+	"mount", "findmnt", "blkid", "swapon",
+	"hwclock", "fuser",
+
+	// --- network ---
+	"ss", "ip", "netstat", "route", "arp",
+	"dig", "host", "nslookup", "whois", "traceroute", "tracepath",
+	"mtr", "ping", "ping6",
+	"ethtool", "ip6tables-save", "iptables-save",
+
+	// --- system stat / monitoring (always batch / no-tui flavours) ---
+	"iostat", "vmstat", "mpstat", "sar", "pidstat", "tcpstat", "uptime",
+	"journalctl", // entirely read-only
+
+	// --- top / htop / iotop need batch mode (no interactive TUI) ---
+	"top -b", "top -bn", "top -bn1", "htop --batch", "iotop -b", "iotop -bn",
+
+	// --- container & orchestration (readonly subcommands only) ---
+	"docker ps", "docker images", "docker inspect", "docker logs",
+	"docker stats", "docker top", "docker version", "docker info",
+	"docker history", "docker port", "docker diff",
+	"docker network ls", "docker network inspect",
+	"docker volume ls", "docker volume inspect",
+	"docker container ls", "docker container inspect",
+	"docker image ls", "docker image inspect",
+
+	"crictl ps", "crictl images", "crictl logs", "crictl inspect",
+	"crictl version", "crictl info", "crictl stats",
+
+	"kubectl get", "kubectl describe", "kubectl logs", "kubectl top",
+	"kubectl version", "kubectl cluster-info", "kubectl explain",
+	"kubectl api-resources", "kubectl api-versions",
+	"kubectl config view", "kubectl config get-contexts", "kubectl config current-context",
+
+	"helm list", "helm status", "helm history", "helm get", "helm version",
+
+	// --- systemd (readonly subcommands only) ---
+	"systemctl status", "systemctl is-active", "systemctl is-enabled",
+	"systemctl is-failed", "systemctl list-units", "systemctl list-sockets",
+	"systemctl list-timers", "systemctl list-jobs",
+	"systemctl list-dependencies", "systemctl show",
+	"systemctl cat", "systemctl get-default", "systemctl --failed",
+
+	// --- package query (readonly only) ---
+	"apt list", "apt-cache", "apt show",
+	"dpkg -l", "dpkg --list", "dpkg -L", "dpkg -s",
+	"dnf list", "dnf info", "dnf repolist", "dnf search",
+	"yum list", "yum info", "yum repolist",
+	"rpm -q", "rpm -qa", "rpm -qi", "rpm -ql", "rpm -V",
+	"pacman -Q", "pacman -Qi", "pacman -Ql",
+
+	// --- HTTP probes (GET / HEAD only — no -X to write methods) ---
+	"curl -I", "curl --head", "curl -s", "curl --silent",
+	"curl -sI", "curl -sf", "curl -fsSL",
+	"wget --spider", "wget -q --spider",
+
+	// --- git (readonly subcommands only) ---
+	"git status", "git log", "git show", "git diff", "git blame",
+	"git branch", "git remote", "git tag", "git reflog", "git ls-files",
+	"git ls-tree", "git cat-file", "git rev-parse", "git config --get",
+}
+
+// commandAllowedReason returns "" if the command is allowed, otherwise a
+// short reason string suitable for surfacing back to the model.
+func commandAllowedReason(cmd string, allow []string) string {
 	trimmed := strings.TrimSpace(cmd)
-	for _, prefix := range allow {
-		if strings.HasPrefix(trimmed, prefix) {
-			return true
+	if trimmed == "" {
+		return "command is empty"
+	}
+	if reason := containsDangerous(trimmed); reason != "" {
+		return reason + " (use ssh_exec if you really need this)"
+	}
+	for _, seg := range splitConjunctions(trimmed) {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			return "empty segment between | or &&"
+		}
+		if reason := containsDangerous(seg); reason != "" {
+			return reason
+		}
+		if !segmentAllowed(seg, allow) {
+			return fmt.Sprintf("command segment %q not in readonly allow-list", abbreviate(seg, 80))
+		}
+	}
+	return ""
+}
+
+func containsDangerous(s string) string {
+	for _, frag := range dangerousFragments {
+		if strings.Contains(s, frag) {
+			return fmt.Sprintf("dangerous shell metachar %q", frag)
+		}
+	}
+	// Detect bare "&" (backgrounding / multiple commands) — but tolerate
+	// "&&" as a conjunction. Strip "&&" first then look for any remaining "&".
+	stripped := strings.ReplaceAll(s, "&&", "")
+	if strings.Contains(stripped, "&") {
+		return `dangerous shell metachar "&" (backgrounding)`
+	}
+	return ""
+}
+
+// splitConjunctions splits a command line on "&&" and "|" into independent
+// segments. Each segment must independently match the allow list. Note that
+// the splitter does NOT understand quoting — e.g. `echo "a | b"` would be
+// split, which would conservatively reject. That's fine for the readonly
+// surface; the model can fall back to ssh_exec for fancy quoting.
+func splitConjunctions(s string) []string {
+	out := []string{}
+	for _, andSeg := range strings.Split(s, "&&") {
+		for _, pipeSeg := range strings.Split(andSeg, "|") {
+			t := strings.TrimSpace(pipeSeg)
+			if t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// segmentAllowed checks one pipe segment against the allow list. Two match
+// modes per allow entry:
+//
+//   - no space → binary-only: first token of seg must equal entry.
+//   - has space → prefix: seg must start with "entry " (or equal entry).
+func segmentAllowed(seg string, allow []string) bool {
+	first := firstToken(seg)
+	for _, entry := range allow {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, " ") {
+			if seg == entry || strings.HasPrefix(seg, entry+" ") {
+				return true
+			}
+		} else {
+			if first == entry {
+				return true
+			}
 		}
 	}
 	return false
@@ -134,9 +324,16 @@ func commandAllowed(cmd string, allow []string) bool {
 
 func firstToken(cmd string) string {
 	for i, c := range cmd {
-		if c == ' ' {
+		if c == ' ' || c == '\t' {
 			return cmd[:i]
 		}
 	}
 	return cmd
+}
+
+func abbreviate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

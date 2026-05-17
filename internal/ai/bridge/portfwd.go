@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 )
@@ -39,4 +40,20 @@ func (p *PortForwardManager) Close(ctx context.Context, id string) error {
 		return fmt.Errorf("tcp forwarder not enabled")
 	}
 	return p.Mgr.Close(ctx, id)
+}
+
+func (p *PortForwardManager) ListByUser(_ context.Context, userID uint64) ([]tools.PortForwardEntry, error) {
+	if p == nil || p.Mgr == nil {
+		return nil, nil
+	}
+	rows := p.Mgr.ListForUser(userID)
+	out := make([]tools.PortForwardEntry, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, tools.PortForwardEntry{
+			ID: r.ID, NodeID: r.NodeID,
+			LocalHost: r.LocalHost, LocalPort: r.LocalPort,
+			ExpiresAt: r.ExpiresAt.Format(time.RFC3339),
+		})
+	}
+	return out, nil
 }

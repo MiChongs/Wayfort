@@ -100,9 +100,29 @@ func RegisterSessionTools(reg *Registry, deps Deps) {
 	})
 
 	reg.Register(&Tool{
-		Name:        "portforward_delete",
-		Description: "关闭一个之前开过的端口转发。",
-		Danger:      DangerHigh,
+		Name:         "portforward_list",
+		Description:  "列出当前用户活动中的端口转发（id / 节点 / 本地端口 / 过期时间）。只读。",
+		Danger:       DangerLow,
+		RequiredPerm: auth.PermPortForward,
+		Schema:       json.RawMessage(`{"type":"object","properties":{},"required":[]}`),
+		Run: func(ctx context.Context, tctx ToolCtx, _ json.RawMessage) (string, error) {
+			if deps.PortFwdMgr == nil {
+				return "", fmt.Errorf("port forwarder not enabled")
+			}
+			rows, err := deps.PortFwdMgr.ListByUser(ctx, tctx.UserID)
+			if err != nil {
+				return "", err
+			}
+			b, _ := json.Marshal(map[string]any{"forwards": rows, "count": len(rows)})
+			out, _ := Truncate(string(b))
+			return out, nil
+		},
+	})
+
+	reg.Register(&Tool{
+		Name:         "portforward_delete",
+		Description:  "关闭一个之前开过的端口转发。",
+		Danger:       DangerHigh,
 		RequiredPerm: auth.PermPortForward,
 		Schema: json.RawMessage(`{"type":"object","properties":{
 			"id":{"type":"string"}},

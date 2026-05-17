@@ -49,11 +49,13 @@ type Deps struct {
 	Asset      *asset.Resolver
 	RBAC       *auth.Resolver
 
-	Nodes    *repo.NodeRepo
-	Creds    *repo.CredentialRepo
-	Proxies  *repo.ProxyRepo
-	Sessions *repo.SessionRepo
+	Nodes     *repo.NodeRepo
+	Creds     *repo.CredentialRepo
+	Proxies   *repo.ProxyRepo
+	Sessions  *repo.SessionRepo
 	AuditRepo *repo.AuditRepo
+	LoginHist *repo.LoginHistoryRepo
+	Users     *repo.UserRepo
 
 	SSHResolver *pkgssh.Resolver
 	Chain       *dialer.ChainBuilder
@@ -114,6 +116,7 @@ func New(cfg Config, deps Deps) *Set {
 		Asset: deps.Asset, RBAC: deps.RBAC, Audit: deps.AuditWriter,
 		Nodes: deps.Nodes, Creds: deps.Creds, Proxies: deps.Proxies,
 		Sessions: deps.Sessions, AuditRepo: deps.AuditRepo,
+		LoginHist: deps.LoginHist, Users: deps.Users,
 		PortFwdMgr: pfMgr, NodeRunner: nodeRunner, SFTPRunner: sftpRunner,
 		// AgentRunner is patched in below once we own the factory.
 	}
@@ -123,6 +126,7 @@ func New(cfg Config, deps Deps) *Set {
 	tools.RegisterSSHTools(toolReg, tdeps, cfg.SSHExecReadOnlyAllow)
 	tools.RegisterSFTPTools(toolReg, tdeps)
 	tools.RegisterSessionTools(toolReg, tdeps)
+	tools.RegisterIdentityTools(toolReg, tdeps)
 
 	factory := runner.NewFactory(providerReg, toolReg, convRepo, msgRepo, invRepo,
 		agentRepo, deps.AuditWriter, deps.Logger, runner.Config{
