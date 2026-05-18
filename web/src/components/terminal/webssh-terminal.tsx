@@ -1,33 +1,10 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
+import { ArrowDownToLine } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
+import { useTheme } from "next-themes"
 import { toast } from "sonner"
-import {
-  AArrowDown,
-  AArrowUp,
-  ArrowDownToLine,
-  Bell,
-  BellOff,
-  ChevronDown,
-  Clipboard,
-  Copy,
-  Download,
-  Eraser,
-  FolderTree,
-  Maximize,
-  Minimize,
-  Plug,
-  RotateCw,
-  Search as SearchIcon,
-  Send,
-  X,
-  Zap,
-} from "lucide-react"
-import { WebSSHConnection } from "@/lib/ws/webssh-client"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -36,24 +13,26 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
-import { Input } from "@/components/ui/input"
-import { Separator } from "@/components/ui/separator"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { Button } from "@/components/ui/button"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { WebSSHConnection, type SessionStats } from "@/lib/ws/webssh-client"
 import { cn } from "@/lib/utils"
+import { TerminalCommandPalette } from "./terminal-command-palette"
+import { TerminalContextMenu } from "./terminal-context-menu"
+import { TerminalSearchPopover } from "./terminal-search-popover"
+import { TerminalSettingsSheet } from "./terminal-settings-sheet"
+import { TerminalStatusBar } from "./terminal-status-bar"
+import { TerminalToolbar } from "./terminal-toolbar"
+import {
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  type TerminalSettings,
+  useTerminalSettings,
+} from "./use-terminal-settings"
+import { resolveTerminalTheme } from "./terminal-themes"
+import type { SearchOptions, Status } from "./terminal-types"
 
-const FONT_KEY = "webssh:fontSize"
-const BELL_KEY = "webssh:bellEnabled"
-const FONT_MIN = 10
-const FONT_MAX = 22
-const FONT_DEFAULT = 13
+export type { Status } from "./terminal-types"
 
 type Props = {
   protocol: "ssh" | "telnet" | "dbcli"
@@ -62,25 +41,12 @@ type Props = {
   username?: string
   host?: string
   port?: number
-  // Fires every time the live WebSocket state changes. The workspace tab
-  // bar listens to this so the per-tab status dot stays in sync with the
-  // terminal — without this the tab would forever say "未连接" even after
-  // the terminal had connected successfully.
   onStatusChange?: (status: Status) => void
-  // When provided, the SFTP shortcut on the toolbar opens a workspace tab
-  // instead of navigating to /nodes/:id/sftp. Standalone-page callers leave
-  // this undefined and keep the historic Link behaviour.
   onOpenSftp?: () => void
 }
 
-export type Status = "connecting" | "open" | "closed"
-
-// Inline scoped CSS that overrides xterm's default scrollbar with a
-// shadcn-flavoured one. We target the `xterm-viewport` element inside the
-// wrapper class so this doesn't leak to other xterm instances on the page.
-// Webkit + Firefox both supported; the Tailwind theme tokens are inlined
-// because xterm renders into a portal-like container that doesn't inherit
-// arbitrary-selector classes cleanly.
+// xterm renders into its own DOM under our container; this scoped CSS gives
+// it a shadcn-flavoured scrollbar without affecting other xterm instances.
 const TERMINAL_SCROLLBAR_CSS = `
 .webssh-scope .xterm-viewport {
   scrollbar-width: thin;
@@ -111,14 +77,22 @@ const TERMINAL_SCROLLBAR_CSS = `
 .webssh-scope .xterm-viewport::-webkit-scrollbar-corner {
   background: transparent;
 }
-/* Hide the scrollbar entirely on touch devices that don't need it */
 @media (hover: none) {
-  .webssh-scope .xterm-viewport::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-  }
+  .webssh-scope .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 }
 `
+
+interface TerminalHandle {
+  copy: () => void
+  paste: () => void
+  selectAll: () => void
+  clear: () => void
+  scrollToBottom: () => void
+  getSelection: () => string
+  setOptions: (patch: Record<string, unknown>) => void
+  reloadAddons: () => void
+  serializeAll: () => string
+}
 
 export function WebSSHTerminal({
   protocol,
@@ -130,24 +104,77 @@ export function WebSSHTerminal({
   onStatusChange,
   onOpenSftp,
 }: Props) {
+  const { settings, update, reset } = useTerminalSettings()
+  const { resolvedTheme } = useTheme()
+  const reduced = useReducedMotion()
+
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const wrapRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const fitRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const searchRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
+  const serializeRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
+  const webglRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
+  const ligaturesRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const connRef = React.useRef<WebSSHConnection | null>(null)
-  // rAF token shared by every fit() caller (ResizeObserver, fontSize change,
-  // initial mount). Coalesces many resize events per frame into one fit call,
-  // so dragging the SideDock splitter or switching tabs no longer ladders
-  // through dozens of layout reflows per second.
+  const handleRef = React.useRef<TerminalHandle | null>(null)
   const fitRafRef = React.useRef<number | null>(null)
 
-  // scheduleFit defers fit() to the next animation frame and short-circuits
-  // when the container is currently 0×0 — that happens transiently while the
-  // tab is hidden (display:none) or before the flex layout has settled. Doing
-  // fit() in that state writes garbage dimensions into xterm and forces a
-  // second fit() once the container reaches its real size, which is exactly
-  // the visible flicker users were reporting.
+  // Status flows through a ref so the WS callbacks always invoke the latest
+  // parent handler without retriggering the connect effect.
+  const onStatusChangeRef = React.useRef(onStatusChange)
+  React.useEffect(() => {
+    onStatusChangeRef.current = onStatusChange
+  }, [onStatusChange])
+
+  const [status, setStatusState] = React.useState<Status>("connecting")
+  const setStatus = React.useCallback((s: Status) => {
+    setStatusState(s)
+    onStatusChangeRef.current?.(s)
+  }, [])
+  React.useEffect(() => {
+    onStatusChangeRef.current?.("connecting")
+  }, [])
+
+  // UI overlays
+  const [searchOpen, setSearchOpen] = React.useState(false)
+  const [searchQuery, setSearchQuery] = React.useState("")
+  const [searchOptions, setSearchOptions] = React.useState<SearchOptions>({
+    regex: false,
+    caseSensitive: false,
+    wholeWord: false,
+  })
+  const [searchResults, setSearchResults] = React.useState({ index: 0, count: 0 })
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const [paletteOpen, setPaletteOpen] = React.useState(false)
+  const [fullscreen, setFullscreen] = React.useState(false)
+  const [bumpKey, setBumpKey] = React.useState(0)
+  const [terminalTitle, setTerminalTitle] = React.useState("")
+  const [scrolledUp, setScrolledUp] = React.useState(false)
+  const [pasteConfirm, setPasteConfirm] = React.useState<string | null>(null)
+  const [hasSelection, setHasSelection] = React.useState(false)
+  const searchAnchorRef = React.useRef<HTMLButtonElement>(null)
+
+  // Status bar metrics
+  const [cols, setCols] = React.useState(80)
+  const [rows, setRows] = React.useState(24)
+  const [cursor, setCursor] = React.useState({ x: 0, y: 0 })
+  const [stats, setStats] = React.useState<SessionStats>({ bytesIn: 0, bytesOut: 0 })
+  const [latencyMs, setLatencyMs] = React.useState<number | null>(null)
+
+  const settingsRef = React.useRef(settings)
+  React.useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+
+  // Resolve theme palette — recomputes whenever the chosen theme or system
+  // theme flips. The effect below applies it to the live terminal.
+  const sysIsDark = resolvedTheme !== "light"
+  const themePalette = React.useMemo(
+    () => resolveTerminalTheme(settings.themeName, sysIsDark),
+    [settings.themeName, sysIsDark],
+  )
+
   const scheduleFit = React.useCallback(() => {
     if (typeof window === "undefined") return
     if (fitRafRef.current !== null) return
@@ -160,54 +187,10 @@ export function WebSSHTerminal({
       try {
         fit.fit()
       } catch {
-        /* noop — happens transiently while the terminal is still wiring up */
+        /* noop */
       }
     })
   }, [])
-  const [status, setStatusState] = React.useState<Status>("connecting")
-  // Keep the latest onStatusChange in a ref so the WS callbacks below
-  // always call the freshest one without retriggering the connect effect.
-  const onStatusChangeRef = React.useRef(onStatusChange)
-  React.useEffect(() => {
-    onStatusChangeRef.current = onStatusChange
-  }, [onStatusChange])
-  const setStatus = React.useCallback((s: Status) => {
-    setStatusState(s)
-    onStatusChangeRef.current?.(s)
-  }, [])
-  React.useEffect(() => {
-    // Notify the parent of the initial status synchronously on mount so the
-    // tab shows "连接中" instead of stuck at "未连接" while the WS dials.
-    onStatusChangeRef.current?.("connecting")
-  }, [])
-  const [fontSize, setFontSize] = React.useState<number>(() => {
-    if (typeof window === "undefined") return FONT_DEFAULT
-    const v = Number(localStorage.getItem(FONT_KEY))
-    return v >= FONT_MIN && v <= FONT_MAX ? v : FONT_DEFAULT
-  })
-  const [fullscreen, setFullscreen] = React.useState(false)
-  const [searchOpen, setSearchOpen] = React.useState(false)
-  const [searchQuery, setSearchQuery] = React.useState("")
-  const [bumpKey, setBumpKey] = React.useState(0)
-  const [terminalTitle, setTerminalTitle] = React.useState<string>("")
-  const [bellEnabled, setBellEnabled] = React.useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    return window.localStorage.getItem(BELL_KEY) === "1"
-  })
-  const bellEnabledRef = React.useRef(bellEnabled)
-  // Track whether the user has scrolled away from the bottom — when true we
-  // show a "back to bottom" floating button instead of always anchoring.
-  const [scrolledUp, setScrolledUp] = React.useState(false)
-  // Multi-line paste confirmation guards against accidental rm -rf disasters.
-  const [pasteConfirm, setPasteConfirm] = React.useState<string | null>(null)
-  const reduced = useReducedMotion()
-
-  React.useEffect(() => {
-    bellEnabledRef.current = bellEnabled
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(BELL_KEY, bellEnabled ? "1" : "0")
-    }
-  }, [bellEnabled])
 
   React.useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement === wrapRef.current)
@@ -215,20 +198,94 @@ export function WebSSHTerminal({
     return () => document.removeEventListener("fullscreenchange", onChange)
   }, [])
 
+  // Apply live-tunable settings to an already-open xterm. Keeps changes
+  // cheap — fontSize/lineHeight just bump options + fit; theme/cursor only
+  // need options touched; ligatures + webgl get a re-load cycle.
   React.useEffect(() => {
-    const t = termRef.current as { options?: { fontSize?: number } } | null
-    if (t && t.options) t.options.fontSize = fontSize
+    const term = termRef.current as { options?: Record<string, unknown> } | null
+    if (!term?.options) return
+    term.options.fontFamily = settings.fontFamily
+    term.options.fontSize = settings.fontSize
+    term.options.lineHeight = settings.lineHeight
+    term.options.letterSpacing = settings.letterSpacing
+    term.options.cursorStyle = settings.cursorStyle
+    term.options.cursorBlink = settings.cursorBlink
+    term.options.scrollback = settings.scrollback
+    term.options.theme = themePalette.colors
     scheduleFit()
-    if (typeof window !== "undefined") localStorage.setItem(FONT_KEY, String(fontSize))
-  }, [fontSize, scheduleFit])
+  }, [
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.letterSpacing,
+    settings.cursorStyle,
+    settings.cursorBlink,
+    settings.scrollback,
+    themePalette,
+    scheduleFit,
+  ])
 
-  function themeColors() {
-    if (typeof window === "undefined") return { fg: "#e4e4e7" }
-    const styles = getComputedStyle(document.documentElement)
-    const fg = styles.getPropertyValue("--foreground").trim() || "#e4e4e7"
-    return { fg: oklchToHex(fg) || "#e4e4e7" }
-  }
+  // Toggle WebGL renderer on/off without recreating the terminal.
+  React.useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    if (settings.webglEnabled && !webglRef.current) {
+      ;(async () => {
+        try {
+          const { WebglAddon } = await import("@xterm/addon-webgl")
+          const webgl = new WebglAddon()
+          webgl.onContextLoss(() => {
+            // GPU context lost (driver crash, tab moved between screens, etc).
+            // Dispose so xterm falls back to its default DOM renderer.
+            try {
+              webgl.dispose()
+            } catch {
+              /* */
+            }
+            webglRef.current = null
+          })
+          term.loadAddon(webgl)
+          webglRef.current = webgl
+        } catch {
+          /* webgl unavailable — keep default renderer */
+        }
+      })()
+    } else if (!settings.webglEnabled && webglRef.current) {
+      try {
+        webglRef.current.dispose()
+      } catch {
+        /* */
+      }
+      webglRef.current = null
+    }
+  }, [settings.webglEnabled])
 
+  // Toggle ligatures addon on/off.
+  React.useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    if (settings.ligaturesEnabled && !ligaturesRef.current) {
+      ;(async () => {
+        try {
+          const { LigaturesAddon } = await import("@xterm/addon-ligatures")
+          const lig = new LigaturesAddon()
+          term.loadAddon(lig)
+          ligaturesRef.current = lig
+        } catch {
+          /* */
+        }
+      })()
+    } else if (!settings.ligaturesEnabled && ligaturesRef.current) {
+      try {
+        ligaturesRef.current.dispose()
+      } catch {
+        /* */
+      }
+      ligaturesRef.current = null
+    }
+  }, [settings.ligaturesEnabled])
+
+  // -------- main init effect ---------------------------------------------
   React.useEffect(() => {
     let disposed = false
     let resizeObserver: ResizeObserver | undefined
@@ -242,70 +299,108 @@ export function WebSSHTerminal({
       const { WebLinksAddon } = await import("@xterm/addon-web-links")
       const { SearchAddon } = await import("@xterm/addon-search")
       const { Unicode11Addon } = await import("@xterm/addon-unicode11")
+      const { ClipboardAddon } = await import("@xterm/addon-clipboard")
+      const { SerializeAddon } = await import("@xterm/addon-serialize")
       if (disposed) return
 
+      const initial = settingsRef.current
+      const themeNow = resolveTerminalTheme(initial.themeName, sysIsDark)
       const term = new Terminal({
-        fontSize,
-        cursorBlink: true,
+        fontFamily: initial.fontFamily,
+        fontSize: initial.fontSize,
+        lineHeight: initial.lineHeight,
+        letterSpacing: initial.letterSpacing,
+        cursorStyle: initial.cursorStyle,
+        cursorBlink: initial.cursorBlink,
+        scrollback: initial.scrollback,
         convertEol: true,
-        scrollback: 5000,
         allowProposedApi: true,
-        fontFamily:
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-        theme: {
-          background: "#09090b",
-          foreground: themeColors().fg,
-          cursor: "#e4e4e7",
-          cursorAccent: "#09090b",
-          selectionBackground: "#3b82f680",
-        },
+        allowTransparency: false,
+        theme: themeNow.colors,
       })
+
       const fit = new FitAddon()
       const search = new SearchAddon()
+      const serialize = new SerializeAddon()
       term.loadAddon(fit)
       term.loadAddon(new WebLinksAddon())
       term.loadAddon(search)
       term.loadAddon(new Unicode11Addon())
+      term.loadAddon(new ClipboardAddon())
+      term.loadAddon(serialize)
       try {
         ;(term as { unicode: { activeVersion: string } }).unicode.activeVersion = "11"
       } catch {
         /* older xterm — falls back to Unicode 6 */
       }
+
       const el = containerRef.current!
       term.open(el)
       termRef.current = term
       fitRef.current = fit
       searchRef.current = search
-      // Defer the first fit() to the next frame so the parent flex layout
-      // is settled before xterm reads clientWidth/clientHeight. Calling
-      // fit() synchronously here writes the pre-layout size into xterm,
-      // which then has to be corrected by the first ResizeObserver hit —
-      // visible as a one-frame layout pop on session start.
+      serializeRef.current = serialize
+      // First fit is deferred so the parent flex layout is settled before
+      // xterm reads clientWidth/clientHeight — synchronous fit() here would
+      // pop one frame later.
       scheduleFit()
 
-      term.onTitleChange((t) => {
-        if (!disposed) setTerminalTitle(t || "")
-      })
-
-      term.onBell(() => {
-        if (!bellEnabledRef.current) return
+      // Optional addons. Each load is independent and failure-tolerant.
+      if (initial.webglEnabled) {
         try {
-          const AC =
-            window.AudioContext ||
-            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
-          const ac = new AC()
-          const o = ac.createOscillator()
-          const g = ac.createGain()
-          o.connect(g)
-          g.connect(ac.destination)
-          o.frequency.value = 880
-          g.gain.value = 0.05
-          o.start()
-          o.stop(ac.currentTime + 0.08)
-          setTimeout(() => ac.close().catch(() => {}), 200)
+          const { WebglAddon } = await import("@xterm/addon-webgl")
+          const webgl = new WebglAddon()
+          webgl.onContextLoss(() => {
+            try {
+              webgl.dispose()
+            } catch {
+              /* */
+            }
+            webglRef.current = null
+          })
+          term.loadAddon(webgl)
+          webglRef.current = webgl
         } catch {
           /* */
         }
+      }
+      if (initial.ligaturesEnabled) {
+        try {
+          const { LigaturesAddon } = await import("@xterm/addon-ligatures")
+          const lig = new LigaturesAddon()
+          term.loadAddon(lig)
+          ligaturesRef.current = lig
+        } catch {
+          /* */
+        }
+      }
+      try {
+        const { ImageAddon } = await import("@xterm/addon-image")
+        term.loadAddon(new ImageAddon())
+      } catch {
+        /* */
+      }
+
+      // ---- term events ---------------------------------------------------
+      term.onTitleChange((t) => !disposed && setTerminalTitle(t || ""))
+      term.onResize(({ cols, rows }) => {
+        setCols(cols)
+        setRows(rows)
+        connRef.current?.resize(cols, rows)
+      })
+      term.onCursorMove(() => {
+        const b = term.buffer.active
+        setCursor({ x: b.cursorX, y: b.cursorY })
+      })
+      term.onSelectionChange(() => setHasSelection(!!term.getSelection?.()))
+      term.onBell(() => {
+        if (!settingsRef.current.bellEnabled) return
+        playBell()
+      })
+
+      // Search result tracking — surfaces match count / current index.
+      search.onDidChangeResults?.((e: { resultIndex: number; resultCount: number }) => {
+        setSearchResults({ index: e.resultIndex >= 0 ? e.resultIndex + 1 : 0, count: e.resultCount })
       })
 
       el.addEventListener("click", () => {
@@ -316,8 +411,7 @@ export function WebSSHTerminal({
         }
       })
 
-      // Wire scrollback tracking to the xterm viewport so we can flip a
-      // "back to bottom" button on/off without burning CPU on scroll.
+      // Scrollback position tracker
       viewport = el.querySelector(".xterm-viewport") as HTMLDivElement | null
       if (viewport) {
         onViewportScroll = () => {
@@ -328,6 +422,7 @@ export function WebSSHTerminal({
         viewport.addEventListener("scroll", onViewportScroll, { passive: true })
       }
 
+      // ---- WebSocket -----------------------------------------------------
       const path =
         protocol === "ssh"
           ? `/ws/ssh/${nodeId}`
@@ -343,26 +438,31 @@ export function WebSSHTerminal({
           setStatus("closed")
           term.writeln(`\r\n\x1b[33m[connection closed: ${m}]\x1b[0m`)
         },
+        onStats: (s) => setStats(s),
+        onLatency: (ms) => setLatencyMs(ms),
       })
       conn.open({ cols: term.cols, rows: term.rows })
       connRef.current = conn
 
       term.onData((d) => conn.sendInput(d))
-      term.onResize(({ cols, rows }) => conn.resize(cols, rows))
 
       term.attachCustomKeyEventHandler((e) => {
         if (e.type !== "keydown") return true
         const k = e.key.toLowerCase()
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "c") {
-          handleCopy(term)
+          handleCopyInternal(term)
           return false
         }
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "v") {
-          handlePaste(conn)
+          handlePasteInternal(conn)
           return false
         }
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "f") {
           setSearchOpen(true)
+          return false
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "p") {
+          setPaletteOpen(true)
           return false
         }
         if (e.key === "F11") {
@@ -372,14 +472,30 @@ export function WebSSHTerminal({
         return true
       })
 
-      // ResizeObserver routes every panel drag pixel through the rAF
-      // scheduler. Without this, dragging the SideDock splitter triggered
-      // a fit() per pixel — each one a layout reflow + cursor blink reset,
-      // which presented as the flicker the user reported.
-      resizeObserver = new ResizeObserver(() => {
-        scheduleFit()
-      })
+      resizeObserver = new ResizeObserver(() => scheduleFit())
       resizeObserver.observe(el)
+
+      // Expose a handle the outer scope's callbacks can drive without
+      // chasing termRef across closures.
+      handleRef.current = {
+        copy: () => handleCopyInternal(term),
+        paste: () => handlePasteInternal(conn),
+        selectAll: () => term.selectAll(),
+        clear: () => term.clear(),
+        scrollToBottom: () => term.scrollToBottom(),
+        getSelection: () => term.getSelection?.() ?? "",
+        setOptions: (patch) => Object.assign(term.options, patch),
+        reloadAddons: () => {
+          /* live-edit settings already handle this */
+        },
+        serializeAll: () => {
+          try {
+            return serialize.serialize()
+          } catch {
+            return ""
+          }
+        },
+      }
     })().catch((e) => toast.error("终端加载失败", { description: String(e) }))
 
     return () => {
@@ -391,17 +507,55 @@ export function WebSSHTerminal({
       }
       if (viewport && onViewportScroll) viewport.removeEventListener("scroll", onViewportScroll)
       connRef.current?.close()
+      if (webglRef.current) {
+        try {
+          webglRef.current.dispose()
+        } catch {
+          /* */
+        }
+        webglRef.current = null
+      }
+      if (ligaturesRef.current) {
+        try {
+          ligaturesRef.current.dispose()
+        } catch {
+          /* */
+        }
+        ligaturesRef.current = null
+      }
       const term = termRef.current as { dispose?: () => void } | null
       term?.dispose?.()
       termRef.current = null
       fitRef.current = null
       searchRef.current = null
+      serializeRef.current = null
+      handleRef.current = null
     }
-  }, [protocol, nodeId, bumpKey, scheduleFit]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocol, nodeId, bumpKey, scheduleFit, sysIsDark]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function handleCopy(term?: { getSelection: () => string }) {
-    const t = term || (termRef.current as { getSelection?: () => string } | null)
-    const sel = t?.getSelection?.() || ""
+  // Re-run incremental search whenever query/options change so the result
+  // counter updates without requiring Enter.
+  React.useEffect(() => {
+    const s = searchRef.current as
+      | { findNext?: (q: string, o?: object) => boolean; clearDecorations?: () => void }
+      | null
+    if (!s) return
+    if (!searchQuery) {
+      s.clearDecorations?.()
+      setSearchResults({ index: 0, count: 0 })
+      return
+    }
+    s.findNext?.(searchQuery, {
+      incremental: true,
+      regex: searchOptions.regex,
+      caseSensitive: searchOptions.caseSensitive,
+      wholeWord: searchOptions.wholeWord,
+    })
+  }, [searchQuery, searchOptions])
+
+  // -------- actions ------------------------------------------------------
+  function handleCopyInternal(term: { getSelection: () => string }) {
+    const sel = term.getSelection?.() || ""
     if (!sel) {
       toast("没有选中文本")
       return
@@ -412,20 +566,15 @@ export function WebSSHTerminal({
     )
   }
 
-  async function handlePaste(conn?: WebSSHConnection) {
-    const c = conn || connRef.current
-    if (!c) return
+  async function handlePasteInternal(conn: WebSSHConnection) {
     try {
       const text = await navigator.clipboard.readText()
       if (!text) return
-      // Confirm multi-line pastes so accidental Ctrl+V doesn't blast a 50-line
-      // shell snippet straight into the prompt. Single-line pastes go through
-      // unimpeded — they're the common case.
       if (text.includes("\n")) {
         setPasteConfirm(text)
         return
       }
-      c.sendInput(text)
+      conn.sendInput(text)
     } catch {
       toast.error("剪贴板读取被拒绝")
     }
@@ -437,11 +586,6 @@ export function WebSSHTerminal({
     setPasteConfirm(null)
   }
 
-  function handleClear() {
-    const t = termRef.current as { clear?: () => void } | null
-    t?.clear?.()
-  }
-
   function toggleFullscreen() {
     const el = wrapRef.current
     if (!el) return
@@ -449,57 +593,29 @@ export function WebSSHTerminal({
     else document.exitFullscreen?.().catch(() => {})
   }
 
-  function handleReconnect() {
-    setBumpKey((v) => v + 1)
+  function sendSignal(ctrl: string) {
+    connRef.current?.sendInput(ctrl)
   }
 
-  function handleDisconnect() {
-    connRef.current?.close()
-  }
-
-  function searchNext(direction: "next" | "prev") {
-    const s = searchRef.current as {
-      findNext?: (q: string, o?: object) => boolean
-      findPrevious?: (q: string, o?: object) => boolean
-    } | null
-    if (!s || !searchQuery) return
-    if (direction === "next") s.findNext?.(searchQuery, { incremental: false })
-    else s.findPrevious?.(searchQuery, { incremental: false })
-  }
-
-  // sendSignal injects a raw control byte. Used by the "send signal" menu so
-  // people can interrupt / EOF / suspend remote processes without typing in
-  // the terminal — handy when their cursor is in our toolbar input.
-  function sendSignal(ctrlChar: string) {
-    const c = connRef.current
-    if (!c) return
-    c.sendInput(ctrlChar)
-  }
-
-  function scrollToBottom() {
-    const t = termRef.current as { scrollToBottom?: () => void } | null
-    t?.scrollToBottom?.()
-  }
-
-  // Save the current scrollback as a text file. Pulls every line from the
-  // active buffer (visible + scrollback), trimmed to keep file sizes sane.
-  function saveScrollback() {
-    const t = termRef.current as
-      | {
-          buffer: {
-            active: { length: number; getLine: (i: number) => { translateToString: () => string } | undefined }
-          }
-        }
+  function handleSearchNext(direction: "next" | "prev") {
+    const s = searchRef.current as
+      | { findNext?: (q: string, o?: object) => boolean; findPrevious?: (q: string, o?: object) => boolean }
       | null
-    if (!t) return
-    const out: string[] = []
-    const len = t.buffer.active.length
-    for (let i = 0; i < len; i++) {
-      const line = t.buffer.active.getLine(i)
-      out.push(line?.translateToString().trimEnd() ?? "")
+    if (!s || !searchQuery) return
+    const opts = {
+      incremental: false,
+      regex: searchOptions.regex,
+      caseSensitive: searchOptions.caseSensitive,
+      wholeWord: searchOptions.wholeWord,
     }
-    while (out.length > 0 && out[out.length - 1] === "") out.pop()
-    const blob = new Blob([out.join("\n") + "\n"], { type: "text/plain;charset=utf-8" })
+    if (direction === "next") s.findNext?.(searchQuery, opts)
+    else s.findPrevious?.(searchQuery, opts)
+  }
+
+  function saveScrollback() {
+    const ser = serializeRef.current as { serialize?: () => string } | null
+    const text = ser?.serialize?.() ?? fallbackPlainScrollback()
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)
@@ -512,232 +628,199 @@ export function WebSSHTerminal({
     toast.success("已保存", { description: a.download })
   }
 
-  const fontDec = () => setFontSize((v) => Math.max(FONT_MIN, v - 1))
-  const fontInc = () => setFontSize((v) => Math.min(FONT_MAX, v + 1))
-  const fontReset = () => setFontSize(FONT_DEFAULT)
+  function fallbackPlainScrollback(): string {
+    const t = termRef.current as
+      | {
+          buffer: {
+            active: {
+              length: number
+              getLine: (i: number) => { translateToString: () => string } | undefined
+            }
+          }
+        }
+      | null
+    if (!t) return ""
+    const out: string[] = []
+    const len = t.buffer.active.length
+    for (let i = 0; i < len; i++) {
+      out.push(t.buffer.active.getLine(i)?.translateToString().trimEnd() ?? "")
+    }
+    while (out.length > 0 && out[out.length - 1] === "") out.pop()
+    return out.join("\n") + "\n"
+  }
 
-  const subtitle = [
-    username && `${username}@`,
-    host || displayName,
-    port ? `:${port}` : "",
-  ]
+  // Front-end font +/- still respects the persisted settings — clamp on edge.
+  function fontDec() {
+    update({ fontSize: Math.max(FONT_SIZE_MIN, settings.fontSize - 1) })
+  }
+  function fontInc() {
+    update({ fontSize: Math.min(FONT_SIZE_MAX, settings.fontSize + 1) })
+  }
+  function fontReset() {
+    update({ fontSize: 14 })
+  }
+  function toggleBell() {
+    update({ bellEnabled: !settings.bellEnabled })
+  }
+  function selectTheme(name: TerminalSettings["themeName"]) {
+    update({ themeName: name })
+    toast.success("主题已切换", { description: name })
+  }
+  function handleReconnect() {
+    setBumpKey((v) => v + 1)
+  }
+  function handleDisconnect() {
+    connRef.current?.close()
+  }
+
+  // -------- derived display strings --------------------------------------
+  const subtitle = [username && `${username}@`, host || displayName, port ? `:${port}` : ""]
     .filter(Boolean)
     .join("")
-
   const liveTitle = terminalTitle && terminalTitle !== displayName ? terminalTitle : ""
 
+  // -------- render -------------------------------------------------------
   return (
     <TooltipProvider delayDuration={300}>
       <style>{TERMINAL_SCROLLBAR_CSS}</style>
       <div
         ref={wrapRef}
         className={cn(
-          "webssh-scope flex flex-col h-full w-full bg-zinc-950 text-zinc-100 isolate",
+          "webssh-scope flex flex-col h-full w-full isolate",
           fullscreen && "fixed inset-0 z-[60]",
         )}
+        style={{ background: themePalette.colors.background }}
       >
-        <header
-          className={cn(
-            "h-10 shrink-0 flex items-center gap-1 px-2",
-            "border-b border-zinc-800/80 bg-zinc-950/95 backdrop-blur supports-[backdrop-filter]:bg-zinc-950/70",
-          )}
+        <TerminalToolbar
+          status={status}
+          protocol={protocol}
+          displayName={displayName}
+          liveTitle={liveTitle}
+          subtitle={subtitle}
+          nodeId={nodeId}
+          fontSize={settings.fontSize}
+          bellEnabled={settings.bellEnabled}
+          searchActive={searchOpen}
+          fullscreen={fullscreen}
+          onCopy={() => handleRef.current?.copy()}
+          onPaste={() => handleRef.current?.paste()}
+          onClear={() => handleRef.current?.clear()}
+          onSendSignal={sendSignal}
+          onToggleBell={toggleBell}
+          onExport={saveScrollback}
+          onSearchToggle={() => setSearchOpen((v) => !v)}
+          onSettings={() => setSettingsOpen(true)}
+          onPalette={() => setPaletteOpen(true)}
+          onFullscreen={toggleFullscreen}
+          onFontDec={fontDec}
+          onFontInc={fontInc}
+          onFontReset={fontReset}
+          onReconnect={handleReconnect}
+          onDisconnect={handleDisconnect}
+          onOpenSftp={onOpenSftp}
+          searchTrigger={searchAnchorRef}
+        />
+
+        <TerminalContextMenu
+          hasSelection={hasSelection}
+          onCopy={() => handleRef.current?.copy()}
+          onPaste={() => handleRef.current?.paste()}
+          onSelectAll={() => handleRef.current?.selectAll()}
+          onClear={() => handleRef.current?.clear()}
+          onSearch={() => setSearchOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+          onPalette={() => setPaletteOpen(true)}
+          onSendSignal={sendSignal}
         >
-          <StatusDot status={status} />
-          <div className="flex items-baseline gap-1.5 min-w-0">
-            <span className="text-xs font-medium text-zinc-100 truncate max-w-[160px]">
-              {displayName || `node #${nodeId}`}
-            </span>
-            <Badge
-              variant="outline"
-              className="h-4 px-1.5 text-[10px] uppercase border-zinc-700 text-zinc-300 bg-zinc-900/60"
-            >
-              {protocol}
-            </Badge>
-            {subtitle && (
-              <span className="text-[11px] text-zinc-400 font-mono truncate min-w-0">
-                {subtitle}
-              </span>
-            )}
-            {liveTitle && (
-              <span className="text-[11px] text-zinc-500 font-mono truncate min-w-0 hidden md:inline">
-                · {liveTitle}
-              </span>
-            )}
-          </div>
-
-          <div className="ml-auto flex items-center gap-0.5">
-            {searchOpen && (
-              <div className="flex items-center gap-0.5 mr-1.5 bg-zinc-900/80 border border-zinc-700/80 rounded-md px-1 py-0.5">
-                <SearchIcon className="w-3 h-3 text-zinc-400 ml-1" />
-                <Input
-                  autoFocus
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault()
-                      searchNext(e.shiftKey ? "prev" : "next")
-                    }
-                    if (e.key === "Escape") setSearchOpen(false)
-                  }}
-                  placeholder="搜索…"
-                  className="h-6 w-44 border-0 bg-transparent text-xs text-zinc-100 placeholder:text-zinc-500 shadow-none focus-visible:ring-0 px-1"
-                />
-                <ToolbarBtn onClick={() => searchNext("prev")} title="上一个 (Shift+Enter)" small>
-                  <span className="text-xs">↑</span>
-                </ToolbarBtn>
-                <ToolbarBtn onClick={() => searchNext("next")} title="下一个 (Enter)" small>
-                  <span className="text-xs">↓</span>
-                </ToolbarBtn>
-                <ToolbarBtn onClick={() => setSearchOpen(false)} title="关闭 (Esc)" small>
-                  <X className="w-3 h-3" />
-                </ToolbarBtn>
+          <div className="relative flex-1 min-h-0">
+            {status === "connecting" && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-full border bg-card/70 backdrop-blur text-muted-foreground">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  正在连接到 {host || displayName || "远端"}…
+                </div>
               </div>
             )}
-
-            <IconBtn
-              icon={SearchIcon}
-              onClick={() => setSearchOpen((v) => !v)}
-              title="搜索 (Ctrl+Shift+F)"
-              active={searchOpen}
-            />
-            <IconBtn icon={Copy} onClick={() => handleCopy()} title="复制选区 (Ctrl+Shift+C)" />
-            <IconBtn icon={Clipboard} onClick={() => handlePaste()} title="粘贴 (Ctrl+Shift+V)" />
-            <IconBtn icon={Eraser} onClick={handleClear} title="清屏" />
-
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  className={termBtnCls(false)}
-                  aria-label="发送控制信号"
-                  title="发送控制信号"
-                >
-                  <Send className="w-3.5 h-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-44">
-                <DropdownMenuLabel className="text-xs">发送控制字符</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => sendSignal("\x03")} className="text-xs">
-                  <Zap className="w-3.5 h-3.5" />
-                  Ctrl+C — 中断 (SIGINT)
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => sendSignal("\x04")} className="text-xs">
-                  <Zap className="w-3.5 h-3.5" />
-                  Ctrl+D — EOF / 退出
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => sendSignal("\x1a")} className="text-xs">
-                  <Zap className="w-3.5 h-3.5" />
-                  Ctrl+Z — 挂起 (SIGTSTP)
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => sendSignal("\x0c")} className="text-xs">
-                  <Zap className="w-3.5 h-3.5" />
-                  Ctrl+L — 清屏
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-
-            <IconBtn
-              icon={bellEnabled ? Bell : BellOff}
-              onClick={() => setBellEnabled((v) => !v)}
-              title={bellEnabled ? "关闭蜂鸣" : "启用蜂鸣"}
-              active={bellEnabled}
-            />
-            <IconBtn icon={Download} onClick={saveScrollback} title="导出回滚为 .log" />
-
-            {protocol === "ssh" &&
-              (onOpenSftp ? (
-                // Workspace-aware: open the SFTP browser as a new workspace
-                // tab. Stays inside the workspace, no page navigation.
-                <IconBtn
-                  icon={FolderTree}
-                  onClick={onOpenSftp}
-                  title="在工作台打开 SFTP 文件管理"
-                />
-              ) : (
-                // Standalone /nodes/:id/ssh page — keep the legacy link to
-                // /nodes/:id/sftp; the workspace doesn't supply onOpenSftp.
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Link
-                      href={{ pathname: `/nodes/${nodeId}/sftp` }}
-                      className={termBtnCls(false)}
-                      aria-label="打开 SFTP 文件管理"
-                    >
-                      <FolderTree className="w-3.5 h-3.5" />
-                    </Link>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">打开 SFTP 文件管理</TooltipContent>
-                </Tooltip>
-              ))}
-
-            <Separator orientation="vertical" className="bg-zinc-800 mx-0.5 h-5" />
-
-            <IconBtn icon={AArrowDown} onClick={fontDec} title="字号 -" />
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={fontReset}
-                  className="text-[11px] font-mono px-1.5 h-7 inline-flex items-center text-zinc-300 hover:text-white hover:bg-zinc-800 rounded-md transition-colors"
-                  aria-label="重置字号"
-                >
-                  {fontSize}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">重置字号</TooltipContent>
-            </Tooltip>
-            <IconBtn icon={AArrowUp} onClick={fontInc} title="字号 +" />
-
-            <Separator orientation="vertical" className="bg-zinc-800 mx-0.5 h-5" />
-
-            <IconBtn
-              icon={fullscreen ? Minimize : Maximize}
-              onClick={toggleFullscreen}
-              title={fullscreen ? "退出全屏 (F11)" : "全屏 (F11)"}
-            />
-            {status === "closed" ? (
-              <IconBtn icon={RotateCw} onClick={handleReconnect} title="重新连接" variant="success" />
-            ) : (
-              <IconBtn icon={Plug} onClick={handleDisconnect} title="断开连接" variant="danger" />
+            <div ref={containerRef} className="absolute inset-0 p-1" />
+            {scrolledUp && (
+              <motion.button
+                initial={reduced ? false : { opacity: 0, y: 8, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={reduced ? undefined : { opacity: 0, y: 8, scale: 0.95 }}
+                transition={{ duration: 0.16, ease: "easeOut" }}
+                onClick={() => handleRef.current?.scrollToBottom()}
+                className={cn(
+                  "absolute bottom-4 right-5 z-10",
+                  "inline-flex items-center gap-1.5 px-3 h-7 rounded-full",
+                  "border bg-card/90 backdrop-blur text-xs",
+                  "shadow-lg hover:bg-card transition-colors",
+                )}
+                aria-label="回到底部"
+                title="回到底部"
+              >
+                <ArrowDownToLine className="w-3 h-3" />
+                回到底部
+              </motion.button>
             )}
           </div>
-        </header>
+        </TerminalContextMenu>
 
-        <div className="relative flex-1 min-h-0 bg-zinc-950">
-          {status === "connecting" && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="flex items-center gap-2 text-sm text-zinc-400 px-3 py-1.5 rounded-full bg-zinc-900/60 border border-zinc-800/80">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                正在连接到 {host || displayName || "远端"}…
-              </div>
-            </div>
-          )}
-          <div ref={containerRef} className="absolute inset-0 p-1" />
+        <TerminalStatusBar
+          status={status}
+          cols={cols}
+          rows={rows}
+          cursorX={cursor.x}
+          cursorY={cursor.y}
+          bytesIn={stats.bytesIn}
+          bytesOut={stats.bytesOut}
+          latencyMs={latencyMs}
+        />
 
-          {/* "Back to bottom" floating button — appears when the user has
-              scrolled up in the scrollback buffer. */}
-          {scrolledUp && (
-            <motion.button
-              initial={reduced ? false : { opacity: 0, y: 8, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={reduced ? undefined : { opacity: 0, y: 8, scale: 0.95 }}
-              transition={{ duration: 0.16, ease: "easeOut" }}
-              onClick={scrollToBottom}
-              className={cn(
-                "absolute bottom-4 right-5 z-10",
-                "inline-flex items-center gap-1.5 px-3 h-7 rounded-full",
-                "bg-zinc-900/90 border border-zinc-700/80 text-xs text-zinc-200",
-                "shadow-lg hover:bg-zinc-800 hover:border-zinc-600",
-                "backdrop-blur transition-colors",
-              )}
-              aria-label="回到底部"
-              title="回到底部"
-            >
-              <ArrowDownToLine className="w-3 h-3" />
-              回到底部
-            </motion.button>
-          )}
-        </div>
+        <TerminalSearchPopover
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
+          options={searchOptions}
+          onOptionsChange={setSearchOptions}
+          resultIndex={searchResults.index}
+          resultCount={searchResults.count}
+          onNext={() => handleSearchNext("next")}
+          onPrev={() => handleSearchNext("prev")}
+          anchor={searchAnchorRef}
+        />
+
+        <TerminalSettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          settings={settings}
+          onChange={update}
+          onReset={reset}
+        />
+
+        <TerminalCommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          actions={{
+            onCopy: () => handleRef.current?.copy(),
+            onPaste: () => handleRef.current?.paste(),
+            onSearch: () => setSearchOpen(true),
+            onClear: () => handleRef.current?.clear(),
+            onExport: saveScrollback,
+            onSettings: () => setSettingsOpen(true),
+            onFontInc: fontInc,
+            onFontDec: fontDec,
+            onFontReset: fontReset,
+            onFullscreen: toggleFullscreen,
+            onToggleBell: toggleBell,
+            bellEnabled: settings.bellEnabled,
+            onSendSignal: sendSignal,
+            onReconnect: handleReconnect,
+            onDisconnect: handleDisconnect,
+            onOpenSftp,
+            onSelectTheme: selectTheme,
+          }}
+        />
 
         <PasteConfirmDialog
           text={pasteConfirm}
@@ -783,102 +866,22 @@ function PasteConfirmDialog({
   )
 }
 
-function StatusDot({ status }: { status: Status }) {
-  const map: Record<Status, { dot: string; label: string }> = {
-    connecting: { dot: "bg-amber-500", label: "连接中" },
-    open: { dot: "bg-emerald-500", label: "已连接" },
-    closed: { dot: "bg-red-500", label: "已断开" },
+function playBell() {
+  try {
+    const AC =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const ac = new AC()
+    const o = ac.createOscillator()
+    const g = ac.createGain()
+    o.connect(g)
+    g.connect(ac.destination)
+    o.frequency.value = 880
+    g.gain.value = 0.05
+    o.start()
+    o.stop(ac.currentTime + 0.08)
+    setTimeout(() => ac.close().catch(() => {}), 200)
+  } catch {
+    /* */
   }
-  const s = map[status]
-  return (
-    <div className="flex items-center gap-1.5 mr-1.5 pl-1">
-      <span className="relative inline-flex w-2 h-2 shrink-0">
-        <span className={cn("absolute inset-0 rounded-full", s.dot)} />
-        {status === "connecting" && (
-          <span className={cn("absolute inset-0 rounded-full animate-ping", s.dot)} />
-        )}
-      </span>
-      <span className="text-[11px] text-zinc-400">{s.label}</span>
-    </div>
-  )
 }
-
-function termBtnCls(active?: boolean, variant?: "success" | "danger") {
-  return cn(
-    "inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors outline-none",
-    "text-zinc-400 hover:text-white hover:bg-zinc-800 focus-visible:ring-1 focus-visible:ring-zinc-600",
-    active && "bg-zinc-800 text-white",
-    variant === "success" && "text-emerald-400 hover:text-emerald-300",
-    variant === "danger" && "text-red-400 hover:text-red-300",
-  )
-}
-
-function IconBtn({
-  icon: Icon,
-  onClick,
-  title,
-  active,
-  variant,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  onClick: () => void
-  title: string
-  active?: boolean
-  variant?: "success" | "danger"
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          onClick={onClick}
-          aria-label={title}
-          className={termBtnCls(active, variant)}
-        >
-          <Icon className="w-3.5 h-3.5" />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{title}</TooltipContent>
-    </Tooltip>
-  )
-}
-
-function ToolbarBtn({
-  onClick,
-  title,
-  small,
-  children,
-}: {
-  onClick: () => void
-  title: string
-  small?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className={cn(
-        "inline-flex items-center justify-center rounded-md transition-colors",
-        "text-zinc-300 hover:text-white hover:bg-zinc-800",
-        small ? "h-6 w-6" : "h-7 w-7",
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-// oklch(0.985 0 0) → #fafafa. xterm needs explicit RGB/HEX, so we crudely
-// convert shadcn's CSS lightness to a hex gray.
-function oklchToHex(oklch: string): string | null {
-  const m = oklch.match(/oklch\(([\d.]+)/)
-  if (!m) return null
-  const l = parseFloat(m[1])
-  const g = Math.round(l * 255)
-  const hex = g.toString(16).padStart(2, "0")
-  return `#${hex}${hex}${hex}`
-}
-
-// Compat: AArrowDown/AArrowUp icons (kept for callers that imported the
-// re-exports). Newer callers don't need this.
