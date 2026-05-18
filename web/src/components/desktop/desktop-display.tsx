@@ -43,6 +43,7 @@ import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
 import { DesktopStatusBar } from "./desktop-status-bar"
 import { DesktopToolbar } from "./desktop-toolbar"
+import { IronRdpDesktopShell } from "./desktop-display-iron"
 import { bitmapCursorCss, x11CursorToCss } from "./desktop-cursor-map"
 import { expandCombo, keysymForEvent } from "./desktop-key-map"
 import { useDesktopSettings } from "./use-desktop-settings"
@@ -54,7 +55,17 @@ export interface DesktopDisplayProps {
   nodeHost?: string
   nodePort?: number
   backHref?: string
-  backend?: "freerdp" | "dummy"
+  /**
+   * Picks the renderer.
+   *   - "ironrdp"  → Plan 29 path: IronRDP Wasm + Devolutions Gateway.
+   *   - "freerdp"  → legacy worker subprocess + in-house frame protocol.
+   *   - "dummy"    → in-process test pattern (CI-only).
+   * Defaults to "ironrdp" so the new workspace tab type picks it up; the
+   * legacy branch stays available for ops who haven't enabled the
+   * Devolutions Gateway yet (it'll be removed in PR-C once the
+   * production migration is done).
+   */
+  backend?: "freerdp" | "dummy" | "ironrdp"
 }
 
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
@@ -86,7 +97,26 @@ type LiveDesktopSession = {
 const liveDesktopSessions = new Map<string, LiveDesktopSession>()
 const TEARDOWN_GRACE_MS = 5000
 
-export function DesktopDisplay({
+// Plan 29 PR-B — top-level dispatcher. Routes to the IronRDP shell
+// (Wasm + Devolutions Gateway) or the legacy worker-subprocess shell
+// based on the `backend` prop. Picking the renderer at this layer
+// keeps each path's hook order stable (no conditional hooks).
+export function DesktopDisplay(props: DesktopDisplayProps): React.ReactElement {
+  const backend = props.backend ?? "ironrdp"
+  if (backend === "ironrdp") {
+    return (
+      <IronRdpDesktopShell
+        nodeId={props.nodeId}
+        nodeName={props.nodeName}
+        nodeHost={props.nodeHost}
+        nodePort={props.nodePort}
+      />
+    )
+  }
+  return <LegacyDesktopDisplay {...props} backend={backend} />
+}
+
+function LegacyDesktopDisplay({
   nodeId,
   nodeName,
   nodeHost,
