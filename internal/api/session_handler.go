@@ -14,9 +14,15 @@ type SessionHandler struct{ Repo *repo.SessionRepo }
 func (h *SessionHandler) List(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-	out, err := h.Repo.List(c.Request.Context(), repo.ListSessionFilter{
+	filter := repo.ListSessionFilter{
 		Status: c.Query("status"), Limit: limit, Offset: offset,
-	})
+	}
+	if raw := c.Query("node_id"); raw != "" {
+		if nid, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			filter.NodeID = &nid
+		}
+	}
+	out, err := h.Repo.List(c.Request.Context(), filter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -3,9 +3,10 @@
 import * as React from "react"
 import { use } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  ArrowRight, Database, FolderOpen, Heart, Monitor, Play,
+  ArrowRight, Database, FolderOpen, Heart, LayoutGrid, Monitor, Play,
   Server, Share2, Terminal as TerminalIcon,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -17,6 +18,7 @@ import { CopyButton } from "@/components/common/copy-button"
 import type { NodeProtocol } from "@/lib/api/types"
 import { fullTime, relTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
+import { useWorkspaceStore, type Protocol } from "@/components/workspace/useWorkspaceStore"
 
 const PROTOCOL_ICON: Record<NodeProtocol, React.ComponentType<{ className?: string }>> = {
   ssh: TerminalIcon,
@@ -102,23 +104,28 @@ export default function NodeDetail({ params }: { params: Promise<{ id: string }>
       </Card>
 
       <div>
-        <div className="text-sm font-medium mb-2 text-muted-foreground">动作</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-medium text-muted-foreground">动作</div>
+          <Button
+            variant="outline"
+            size="sm"
+            asChild
+          >
+            {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+            <Link href={"/workspace" as any} className="gap-1.5">
+              <LayoutGrid className="w-3.5 h-3.5" />
+              切换到工作台
+            </Link>
+          </Button>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {actions.map((a) => (
-            <Link
+            <ActionCard
               key={a.href}
-              href={a.external ? (a.href as Parameters<typeof Link>[0]["href"]) : `/nodes/${nodeId}${a.href}` as Parameters<typeof Link>[0]["href"]}
-              className="rounded-lg border p-4 hover:bg-accent hover:border-primary/40 transition-all group"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 font-medium">
-                  <a.icon className="w-4 h-4" />
-                  {a.label}
-                </div>
-                <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">{a.hint}</div>
-            </Link>
+              action={a}
+              node={n}
+              nodeId={nodeId}
+            />
           ))}
         </div>
       </div>
@@ -175,35 +182,122 @@ function prettyJson(s: string): string {
   try { return JSON.stringify(JSON.parse(s), null, 2) } catch { return s }
 }
 
-type ActionItem = { href: string; label: string; hint: string; icon: React.ComponentType<{ className?: string }>; external?: boolean }
+type ActionItem = {
+  href: string
+  label: string
+  hint: string
+  icon: React.ComponentType<{ className?: string }>
+  external?: boolean
+  // When present, the card's primary CTA opens a workspace tab instead of
+  // navigating to the standalone page. The standalone page remains a
+  // secondary link on the card.
+  protocol?: Protocol
+}
 
 function actionList(protocol: string): ActionItem[] {
   const out: ActionItem[] = []
   if (protocol === "ssh") {
-    out.push({ href: "/ssh", label: "SSH 终端", hint: "浏览器内 xterm.js", icon: TerminalIcon })
-    out.push({ href: "/sftp", label: "SFTP 文件管理", hint: "上传 / 下载 / 编辑", icon: FolderOpen })
+    out.push({ href: "/ssh", label: "SSH 终端", hint: "浏览器内 xterm.js", icon: TerminalIcon, protocol: "ssh" })
+    out.push({ href: "/sftp", label: "SFTP 文件管理", hint: "上传 / 下载 / 编辑", icon: FolderOpen, protocol: "sftp" })
   } else if (protocol === "telnet") {
-    out.push({ href: "/telnet", label: "Telnet 终端", hint: "适合网络设备", icon: TerminalIcon })
+    out.push({ href: "/telnet", label: "Telnet 终端", hint: "适合网络设备", icon: TerminalIcon, protocol: "telnet" })
   } else if (protocol === "rdp") {
-    out.push({ href: "/rdp", label: "RDP 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor })
-    // Plan 17 — surface the new worker-based stack as a Beta entry. Once
-    // M2 reaches parity this becomes the default and the guacd link goes
-    // away.
+    out.push({ href: "/rdp", label: "RDP 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor, protocol: "rdp" })
+    // Plan 17 — surface the new worker-based stack. M2 + Plan 18 ship the
+    // real freerdp worker; the dummy-test-pattern note is obsolete.
     out.push({
       href: "/rdp-next",
       label: "RDP (Beta · 新栈)",
-      hint: "DesktopWorker 子进程 + 浏览器自研 viewer (M1: test pattern)",
+      hint: "DesktopWorker 子进程 + 浏览器自研 viewer",
       icon: Monitor,
+      protocol: "rdp_next",
     })
   } else if (protocol === "vnc") {
-    out.push({ href: "/vnc", label: "VNC 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor })
+    out.push({ href: "/vnc", label: "VNC 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor, protocol: "vnc" })
   } else if (["mysql", "postgres", "redis", "mongo"].includes(protocol)) {
-    out.push({ href: "/dbcli", label: "数据库 CLI", hint: "一次性容器，会话结束自动销毁", icon: TerminalIcon })
+    out.push({ href: "/dbcli", label: "数据库 CLI", hint: "一次性容器，会话结束自动销毁", icon: TerminalIcon, protocol: "dbcli" })
   }
   if (protocol === "tcp") {
-    out.push({ href: "/sftp", label: "SFTP 文件管理", hint: "（如果目标支持）", icon: FolderOpen })
+    out.push({ href: "/sftp", label: "SFTP 文件管理", hint: "（如果目标支持）", icon: FolderOpen, protocol: "sftp" })
   }
   out.push({ href: "/port-forwards", label: "端口转发", hint: "管理网关本地 TCP 转发端口", icon: Share2, external: true })
   const seen = new Set<string>()
   return out.filter((x) => (seen.has(x.href) ? false : (seen.add(x.href), true)))
+}
+
+// ActionCard renders one protocol entry. When the action maps to a
+// workspace Protocol, clicking the card opens a workspace tab (the
+// preferred flow); otherwise it navigates to the standalone page. The
+// standalone page is always linked as a small secondary link below.
+function ActionCard({
+  action,
+  node,
+  nodeId,
+}: {
+  action: ActionItem
+  node: { name: string; host: string; port: number }
+  nodeId: number
+}) {
+  const router = useRouter()
+  const open = useWorkspaceStore((s) => s.open)
+  const standaloneHref = action.external
+    ? (action.href as Parameters<typeof Link>[0]["href"])
+    : ((`/nodes/${nodeId}${action.href}`) as Parameters<typeof Link>[0]["href"])
+
+  if (!action.protocol) {
+    // No workspace mapping (e.g. port-forwards) — keep classic Link card.
+    return (
+      <Link
+        href={standaloneHref}
+        className="rounded-lg border p-4 hover:bg-accent hover:border-primary/40 transition-all group"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 font-medium">
+            <action.icon className="w-4 h-4" />
+            {action.label}
+          </div>
+          <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:translate-x-0.5 transition-transform" />
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">{action.hint}</div>
+      </Link>
+    )
+  }
+
+  const openInWorkspace = () => {
+    open({
+      nodeId,
+      protocol: action.protocol!,
+      title: node.name,
+      host: node.host,
+      port: node.port,
+    })
+    router.push("/workspace" as Parameters<typeof router.push>[0])
+  }
+
+  return (
+    <div className="rounded-lg border p-4 hover:border-primary/40 transition-all">
+      <button
+        type="button"
+        className="w-full text-left group"
+        onClick={openInWorkspace}
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 font-medium">
+            <action.icon className="w-4 h-4" />
+            {action.label}
+          </div>
+          <span className="inline-flex items-center gap-1 text-xs text-primary group-hover:underline">
+            <LayoutGrid className="w-3 h-3" /> 在工作台打开
+          </span>
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">{action.hint}</div>
+      </button>
+      <Link
+        href={standaloneHref}
+        className="mt-2 inline-flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+      >
+        或单独页面打开 <ArrowRight className="w-3 h-3" />
+      </Link>
+    </div>
+  )
 }

@@ -5,6 +5,7 @@ import dynamic from "next/dynamic"
 import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { SftpWorkspace } from "@/components/sftp/SftpWorkspace"
+import { SideDock } from "./SideDock"
 import { TcpForwardPanel } from "./TcpForwardPanel"
 import { useWorkspaceStore, type WorkspaceTab as TabModel } from "./useWorkspaceStore"
 
@@ -32,41 +33,50 @@ function LoadingShim({ label }: { label: string }) {
   )
 }
 
-// Pick the right protocol component for a tab. Stays in this file so the
-// renderer logic lives next to the visibility strategy.
+// Pick the right protocol component for a tab. Connection-oriented
+// protocols (SSH/Telnet/DBCLI/RDP/VNC/RDP-next) get wrapped in SideDock so
+// the right pane shows server insights / firewall / docker / sessions /
+// node info. SFTP + TCP-forward already span the full pane and look
+// cramped with another split, so they render flat.
 function renderTabBody(tab: TabModel): React.ReactNode {
   switch (tab.protocol) {
     case "ssh":
     case "telnet":
     case "dbcli":
       return (
-        <WebSSHTerminal
-          protocol={tab.protocol}
-          nodeId={tab.nodeId}
-          displayName={tab.title}
-          host={tab.host}
-          port={tab.port}
-        />
+        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+          <WebSSHTerminal
+            protocol={tab.protocol}
+            nodeId={tab.nodeId}
+            displayName={tab.title}
+            host={tab.host}
+            port={tab.port}
+          />
+        </SideDock>
       )
     case "rdp":
     case "vnc":
       return (
-        <RDPDisplay
-          protocol={tab.protocol}
-          nodeId={tab.nodeId}
-          nodeName={tab.title}
-          nodeHost={tab.host}
-          nodePort={tab.port}
-        />
+        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+          <RDPDisplay
+            protocol={tab.protocol}
+            nodeId={tab.nodeId}
+            nodeName={tab.title}
+            nodeHost={tab.host}
+            nodePort={tab.port}
+          />
+        </SideDock>
       )
     case "rdp_next":
       return (
-        <DesktopDisplay
-          nodeId={tab.nodeId}
-          nodeName={tab.title}
-          nodeHost={tab.host}
-          nodePort={tab.port}
-        />
+        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+          <DesktopDisplay
+            nodeId={tab.nodeId}
+            nodeName={tab.title}
+            nodeHost={tab.host}
+            nodePort={tab.port}
+          />
+        </SideDock>
       )
     case "sftp":
       return <SftpWorkspace nodeId={tab.nodeId} showNodeHeader={false} className="h-full flex flex-col" />

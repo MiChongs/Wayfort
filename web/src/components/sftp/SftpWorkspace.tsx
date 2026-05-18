@@ -7,7 +7,7 @@ import { ArrowLeft, Server, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { nodeService, sftpService, type SftpEntry } from "@/lib/api/services"
 import { SftpBrowser } from "./SftpBrowser"
-import { SftpContextMenu, useSftpContextMenu, type SftpContextActions } from "./SftpContextMenu"
+import { type SftpContextActions } from "./SftpContextMenu"
 import { SftpStatusBar } from "./SftpStatusBar"
 import { SftpToolbar, type SortDir, type SortKey } from "./SftpToolbar"
 import { SftpUploadDrawer } from "./SftpUploadDrawer"
@@ -206,14 +206,15 @@ export function SftpWorkspace({
     else triggerDownload(entry)
   }
 
-  // ---- context menu -----------------------------------------------------
-  const menu = useSftpContextMenu()
-  const openContext = (entry: SftpEntry, ev: React.MouseEvent) => {
+  // ---- context menu — selection sync ------------------------------------
+  // Shadcn ContextMenu fires onOpenChange when the user right-clicks; we
+  // use that hook to ensure the row that opened the menu is selected,
+  // matching native file-manager UX where right-click implies "select".
+  const onBeforeContextMenu = (entry: SftpEntry) => {
     if (!sel.isSelected(entry.path)) {
       const idx = entries.indexOf(entry)
       sel.select(entry, idx, "set")
     }
-    menu.open(entry, ev)
   }
 
   const triggerDownload = (entry: SftpEntry) => {
@@ -278,7 +279,6 @@ export function SftpWorkspace({
       onRefresh: () => refresh(),
       onEscape: () => {
         if (renamingPath) setRenamingPath(null)
-        else if (menu.state) menu.close()
         else if (sel.count > 0) sel.clear()
       },
     },
@@ -355,7 +355,8 @@ export function SftpWorkspace({
         isSelected={sel.isSelected}
         onRowClick={onRowClick}
         onRowDoubleClick={onRowDoubleClick}
-        onContextMenu={openContext}
+        contextActions={actions}
+        onBeforeContextMenu={onBeforeContextMenu}
         renamingPath={renamingPath}
         onRenameSubmit={runRename}
         onRenameCancel={() => setRenamingPath(null)}
@@ -390,8 +391,6 @@ export function SftpWorkspace({
         onRetry={uploads.retry}
         onClearFinished={uploads.clearFinished}
       />
-
-      <SftpContextMenu state={menu.state} onClose={menu.close} actions={actions} />
 
       <SftpPreviewModal
         nodeId={nodeId}

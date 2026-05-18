@@ -31,6 +31,7 @@ func (r *SessionRepo) FindByID(ctx context.Context, id string) (*model.Session, 
 
 type ListSessionFilter struct {
 	UserID *uint64
+	NodeID *uint64 // populated by the workspace's per-node "recent sessions" tab
 	Status string
 	Limit  int
 	Offset int
@@ -40,6 +41,9 @@ func (r *SessionRepo) List(ctx context.Context, f ListSessionFilter) ([]model.Se
 	q := r.db.WithContext(ctx).Model(&model.Session{})
 	if f.UserID != nil {
 		q = q.Where("user_id = ?", *f.UserID)
+	}
+	if f.NodeID != nil {
+		q = q.Where("node_id = ?", *f.NodeID)
 	}
 	if f.Status != "" {
 		q = q.Where("status = ?", f.Status)

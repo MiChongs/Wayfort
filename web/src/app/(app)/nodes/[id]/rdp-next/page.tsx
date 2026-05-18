@@ -28,10 +28,10 @@ export default function NodeRDPNextPage({ params }: { params: Promise<{ id: stri
         nodeHost={node.data?.host}
         nodePort={node.data?.port}
         backHref={`/nodes/${nodeId}`}
-        // M1: keep dummy as the default so the page works on machines without
-        // libfreerdp. Operators can flip to "freerdp" by editing this prop
-        // (or once M2 ships, the gateway config sets the default backend).
-        backend="dummy"
+        // Default to freerdp now that M2 + Plan 18 ship the real worker.
+        // If the gateway can't reach a built worker the start call returns
+        // 502 with a clear error; the user can manually try ?backend=dummy
+        // (or hit /api/v1/desktop/bootstrap as admin).
       />
     </div>
   )

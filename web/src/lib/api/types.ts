@@ -150,6 +150,71 @@ export interface AssetTag {
   color?: string
 }
 
+// ----- Workspace v2 — firewall + docker management -----
+
+export type FirewallTool = "ufw" | "firewalld" | "iptables" | ""
+export interface FirewallStatus {
+  tool: FirewallTool
+  active: boolean
+  policy?: string
+  rule_count: number
+  reason?: string
+  sampled_at: string
+}
+export interface FirewallRule {
+  index: number
+  action: string
+  direction: string
+  protocol?: string
+  port?: string
+  source?: string
+  raw: string
+}
+export interface FirewallRuleSpec {
+  action: "ALLOW" | "DENY" | "REJECT"
+  direction?: "in" | "out"
+  protocol?: "tcp" | "udp"
+  port: string
+  source?: string
+}
+
+export interface DockerStatus {
+  available: boolean
+  version?: string
+  api_version?: string
+  os?: string
+  reason?: string
+  containers: number
+  images: number
+  sampled_at: string
+}
+export interface DockerContainer {
+  id: string
+  names: string
+  image: string
+  state: string
+  status: string
+  command: string
+  ports: string
+  created_at: string
+  size_rootfs?: string
+  sampled_at: string
+}
+export interface DockerImage {
+  id: string
+  repository: string
+  tag: string
+  digest?: string
+  size: string
+  created_at: string
+  sampled_at: string
+}
+export interface DockerLogsResponse {
+  container_id: string
+  tail: number
+  logs: string
+}
+
 export interface AssetGrant {
   id: number
   grantee_type: "user" | "role" | "group" | "department"

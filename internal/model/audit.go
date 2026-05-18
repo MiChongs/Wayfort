@@ -24,6 +24,9 @@ const (
 	AuditPortForwardClose AuditEventKind = "portforward.close"
 	AuditGraphicalStart  AuditEventKind = "graphical.start"
 	AuditGraphicalError  AuditEventKind = "graphical.error"
+	// Plan v2 — server-management actions executed via SSH.
+	AuditFirewallChange  AuditEventKind = "firewall.change"
+	AuditDockerAction    AuditEventKind = "docker.action"
 )
 
 type AuditLog struct {

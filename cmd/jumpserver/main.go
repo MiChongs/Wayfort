@@ -31,9 +31,12 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/server"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/firewall"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
+	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
@@ -326,6 +329,23 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
 		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
 	}
+
+	// Workspace v2 — firewall + docker management panels. Both run
+	// commands over SSH (same plumbing as insights) and surface results
+	// to the workspace's right-side dock.
+	sshDeps := sshrun.Deps{
+		Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(), Proxies: proxyRepo,
+	}
+	firewallMgr := firewall.NewManager(firewall.Config{Enabled: true}, firewall.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
+		Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Firewall = api.NewFirewallHandler(firewallMgr)
+	dockerMgr := dockerpkg.NewManager(dockerpkg.Config{Enabled: true}, dockerpkg.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
+		Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Docker = api.NewDockerHandler(dockerMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{

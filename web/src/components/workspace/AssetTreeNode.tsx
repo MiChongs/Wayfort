@@ -1,14 +1,24 @@
 "use client"
 
 import * as React from "react"
-import Link from "next/link"
 import { ChevronRight, Star } from "lucide-react"
 import { toast } from "sonner"
 import type { Node } from "@/lib/api/types"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import { metaOf, protocolsForNode, PROTOCOL_META } from "./protocolMeta"
-import type { Protocol } from "./useWorkspaceStore"
+import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
 
 export type TreeFolder = {
   type: "folder"
@@ -105,150 +115,93 @@ function LeafRow({
   const defaultProto = protocols[0]
   const meta = metaOf(defaultProto)
   const Icon = meta.icon
-  const [menu, setMenu] = React.useState<{ x: number; y: number } | null>(null)
+  const open = useWorkspaceStore((s) => s.open)
+  const setSubTab = useWorkspaceStore((s) => s.setSubTab)
 
-  const onContextMenu = (ev: React.MouseEvent) => {
-    ev.preventDefault()
-    setMenu({ x: ev.clientX, y: ev.clientY })
+  // Open the default protocol AND flip the dock straight to 节点信息 so the
+  // user lands on the metadata tab — replaces the old "节点详情(新页面)"
+  // jump-out without leaving the workspace.
+  const openWithInfo = () => {
+    const id = open({
+      nodeId: leaf.node.id,
+      protocol: defaultProto,
+      title: leaf.node.name,
+      host: leaf.node.host,
+      port: leaf.node.port,
+    })
+    if (id) setSubTab(id, "info")
+  }
+
+  const copyHostPort = () => {
+    const v = `${leaf.node.host}:${leaf.node.port}`
+    void navigator.clipboard?.writeText(v)
+    toast.success("已复制", { description: v })
   }
 
   return (
-    <>
-      <button
-        type="button"
-        onDoubleClick={() => onOpenTab(leaf.node, defaultProto)}
-        onContextMenu={onContextMenu}
-        title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接`}
-        className={cn(
-          "group/leaf w-full flex items-center gap-2 px-2 py-1 rounded-sm text-sm",
-          "hover:bg-accent/60 active:bg-accent transition-colors",
-          leaf.node.disabled && "opacity-50",
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          type="button"
+          onDoubleClick={() => onOpenTab(leaf.node, defaultProto)}
+          title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接`}
+          className={cn(
+            "group/leaf w-full flex items-center gap-2 px-2 py-1 rounded-sm text-sm",
+            "hover:bg-accent/60 active:bg-accent transition-colors",
+            leaf.node.disabled && "opacity-50",
+          )}
+          style={{ paddingLeft: 8 + depth * 12 + 16 }}
+        >
+          <Icon className={cn("w-3.5 h-3.5 shrink-0", meta.tint)} />
+          <span className="truncate flex-1 text-left">{leaf.node.name}</span>
+          {leaf.isFavorite && <Star className="w-3 h-3 fill-amber-400 text-amber-400 shrink-0" />}
+          <span className="text-[10px] text-muted-foreground uppercase shrink-0">
+            {leaf.node.protocol}
+          </span>
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-56">
+        <ContextMenuLabel className="truncate">{leaf.node.name}</ContextMenuLabel>
+        <ContextMenuSeparator />
+        {protocols.length === 1 ? (
+          <ContextMenuItem onSelect={() => onOpenTab(leaf.node, protocols[0])}>
+            <Icon className={cn("w-4 h-4", meta.tint)} />
+            <span>打开 · {meta.label}</span>
+          </ContextMenuItem>
+        ) : (
+          <ContextMenuSub>
+            <ContextMenuSubTrigger>
+              <Icon className={cn("w-4 h-4", meta.tint)} />
+              <span>在工作台打开</span>
+            </ContextMenuSubTrigger>
+            <ContextMenuSubContent>
+              {protocols.map((p) => {
+                const m = PROTOCOL_META[p]
+                const PIcon = m.icon
+                return (
+                  <ContextMenuItem key={p} onSelect={() => onOpenTab(leaf.node, p)}>
+                    <PIcon className={cn("w-4 h-4", m.tint)} />
+                    <span>{m.label}</span>
+                  </ContextMenuItem>
+                )
+              })}
+            </ContextMenuSubContent>
+          </ContextMenuSub>
         )}
-        style={{ paddingLeft: 8 + depth * 12 + 16 }}
-      >
-        <Icon className={cn("w-3.5 h-3.5 shrink-0", meta.tint)} />
-        <span className="truncate flex-1 text-left">{leaf.node.name}</span>
-        {leaf.isFavorite && <Star className="w-3 h-3 fill-amber-400 text-amber-400 shrink-0" />}
-        <span className="text-[10px] text-muted-foreground uppercase shrink-0">
-          {leaf.node.protocol}
-        </span>
-      </button>
-      {menu && (
-        <LeafContextMenu
-          pos={menu}
-          node={leaf.node}
-          protocols={protocols}
-          onClose={() => setMenu(null)}
-          onOpenTab={onOpenTab}
-          onToggleFavorite={onToggleFavorite}
-        />
-      )}
-    </>
-  )
-}
-
-const MENU_W = 240
-
-function LeafContextMenu({
-  pos,
-  node,
-  protocols,
-  onClose,
-  onOpenTab,
-  onToggleFavorite,
-}: {
-  pos: { x: number; y: number }
-  node: Node
-  protocols: Protocol[]
-  onClose: () => void
-  onOpenTab: (node: Node, protocol: Protocol) => void
-  onToggleFavorite?: (node: Node) => void
-}) {
-  const ref = React.useRef<HTMLDivElement>(null)
-  React.useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as globalThis.Node)) onClose()
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
-    }
-    document.addEventListener("mousedown", onDown)
-    document.addEventListener("keydown", onKey)
-    return () => {
-      document.removeEventListener("mousedown", onDown)
-      document.removeEventListener("keydown", onKey)
-    }
-  }, [onClose])
-
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1024
-  const vh = typeof window !== "undefined" ? window.innerHeight : 768
-  const itemsCount = protocols.length + 4
-  const left = Math.min(pos.x, vw - MENU_W - 8)
-  const top = Math.min(pos.y, vh - itemsCount * 32 - 24)
-
-  const Item = ({
-    label,
-    onClick,
-    icon: Icon,
-    color,
-  }: {
-    label: string
-    onClick: () => void
-    icon?: React.ComponentType<{ className?: string }>
-    color?: string
-  }) => (
-    <button
-      type="button"
-      onClick={() => {
-        onClick()
-        onClose()
-      }}
-      className="w-full flex items-center gap-2 px-2.5 py-1.5 text-sm hover:bg-accent rounded-sm text-left"
-    >
-      {Icon && <Icon className={cn("w-4 h-4 shrink-0", color)} />}
-      <span className="truncate">{label}</span>
-    </button>
-  )
-
-  return (
-    <div
-      ref={ref}
-      style={{ position: "fixed", left, top, width: MENU_W, zIndex: 80 }}
-      className="bg-popover border rounded-md shadow-lg p-1 text-popover-foreground"
-    >
-      <div className="px-2.5 py-1 text-xs text-muted-foreground truncate">{node.name}</div>
-      <div className="-mx-1 my-1 h-px bg-border" />
-      {protocols.map((p) => {
-        const meta = PROTOCOL_META[p]
-        return (
-          <Item
-            key={p}
-            label={`在工作台中打开 · ${meta.label}`}
-            onClick={() => onOpenTab(node, p)}
-            icon={meta.icon}
-            color={meta.tint}
-          />
-        )
-      })}
-      <div className="-mx-1 my-1 h-px bg-border" />
-      {onToggleFavorite && (
-        <Item label="切换收藏" onClick={() => onToggleFavorite(node)} icon={Star} />
-      )}
-      <Item
-        label="复制地址 (host:port)"
-        onClick={() => {
-          void navigator.clipboard?.writeText(`${node.host}:${node.port}`)
-          toast.success("已复制", { description: `${node.host}:${node.port}` })
-        }}
-      />
-      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-      <Link
-        href={`/nodes/${node.id}` as any}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-sm hover:bg-accent rounded-sm"
-        onClick={onClose}
-      >
-        节点详情(新页面)
-      </Link>
-    </div>
+        <ContextMenuItem onSelect={openWithInfo}>
+          <span>打开 + 查看节点信息</span>
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {onToggleFavorite && (
+          <ContextMenuItem onSelect={() => onToggleFavorite(leaf.node)}>
+            <Star className="w-4 h-4" />
+            <span>{leaf.isFavorite ? "取消收藏" : "加入收藏"}</span>
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem onSelect={copyHostPort}>
+          <span>复制 host:port</span>
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
