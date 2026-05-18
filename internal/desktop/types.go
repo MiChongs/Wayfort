@@ -46,6 +46,23 @@ type StartSessionResponse struct {
 	SessionID    string `json:"session_id"`
 	RemoteWidth  uint32 `json:"remote_width"`
 	RemoteHeight uint32 `json:"remote_height"`
+	// Backend echoes which backend the manager picked. Browsers compare
+	// this against their build to decide whether to attach FrameClient
+	// (legacy freerdp/dummy) or instantiate iron-remote-desktop (ironrdp).
+	Backend string `json:"backend,omitempty"`
+
+	// ----- ironrdp backend only -----
+	// IronRDP is the Devolutions Wasm RDP client running inside the
+	// browser. It needs the destination + creds + a short-lived JWT it
+	// presents to the Devolutions Gateway as a pre-auth ticket. These
+	// fields are zero for freerdp/dummy responses; the browser MUST
+	// ignore them unless Backend == "ironrdp".
+	GatewayURL   string `json:"gateway_url,omitempty"`
+	Token        string `json:"token,omitempty"`
+	Destination  string `json:"destination,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	Domain       string `json:"domain,omitempty"`
 }
 
 type ResizeRequest struct {

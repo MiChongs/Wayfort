@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -328,6 +331,26 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		})
 		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
 		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
+
+		// Plan 29 — ironrdp backend via Devolutions Gateway. JWT signer
+		// + supervisor are attached to the manager; the gateway
+		// subprocess itself is spawned later in the errgroup (alongside
+		// the freerdp worker bootstrap). When the gateway block is
+		// disabled in YAML, manager.AttachIronRDP simply doesn't run
+		// and StartSession refuses backend=ironrdp.
+		if cfg.Desktop.DevolutionsGateway.Enabled {
+			signer, runtime, err := buildDesktopIronRDP(cfg.Desktop.DevolutionsGateway, logger)
+			if err != nil {
+				return fmt.Errorf("ironrdp setup: %w", err)
+			}
+			sup := desktop.NewGatewaySupervisor(logger, runtime, signer)
+			desktopMgr.AttachIronRDP(signer, sup)
+			logger.Info("desktop ironrdp backend wired",
+				zap.String("binary_path", runtime.BinaryPath),
+				zap.String("config_path", runtime.ConfigPath),
+				zap.String("listen_url", runtime.ListenURL),
+				zap.String("advertised_url", sup.AdvertisedURL()))
+		}
 	}
 
 	// Workspace v2 — firewall + docker management panels. Both run
@@ -400,6 +423,18 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			zap.Bool("auto_install", cfg.Desktop.AutoInstall),
 			zap.String("default_backend", cfg.Desktop.DefaultBackend))
 		g.Go(func() error { return desktopMgr.EnsureWorker(gctx) })
+		if cfg.Desktop.DevolutionsGateway.Enabled {
+			g.Go(func() error {
+				if err := desktopMgr.EnsureGateway(gctx); err != nil {
+					// Surface the error in /desktop/stats but don't
+					// fail the errgroup — operators can fix the gateway
+					// without restarting the whole jumpserver.
+					logger.Warn("devolutions gateway ensure failed",
+						zap.Error(err))
+				}
+				return nil
+			})
+		}
 	}
 
 	logger.Info("jumpserver started", zap.String("addr", cfg.Server.Addr))
@@ -570,4 +605,133 @@ func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, b
 		return roles.AssignToUser(ctx, u.ID, adminRole.ID, nil)
 	}
 	return nil
+}
+
+// buildDesktopIronRDP resolves config defaults, generates / loads the RSA
+// keypair, runs the install script if the gateway binary is missing
+// (and auto_install is on), and returns the pieces NewGatewaySupervisor
+// expects. Called once from the main wire-up when the ironrdp backend
+// is enabled in YAML.
+//
+// Path conventions:
+//   InstallPrefix       /opt/jumpserver/devolutions-gateway          (Linux)
+//                       ~/Library/Application Support/JumpServer/... (macOS)
+//                       %LOCALAPPDATA%\Programs\JumpServer\...       (Windows)
+//   BinaryPath          <InstallPrefix>/devolutions-gateway[.exe]
+//   ConfigPath          <InstallPrefix>/config/gateway.json
+//   IDFile              <InstallPrefix>/config/gateway-id
+//   JWTPrivateKeyFile   <InstallPrefix>/config/jwt.key   (+ jwt.key.pub auto-generated)
+//
+// Operators can override every path in YAML — these are just sensible
+// defaults so a clean install needs zero extra knobs.
+func buildDesktopIronRDP(cfg config.DevolutionsGatewayConfig, logger *zap.Logger) (*desktop.JWTSigner, desktop.DevolutionsGatewayRuntime, error) {
+	installPrefix := cfg.InstallPrefix
+	if installPrefix == "" {
+		installPrefix = defaultDevolutionsPrefix()
+	}
+	binaryPath := cfg.BinaryPath
+	if binaryPath == "" {
+		binaryPath = desktop.DefaultBinaryPath(installPrefix)
+	}
+	configPath := cfg.ConfigPath
+	if configPath == "" {
+		configPath = filepath.Join(installPrefix, "config", "gateway.json")
+	}
+	idFile := cfg.IDFile
+	if idFile == "" {
+		idFile = filepath.Join(installPrefix, "config", "gateway-id")
+	}
+	keyFile := cfg.JWTPrivateKeyFile
+	if keyFile == "" {
+		keyFile = filepath.Join(installPrefix, "config", "jwt.key")
+	}
+
+	// Install the binary on first run if the operator opted in. The
+	// install script is the same one operators run manually; calling
+	// it from here just removes a step.
+	if cfg.AutoInstall {
+		if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+			if err := runInstallDevolutionsScript(installPrefix, logger); err != nil {
+				return nil, desktop.DevolutionsGatewayRuntime{}, fmt.Errorf("install devolutions-gateway: %w", err)
+			}
+		}
+	}
+
+	signer, err := desktop.NewJWTSigner(keyFile)
+	if err != nil {
+		return nil, desktop.DevolutionsGatewayRuntime{}, err
+	}
+
+	rt := desktop.DevolutionsGatewayRuntime{
+		Enabled:       cfg.Enabled,
+		BinaryPath:    binaryPath,
+		ConfigPath:    configPath,
+		IDFile:        idFile,
+		ListenURL:     cfg.ListenAddr,
+		AdvertisedURL: cfg.AdvertisedURL,
+		HealthTimeout: cfg.HealthTimeout,
+		Verbosity:     cfg.Verbosity,
+		AutoStart:     cfg.AutoStart,
+	}
+	return signer, rt, nil
+}
+
+// defaultDevolutionsPrefix picks the install directory the install
+// script defaults to for the current OS. Kept in sync with the
+// scripts/install-devolutions-gateway-*.{sh,ps1} INSTALL_PREFIX values.
+func defaultDevolutionsPrefix() string {
+	switch runtime.GOOS {
+	case "windows":
+		return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "JumpServer", "devolutions-gateway")
+	case "darwin":
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, "Library", "Application Support", "JumpServer", "devolutions-gateway")
+	default:
+		return "/opt/jumpserver/devolutions-gateway"
+	}
+}
+
+// runInstallDevolutionsScript shells out to the platform-appropriate
+// install script with INSTALL_PREFIX pointing at the operator-chosen
+// directory. The scripts themselves are idempotent — they download
+// the upstream release archive, extract the binary, chmod it.
+func runInstallDevolutionsScript(installPrefix string, logger *zap.Logger) error {
+	scriptsDir := "scripts"
+	if exe, err := os.Executable(); err == nil {
+		// When running from a binary outside the repo (e.g. /usr/local/bin/jumpserver)
+		// the scripts/ dir is conventionally next to the binary or one level up.
+		// Try both before falling back to the CWD-relative path.
+		cands := []string{
+			filepath.Join(filepath.Dir(exe), "scripts"),
+			filepath.Join(filepath.Dir(exe), "..", "scripts"),
+			"scripts",
+		}
+		for _, c := range cands {
+			if _, serr := os.Stat(c); serr == nil {
+				scriptsDir = c
+				break
+			}
+		}
+	}
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		ps := filepath.Join(scriptsDir, "install-devolutions-gateway-windows.ps1")
+		cmd = exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps, "-InstallPrefix", installPrefix)
+	case "darwin":
+		sh := filepath.Join(scriptsDir, "install-devolutions-gateway-darwin.sh")
+		cmd = exec.Command("bash", sh)
+	default:
+		sh := filepath.Join(scriptsDir, "install-devolutions-gateway-linux.sh")
+		cmd = exec.Command("bash", sh)
+	}
+	cmd.Env = append(os.Environ(), "INSTALL_PREFIX="+installPrefix)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	logger.Info("running devolutions gateway install script",
+		zap.String("script", cmd.Path),
+		zap.Strings("args", cmd.Args),
+		zap.String("install_prefix", installPrefix))
+	return cmd.Run()
 }
