@@ -213,7 +213,15 @@ func (s *GatewaySupervisor) spawn(ctx context.Context) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
-	cmd := exec.CommandContext(runCtx, s.cfg.BinaryPath, "--config-path", s.cfg.ConfigPath)
+	// `--config-path` is a *directory*, not the JSON file itself. The
+	// gateway appends `gateway.json` internally and also writes peer
+	// state (boot.stacktrace, recordings, etc.) alongside. PR-A
+	// originally passed the .json file path here, causing the gateway
+	// to try `<file>\gateway.json\gateway.json` on Windows and fail
+	// with "os error 3 — system cannot find the path". Pass the
+	// directory containing our generated gateway.json.
+	configDir := filepath.Dir(s.cfg.ConfigPath)
+	cmd := exec.CommandContext(runCtx, s.cfg.BinaryPath, "--config-path", configDir)
 	// Hide the gateway binary's stdin so it doesn't compete for the TTY.
 	cmd.Stdin = nil
 	// Capture stderr and stdout to forward to our zap logger; the
