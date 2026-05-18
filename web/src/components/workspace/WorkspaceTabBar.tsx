@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react"
 import { Plus } from "lucide-react"
 import {
   ContextMenu,
@@ -65,69 +66,81 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   }
   const onDragEnd = () => setDrag(null)
 
+  const reduced = useReducedMotion()
   return (
     <div
       role="tablist"
       aria-label="工作台 Tabs"
-      className="flex items-stretch border-b bg-background h-9 overflow-x-auto overflow-y-hidden scrollbar-thin"
+      className={cn(
+        "flex items-stretch border-b bg-background h-9",
+        "overflow-x-auto overflow-y-hidden scrollbar-thin",
+        // Subtle gradient on the right edge to hint at horizontal overflow.
+        "[scrollbar-gutter:stable]",
+      )}
     >
-      {tabs.map((tab) => (
-        <ContextMenu key={tab.id}>
-          <ContextMenuTrigger asChild>
-            <div className="contents">
-              <WorkspaceTab
-                tab={tab}
-                active={tab.id === activeId}
-                editingTitle={renamingId === tab.id}
-                onActivate={() => setActive(tab.id)}
-                onClose={() => close(tab.id)}
-                // Radix ContextMenuTrigger handles right-click; the
-                // explicit handler here is kept to swallow the legacy
-                // bubble so an outer listener doesn't see it.
-                onContextMenu={(ev) => {
-                  ev.preventDefault()
-                }}
-                onDoubleClick={() => setRenamingId(tab.id)}
-                onRenameSubmit={(v) => {
-                  renameTab(tab.id, v)
-                  setRenamingId(null)
-                }}
-                onRenameCancel={() => setRenamingId(null)}
-                onDragStart={onDragStart(tab.id)}
-                onDragOver={onDragOver(tab.id)}
-                onDrop={onDrop(tab.id)}
-                onDragEnd={onDragEnd}
-                dragOver={drag && drag.hoverId === tab.id ? drag.side : null}
-              />
-            </div>
-          </ContextMenuTrigger>
-          <ContextMenuContent className="w-52">
-            <ContextMenuItem onSelect={() => close(tab.id)}>
-              关闭
-              <ContextMenuShortcut>Ctrl+W</ContextMenuShortcut>
-            </ContextMenuItem>
-            <ContextMenuItem onSelect={() => closeOthers(tab.id)}>关闭其他</ContextMenuItem>
-            <ContextMenuItem onSelect={() => closeToRight(tab.id)}>关闭右侧</ContextMenuItem>
-            <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => duplicate(tab.id)}>复制 Tab</ContextMenuItem>
-            <ContextMenuItem onSelect={() => setRenamingId(tab.id)}>
-              重命名
-              <ContextMenuShortcut>双击</ContextMenuShortcut>
-            </ContextMenuItem>
-          </ContextMenuContent>
-        </ContextMenu>
-      ))}
-      <button
+      {/* LayoutGroup makes the active-tab accent slide between siblings via
+       * the layoutId="workspace-tab-active" element. AnimatePresence lets
+       * tabs animate in/out as they're added or closed. */}
+      <LayoutGroup id="workspace-tabs">
+        <AnimatePresence initial={false} mode="popLayout">
+          {tabs.map((tab) => (
+            <ContextMenu key={tab.id}>
+              <ContextMenuTrigger asChild>
+                <WorkspaceTab
+                  tab={tab}
+                  active={tab.id === activeId}
+                  editingTitle={renamingId === tab.id}
+                  onActivate={() => setActive(tab.id)}
+                  onClose={() => close(tab.id)}
+                  // Radix handles right-click via the Trigger; swallowing
+                  // the bubbled event keeps any outer listener quiet.
+                  onContextMenu={(ev) => ev.preventDefault()}
+                  onDoubleClick={() => setRenamingId(tab.id)}
+                  onRenameSubmit={(v) => {
+                    renameTab(tab.id, v)
+                    setRenamingId(null)
+                  }}
+                  onRenameCancel={() => setRenamingId(null)}
+                  onDragStart={onDragStart(tab.id)}
+                  onDragOver={onDragOver(tab.id)}
+                  onDrop={onDrop(tab.id)}
+                  onDragEnd={onDragEnd}
+                  dragOver={drag && drag.hoverId === tab.id ? drag.side : null}
+                />
+              </ContextMenuTrigger>
+              <ContextMenuContent className="w-52">
+                <ContextMenuItem onSelect={() => close(tab.id)}>
+                  关闭
+                  <ContextMenuShortcut>Ctrl+W</ContextMenuShortcut>
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => closeOthers(tab.id)}>关闭其他</ContextMenuItem>
+                <ContextMenuItem onSelect={() => closeToRight(tab.id)}>关闭右侧</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem onSelect={() => duplicate(tab.id)}>复制 Tab</ContextMenuItem>
+                <ContextMenuItem onSelect={() => setRenamingId(tab.id)}>
+                  重命名
+                  <ContextMenuShortcut>双击</ContextMenuShortcut>
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+          ))}
+        </AnimatePresence>
+      </LayoutGroup>
+      <motion.button
         type="button"
         onClick={onNewTab}
+        whileHover={reduced ? undefined : { scale: 1.08 }}
+        whileTap={reduced ? undefined : { scale: 0.92 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
         title="新建 Tab (Ctrl+T)"
+        aria-label="新建 Tab"
         className={cn(
           "shrink-0 flex items-center justify-center h-9 w-9 text-muted-foreground",
           "hover:bg-accent hover:text-foreground transition-colors",
         )}
       >
         <Plus className="w-4 h-4" />
-      </button>
+      </motion.button>
     </div>
   )
 }
