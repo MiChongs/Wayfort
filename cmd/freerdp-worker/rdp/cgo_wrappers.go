@@ -9,6 +9,12 @@ package rdp
 
 /*
 #cgo pkg-config: freerdp3 freerdp-client3 winpr3
+// __STDC_NO_THREADS__ tells winpr/platform.h to skip its `#include <threads.h>`
+// branch. C11 <threads.h> is optional in the standard, and MinGW-w64 / UCRT64
+// don't ship it (their thread support is winpthreads via <pthread.h> instead).
+// winpr falls back to the `__thread` GCC extension for thread-local storage,
+// which MinGW handles natively — no functional loss.
+#cgo windows CFLAGS: -D__STDC_NO_THREADS__
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client.h>
