@@ -82,6 +82,22 @@ func run(logger *zap.Logger) error {
 		return errors.New("first frame must be type=start")
 	}
 
+	// Force libfreerdp's WLog root to honour WLOG_LEVEL before any
+	// freerdp_* call. libfreerdp documents auto-init from env via
+	// WLog_GetRoot() + InitOnceExecuteOnce, but empirically (MSYS2
+	// ucrt64 + cgo) that produced no DEBUG output even with the env
+	// set on the subprocess by the gateway. Explicit apply is
+	// deterministic; without it `desktop.debug_log: true` is dead
+	// weight (the operator sees no state-machine trace, can't
+	// distinguish CredSSP / MCS / capability failures).
+	if lvl := os.Getenv("WLOG_LEVEL"); lvl != "" {
+		if rdp.ApplyWLogLevel(lvl) {
+			logger.Info("libfreerdp WLog level applied", zap.String("level", lvl))
+		} else {
+			logger.Warn("libfreerdp WLog level apply failed", zap.String("level", lvl))
+		}
+	}
+
 	// Plan 17 M2: backend is libfreerdp via rdp.NewClient when built with
 	// `-tags freerdp`; otherwise the rdp package's stub returns an error
 	// the gateway forwards to the browser. The dummy worker remains as a

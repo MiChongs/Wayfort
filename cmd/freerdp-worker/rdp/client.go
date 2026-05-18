@@ -480,6 +480,7 @@ func (c *Client) connectWithAutoNlaRetry() bool {
 	rctx := (*C.rdpContext)(c.context)
 
 	if goBool(C.freerdp_connect(instance)) {
+		c.logSelectedProtocol(rctx, "freerdp_connect succeeded")
 		return true
 	}
 
@@ -513,7 +514,7 @@ func (c *Client) connectWithAutoNlaRetry() bool {
 		instance = (*C.freerdp)(c.instance)
 		rctx = (*C.rdpContext)(c.context)
 		if goBool(C.freerdp_connect(instance)) {
-			c.logger.Info("auto-retry with NLA succeeded")
+			c.logSelectedProtocol(rctx, "auto-retry with NLA succeeded")
 			return true
 		}
 		// Second attempt also failed — pull updated state for the user
@@ -535,6 +536,22 @@ func (c *Client) connectWithAutoNlaRetry() bool {
 		Code:    code,
 	}})
 	return false
+}
+
+// logSelectedProtocol emits an INFO line carrying which X.224 protocol the
+// server actually picked. Called from both the first-attempt and
+// auto-retry success paths so the gateway log shows the server's choice
+// regardless of which attempt won. Failure paths already log
+// requested/selected via the explicit zap.Error block in
+// connectWithAutoNlaRetry.
+func (c *Client) logSelectedProtocol(rctx *C.rdpContext, message string) {
+	requested := uint32(C.wGetRequestedProtocols(rctx))
+	selected := uint32(C.wGetSelectedProtocol(rctx))
+	c.logger.Info(message,
+		zap.Uint32("requested_protocols_mask", requested),
+		zap.Uint32("selected_protocol_mask", selected),
+		zap.String("requested_protocols", protocolMaskString(requested)),
+		zap.String("selected_protocol", protocolMaskString(selected)))
 }
 
 // shouldAutoRetryWithNla decides whether the failure signature from

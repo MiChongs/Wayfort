@@ -43,6 +43,9 @@ func goPreConnect(instance *C.freerdp) C.BOOL {
 	// FreeRDP_DeviceRedirection settings we already enabled. We just need
 	// the channel listener registration which happens in registerChannelPubSub
 	// at context-new time.
+	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
+		c.logger.Info("phase: pre-connect (settings staged, x224 not yet sent)")
+	}
 	return C.TRUE
 }
 
@@ -53,6 +56,7 @@ func goPostConnect(instance *C.freerdp) C.BOOL {
 	if c == nil {
 		return C.FALSE
 	}
+	c.logger.Info("phase: post-connect (capability exchange done, RDP session ready)")
 	// Initialize the software GDI so bitmap updates have a target surface.
 	// We don't actually display it — the BitmapUpdate callback intercepts
 	// raw rectangles before GDI compositing.
@@ -93,6 +97,12 @@ func goAuthenticate(instance *C.freerdp, username, password, domain **C.char) C.
 //export goVerifyCertificate
 func goVerifyCertificate(instance *C.freerdp, host *C.char, port C.UINT16,
 	commonName, subject, issuer, fingerprint *C.char, flags C.DWORD) C.DWORD {
+	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
+		c.logger.Info("phase: tls handshake complete, validating server cert",
+			zap.String("host", C.GoString(host)),
+			zap.Uint16("port", uint16(port)),
+			zap.String("common_name", C.GoString(commonName)))
+	}
 	// 2 == accept permanently (matches FreeRDP's CERT_ACCEPT_PERMANENTLY).
 	// Mirrors the IgnoreCertificate=TRUE setting we already turned on.
 	return 2

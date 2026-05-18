@@ -36,3 +36,8 @@ func (c *stubClient) Start(ctx context.Context, p desktop.StartParams) error {
 func (c *stubClient) Send(_ desktop.ClientMessage) error { return errors.New("stub") }
 func (c *stubClient) Recv() <-chan desktop.ServerMessage { return c.out }
 func (c *stubClient) Close() error                       { return nil }
+
+// ApplyWLogLevel — no-op when libfreerdp isn't linked. main.go calls this
+// unconditionally so the freerdp-tagged and stub builds share the same
+// startup sequence.
+func ApplyWLogLevel(level string) bool { return false }
