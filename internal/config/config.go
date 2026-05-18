@@ -67,6 +67,66 @@ type DesktopConfig struct {
 	// Default false because DEBUG is loud (hundreds of lines per session
 	// connect). Enable when diagnosing a specific failure.
 	DebugLog bool `mapstructure:"debug_log"`
+
+	// DevolutionsGateway — Plan 29: the new ironrdp backend. The browser
+	// talks RDP directly via @devolutions/iron-remote-desktop (Wasm) and
+	// tunnels over WebSocket to a Devolutions Gateway subprocess we
+	// supervise here. This Go service only mints short-lived RS256 JWTs;
+	// the gateway subprocess validates them and byte-proxies TCP to the
+	// target RDP host. Replaces the libfreerdp cgo subprocess pipeline.
+	DevolutionsGateway DevolutionsGatewayConfig `mapstructure:"devolutions_gateway"`
+}
+
+// DevolutionsGatewayConfig parameterises the Devolutions Gateway
+// subprocess supervisor + JWT signer. See
+//   https://github.com/Devolutions/devolutions-gateway/blob/master/docs/COOKBOOK.md
+// for the upstream config shape this code generates.
+type DevolutionsGatewayConfig struct {
+	// Enabled gates the entire ironrdp path. When false the backend is
+	// unavailable and the manager refuses sessions that request it.
+	Enabled bool `mapstructure:"enabled"`
+	// AutoInstall runs scripts/install-devolutions-gateway-*.{sh,ps1}
+	// at startup when BinaryPath is missing. Default true so the first
+	// gateway boot on a fresh host "just works".
+	AutoInstall bool `mapstructure:"auto_install"`
+	// AutoStart spawns the gateway binary as a child of this process.
+	// Disable when running the gateway under systemd / Windows service
+	// / container — in that mode we only manage config + JWT signing.
+	AutoStart bool `mapstructure:"auto_start"`
+	// InstallPrefix is the directory the install script drops the
+	// binary into and where the supervisor expects to find it (unless
+	// BinaryPath overrides). Default: /opt/jumpserver/devolutions-gateway
+	// on Linux, %LOCALAPPDATA%\Programs\JumpServer\devolutions-gateway
+	// on Windows.
+	InstallPrefix string `mapstructure:"install_prefix"`
+	// BinaryPath is the absolute path to the gateway executable.
+	// Empty = derive from InstallPrefix + platform-specific name.
+	BinaryPath string `mapstructure:"binary_path"`
+	// ConfigPath is where the supervisor writes the generated
+	// devolutions-gateway.json each time it spawns the subprocess.
+	// Empty = <InstallPrefix>/config/gateway.json
+	ConfigPath string `mapstructure:"config_path"`
+	// IDFile persists the gateway's stable UUID across restarts so log
+	// correlation upstream remains consistent. Empty = <InstallPrefix>/config/gateway-id
+	IDFile string `mapstructure:"id_file"`
+	// ListenAddr is what the gateway subprocess binds. Internal-only —
+	// the browser uses AdvertisedURL.
+	ListenAddr string `mapstructure:"listen_addr"`
+	// AdvertisedURL is the WebSocket URL handed to the browser when it
+	// starts a session. Typically a wss://… URL once the reverse proxy
+	// terminates TLS. Empty = derived from ListenAddr.
+	AdvertisedURL string `mapstructure:"advertised_url"`
+	// JWTPrivateKeyFile holds the RS256 private key the signer uses to
+	// mint pre-auth tokens. Generated on first run if missing.
+	JWTPrivateKeyFile string `mapstructure:"jwt_private_key_file"`
+	// TokenTTL caps how long an issued JWT stays valid. Default 90s.
+	TokenTTL time.Duration `mapstructure:"token_ttl"`
+	// HealthTimeout is how long Ensure() will wait for the gateway's
+	// /jet/health endpoint after spawning. Default 15s.
+	HealthTimeout time.Duration `mapstructure:"health_timeout"`
+	// Verbosity is passed through to the gateway's `Verbosity` config
+	// (warn/info/debug/trace). Default "info".
+	Verbosity string `mapstructure:"verbosity"`
 }
 
 type AIConfig struct {
@@ -352,6 +412,24 @@ func setDefaults(v *viper.Viper) {
 	// startup and otherwise ignores it. Remove from new configs.
 	v.SetDefault("desktop.auto_install", false)
 	v.SetDefault("desktop.install_prefix", "")
+
+	// Plan 29 — ironrdp backend via Devolutions Gateway subprocess.
+	// Defaults are tuned for a single-host deploy where the gateway
+	// listens on loopback and our reverse proxy forwards /jet/* to it
+	// (or the browser hits it directly if no proxy is in front).
+	v.SetDefault("desktop.devolutions_gateway.enabled", false)
+	v.SetDefault("desktop.devolutions_gateway.auto_install", true)
+	v.SetDefault("desktop.devolutions_gateway.auto_start", true)
+	v.SetDefault("desktop.devolutions_gateway.listen_addr", "http://127.0.0.1:7171")
+	v.SetDefault("desktop.devolutions_gateway.advertised_url", "")
+	v.SetDefault("desktop.devolutions_gateway.install_prefix", "")
+	v.SetDefault("desktop.devolutions_gateway.binary_path", "")
+	v.SetDefault("desktop.devolutions_gateway.config_path", "")
+	v.SetDefault("desktop.devolutions_gateway.id_file", "")
+	v.SetDefault("desktop.devolutions_gateway.jwt_private_key_file", "")
+	v.SetDefault("desktop.devolutions_gateway.token_ttl", 90*time.Second)
+	v.SetDefault("desktop.devolutions_gateway.health_timeout", 15*time.Second)
+	v.SetDefault("desktop.devolutions_gateway.verbosity", "info")
 
 	v.SetDefault("protocols.guacamole.enabled", false)
 	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")

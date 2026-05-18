@@ -51,6 +51,13 @@ type Manager struct {
 	// exposed here so /desktop/stats can show the resolved path even
 	// when the operator left worker_path blank.
 	workerPath atomic.Value // string
+
+	// Plan 29 — ironrdp backend. Both nil for builds that don't use
+	// Devolutions Gateway; the manager checks before serving an
+	// `ironrdp` StartSession request. Set once at startup via
+	// AttachIronRDP() and never mutated thereafter.
+	jwtSigner  *JWTSigner
+	gatewaySup *GatewaySupervisor
 }
 
 // PasswordOpener is the subset of pkgcrypto.Sealer we need (decrypt one blob).
@@ -89,6 +96,35 @@ func NewManager(cfg config.DesktopConfig, deps Deps) *Manager {
 
 func (m *Manager) Enabled() bool { return m.cfg.Enabled }
 
+// AttachIronRDP wires in the JWT signer + Devolutions Gateway supervisor
+// that back the `ironrdp` desktop backend. Must be called before
+// StartSession can serve `ironrdp` requests. Idempotent.
+func (m *Manager) AttachIronRDP(signer *JWTSigner, sup *GatewaySupervisor) {
+	m.jwtSigner = signer
+	m.gatewaySup = sup
+}
+
+// EnsureGateway brings up the Devolutions Gateway subprocess (and
+// generates its on-disk config) if the ironrdp backend is enabled.
+// Safe to call when no supervisor is attached — it's a no-op then.
+// Called once at startup from cmd/jumpserver/main.go inside the same
+// errgroup that runs EnsureWorker, so both backends are independent.
+func (m *Manager) EnsureGateway(ctx context.Context) error {
+	if m.gatewaySup == nil {
+		return nil
+	}
+	return m.gatewaySup.Ensure(ctx)
+}
+
+// StopGateway tears down the Devolutions Gateway subprocess. Called on
+// graceful shutdown from main.go.
+func (m *Manager) StopGateway() error {
+	if m.gatewaySup == nil {
+		return nil
+	}
+	return m.gatewaySup.Stop()
+}
+
 // StartSession handles the control-plane request. It performs auth, looks
 // up node + credential, spawns the worker, registers the live Session.
 // Returns the opaque session_id the browser uses to open the WS data
@@ -105,6 +141,14 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	}
 	if backend == "freerdp" && !m.workerReady.Load() {
 		return nil, errors.New("desktop worker bootstrapping (libfreerdp + go build); retry in 30-90s")
+	}
+	if backend == "ironrdp" {
+		if m.jwtSigner == nil || m.gatewaySup == nil {
+			return nil, errors.New("ironrdp backend not configured (set desktop.devolutions_gateway.enabled = true)")
+		}
+		if !m.gatewaySup.Ready() {
+			return nil, errors.New("devolutions gateway subprocess not ready; check /desktop/stats")
+		}
 	}
 	m.mu.Lock()
 	if len(m.live) >= m.maxLive {
@@ -144,44 +188,84 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}
 
-	// Pick worker backend. Bubble the typed error so the operator sees
-	// "worker path not resolved" instead of an opaque crash.
-	worker, err := m.pickWorker(req.Backend)
-	if err != nil {
-		return nil, fmt.Errorf("pick worker: %w", err)
-	}
-
-	// Prepare session bookkeeping. We mint our own UUID instead of relying
-	// on worker; the session row table doesn't need to know which backend
-	// is in use.
+	// Common bookkeeping shared by all backends. We mint our own UUID
+	// because the session row table doesn't need to know which backend
+	// is running underneath.
 	sessionID := uuid.NewString()
 	rdpOpts := ParseRdpOptions(node.ProtoOptions)
-	// Pick a keyboard layout: explicit per-session request wins, then the
-	// node-saved layout, then the worker's default ("us").
 	keyboard := req.Keyboard
 	if keyboard == "" {
 		keyboard = rdpOpts.Keyboard
+	}
+	username := pkgssh.PreferredUser(cred, node.Username)
+	width := req.Width
+	height := req.Height
+	if width == 0 {
+		width = 1280
+	}
+	if height == 0 {
+		height = 720
+	}
+
+	if backend == "ironrdp" {
+		dst := fmt.Sprintf("%s:%d", node.Host, node.Port)
+		ttl := m.cfg.DevolutionsGateway.TokenTTL
+		if ttl <= 0 {
+			ttl = 90 * time.Second
+		}
+		token, err := m.jwtSigner.SignForwardRDP(dst, ttl)
+		if err != nil {
+			return nil, fmt.Errorf("mint jwt: %w", err)
+		}
+		sess := &Session{
+			ID:        sessionID,
+			NodeID:    req.NodeID,
+			UserID:    claims.UserID,
+			Username:  claims.Username,
+			ClientIP:  clientIP,
+			StartedAt: time.Now(),
+			manager:   m,
+		}
+		m.register(sess)
+		m.recordStart(ctx, sess, node)
+		return &StartSessionResponse{
+			SessionID:    sessionID,
+			RemoteWidth:  width,
+			RemoteHeight: height,
+			Backend:      "ironrdp",
+			GatewayURL:   m.gatewaySup.AdvertisedURL(),
+			Token:        token,
+			Destination:  dst,
+			Username:     username,
+			Password:     string(pw),
+			Domain:       rdpOpts.Domain,
+		}, nil
+	}
+
+	// freerdp / dummy path — spawn the local worker subprocess (or
+	// in-process test pattern) and stream frames through our WS handler.
+	worker, err := m.pickWorker(req.Backend)
+	if err != nil {
+		return nil, fmt.Errorf("pick worker: %w", err)
 	}
 	startParams := StartParams{
 		NodeID:   req.NodeID,
 		Host:     node.Host,
 		Port:     node.Port,
-		Username: pkgssh.PreferredUser(cred, node.Username),
+		Username: username,
 		Password: string(pw),
 		Domain:   rdpOpts.Domain,
-		Width:    int(req.Width),
-		Height:   int(req.Height),
+		Width:    int(width),
+		Height:   int(height),
 		Keyboard: keyboard,
 		Quality:  req.Quality,
 		RDP:      rdpOpts,
 	}
-
 	wctx, cancel := context.WithCancel(context.Background())
 	if err := worker.Start(wctx, startParams); err != nil {
 		cancel()
 		return nil, fmt.Errorf("worker start: %w", err)
 	}
-
 	sess := &Session{
 		ID:        sessionID,
 		Worker:    worker,
@@ -195,11 +279,11 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	}
 	m.register(sess)
 	m.recordStart(ctx, sess, node)
-
 	return &StartSessionResponse{
 		SessionID:    sessionID,
-		RemoteWidth:  req.Width,
-		RemoteHeight: req.Height,
+		RemoteWidth:  width,
+		RemoteHeight: height,
+		Backend:      backend,
 	}, nil
 }
 
@@ -216,8 +300,10 @@ func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
 			return nil, errors.New("freerdp worker path not resolved; check /desktop/stats and ensure bootstrap completed")
 		}
 		return NewFreeRDPWorker(m.logger, path, WithDebugLog(m.cfg.DebugLog)), nil
+	case "ironrdp":
+		return nil, errors.New("ironrdp backend doesn't use a local worker; route through StartSession's ironrdp branch")
 	default:
-		return nil, fmt.Errorf("unknown desktop backend %q (supported: freerdp, dummy)", backend)
+		return nil, fmt.Errorf("unknown desktop backend %q (supported: freerdp, dummy, ironrdp)", backend)
 	}
 }
 
@@ -225,21 +311,24 @@ func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
 // the /desktop/stats handler so operators can debug auto_install without
 // digging through logs.
 type BootstrapStatus struct {
-	Enabled        bool      `json:"enabled"`
-	Backend        string    `json:"default_backend"`
-	WorkerReady    bool      `json:"worker_ready"`
-	WorkerPath     string    `json:"worker_path"`
-	AutoInstall    bool      `json:"auto_install"`
-	InFlight       bool      `json:"bootstrap_in_flight"`
-	LastError      string    `json:"last_bootstrap_error,omitempty"`
-	LastAttemptAt  time.Time `json:"last_bootstrap_at,omitempty"`
+	Enabled       bool           `json:"enabled"`
+	Backend       string         `json:"default_backend"`
+	WorkerReady   bool           `json:"worker_ready"`
+	WorkerPath    string         `json:"worker_path"`
+	AutoInstall   bool           `json:"auto_install"`
+	InFlight      bool           `json:"bootstrap_in_flight"`
+	LastError     string         `json:"last_bootstrap_error,omitempty"`
+	LastAttemptAt time.Time      `json:"last_bootstrap_at,omitempty"`
+	// Gateway is the Devolutions Gateway supervisor snapshot when the
+	// ironrdp backend is configured. Zero-value struct otherwise.
+	Gateway GatewayStatus `json:"devolutions_gateway"`
 }
 
 func (m *Manager) BootstrapStatus() BootstrapStatus {
 	path, _ := m.workerPath.Load().(string)
 	lastErr, _ := m.bootstrapErr.Load().(string)
 	lastAt, _ := m.bootstrapAt.Load().(time.Time)
-	return BootstrapStatus{
+	bs := BootstrapStatus{
 		Enabled:       m.cfg.Enabled,
 		Backend:       m.cfg.DefaultBackend,
 		WorkerReady:   m.workerReady.Load(),
@@ -249,6 +338,10 @@ func (m *Manager) BootstrapStatus() BootstrapStatus {
 		LastError:     lastErr,
 		LastAttemptAt: lastAt,
 	}
+	if m.gatewaySup != nil {
+		bs.Gateway = m.gatewaySup.Snapshot()
+	}
+	return bs
 }
 
 func (m *Manager) register(s *Session) {
@@ -280,8 +373,13 @@ func (m *Manager) End(ctx context.Context, sessionID string) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if err := s.Worker.Close(); err != nil {
-		m.logger.Warn("worker close", zap.String("session", sessionID), zap.Error(err))
+	// Worker is nil for ironrdp sessions — the browser talks RDP
+	// directly to the Devolutions Gateway subprocess, so there's
+	// nothing local to close.
+	if s.Worker != nil {
+		if err := s.Worker.Close(); err != nil {
+			m.logger.Warn("worker close", zap.String("session", sessionID), zap.Error(err))
+		}
 	}
 	m.recordEnd(ctx, s, nil)
 	return nil
