@@ -33,12 +33,50 @@ function LoadingShim({ label }: { label: string }) {
   )
 }
 
-// Pick the right protocol component for a tab. Connection-oriented
-// protocols (SSH/Telnet/DBCLI/RDP/VNC/RDP-next) get wrapped in SideDock so
-// the right pane shows server insights / firewall / docker / sessions /
-// node info. SFTP + TCP-forward already span the full pane and look
-// cramped with another split, so they render flat.
-function renderTabBody(tab: TabModel): React.ReactNode {
+// TabBody is split out so it can read the workspace store hooks (setStatus
+// / open) and forward them to the per-protocol component. The previous
+// inline renderTabBody couldn't call hooks because it was a free function.
+function TabBody({ tab }: { tab: TabModel }) {
+  const setStatus = useWorkspaceStore((s) => s.setStatus)
+  const open = useWorkspaceStore((s) => s.open)
+
+  // Wires WebSSHTerminal's internal Status → store TabStatus. Without this
+  // the tab strip would show "未连接" forever even after the terminal had
+  // connected (bug surfaced after PR #6 redesign — the dots are accurate
+  // only if the protocol pushes status up to the store).
+  const onSshStatusChange = React.useCallback(
+    (s: "connecting" | "open" | "closed") => {
+      setStatus(tab.id, s === "open" ? "connected" : s === "closed" ? "closed" : "connecting")
+    },
+    [setStatus, tab.id],
+  )
+
+  // The terminal toolbar's SFTP shortcut opens a workspace tab instead of
+  // navigating to /nodes/:id/sftp (which broke the workspace flow).
+  const onOpenSftp = React.useCallback(() => {
+    open({
+      nodeId: tab.nodeId,
+      protocol: "sftp",
+      title: tab.title,
+      host: tab.host,
+      port: tab.port,
+    })
+  }, [open, tab.host, tab.nodeId, tab.port, tab.title])
+
+  // Non-WS protocols don't have a clean phase signal yet — mark "connected"
+  // once the body mounts so the tab dot stops sticking at "fresh". RDP /
+  // VNC / Desktop expose their own internal phase UI inside the viewer for
+  // real-time feedback; the workspace-level dot is a coarse summary.
+  React.useEffect(() => {
+    if (tab.protocol === "sftp" || tab.protocol === "tcp_forward") {
+      setStatus(tab.id, "connected")
+      return
+    }
+    if (tab.protocol === "rdp" || tab.protocol === "vnc" || tab.protocol === "rdp_next") {
+      setStatus(tab.id, "connecting")
+    }
+  }, [tab.id, tab.protocol, setStatus])
+
   switch (tab.protocol) {
     case "ssh":
     case "telnet":
@@ -51,6 +89,8 @@ function renderTabBody(tab: TabModel): React.ReactNode {
             displayName={tab.title}
             host={tab.host}
             port={tab.port}
+            onStatusChange={onSshStatusChange}
+            onOpenSftp={onOpenSftp}
           />
         </SideDock>
       )
@@ -119,7 +159,7 @@ export function WorkspaceTabContent() {
               }
               className={cn("absolute inset-0", active ? "z-10" : "z-0")}
             >
-              {renderTabBody(tab)}
+              <TabBody tab={tab} />
             </div>
           )
         })
