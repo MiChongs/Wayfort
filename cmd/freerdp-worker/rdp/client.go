@@ -52,6 +52,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -225,6 +226,67 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopWidth, C.UINT32(c.width))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopHeight, C.UINT32(c.height))
 
+	// ----- GCC ConferenceCreateRequest core data (MS-RDPBCGR §2.2.1.3.2) -----
+	// Win11 / Server 2022 RDS silently drop MCS Connect Initial when these
+	// TS_UD_CS_CORE fields arrive zero/empty. libfreerdp's
+	// gcc_write_client_core_data writes settings values verbatim — no
+	// defaults are substituted at wire-write time — so they have to be
+	// populated here before freerdp_connect() builds the PDU. Symptom of
+	// missing values: TLS completes, then 6+ seconds of silence followed
+	// by BIO_read retries exceeded → 0x0002000D.
+	hostname := "JumpServer"
+	if h, err := os.Hostname(); err == nil && h != "" {
+		if len(h) > 15 {
+			h = h[:15]
+		}
+		hostname = h
+	}
+	chostname := C.CString(hostname)
+	defer C.free(unsafe.Pointer(chostname))
+	C.freerdp_settings_set_string(s, C.FreeRDP_ClientHostname, chostname)
+
+	cprod := C.CString("1")
+	defer C.free(unsafe.Pointer(cprod))
+	C.freerdp_settings_set_string(s, C.FreeRDP_ClientProductId, cprod)
+
+	// ClientBuild = Win10 22H2 build number. Any value ≥7600 signals RDP
+	// 7+ to the server; 19045 is what mstsc on a fresh Win10 22H2 install
+	// reports, so server-side telemetry sees a familiar build.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_ClientBuild, 19045)
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_OsMajorType, 4) // OSMAJORTYPE_WINDOWS
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_OsMinorType, 7) // OSMINORTYPE_WINDOWS_NT
+
+	// KeyboardLayout MUST be a valid LCID — 0 is rejected by modern
+	// Windows. Type=4 / SubType=0 / FunctionKey=12 describes an IBM
+	// enhanced 101/102 keyboard (what mstsc reports).
+	kbdLayout := keyboardLayoutFromString(c.params.Keyboard)
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardLayout, C.UINT32(kbdLayout))
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardType, 4)
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardSubType, 0)
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardFunctionKey, 12)
+
+	// SupportedColorDepths bitmask: 15+16+24+32 bpp; server picks.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_SupportedColorDepths, 0x000F)
+
+	// EarlyCapabilityFlags:
+	//   0x0001 RNS_UD_CS_SUPPORT_ERRINFO_PDU
+	//   0x0020 RNS_UD_CS_VALID_CONNECTION_TYPE   (must accompany ConnectionType)
+	//   0x0080 RNS_UD_CS_SUPPORT_STATUSINFO_PDU
+	//   0x0200 RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, 0x0001|0x0020|0x0080|0x0200)
+
+	// ConnectionType = CONNECTION_TYPE_BROADBAND_LOW (2). Tunnelled
+	// gateway → RDS link is RTT-bounded, not LAN.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_ConnectionType, 2)
+
+	// Multitransport / network autodetect / batched channel join: off.
+	// The gateway has no UDP sidechannel, some Server 2022 builds
+	// deadlock on the network autodetect PDU, and RDP 8.1's batched
+	// channel-join sequence is rejected by older RDS we still target.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportMultitransport, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_NetworkAutoDetect, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportSkipChannelJoin, C.FALSE)
+
 	opts := c.params.RDP
 
 	// Color depth — operator can drop to 16/24 for bandwidth-constrained
@@ -338,11 +400,13 @@ func (c *Client) applySettings() error {
 		C.freerdp_settings_set_bool(s, C.FreeRDP_ConsoleSession, C.TRUE)
 	}
 
-	if kbd := c.params.Keyboard; kbd != "" {
-		// FreeRDP wants the layout via FreeRDP_KeyboardLayout numeric ID;
-		// our string form is informational for now. M2.x maps strings to IDs.
-		_ = kbd
-	}
+	c.logger.Info("freerdp GCC core data",
+		zap.String("client_hostname", hostname),
+		zap.Uint32("client_build", 19045),
+		zap.Uint32("keyboard_layout", kbdLayout),
+		zap.String("keyboard_string", c.params.Keyboard),
+		zap.Uint32("os_major_type", 4),
+		zap.Uint32("connection_type", 2))
 	return nil
 }
 
