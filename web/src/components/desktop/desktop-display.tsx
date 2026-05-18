@@ -390,6 +390,10 @@ export function DesktopDisplay({
         remoteHeight: remoteH,
         lastStatus: "loading-script",
       })
+      console.info("[DesktopDisplay] cache populated", {
+        cacheKey,
+        sessionId: start.session_id,
+      })
     }
 
     connect().catch((e) => {
@@ -404,12 +408,20 @@ export function DesktopDisplay({
 
       const live = liveDesktopSessions.get(cacheKey)
       if (live) {
+        console.info("[DesktopDisplay] cleanup: Path A (cache hit) — deferring teardown 200ms", {
+          cacheKey,
+          sessionId: live.sessionId,
+        })
         // Connect completed and the session is in the cache. Schedule a
         // deferred teardown — a remount within TEARDOWN_GRACE_MS (the
         // strict-mode case) will reach in, cancel the timer, and
         // reattach without paying for a fresh POST /start.
         if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
         live.teardownTimer = window.setTimeout(() => {
+          console.info("[DesktopDisplay] deferred teardown firing (Path A)", {
+            cacheKey,
+            sessionId: live.sessionId,
+          })
           liveDesktopSessions.delete(cacheKey)
           live.detachInputs?.()
           live.client.close()
@@ -419,6 +431,11 @@ export function DesktopDisplay({
         return
       }
 
+      console.info("[DesktopDisplay] cleanup: Path B (cache miss) — immediate close", {
+        cacheKey,
+        hasClient: !!clientRef.current,
+        sessionId: sessionIdRef.current,
+      })
       // Connect was still in flight (or failed). Do an immediate
       // cleanup of whatever was started — the in-flight POST will hit
       // the `if (cancelled)` orphan-killer above and self-clean on
