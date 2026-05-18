@@ -92,15 +92,41 @@ try {
     & $goExe build -tags freerdp -trimpath -o $tmpOut .\cmd\freerdp-worker
     if ($LASTEXITCODE -ne 0) { Write-Error "go build failed with exit $LASTEXITCODE" }
 
-    # If the old binary is in use, rename it aside so the new one can take its place.
+    # If the old binary is in use, rename it aside so the new one can
+    # take its place. Windows lets us rename a file with an open handle,
+    # just not delete or overwrite it. We MUST use a unique suffix per
+    # build because a previous "freerdp-worker.exe.old" can itself still
+    # be locked by an even-older worker process — using a plain ".old"
+    # collides and Rename-Item then fails, leaving the original $out in
+    # place and the next Move-Item -Force erroring with "Cannot create a
+    # file when that file already exists".
     if (Test-Path $out) {
-        $stale = "$out.old"
-        if (Test-Path $stale) { Remove-Item -Force $stale -ErrorAction SilentlyContinue }
-        try { Rename-Item $out $stale -ErrorAction Stop } catch { }
+        $stale = "$out.$([Guid]::NewGuid().ToString('N')).old"
+        try {
+            Rename-Item -LiteralPath $out -NewName (Split-Path -Leaf $stale) -ErrorAction Stop
+        } catch {
+            Write-Error @"
+Cannot rename existing $out aside ($_).
+Most likely a running gateway/worker process is holding the binary open.
+Stop the gateway and any leftover freerdp-worker.exe, then re-run:
+  Get-Process freerdp-worker -ErrorAction SilentlyContinue | Stop-Process -Force
+  Get-Process jumpserver     -ErrorAction SilentlyContinue | Stop-Process -Force
+"@
+        }
     }
-    Move-Item -Force $tmpOut $out
+    Move-Item -LiteralPath $tmpOut -Destination $out
     Write-Host "[build-worker-windows] installed: $out"
     Get-Item $out | Format-List Name, Length, LastWriteTime
+
+    # Best-effort cleanup of stale ".old" siblings left over from earlier
+    # runs. Matches both the legacy plain "freerdp-worker.exe.old"
+    # (pre-fix script) and the new GUID-suffixed
+    # "freerdp-worker.exe.<guid>.old" form. They were unlinked from $out
+    # but Windows keeps them on disk until the holding process exits;
+    # once it does, this sweep removes them so the install dir doesn't
+    # accumulate junk.
+    Get-ChildItem -LiteralPath $InstallDir -Filter "freerdp-worker.exe*.old" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 } finally {
     if (Test-Path $tmpOut) { Remove-Item -Force $tmpOut -ErrorAction SilentlyContinue }
     Pop-Location
