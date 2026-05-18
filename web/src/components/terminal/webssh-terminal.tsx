@@ -62,9 +62,18 @@ type Props = {
   username?: string
   host?: string
   port?: number
+  // Fires every time the live WebSocket state changes. The workspace tab
+  // bar listens to this so the per-tab status dot stays in sync with the
+  // terminal — without this the tab would forever say "未连接" even after
+  // the terminal had connected successfully.
+  onStatusChange?: (status: Status) => void
+  // When provided, the SFTP shortcut on the toolbar opens a workspace tab
+  // instead of navigating to /nodes/:id/sftp. Standalone-page callers leave
+  // this undefined and keep the historic Link behaviour.
+  onOpenSftp?: () => void
 }
 
-type Status = "connecting" | "open" | "closed"
+export type Status = "connecting" | "open" | "closed"
 
 // Inline scoped CSS that overrides xterm's default scrollbar with a
 // shadcn-flavoured one. We target the `xterm-viewport` element inside the
@@ -111,14 +120,38 @@ const TERMINAL_SCROLLBAR_CSS = `
 }
 `
 
-export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, port }: Props) {
+export function WebSSHTerminal({
+  protocol,
+  nodeId,
+  displayName,
+  username,
+  host,
+  port,
+  onStatusChange,
+  onOpenSftp,
+}: Props) {
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const wrapRef = React.useRef<HTMLDivElement | null>(null)
   const termRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const fitRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const searchRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const connRef = React.useRef<WebSSHConnection | null>(null)
-  const [status, setStatus] = React.useState<Status>("connecting")
+  const [status, setStatusState] = React.useState<Status>("connecting")
+  // Keep the latest onStatusChange in a ref so the WS callbacks below
+  // always call the freshest one without retriggering the connect effect.
+  const onStatusChangeRef = React.useRef(onStatusChange)
+  React.useEffect(() => {
+    onStatusChangeRef.current = onStatusChange
+  }, [onStatusChange])
+  const setStatus = React.useCallback((s: Status) => {
+    setStatusState(s)
+    onStatusChangeRef.current?.(s)
+  }, [])
+  React.useEffect(() => {
+    // Notify the parent of the initial status synchronously on mount so the
+    // tab shows "连接中" instead of stuck at "未连接" while the WS dials.
+    onStatusChangeRef.current?.("connecting")
+  }, [])
   const [fontSize, setFontSize] = React.useState<number>(() => {
     if (typeof window === "undefined") return FONT_DEFAULT
     const v = Number(localStorage.getItem(FONT_KEY))
@@ -579,20 +612,31 @@ export function WebSSHTerminal({ protocol, nodeId, displayName, username, host, 
             />
             <IconBtn icon={Download} onClick={saveScrollback} title="导出回滚为 .log" />
 
-            {protocol === "ssh" && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Link
-                    href={{ pathname: `/nodes/${nodeId}/sftp` }}
-                    className={termBtnCls(false)}
-                    aria-label="打开 SFTP 文件管理"
-                  >
-                    <FolderTree className="w-3.5 h-3.5" />
-                  </Link>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">打开 SFTP 文件管理</TooltipContent>
-              </Tooltip>
-            )}
+            {protocol === "ssh" &&
+              (onOpenSftp ? (
+                // Workspace-aware: open the SFTP browser as a new workspace
+                // tab. Stays inside the workspace, no page navigation.
+                <IconBtn
+                  icon={FolderTree}
+                  onClick={onOpenSftp}
+                  title="在工作台打开 SFTP 文件管理"
+                />
+              ) : (
+                // Standalone /nodes/:id/ssh page — keep the legacy link to
+                // /nodes/:id/sftp; the workspace doesn't supply onOpenSftp.
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Link
+                      href={{ pathname: `/nodes/${nodeId}/sftp` }}
+                      className={termBtnCls(false)}
+                      aria-label="打开 SFTP 文件管理"
+                    >
+                      <FolderTree className="w-3.5 h-3.5" />
+                    </Link>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">打开 SFTP 文件管理</TooltipContent>
+                </Tooltip>
+              ))}
 
             <Separator orientation="vertical" className="bg-zinc-800 mx-0.5 h-5" />
 
