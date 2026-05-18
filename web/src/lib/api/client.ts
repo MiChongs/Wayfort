@@ -97,3 +97,89 @@ export function withTokenQuery(url: string): string {
   const sep = url.includes("?") ? "&" : "?"
   return `${url}${sep}token=${encodeURIComponent(tok)}`
 }
+
+// fetch() has no upload-progress events; for the SFTP transfer drawer we need
+// per-file bytes-sent updates and per-file abort. apiUpload wraps XHR so
+// callers get an `onProgress` callback plus an AbortSignal that cancels the
+// in-flight request. Response handling mirrors api() (JSON 200, structured
+// ApiError on non-2xx, automatic /login redirect on 401).
+export type UploadOptions = {
+  query?: Record<string, string | number | boolean | undefined>
+  fieldName?: string
+  onProgress?: (sent: number, total: number) => void
+  signal?: AbortSignal
+}
+
+export function apiUpload<T>(path: string, file: File | Blob, opts: UploadOptions = {}): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const url = buildURL(path, opts.query)
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", url, true)
+    xhr.withCredentials = true
+    const tok = getAccessToken()
+    if (tok) xhr.setRequestHeader("Authorization", `Bearer ${tok}`)
+    xhr.responseType = "text"
+
+    if (opts.onProgress) {
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) opts.onProgress!(ev.loaded, ev.total)
+      }
+    }
+
+    const onAbort = () => xhr.abort()
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        reject({ status: 0, message: "aborted" } as ApiError)
+        return
+      }
+      opts.signal.addEventListener("abort", onAbort, { once: true })
+    }
+
+    xhr.onerror = () => {
+      opts.signal?.removeEventListener("abort", onAbort)
+      reject({ status: xhr.status || 0, message: "network error" } as ApiError)
+    }
+    xhr.onabort = () => {
+      opts.signal?.removeEventListener("abort", onAbort)
+      reject({ status: 0, message: "aborted" } as ApiError)
+    }
+    xhr.onload = () => {
+      opts.signal?.removeEventListener("abort", onAbort)
+      const status = xhr.status
+      const text = xhr.responseText
+      if (status === 401) {
+        clearTokens()
+        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+          window.location.href = "/login"
+        }
+      }
+      if (status >= 200 && status < 300) {
+        if (!text) {
+          resolve(undefined as T)
+          return
+        }
+        try {
+          resolve(JSON.parse(text) as T)
+        } catch {
+          resolve(text as unknown as T)
+        }
+        return
+      }
+      let detail: unknown = undefined
+      let message = xhr.statusText || `HTTP ${status}`
+      try {
+        detail = JSON.parse(text)
+        if (detail && typeof detail === "object" && "error" in (detail as Record<string, unknown>)) {
+          message = String((detail as Record<string, unknown>).error)
+        }
+      } catch {
+        if (text) message = text
+      }
+      reject({ status, message, detail } as ApiError)
+    }
+
+    const fd = new FormData()
+    fd.append(opts.fieldName || "file", file)
+    xhr.send(fd)
+  })
+}
