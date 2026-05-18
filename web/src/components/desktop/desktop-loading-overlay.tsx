@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { AlertCircle, Loader2, RotateCw, ShieldOff } from "lucide-react"
+import { AlertCircle, Loader2, RotateCw, ShieldOff, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
@@ -24,6 +24,11 @@ type Props = {
   // the overlay shows a "禁用 NLA 重试" button that the parent wires to a
   // node.proto_options PATCH + reconnect.
   onForceTlsOnly?: () => void
+  // Optional. Always available when provided — closes the current rdp_next
+  // session and opens a classic Guacamole RDP tab for the same node. The
+  // workspace's classic RDP path is the documented "this just works"
+  // alternative when freerdp-worker hits an edge case it doesn't handle.
+  onSwitchToGuacamole?: () => void
 }
 
 const PHASE_LABEL: Partial<Record<DesktopStatus, string>> = {
@@ -42,6 +47,7 @@ export function DesktopLoadingOverlay({
   nodeName,
   onRetry,
   onForceTlsOnly,
+  onSwitchToGuacamole,
 }: Props) {
   if (status === "connected") return null
   const isError = status === "error"
@@ -99,7 +105,12 @@ export function DesktopLoadingOverlay({
         )}
 
         {isError && (
-          <div className="flex justify-end gap-2 pt-1">
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            {onSwitchToGuacamole && (
+              <Button size="sm" variant="secondary" onClick={onSwitchToGuacamole}>
+                <ShieldCheck className="w-3.5 h-3.5" /> 切换经典 RDP
+              </Button>
+            )}
             {errorCode === ERR_TRANSPORT_FAILED && onForceTlsOnly && (
               <Button size="sm" variant="outline" onClick={onForceTlsOnly}>
                 <ShieldOff className="w-3.5 h-3.5" /> 禁用 NLA 重试
@@ -109,6 +120,13 @@ export function DesktopLoadingOverlay({
               <RotateCw className="w-3.5 h-3.5" /> 重试
             </Button>
           </div>
+        )}
+        {isError && onSwitchToGuacamole && (
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            新栈 FreeRDP 在 Windows 11/Server 2022 等场景偶有兼容性问题。
+            点 <span className="font-medium text-foreground">切换经典 RDP</span>{" "}
+            会用同一凭据通过 Guacamole 通道重连,通常更稳。
+          </p>
         )}
       </div>
     </div>

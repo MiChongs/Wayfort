@@ -25,6 +25,7 @@ import { desktopControl } from "@/lib/desktop/control-client"
 import { FrameClient } from "@/lib/desktop/frame-client"
 import { nodeService } from "@/lib/api/services"
 import { patchRdpProtoOptions } from "@/lib/desktop/proto-options"
+import { useWorkspaceStore } from "@/components/workspace/useWorkspaceStore"
 import {
   MOUSE_BUTTON_LEFT,
   MOUSE_BUTTON_MIDDLE,
@@ -362,6 +363,39 @@ export function DesktopDisplay({
     clientRef.current?.close()
   }
 
+  // Escape hatch: close the failing rdp_next session and open the same
+  // node via classic Guacamole RDP. The workspace's "rdp" protocol is the
+  // longstanding stable path (RDPDisplay) — operators verified to work on
+  // the same hosts that trip the freerdp-worker stack. We only attempt
+  // this when running inside the workspace; on the standalone /nodes/
+  // pages we navigate to the classic RDP page instead.
+  function handleSwitchToGuacamole() {
+    const store = useWorkspaceStore.getState()
+    const inWorkspace = typeof store.open === "function" && Array.isArray(store.tabs)
+    if (inWorkspace) {
+      // Open a fresh tab on the workspace store; the existing rdp_next
+      // tab stays in place so the user can compare. Activation auto-
+      // happens because open() also focuses the new tab.
+      store.open({
+        nodeId,
+        protocol: "rdp",
+        title: nodeName || `node #${nodeId}`,
+        host: nodeHost,
+        port: nodePort,
+      })
+      toast.success("已在工作台开启经典 RDP 会话", {
+        description: "通过 Guacamole 通道连接,通常更稳定",
+      })
+      return
+    }
+    // Standalone /nodes/[id]/rdp-next fallback — navigate to the classic
+    // /nodes/[id]/rdp page. window.location keeps the navigation cheap
+    // and avoids dragging next/router into this layer.
+    if (typeof window !== "undefined") {
+      window.location.assign(`/nodes/${nodeId}/rdp`)
+    }
+  }
+
   // Force-TLS retry shortcut: surfaces on the loading overlay when the
   // connection failed with ERRCONNECT_CONNECT_TRANSPORT_FAILED. Patches
   // the node's proto_options to set rdp.security = "tls" and reconnects,
@@ -435,6 +469,7 @@ export function DesktopDisplay({
               nodeName={nodeName}
               onRetry={handleReconnect}
               onForceTlsOnly={handleForceTlsOnly}
+              onSwitchToGuacamole={handleSwitchToGuacamole}
             />
           </div>
         </DesktopContextMenu>

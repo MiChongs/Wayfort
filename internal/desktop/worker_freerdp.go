@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 type FreeRDPWorker struct {
 	logger     *zap.Logger
 	workerPath string
+	debugLog   bool
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
@@ -35,13 +37,27 @@ type FreeRDPWorker struct {
 	mu         sync.Mutex // guards writes to stdin
 }
 
-func NewFreeRDPWorker(logger *zap.Logger, workerPath string) *FreeRDPWorker {
-	return &FreeRDPWorker{
+// WorkerOption tweaks NewFreeRDPWorker without exploding the constructor's
+// arg list when we add more diagnostics knobs.
+type WorkerOption func(*FreeRDPWorker)
+
+// WithDebugLog injects WLOG_LEVEL=DEBUG into the worker process env so
+// libfreerdp emits its full state-machine trace via stderr.
+func WithDebugLog(enabled bool) WorkerOption {
+	return func(w *FreeRDPWorker) { w.debugLog = enabled }
+}
+
+func NewFreeRDPWorker(logger *zap.Logger, workerPath string, opts ...WorkerOption) *FreeRDPWorker {
+	w := &FreeRDPWorker{
 		logger:     logger,
 		workerPath: workerPath,
 		out:        make(chan ServerMessage, 64),
 		done:       make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 func (w *FreeRDPWorker) Start(ctx context.Context, p StartParams) error {
@@ -49,6 +65,13 @@ func (w *FreeRDPWorker) Start(ctx context.Context, p StartParams) error {
 		return errors.New("freerdp worker path not configured")
 	}
 	w.cmd = exec.CommandContext(ctx, w.workerPath)
+	// libfreerdp reads WLOG_LEVEL natively at WLog init; setting it on the
+	// child's env is enough to enable DEBUG / TRACE logging without any
+	// cgo bridge from our side. When debugLog is false we inherit the
+	// gateway's env unchanged (default level INFO).
+	if w.debugLog {
+		w.cmd.Env = append(os.Environ(), "WLOG_LEVEL=DEBUG")
+	}
 	stdin, err := w.cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)

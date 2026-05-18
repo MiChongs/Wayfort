@@ -215,7 +215,7 @@ func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
 		if path == "" {
 			return nil, errors.New("freerdp worker path not resolved; check /desktop/stats and ensure bootstrap completed")
 		}
-		return NewFreeRDPWorker(m.logger, path), nil
+		return NewFreeRDPWorker(m.logger, path, WithDebugLog(m.cfg.DebugLog)), nil
 	default:
 		return nil, fmt.Errorf("unknown desktop backend %q (supported: freerdp, dummy)", backend)
 	}

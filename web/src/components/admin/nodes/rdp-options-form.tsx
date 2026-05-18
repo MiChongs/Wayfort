@@ -46,7 +46,13 @@ export function RdpOptionsForm({ value, onChange }: Props) {
   )
 
   return (
-    <Tabs defaultValue="security" className="w-full">
+    <div className="space-y-3">
+      <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground leading-relaxed">
+        <span className="font-medium text-foreground">这里配置 FreeRDP 新栈(rdp_next)</span>
+        。工作台双击 RDP 节点默认走经典 Guacamole 模式,兼容性更广;FreeRDP 新栈
+        作为右键备选(Beta)。新栈连接失败时,会话内有 "切换经典 RDP" 按钮一键回退。
+      </div>
+      <Tabs defaultValue="security" className="w-full">
       <TabsList className="grid grid-cols-5 w-full">
         <TabsTrigger value="security" className="text-xs">安全</TabsTrigger>
         <TabsTrigger value="display" className="text-xs">显示</TabsTrigger>
@@ -248,7 +254,8 @@ export function RdpOptionsForm({ value, onChange }: Props) {
           />
         </Field>
       </TabsContent>
-    </Tabs>
+      </Tabs>
+    </div>
   )
 }
 
