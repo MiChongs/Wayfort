@@ -139,6 +139,9 @@ export interface AssetGroup {
   parent_id?: number | null
   path: string
   description?: string
+  // Member node IDs populated by the GET /asset-groups list endpoint.
+  // Create/Update payloads don't include it, which is why this is optional.
+  node_ids?: number[]
 }
 
 export interface AssetTag {
