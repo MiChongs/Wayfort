@@ -139,12 +139,14 @@ func TestPlanInstall_Darwin_BrewMissing(t *testing.T) {
 	}
 }
 
-// TestPlanInstall_Windows_NoToolkit simulates a Windows box without
-// MSYS2 or vcpkg. We don't actually run on Windows in the sandbox; we
-// just verify planInstallWindows yields a Reason + HumanInstall (driven
-// by detectWindowsToolkit returning "none" because neither pacman.exe
-// nor vcpkg.exe is on the Linux host).
+// TestPlanInstall_Windows_NoToolkit verifies planInstallWindows yields a
+// Reason + HumanInstall when no toolkit is present. The detection scans
+// the actual filesystem; on a Windows dev host with MSYS2 installed it
+// returns a real install plan instead — skip in that case.
 func TestPlanInstall_Windows_NoToolkit(t *testing.T) {
+	if tk := detectWindowsToolkit(); tk.Kind != "none" {
+		t.Skipf("host has %s toolkit at %s; this test exercises the no-toolkit path", tk.Kind, tk.Root)
+	}
 	plan := planInstallWindows(osInfo{ID: distroWindows, PrettyName: "Windows 10"})
 	if plan.Reason == "" {
 		t.Error("expected Reason when no toolkit detected")

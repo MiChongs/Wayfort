@@ -235,6 +235,11 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/desktop/sessions", desktopControl(rt).Start)
 		ops.DELETE("/desktop/sessions/:session_id", desktopControl(rt).End)
 		ops.GET("/desktop/stats", desktopControl(rt).Stats)
+		// Plan 19.5 — operator can re-run the worker bootstrap without
+		// restarting the gateway (e.g. after installing MSYS2 / brew /
+		// apt deps). Admin-only because it spawns package-manager
+		// commands and a CGo compile.
+		ops.POST("/desktop/bootstrap", auth.RequireAdmin(), desktopControl(rt).RetryBootstrap)
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)

@@ -370,8 +370,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
 	// Plan 18 — async desktop worker bootstrap. Returns nil on failure so
-	// the gateway keeps running; per-session error surfaces via 503.
+	// the gateway keeps running; per-session error surfaces via 503 and
+	// state surfaces via GET /api/v1/desktop/stats. The "scheduled" log
+	// here is a sanity check — if it appears but EnsureWorker's own
+	// "ensuring desktop worker availability" doesn't, the goroutine
+	// never ran (errgroup canceled early).
 	if desktopMgr != nil {
+		logger.Info("desktop bootstrap scheduled in background goroutine",
+			zap.Bool("auto_install", cfg.Desktop.AutoInstall),
+			zap.String("default_backend", cfg.Desktop.DefaultBackend))
 		g.Go(func() error { return desktopMgr.EnsureWorker(gctx) })
 	}
 
