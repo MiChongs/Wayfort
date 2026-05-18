@@ -136,6 +136,34 @@ export function WebSSHTerminal({
   const fitRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const searchRef = React.useRef<any>(null) // eslint-disable-line @typescript-eslint/no-explicit-any
   const connRef = React.useRef<WebSSHConnection | null>(null)
+  // rAF token shared by every fit() caller (ResizeObserver, fontSize change,
+  // initial mount). Coalesces many resize events per frame into one fit call,
+  // so dragging the SideDock splitter or switching tabs no longer ladders
+  // through dozens of layout reflows per second.
+  const fitRafRef = React.useRef<number | null>(null)
+
+  // scheduleFit defers fit() to the next animation frame and short-circuits
+  // when the container is currently 0×0 — that happens transiently while the
+  // tab is hidden (display:none) or before the flex layout has settled. Doing
+  // fit() in that state writes garbage dimensions into xterm and forces a
+  // second fit() once the container reaches its real size, which is exactly
+  // the visible flicker users were reporting.
+  const scheduleFit = React.useCallback(() => {
+    if (typeof window === "undefined") return
+    if (fitRafRef.current !== null) return
+    fitRafRef.current = window.requestAnimationFrame(() => {
+      fitRafRef.current = null
+      const fit = fitRef.current as { fit?: () => void } | null
+      const el = containerRef.current
+      if (!fit?.fit || !el) return
+      if (el.clientWidth === 0 || el.clientHeight === 0) return
+      try {
+        fit.fit()
+      } catch {
+        /* noop — happens transiently while the terminal is still wiring up */
+      }
+    })
+  }, [])
   const [status, setStatusState] = React.useState<Status>("connecting")
   // Keep the latest onStatusChange in a ref so the WS callbacks below
   // always call the freshest one without retriggering the connect effect.
@@ -190,9 +218,9 @@ export function WebSSHTerminal({
   React.useEffect(() => {
     const t = termRef.current as { options?: { fontSize?: number } } | null
     if (t && t.options) t.options.fontSize = fontSize
-    fitRef.current?.fit?.()
+    scheduleFit()
     if (typeof window !== "undefined") localStorage.setItem(FONT_KEY, String(fontSize))
-  }, [fontSize])
+  }, [fontSize, scheduleFit])
 
   function themeColors() {
     if (typeof window === "undefined") return { fg: "#e4e4e7" }
@@ -245,14 +273,15 @@ export function WebSSHTerminal({
       }
       const el = containerRef.current!
       term.open(el)
-      try {
-        fit.fit()
-      } catch {
-        /* noop */
-      }
       termRef.current = term
       fitRef.current = fit
       searchRef.current = search
+      // Defer the first fit() to the next frame so the parent flex layout
+      // is settled before xterm reads clientWidth/clientHeight. Calling
+      // fit() synchronously here writes the pre-layout size into xterm,
+      // which then has to be corrected by the first ResizeObserver hit —
+      // visible as a one-frame layout pop on session start.
+      scheduleFit()
 
       term.onTitleChange((t) => {
         if (!disposed) setTerminalTitle(t || "")
@@ -343,12 +372,12 @@ export function WebSSHTerminal({
         return true
       })
 
+      // ResizeObserver routes every panel drag pixel through the rAF
+      // scheduler. Without this, dragging the SideDock splitter triggered
+      // a fit() per pixel — each one a layout reflow + cursor blink reset,
+      // which presented as the flicker the user reported.
       resizeObserver = new ResizeObserver(() => {
-        try {
-          fit.fit()
-        } catch {
-          /* noop */
-        }
+        scheduleFit()
       })
       resizeObserver.observe(el)
     })().catch((e) => toast.error("终端加载失败", { description: String(e) }))
@@ -356,6 +385,10 @@ export function WebSSHTerminal({
     return () => {
       disposed = true
       resizeObserver?.disconnect()
+      if (fitRafRef.current !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(fitRafRef.current)
+        fitRafRef.current = null
+      }
       if (viewport && onViewportScroll) viewport.removeEventListener("scroll", onViewportScroll)
       connRef.current?.close()
       const term = termRef.current as { dispose?: () => void } | null
@@ -364,7 +397,7 @@ export function WebSSHTerminal({
       fitRef.current = null
       searchRef.current = null
     }
-  }, [protocol, nodeId, bumpKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocol, nodeId, bumpKey, scheduleFit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleCopy(term?: { getSelection: () => string }) {
     const t = term || (termRef.current as { getSelection?: () => string } | null)
