@@ -166,6 +166,13 @@ func goOnBitmapUpdate(ctx *C.rdpContext, bitmap *C.BITMAP_UPDATE) C.BOOL {
 	if bitmap == nil || bitmap.number == 0 {
 		return C.TRUE
 	}
+	// One-shot log so the gateway log proves "the server sent at least one
+	// frame and our worker decoded it" — distinguishes a happy-path-but-
+	// browser-closed-early failure from a connect-but-no-frames hang.
+	if !c.firstBitmapLogged.Swap(true) {
+		c.logger.Info("phase: first bitmap update from server",
+			zap.Uint32("rectangle_count", uint32(bitmap.number)))
+	}
 	// Walk the array of rectangles libfreerdp produced; each is a self-
 	// contained tile we forward to the browser. We currently send the
 	// per-tile DSTRECT directly without coalescing.

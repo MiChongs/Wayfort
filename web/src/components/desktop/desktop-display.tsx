@@ -294,6 +294,24 @@ export function DesktopDisplay({
     })
 
     return () => {
+      // Diagnostic: capture who triggered the cleanup. After PR #22-#24
+      // landed the RDP connection itself works, but the browser sometimes
+      // closes the WS ~1.5s after PhaseConnected — that means the React
+      // effect cleanup fired unexpectedly (component unmount or dep
+      // change), tearing down the worker. The deps (nodeId/backend/
+      // bumpKey) shouldn't change unless the user clicks reconnect, so
+      // the most likely cause is an external unmount (workspace store
+      // tabs array changed, hot reload, persist rehydration, etc).
+      // Capturing the JS call stack tells us exactly which component
+      // tree teardown triggered this cleanup.
+      console.warn("[DesktopDisplay] effect cleanup firing", {
+        sessionId: sessionIdRef.current,
+        nodeId,
+        backend,
+        bumpKey,
+        status,
+        stack: new Error().stack,
+      })
       cancelled = true
       if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
       detachInputsRef.current?.()
