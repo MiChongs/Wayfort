@@ -39,6 +39,18 @@ type Manager struct {
 	// Plan 18 — true once EnsureWorker has either found or built the
 	// worker binary. Sessions started before this flips get a 503.
 	workerReady atomic.Bool
+	// Plan 19.5 — bootstrap state surfaced via /desktop/stats so the
+	// operator can debug "why isn't auto_install running?" without
+	// grepping logs. All three are accessed via atomic.Value to keep
+	// reader paths lock-free.
+	bootstrapErr     atomic.Value // string — empty when no error
+	bootstrapAt      atomic.Value // time.Time — last bootstrap attempt finish
+	bootstrapInFlight atomic.Bool
+	// Resolved path to the worker binary, populated by EnsureWorker.
+	// Mirrored back into m.cfg.WorkerPath for backwards compat but
+	// exposed here so /desktop/stats can show the resolved path even
+	// when the operator left worker_path blank.
+	workerPath atomic.Value // string
 }
 
 // PasswordOpener is the subset of pkgcrypto.Sealer we need (decrypt one blob).
@@ -132,8 +144,12 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}
 
-	// Pick worker backend.
-	worker := m.pickWorker(req.Backend)
+	// Pick worker backend. Bubble the typed error so the operator sees
+	// "worker path not resolved" instead of an opaque crash.
+	worker, err := m.pickWorker(req.Backend)
+	if err != nil {
+		return nil, fmt.Errorf("pick worker: %w", err)
+	}
 
 	// Prepare session bookkeeping. We mint our own UUID instead of relying
 	// on worker; the session row table doesn't need to know which backend
@@ -178,24 +194,51 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	}, nil
 }
 
-func (m *Manager) pickWorker(backend string) DesktopWorker {
-	if backend == "dummy" {
-		return NewDummyWorker(m.logger)
-	}
+func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
 	if backend == "" {
 		backend = m.cfg.DefaultBackend
 	}
 	switch backend {
+	case "dummy":
+		return NewDummyWorker(m.logger), nil
 	case "freerdp":
-		if m.cfg.WorkerPath == "" {
-			m.logger.Warn("freerdp worker path not configured — falling back to dummy")
-			return NewDummyWorker(m.logger)
+		path, _ := m.workerPath.Load().(string)
+		if path == "" {
+			return nil, errors.New("freerdp worker path not resolved; check /desktop/stats and ensure bootstrap completed")
 		}
-		return NewFreeRDPWorker(m.logger, m.cfg.WorkerPath)
+		return NewFreeRDPWorker(m.logger, path), nil
 	default:
-		// In M1 we default to dummy if not explicitly freerdp, so the
-		// pipeline is testable without libfreerdp.
-		return NewDummyWorker(m.logger)
+		return nil, fmt.Errorf("unknown desktop backend %q (supported: freerdp, dummy)", backend)
+	}
+}
+
+// BootstrapStatus snapshots the current worker / bootstrap state. Used by
+// the /desktop/stats handler so operators can debug auto_install without
+// digging through logs.
+type BootstrapStatus struct {
+	Enabled        bool      `json:"enabled"`
+	Backend        string    `json:"default_backend"`
+	WorkerReady    bool      `json:"worker_ready"`
+	WorkerPath     string    `json:"worker_path"`
+	AutoInstall    bool      `json:"auto_install"`
+	InFlight       bool      `json:"bootstrap_in_flight"`
+	LastError      string    `json:"last_bootstrap_error,omitempty"`
+	LastAttemptAt  time.Time `json:"last_bootstrap_at,omitempty"`
+}
+
+func (m *Manager) BootstrapStatus() BootstrapStatus {
+	path, _ := m.workerPath.Load().(string)
+	lastErr, _ := m.bootstrapErr.Load().(string)
+	lastAt, _ := m.bootstrapAt.Load().(time.Time)
+	return BootstrapStatus{
+		Enabled:       m.cfg.Enabled,
+		Backend:       m.cfg.DefaultBackend,
+		WorkerReady:   m.workerReady.Load(),
+		WorkerPath:    path,
+		AutoInstall:   m.cfg.AutoInstall,
+		InFlight:      m.bootstrapInFlight.Load(),
+		LastError:     lastErr,
+		LastAttemptAt: lastAt,
 	}
 }
 

@@ -38,46 +38,94 @@ func (m *Manager) candidateWorkerPaths() []string {
 // EnsureWorker drives the entire startup self-check. Returns nil even
 // when the bootstrap fails — the gateway continues to run and individual
 // session starts will return a clear error mentioning the failure.
+//
+// Every decision point logs at INFO so the operator never has to guess
+// why auto_install did or didn't run. Failure state is also captured on
+// the Manager and surfaced through /desktop/stats.
 func (m *Manager) EnsureWorker(ctx context.Context) error {
+	// Make sure repeated invocations (POST /desktop/bootstrap retry) don't
+	// overlap and stomp each other's WorkerPath updates.
+	if !m.bootstrapInFlight.CompareAndSwap(false, true) {
+		return errors.New("bootstrap already in flight")
+	}
+	defer m.bootstrapInFlight.Store(false)
+
+	m.logger.Info("ensuring desktop worker availability",
+		zap.Bool("enabled", m.cfg.Enabled),
+		zap.String("default_backend", m.cfg.DefaultBackend),
+		zap.String("configured_worker_path", m.cfg.WorkerPath),
+		zap.Bool("auto_install", m.cfg.AutoInstall),
+		zap.String("install_prefix", m.cfg.InstallPrefix))
+
 	if !m.cfg.Enabled {
+		m.logger.Info("desktop subsystem disabled — skipping bootstrap (set desktop.enabled=true)")
+		m.recordBootstrap(nil)
 		return nil
 	}
 	if m.cfg.DefaultBackend == "dummy" {
 		// The in-process dummy worker never needs a binary. Mark ready
 		// so session starts proceed.
+		m.logger.Info("default_backend=dummy — skipping freerdp bootstrap (no native worker needed)")
 		m.workerReady.Store(true)
+		m.recordBootstrap(nil)
 		return nil
 	}
 
 	// 1. Short-circuit when an existing binary is found.
-	for _, p := range m.candidateWorkerPaths() {
+	candidates := m.candidateWorkerPaths()
+	m.logger.Info("searching for existing worker binary",
+		zap.Strings("candidates", candidates))
+	for _, p := range candidates {
 		if isExecutable(p) {
-			m.logger.Info("desktop worker found", zap.String("path", p))
+			m.logger.Info("desktop worker found — skipping bootstrap", zap.String("path", p))
 			m.cfg.WorkerPath = p
+			m.workerPath.Store(p)
 			m.workerReady.Store(true)
+			m.recordBootstrap(nil)
 			return nil
 		}
 	}
 
 	if !m.cfg.AutoInstall {
+		err := errors.New("desktop worker not found and auto_install disabled")
 		m.logger.Warn("desktop worker missing and auto_install is disabled",
-			zap.String("expected_path", m.cfg.WorkerPath))
-		return errors.New("desktop worker not found and auto_install disabled")
+			zap.String("configured_path", m.cfg.WorkerPath),
+			zap.Strings("searched", candidates),
+			zap.String("hint", "set desktop.auto_install=true OR install libfreerdp+go and pre-build the worker"))
+		m.recordBootstrap(err)
+		return nil
 	}
 
-	m.logger.Info("desktop worker not found — starting bootstrap (this can take 30-90s)")
+	m.logger.Info("desktop worker not found — starting bootstrap (this can take 30-90s)",
+		zap.Strings("searched", candidates))
 	startedAt := time.Now()
 	if err := m.runBootstrap(ctx); err != nil {
 		m.logger.Error("desktop worker bootstrap failed", zap.Error(err),
-			zap.Duration("elapsed", time.Since(startedAt)))
+			zap.Duration("elapsed", time.Since(startedAt)),
+			zap.String("hint", "fix the reported issue, then POST /api/v1/desktop/bootstrap to retry without restart"))
+		m.recordBootstrap(err)
 		// Don't return the error — we want the gateway to keep running.
 		return nil
 	}
 	m.workerReady.Store(true)
+	m.workerPath.Store(m.cfg.WorkerPath)
 	m.logger.Info("desktop worker bootstrap complete",
 		zap.String("path", m.cfg.WorkerPath),
 		zap.Duration("elapsed", time.Since(startedAt)))
+	m.recordBootstrap(nil)
 	return nil
+}
+
+// recordBootstrap snapshots the bootstrap outcome on the Manager so
+// /desktop/stats can report it. Always sets bootstrapAt; bootstrapErr is
+// the empty string on success.
+func (m *Manager) recordBootstrap(err error) {
+	m.bootstrapAt.Store(time.Now())
+	if err == nil {
+		m.bootstrapErr.Store("")
+	} else {
+		m.bootstrapErr.Store(err.Error())
+	}
 }
 
 // runBootstrap is the actual install → extract → build → deploy pipeline.
