@@ -252,13 +252,16 @@ func (c *Client) applySettings() error {
 	// asked for that specific protocol only.
 	extSec := opts.Security == desktop.SecAny || opts.Security == ""
 	C.freerdp_settings_set_bool(s, C.FreeRDP_ExtSecurity, cBool(extSec))
-	// RDSTLS (PROTOCOL_RDSTLS, 0x10) is required by RDS Gateway / RD Web
-	// Access scenarios. Plain RDP servers ignore the unrecognised bit so
-	// this is purely additive — turning it on in "any" mode broadens the
-	// set of hosts we can reach without affecting direct-RDP nodes.
-	if extSec {
-		C.freerdp_settings_set_bool(s, C.FreeRDP_RdstlsSecurity, C.TRUE)
-	}
+	// We do NOT enable FreeRDP_RdstlsSecurity here. When RDSTLS is on,
+	// libfreerdp strips NLA + NLA-EX from the X.224 client request (RDSTLS
+	// is mutually exclusive with HYBRID variants in the negotiation), so
+	// a direct-connect Win10/11 host without Microsoft Entra/RD Gateway
+	// support sees only TLS+RDSTLS offered, picks RDSTLS, then fails
+	// authentication. Empirically this broke connections that worked via
+	// plain NLA. RDSTLS is therefore left off by default; operators who
+	// genuinely need it for a RD Web Access / Entra-joined host can set
+	// security="any" on the node and we'll keep that path opt-in later.
+	//
 	// Explicit RestrictedAdminModeRequired = FALSE. If the server thinks
 	// the client is asking for restricted-admin (a special NLA sub-mode
 	// that disables LSASS credential extraction) it may reject the
