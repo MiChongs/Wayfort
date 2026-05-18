@@ -125,19 +125,22 @@ export class MinimapPlugin implements RDPPlugin {
     this.hostRect = { w: host.clientWidth, h: host.clientHeight }
 
     c.clearRect(0, 0, MINIMAP_WIDTH, MINIMAP_HEIGHT)
-    // Draw downscaled snapshot of the underlying Pixi canvas. We do this
-    // every frame — for a 1080p remote it's a single sub-millisecond blit.
-    const src = this.ctx.getRenderCanvas()
-    // Letterbox fit so aspect ratio is preserved.
+    // Plan 16: source is the Guac display element's largest child canvas
+    // (background layer). Pixi canvas (overlay) is mostly transparent and
+    // useless here. We don't need the cursor in the minimap.
+    const displayEl = this.ctx.getDisplayElement?.()
+    const src = pickBackgroundCanvas(displayEl)
     const fit = Math.min(MINIMAP_WIDTH / remote.w, MINIMAP_HEIGHT / remote.h)
     const w = remote.w * fit
     const h = remote.h * fit
     const ox = (MINIMAP_WIDTH - w) / 2
     const oy = (MINIMAP_HEIGHT - h) / 2
-    try {
-      c.drawImage(src, ox, oy, w, h)
-    } catch {
-      /* Cross-origin or tainted — ignore */
+    if (src) {
+      try {
+        c.drawImage(src, ox, oy, w, h)
+      } catch {
+        /* Tainted or cross-origin — ignore */
+      }
     }
     // Viewport rectangle in remote space → minimap space.
     const vp = this.deps.getViewport()
@@ -164,4 +167,22 @@ export class MinimapPlugin implements RDPPlugin {
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v
+}
+
+// Pick the largest <canvas> child of the Guac display element — that's
+// almost always the background layer. We skip the cursor (small) and any
+// intermediate buffer canvases by area-sorting.
+function pickBackgroundCanvas(displayEl: HTMLElement | null | undefined): HTMLCanvasElement | null {
+  if (!displayEl) return null
+  let best: HTMLCanvasElement | null = null
+  let bestArea = 0
+  const all = displayEl.querySelectorAll<HTMLCanvasElement>("canvas")
+  for (const c of all) {
+    const a = c.width * c.height
+    if (a > bestArea) {
+      bestArea = a
+      best = c
+    }
+  }
+  return best
 }

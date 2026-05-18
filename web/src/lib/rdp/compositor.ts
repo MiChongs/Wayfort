@@ -1,21 +1,22 @@
-// PixiCompositor — Plan 15's core renderer.
+// PixiCompositor — overlay-only renderer (Plan 16).
 //
-// Guacamole's Display draws into its own internal HTMLCanvasElement via
-// 2D context. We grab that canvas, upload it as a PIXI.Texture each frame
-// (zero-copy on modern browsers — Texture.source.update() just rebinds the
-// canvas as the WebGL texture data source), and let Pixi composite it with
-// any overlay sprites we add (cursor, annotations, minimap).
+// Originally Plan 15 made Pixi the primary visible surface by blitting
+// Guacamole's default-layer canvas each frame. That regressed the cursor:
+// Guac's cursor lives on a SEPARATE child canvas we never mirrored, and
+// the wrapper holding it was hidden at opacity:0. Plan 16 flips the
+// architecture — Guacamole renders all desktop layers (background +
+// cursor + buffers) as-is, and Pixi sits ON TOP as a transparent overlay
+// for annotations / future GPU effects.
 //
-// Why this beats Guacamole's vanilla rendering:
-//   - GPU-accelerated compositing: zoom/pan transforms run on the GPU,
-//     anti-aliased correctly instead of blurry CSS bilinear interpolation.
-//   - One canvas in the DOM (the Pixi one) — easier to overlay sprites,
-//     apply filters (privacy blur, contrast), capture screenshots.
-//   - Stage-level snapshot includes annotation overlays for free.
-//
-// Why we don't rewrite Guacamole.Display entirely: see Plan 15 Context. The
-// protocol layer keeps doing its 30+ drawing primitives correctly; we just
-// take over the *display* surface.
+// Consequences:
+//   • Cursor, intermediate buffers, layered RDP elements all "just work".
+//   • Zoom uses Guacamole.Display.scale() (library-native, propagates to
+//     every layer including the cursor's CSS position).
+//   • Screenshot / recording compose the desktop frame by walking Guac's
+//     child canvases (see lib/rdp/compose.ts).
+//   • Pixi stage contains annotation strokes (and any future overlay-only
+//     effects). attachSourceCanvas / setRemoteSize / applyHostTransform
+//     are removed — they served the old "Pixi is primary" model.
 
 import * as PIXI from "pixi.js"
 
@@ -32,11 +33,11 @@ export interface CompositorOptions {
 
 export class PixiCompositor {
   private app: PIXI.Application | null = null
-  private sprite: PIXI.Sprite | null = null
-  private texture: PIXI.Texture | null = null
   private filterStage: PIXI.Filter[] = []
   private destroyed = false
-  // Re-exposed so plugins can add display objects above the remote sprite.
+  // Stage where overlay plugins (annotation, minimap container) add their
+  // display objects. After Plan 16 there's no desktop sprite below them —
+  // the stage is transparent and sits over Guacamole's own canvases.
   stage: PIXI.Container | null = null
 
   async init(opts: CompositorOptions): Promise<void> {
@@ -44,15 +45,12 @@ export class PixiCompositor {
     this.app = new PIXI.Application()
     await this.app.init({
       resizeTo: opts.host,
-      backgroundColor: opts.backgroundColor ?? 0x000000,
-      // Pixi auto-detects WebGL2 → WebGL1 → canvas2d in that order.
-      // We prefer webgl over webgpu for now: WebGPU is still rolling out
-      // and we want consistent behaviour across browsers.
+      // Plan 16: transparent overlay. The visible desktop comes from
+      // Guacamole's element underneath; we just paint annotations on top.
+      backgroundAlpha: 0,
       preference: "webgl",
-      // Pixel-art clarity for terminals and code editors > smoothing.
       antialias: false,
       autoDensity: true,
-      // High DPI screens — let Pixi handle the devicePixelRatio scaling.
       resolution: typeof window !== "undefined" ? window.devicePixelRatio : 1,
     })
     if (this.destroyed) {
@@ -64,52 +62,23 @@ export class PixiCompositor {
     this.app.canvas.style.inset = "0"
     this.app.canvas.style.width = "100%"
     this.app.canvas.style.height = "100%"
-    // Critical: events must pass through to Guac's hidden element underneath
-    // (see input-bridge.ts). Pointer-events:none on the Pixi canvas does it.
+    // Pointer-events:none lets mouse / touch fall through to the Guac
+    // canvas beneath us so its input handlers fire normally. Annotation
+    // mode toggles an HTMLDivElement overlay above (see annotation
+    // plugin) when it needs to intercept events for drawing.
     this.app.canvas.style.pointerEvents = "none"
+    // z-index above Guac canvases (which Guac places without explicit
+    // z-index) but below the floating toolbar / loader (z-20+).
+    this.app.canvas.style.zIndex = "5"
     opts.host.appendChild(this.app.canvas)
     this.stage = this.app.stage
   }
 
-  // Wire up the source canvas (Guacamole's internal drawing surface). Once
-  // attached, we re-upload it to the GPU each Pixi tick.
-  attachSourceCanvas(canvas: HTMLCanvasElement): void {
-    if (!this.app || !this.stage) {
-      throw new Error("compositor not initialised")
-    }
-    // Tear down any previous attachment so re-attach after reconnect works.
-    if (this.sprite) {
-      this.sprite.destroy()
-      this.sprite = null
-    }
-    if (this.texture) {
-      this.texture.destroy(true)
-      this.texture = null
-    }
-    this.texture = PIXI.Texture.from(canvas)
-    this.sprite = new PIXI.Sprite(this.texture)
-    // Always at z=0 — plugins add above.
-    this.stage.addChildAt(this.sprite, 0)
-    // Ticker fires at 60Hz (or display rate). Each tick we tell the texture
-    // its backing canvas may have changed. Update is cheap on WebGL — just
-    // dirties the texture binding; the actual GPU upload only happens on
-    // the next draw call. ~0.5ms per frame on modern hardware.
-    this.app.ticker.add(this.tick)
-  }
-
-  // Resize the visible sprite to match the remote desktop dimensions. Called
-  // from Guacamole's Display.onresize. The stage transform handles zoom/pan
-  // for the user — this is just "intrinsic size".
-  setRemoteSize(width: number, height: number): void {
-    if (!this.sprite) return
-    this.sprite.width = width
-    this.sprite.height = height
-  }
-
-  // Apply a GPU filter chain. "privacy" blurs the desktop heavily (useful
-  // when sharing the browser tab); "grayscale" desaturates.
+  // Plan 16: filter API kept for the annotation stage so users can still
+  // privacy-blur their own overlays. Filtering the remote desktop directly
+  // is left to Plan 17's full-mirror renderer.
   setFilter(name: CompositorFilter): void {
-    if (!this.sprite) return
+    if (!this.stage) return
     this.disposeFilters()
     switch (name) {
       case "privacy":
@@ -121,18 +90,7 @@ export class PixiCompositor {
       default:
         this.filterStage = []
     }
-    this.sprite.filters = this.filterStage
-  }
-
-  // Apply a CSS transform to the host (zoom + pan). Pixi handles its own
-  // canvas the same way the input bridge handles Guac's — we use a single
-  // transform on a parent wrapper so the two stay aligned.
-  applyHostTransform(scale: number, x: number, y: number): void {
-    if (!this.app || !this.stage) return
-    // Drive Pixi stage transform directly — keeps WebGL pipeline consistent
-    // (avoids browser CSS scale that defeats the GPU advantage).
-    this.stage.scale.set(scale)
-    this.stage.position.set(x, y)
+    this.stage.filters = this.filterStage
   }
 
   // Async screenshot of the current rendered frame including all overlays.
@@ -158,18 +116,11 @@ export class PixiCompositor {
   destroy(): void {
     this.destroyed = true
     if (this.app) {
-      this.app.ticker.remove(this.tick)
       this.disposeFilters()
       this.app.destroy(true, { children: true, texture: true })
       this.app = null
     }
-    this.sprite = null
-    this.texture = null
     this.stage = null
-  }
-
-  private tick = (): void => {
-    if (this.texture) this.texture.source.update()
   }
 
   private disposeFilters(): void {

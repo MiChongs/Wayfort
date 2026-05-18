@@ -128,6 +128,22 @@ export function GuacLoader({
           </ul>
         )}
 
+        {/* Plan 16.C.4 — connection-stall diagnostic. If we've been in a
+            pre-connected phase for more than 8s, surface common causes
+            instead of leaving the user staring at a spinner. Static hints
+            (no active probe) — the goal is to nudge a debugging path. */}
+        {!isError && elapsedMs > 8000 && phase !== "connected" && (
+          <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300 space-y-1">
+            <div className="font-medium">已用时 {(elapsedMs / 1000).toFixed(0)}s — 还在连接？</div>
+            <ul className="list-disc list-inside space-y-0.5 opacity-90">
+              <li>目标 RDP / VNC 服务未启动或端口未开放</li>
+              <li>节点 SOCKS5 / bastion 链路不可达</li>
+              <li>NLA 严格模式拒绝了凭据（试试关掉 NLA 或换凭据）</li>
+              <li>guacd 容器没起来（后端日志 grep `guacd` 看）</li>
+            </ul>
+          </div>
+        )}
+
         {isError && (
           <>
             {errorHint && (

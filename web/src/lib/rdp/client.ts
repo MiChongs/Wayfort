@@ -16,6 +16,7 @@
 
 import { ensureGuacamoleScript, type GuacQuality } from "@/lib/ws/guacamole-client"
 import { getAccessToken } from "@/lib/auth/tokens"
+import { composeFrame } from "./compose"
 import { PixiCompositor } from "./compositor"
 import { InputBridge } from "./input-bridge"
 import { Viewport } from "./viewport"
@@ -36,17 +37,21 @@ interface GuacClient {
   onstatechange?: (s: number) => void
   onclipboard?: (stream: unknown, mimetype: string) => void
   onsync?: (timestamp: number) => void
-  getDisplay(): {
-    getElement(): HTMLElement
-    onresize?: (w: number, h: number) => void
-    getDefaultLayer(): { getCanvas(): HTMLCanvasElement }
-  }
+  getDisplay(): GuacDisplayCtl
   sendMouseState(s: unknown): void
   sendKeyEvent(p: number, k: number): void
   sendSize(w: number, h: number): void
   createClipboardStream?: (mimetype: string) => unknown
   connect(query: string): void
   disconnect(): void
+}
+
+interface GuacDisplayCtl {
+  getElement(): HTMLElement
+  onresize?: (w: number, h: number) => void
+  // Plan 16: scale() is the library-native zoom hook the Viewport drives.
+  scale?: (s: number) => void
+  getDefaultLayer?: () => { getCanvas?: () => HTMLCanvasElement }
 }
 
 interface GuacTunnel {
@@ -83,6 +88,10 @@ export class RDPClient {
   private metricsTimer: number | null = null
   private fpsSamples: number[] = []
   private remoteResizeSubs: Array<(w: number, h: number) => void> = []
+  // Plan 16: Guacamole's display container — composite/screenshot/recording
+  // walk its child canvases to build a single frame.
+  private guacDisplayEl: HTMLElement | null = null
+  private remoteSize = { w: 1280, h: 720 }
 
   constructor(opts: RDPClientOptions) {
     this.opts = opts
@@ -138,25 +147,21 @@ export class RDPClient {
       origInstruction?.(op, args)
     }
 
-    // Hook the display before connect so we know its canvas immediately on
-    // the first paint.
+    // Plan 16: Guacamole owns the visible surface. We grab the display
+    // controller + element, subscribe to remote-size changes (so the
+    // viewport / plugins know intrinsic dimensions), and let the library
+    // do all the drawing including the cursor layer.
     const displayCtl = client.getDisplay()
     const displayEl = displayCtl.getElement()
-    const guacCanvas = this.findCanvas(displayCtl, displayEl)
-    if (guacCanvas) {
-      this.compositor.attachSourceCanvas(guacCanvas)
-    }
+    this.guacDisplayEl = displayEl
     displayCtl.onresize = (w: number, h: number) => {
-      this.compositor.setRemoteSize(w, h)
+      this.remoteSize = { w, h }
       this.viewport?.setRemoteSize(w, h)
       for (const cb of this.remoteResizeSubs) cb(w, h)
-      // Re-find the canvas in case the library swapped it for a new size.
-      const c = this.findCanvas(displayCtl, displayEl)
-      if (c) this.compositor.attachSourceCanvas(c)
     }
 
-    // Mount the hidden input element. InputBridge takes ownership of
-    // displayEl and appends a transparent wrapper to host.
+    // Mount the visible Guac display via the input bridge. Wrapper now has
+    // opacity:1 and centres the desktop in the host.
     this.bridge = new InputBridge({
       host: this.opts.host,
       guacDisplayElement: displayEl,
@@ -164,11 +169,11 @@ export class RDPClient {
       client,
     })
 
-    // Viewport drives matched CSS transforms on the Pixi stage + hidden el.
+    // Viewport drives Guacamole.Display.scale() — single source of truth
+    // for zoom; cursor + buffers follow automatically.
     this.viewport = new Viewport({
       host: this.opts.host,
-      compositor: this.compositor,
-      inputElement: this.bridge.getInputElement(),
+      guacDisplay: displayCtl,
       onChange: (v: RDPViewportState) => this.opts.onViewportChange?.(v),
     })
     this.viewport.attach(this.opts.nodeId)
@@ -241,8 +246,22 @@ export class RDPClient {
     return this.viewport?.current ?? null
   }
 
+  // Plan 16: snapshot composites Guacamole's child canvases (background +
+  // cursor + buffers) plus the Pixi overlay (annotations) into one PNG.
   async snapshot(): Promise<Blob> {
-    const canvas = await this.compositor.snapshot()
+    if (!this.guacDisplayEl) throw new Error("snapshot: display not ready")
+    let overlay: HTMLCanvasElement | null = null
+    try {
+      overlay = this.compositor.getRenderCanvas()
+    } catch {
+      overlay = null
+    }
+    const canvas = composeFrame({
+      displayEl: this.guacDisplayEl,
+      overlayCanvas: overlay,
+      remoteW: this.remoteSize.w,
+      remoteH: this.remoteSize.h,
+    })
     return new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("snapshot blob null"))), "image/png")
     })
@@ -300,24 +319,6 @@ export class RDPClient {
     return `${WS_BASE}/api/v1/ws/${this.opts.protocol}/${this.opts.nodeId}?${params.toString()}`
   }
 
-  // Defensive canvas lookup. Newer guacamole-common-js exposes
-  // getDefaultLayer().getCanvas(). Older builds put the canvas as a child of
-  // the display element instead.
-  private findCanvas(
-    displayCtl: { getDefaultLayer: () => { getCanvas?: () => HTMLCanvasElement } } | null,
-    displayEl: HTMLElement,
-  ): HTMLCanvasElement | null {
-    try {
-      const layer = displayCtl?.getDefaultLayer()
-      const c = layer?.getCanvas?.()
-      if (c instanceof HTMLCanvasElement) return c
-    } catch {
-      /* */
-    }
-    const found = displayEl.querySelector("canvas")
-    return found instanceof HTMLCanvasElement ? found : null
-  }
-
   private startMetricsTimer(): void {
     if (!this.opts.onMetrics) return
     this.metricsTimer = window.setInterval(() => {
@@ -370,6 +371,8 @@ export class RDPClient {
       getHost: () => this.opts.host,
       getPixiApp: () => this.compositor.getApp(),
       getRenderCanvas: () => this.compositor.getRenderCanvas(),
+      getDisplayElement: () => this.guacDisplayEl,
+      getRemoteSize: () => this.remoteSize,
       snapshot: () => this.snapshot(),
       onRemoteResize: (cb) => {
         this.remoteResizeSubs.push(cb)

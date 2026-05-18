@@ -1,16 +1,17 @@
-// Viewport — Fit/Fill/1:1 modes + interactive zoom/pan with momentum.
+// Viewport — Fit/Fill/1:1 modes + interactive zoom with momentum (pan kept
+// for follow-up; with Guacamole.Display.scale() the library auto-positions
+// the desktop in the centred wrapper).
 //
-// We drive the visual transform on TWO surfaces in lockstep:
-//   1. The Pixi stage (compositor.applyHostTransform) — actual rendering.
-//   2. The Guacamole hidden input element (CSS transform) — so the browser's
-//      getBoundingClientRect math used by Guacamole.Mouse keeps coordinates
-//      in remote-pixel space without any manual translation.
-//
-// Persistence: per (nodeID) viewport state stored in localStorage so
-// re-opening a session restores the user's preferred zoom & pan.
+// After Plan 16 we drive zoom via Guacamole.Display.scale(s) — the library
+// propagates the scale to every child canvas (background + cursor + buffers)
+// and adjusts mouse coordinates internally so we don't have to. No CSS
+// transform math on our end.
 
-import type { PixiCompositor } from "./compositor"
 import type { RDPViewportMode, RDPViewportState } from "./types"
+
+interface GuacDisplay {
+  scale?: (s: number) => void
+}
 
 const STORAGE_KEY = "rdp:viewport"
 const MIN_ZOOM = 0.25
@@ -20,11 +21,8 @@ const ZOOM_STEP = 1.15
 export interface ViewportDeps {
   // Container the viewport applies to.
   host: HTMLElement
-  // Pixi renderer — handles its own coordinate system.
-  compositor: PixiCompositor
-  // The Guacamole-owned wrapper holding the hidden canvas — receives a CSS
-  // transform so input coords map back to remote pixels.
-  inputElement: HTMLElement
+  // Guacamole's display controller — gets scale() calls.
+  guacDisplay: GuacDisplay
   // Optional change subscriber.
   onChange?: (state: RDPViewportState) => void
 }
@@ -95,10 +93,12 @@ export class Viewport {
     this.persist()
   }
 
-  pan(dx: number, dy: number): void {
-    this.state.offsetX += dx
-    this.state.offsetY += dy
-    this.apply()
+  // Plan 16: pan is a no-op now. Guacamole's display is auto-centred by the
+  // wrapper flex layout; "pan" would have meant CSS-translating the wrapper,
+  // which conflicts with the centring. Kept as a stub so existing callers
+  // (and the minimap teleport stub) don't break.
+  pan(_dx: number, _dy: number): void {
+    /* intentionally empty */
   }
 
   reset(): void {
@@ -128,28 +128,25 @@ export class Viewport {
   }
 
   private apply(): void {
-    this.deps.compositor.applyHostTransform(
-      this.state.scale,
-      this.state.offsetX,
-      this.state.offsetY,
-    )
-    // Mirror the same transform to the hidden Guacamole element so its
-    // getBoundingClientRect-based mouse coords remain in remote-pixel space.
-    // The hidden element's intrinsic size is the remote desktop size; the
-    // transform scales it visually (no effect since opacity:0) but the
-    // bounding rect that Guacamole.Mouse reads now matches what we drew.
-    this.deps.inputElement.style.transformOrigin = "0 0"
-    this.deps.inputElement.style.transform =
-      `translate(${this.state.offsetX}px, ${this.state.offsetY}px) scale(${this.state.scale})`
-    this.deps.inputElement.style.width = `${this.state.remoteWidth}px`
-    this.deps.inputElement.style.height = `${this.state.remoteHeight}px`
+    // Drive Guacamole's own scaling. The library updates every child
+    // canvas (background + cursor + buffers) and shifts its internal
+    // coordinate transforms so Mouse continues to report remote pixels.
+    try {
+      this.deps.guacDisplay.scale?.(this.state.scale)
+    } catch {
+      /* old library versions might throw on extreme values; fail soft */
+    }
     this.deps.onChange?.(this.state)
   }
 
   private bindInteractions(): void {
     const host = this.deps.host
-    // Ctrl-wheel zoom. We attach to the host because the Pixi canvas has
-    // pointer-events:none and we don't want to consume Guac's mouse events.
+    // Plan 16: only Ctrl-wheel zoom is bound here. Middle-mouse pan was
+    // dropped because Guacamole now owns the visible canvas (no manual
+    // panning needed — Guac centres itself in the wrapper) and middle
+    // clicks have semantic meaning to many remote shells (paste etc.).
+    // Double-click was dropped because users double-click files on the
+    // remote desktop frequently and a viewport-mode flip would surprise.
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
@@ -159,83 +156,9 @@ export class Viewport {
     }
     host.addEventListener("wheel", onWheel, { passive: false })
     this.cleanup.push(() => host.removeEventListener("wheel", onWheel))
-
-    // Middle-mouse pan. Capture on the host so we get events before they
-    // reach the (transparent) Guac element.
-    let panning = false
-    let lastX = 0
-    let lastY = 0
-    let lastTime = 0
-    let velX = 0
-    let velY = 0
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 1) return // middle only
-      e.preventDefault()
-      panning = true
-      lastX = e.clientX
-      lastY = e.clientY
-      lastTime = performance.now()
-      velX = 0
-      velY = 0
-      if (this.momentumRAF != null) {
-        cancelAnimationFrame(this.momentumRAF)
-        this.momentumRAF = null
-      }
-    }
-    const onMouseMove = (e: MouseEvent) => {
-      if (!panning) return
-      const dx = e.clientX - lastX
-      const dy = e.clientY - lastY
-      const now = performance.now()
-      const dt = Math.max(1, now - lastTime)
-      velX = dx / dt
-      velY = dy / dt
-      lastX = e.clientX
-      lastY = e.clientY
-      lastTime = now
-      this.pan(dx, dy)
-    }
-    const onMouseUp = (e: MouseEvent) => {
-      if (e.button !== 1) return
-      panning = false
-      // Momentum: decay velocity over ~500ms (damping each frame).
-      this.startMomentum(velX, velY)
-    }
-    host.addEventListener("mousedown", onMouseDown, true)
-    host.addEventListener("mousemove", onMouseMove, true)
-    host.addEventListener("mouseup", onMouseUp, true)
-    this.cleanup.push(() => {
-      host.removeEventListener("mousedown", onMouseDown, true)
-      host.removeEventListener("mousemove", onMouseMove, true)
-      host.removeEventListener("mouseup", onMouseUp, true)
-    })
-
-    // Double-click toggles Fit ↔ 1:1.
-    const onDblClick = (e: MouseEvent) => {
-      if (e.button !== 0) return
-      this.setMode(this.state.mode === "fit" ? "actual" : "fit")
-    }
-    host.addEventListener("dblclick", onDblClick)
-    this.cleanup.push(() => host.removeEventListener("dblclick", onDblClick))
   }
 
-  private startMomentum(vx: number, vy: number): void {
-    // Skip tiny flicks.
-    if (Math.abs(vx) < 0.1 && Math.abs(vy) < 0.1) return
-    const decay = 0.92
-    const tick = () => {
-      vx *= decay
-      vy *= decay
-      // Per-frame translation (assume 60Hz).
-      this.pan(vx * 16, vy * 16)
-      if (Math.abs(vx) < 0.02 && Math.abs(vy) < 0.02) {
-        this.momentumRAF = null
-        return
-      }
-      this.momentumRAF = requestAnimationFrame(tick)
-    }
-    this.momentumRAF = requestAnimationFrame(tick)
-  }
+  // momentum scrolling is no-op in Plan 16 — pan is gone.
 
   private restore(): void {
     if (typeof window === "undefined") return

@@ -1,16 +1,17 @@
-// RecordingPlugin — Plan 15.D.4. Captures the live Pixi canvas to a WebM
-// file via MediaRecorder + canvas.captureStream(). For files that grow past
-// memory-safe bounds, chunks are flushed to IndexedDB (idb-keyval) as they
-// arrive; on stop the chunks are stitched into a single Blob and downloaded.
+// RecordingPlugin — Plan 16 rewrite. Plan 15 captured a stream from the
+// Pixi canvas directly; that broke when we flipped to "Guac visible / Pixi
+// transparent overlay" because Pixi no longer contains the desktop pixels.
 //
-// Audio: optional. We don't tap Guacamole's audio stream here because the
-// browser's MediaStream design makes it awkward — the audio track would
-// need to live alongside the captureStream() video track, which is not
-// well-supported across all browsers. Audio is left as a future enhancement
-// (Plan 16 / 17), with the data-only WebM still useful for "look what I did
-// on the remote" reviews.
+// Now we composite each frame via composeFrame() into a hidden offscreen
+// canvas (walking Guac's child canvases + adding Pixi annotations on top),
+// then captureStream() that hidden canvas. Cursor + buffers end up in the
+// recording correctly. We tick at ~30Hz via requestAnimationFrame.
+//
+// Chunks land in IndexedDB during recording so a long session doesn't
+// blow memory; on stop everything is stitched and downloaded as one WebM.
 
 import { del, get, keys, set } from "idb-keyval"
+import { composeFrame } from "../compose"
 import type { RDPPlugin, RDPPluginContext } from "../types"
 
 const STORAGE_PREFIX = "rdp-recording-chunk:"
@@ -35,6 +36,9 @@ export class RecordingPlugin implements RDPPlugin {
   private nodeName: string
   private subscribers: Array<(e: RecordingEvent) => void> = []
   private tickerInterval: number | null = null
+  // Plan 16: offscreen canvas + compose RAF loop.
+  private captureCanvas: HTMLCanvasElement | null = null
+  private composeRAF: number | null = null
 
   constructor(nodeName: string) {
     this.nodeName = nodeName || "remote"
@@ -68,11 +72,21 @@ export class RecordingPlugin implements RDPPlugin {
   async start(): Promise<void> {
     if (!this.ctx) throw new Error("recording plugin not initialised")
     if (this.recorder) throw new Error("recording already active")
-    const canvas = this.ctx.getRenderCanvas()
-    if (!canvas.captureStream) {
+    const displayEl = this.ctx.getDisplayElement()
+    if (!displayEl) throw new Error("远端尚未就绪")
+    const { w, h } = this.ctx.getRemoteSize()
+    // Reusable offscreen capture canvas — sized to the remote desktop so
+    // the recording's pixel space matches the source.
+    this.captureCanvas = document.createElement("canvas")
+    this.captureCanvas.width = w
+    this.captureCanvas.height = h
+    if (!this.captureCanvas.captureStream) {
       throw new Error("浏览器不支持 canvas.captureStream")
     }
-    this.stream = canvas.captureStream(30)
+    this.stream = this.captureCanvas.captureStream(30)
+    // 30Hz rAF loop redraws the captureCanvas from the live Guac canvases +
+    // Pixi overlay until stop().
+    this.startComposeLoop(displayEl)
     const mimeType = this.pickMimeType()
     this.recorder = new MediaRecorder(this.stream, {
       mimeType,
@@ -116,6 +130,11 @@ export class RecordingPlugin implements RDPPlugin {
           await this.cleanupChunks()
           this.recorder = null
           this.stream = null
+          this.captureCanvas = null
+          if (this.composeRAF != null) {
+            cancelAnimationFrame(this.composeRAF)
+            this.composeRAF = null
+          }
           if (this.tickerInterval != null) {
             window.clearInterval(this.tickerInterval)
             this.tickerInterval = null
@@ -129,6 +148,31 @@ export class RecordingPlugin implements RDPPlugin {
       rec.stop()
       this.emitState("stopping")
     })
+  }
+
+  // Compose Guac + overlay into the captureCanvas at ~30fps. Uses rAF
+  // gating to stay aligned with the display refresh; if rAF is faster
+  // than 30fps we drop intermediate frames (single tick variable).
+  private startComposeLoop(displayEl: HTMLElement): void {
+    let last = 0
+    const target = 1000 / 30
+    const overlay = this.ctx?.getRenderCanvas() ?? null
+    const tick = (t: number) => {
+      if (!this.recorder) return
+      if (t - last >= target) {
+        last = t
+        const { w, h } = this.ctx?.getRemoteSize() ?? { w: 1280, h: 720 }
+        if (this.captureCanvas && (this.captureCanvas.width !== w || this.captureCanvas.height !== h)) {
+          this.captureCanvas.width = w
+          this.captureCanvas.height = h
+        }
+        if (this.captureCanvas) {
+          composeFrame({ displayEl, overlayCanvas: overlay, remoteW: w, remoteH: h, target: this.captureCanvas })
+        }
+      }
+      this.composeRAF = requestAnimationFrame(tick)
+    }
+    this.composeRAF = requestAnimationFrame(tick)
   }
 
   isActive(): boolean {

@@ -1,11 +1,12 @@
-// InputBridge — sets up the hidden, event-receiving Guacamole element so
-// Mouse/Keyboard/Touch from guacamole-common-js can attach to it. The Pixi
-// canvas sits above visually (pointer-events:none) and the Guac element
-// sits below (or in the same layer) with pointer-events:auto + opacity:0.
+// InputBridge — mounts the Guacamole display element into the host so it
+// receives mouse / keyboard / touch events AND renders the visible
+// desktop (Plan 16 architecture flip). Guacamole's display is now the
+// primary user-visible surface; Pixi sits on top as a transparent overlay
+// for annotation strokes only.
 //
-// Coordinates: Viewport applies the same CSS transform to this element as
-// the Pixi stage transform, so Guacamole.Mouse's getBoundingClientRect
-// math naturally yields remote-pixel coordinates without manual conversion.
+// Coordinates: Guacamole.Display.scale(s) propagates the scale internally
+// to every child canvas (background + cursor + buffers) and adjusts mouse
+// coords accordingly. We don't apply CSS transforms here.
 
 // We intentionally type the constructor returns as `unknown` so this module
 // composes with the broader GuacNS type in client.ts without duplicating
@@ -70,23 +71,24 @@ export class InputBridge {
   }
 
   private mountHiddenSurface(): HTMLElement {
-    // We host Guacamole's display element here so its internal canvas keeps
-    // receiving paints, but the wrapper has opacity:0 so Pixi above is what
-    // the user sees.
+    // Plan 16: Guacamole's display element IS the visible desktop surface
+    // now. We host it inside a centered wrapper so the rendered canvases
+    // (whose intrinsic size is the remote desktop pixels) get positioned
+    // relative to the host. Viewport.setMode() calls Guacamole.Display.scale()
+    // which CSS-transforms the display down to fit; the wrapper provides
+    // the flex centering.
     const wrapper = document.createElement("div")
     wrapper.dataset.guacInputWrapper = "1"
     wrapper.style.position = "absolute"
-    wrapper.style.top = "0"
-    wrapper.style.left = "0"
-    wrapper.style.opacity = "0"
-    // Critical: receive mouse / touch events so Guacamole.Mouse fires.
+    wrapper.style.inset = "0"
+    wrapper.style.display = "flex"
+    wrapper.style.alignItems = "center"
+    wrapper.style.justifyContent = "center"
+    wrapper.style.overflow = "hidden"
+    // Receive mouse / touch events so Guacamole.Mouse fires.
     wrapper.style.pointerEvents = "auto"
-    // Don't let the user accidentally select the invisible canvas content.
     wrapper.style.userSelect = "none"
-    // Default intrinsic size; Viewport.setRemoteSize() updates these.
-    wrapper.style.width = "1280px"
-    wrapper.style.height = "720px"
-    wrapper.style.transformOrigin = "0 0"
+    wrapper.style.touchAction = "none"
     wrapper.appendChild(this.opts.guacDisplayElement)
     this.opts.host.appendChild(wrapper)
     this.guacWrapper = wrapper

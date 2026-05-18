@@ -80,18 +80,107 @@ export function RDPDisplay({
     return () => w?.removeEventListener("paste", onPaste)
   }, [rdp])
 
-  // F11 → fullscreen toggle.
+  // F11 → fullscreen toggle. Plan 16.C.3 adds Ctrl+Shift+ shortcut grid for
+  // every other major feature so power users never need the mouse.
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "F11") {
         e.preventDefault()
         if (isFullscreen) rdp.exitFullscreen()
         else rdp.enterFullscreen()
+        return
+      }
+      // Ctrl+Shift+<key> — namespaced to avoid clobbering remote shell
+      // shortcuts (Ctrl+C copy etc. stay intact). We call the rdp facade
+      // directly rather than going through the toast-wrapped React
+      // callbacks; means no extra dependency churn here.
+      if (!(e.ctrlKey && e.shiftKey)) return
+      const k = e.key.toLowerCase()
+      const dispatched = {
+        "1": () => rdp.setViewportMode("fit"),
+        "2": () => rdp.setViewportMode("fill"),
+        "3": () => rdp.setViewportMode("actual"),
+        "0": () => rdp.setViewportMode("fit"),
+        r: () =>
+          rdp.recording.state === "recording"
+            ? void rdp.recordingStop()
+            : void rdp.recordingStart(),
+        s: () => void rdp.screenshotDownload(),
+        a: () => rdp.toggleAnnotation(),
+        m: () => rdp.toggleMinimap(),
+        p: () => rdp.toggleStats(),
+      } as Record<string, (() => void) | undefined>
+      const fn = dispatched[k]
+      if (fn) {
+        e.preventDefault()
+        fn()
       }
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [isFullscreen, rdp])
+
+  // Plan 16.C.1 — sync the browser tab title with the connected node, so a
+  // user with many open tabs can tell them apart at a glance.
+  React.useEffect(() => {
+    if (rdp.phase !== "connected" || !nodeName) return
+    const prev = document.title
+    document.title = `${nodeName} · ${protocol.toUpperCase()} · JumpServer`
+    return () => {
+      document.title = prev
+    }
+  }, [rdp.phase, nodeName, protocol])
+
+  // Plan 16.C.2 — pinch-zoom (touch). Two simultaneous PointerEvents on the
+  // host drive rdp.zoom(ratio). Single-finger / mouse pointer events fall
+  // through to the Guac element unchanged.
+  React.useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const pointers = new Map<number, { x: number; y: number }>()
+    let lastDist = 0
+    function dist() {
+      const pts = [...pointers.values()]
+      if (pts.length < 2) return 0
+      const dx = pts[0].x - pts[1].x
+      const dy = pts[0].y - pts[1].y
+      return Math.hypot(dx, dy)
+    }
+    function onDown(e: PointerEvent) {
+      if (e.pointerType !== "touch") return
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (pointers.size === 2) lastDist = dist()
+    }
+    function onMove(e: PointerEvent) {
+      if (e.pointerType !== "touch") return
+      if (!pointers.has(e.pointerId)) return
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      if (pointers.size === 2) {
+        const d = dist()
+        if (lastDist > 0 && d > 0) {
+          const ratio = d / lastDist
+          if (Math.abs(ratio - 1) > 0.02) {
+            rdp.zoom(ratio)
+            lastDist = d
+          }
+        }
+      }
+    }
+    function onUp(e: PointerEvent) {
+      pointers.delete(e.pointerId)
+      lastDist = 0
+    }
+    host.addEventListener("pointerdown", onDown)
+    host.addEventListener("pointermove", onMove)
+    host.addEventListener("pointerup", onUp)
+    host.addEventListener("pointercancel", onUp)
+    return () => {
+      host.removeEventListener("pointerdown", onDown)
+      host.removeEventListener("pointermove", onMove)
+      host.removeEventListener("pointerup", onUp)
+      host.removeEventListener("pointercancel", onUp)
+    }
+  }, [rdp])
 
   // Recording stop with toast.
   const onRecordingStart = React.useCallback(async () => {
@@ -136,15 +225,16 @@ export function RDPDisplay({
       className="relative h-full w-full bg-black overflow-hidden focus:outline-none"
       tabIndex={0}
     >
-      {/* The host div is what RDPClient mounts the Pixi canvas + hidden Guac
-          element into. It must be position: relative for children to anchor. */}
+      {/* The host div is what RDPClient mounts into. After Plan 16 it
+          contains: (1) the Guacamole display wrapper (event-receiving,
+          renders the real desktop + cursor), (2) the Pixi canvas above
+          (transparent overlay for annotations). No cursor:none — the
+          Guacamole cursor layer draws the remote pointer inside the
+          desktop area; outside it we want the browser arrow back. */}
       <div
         ref={hostRef}
         className="absolute inset-0"
-        // Pixi canvas inside is pointer-events:none; the hidden Guac wrapper
-        // is pointer-events:auto. cursor: none everywhere so the remote
-        // cursor (rendered into Guac's canvas) shows through alone.
-        style={{ cursor: "none" }}
+        style={{ touchAction: "none" }}
       />
 
       <RDPToolbar

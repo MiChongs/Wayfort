@@ -55,7 +55,17 @@ export interface RDPPluginContext {
   // Pixi application; plugins add display objects to its stage.
   getPixiApp(): unknown
   // The HTMLCanvasElement Pixi renders to. Stream / screenshot targets.
+  // After Plan 16's architecture flip this canvas is transparent — only
+  // annotations live on it. Use getDisplayElement() to get at the Guac
+  // canvases for compositing the actual desktop frame.
   getRenderCanvas(): HTMLCanvasElement
+  // Plan 16.A.3 — the Guacamole display container holding all desktop
+  // canvases (default layer, cursor layer, intermediate buffers). compose.ts
+  // walks these to build screenshots and recording frames.
+  getDisplayElement(): HTMLElement | null
+  // Plan 16.B — remote desktop dimensions in pixels (updated on resize).
+  // Needed by compose() to size the offscreen capture canvas.
+  getRemoteSize(): { w: number; h: number }
   // Capture the current frame including any plugin overlays.
   snapshot(): Promise<Blob>
   // Subscribe to remote desktop size changes.
