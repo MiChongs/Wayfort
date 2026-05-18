@@ -23,13 +23,42 @@ export interface StartSessionRequest {
   dpi?: number
   keyboard?: string
   quality?: Quality
-  backend?: "freerdp" | "dummy"
+  backend?: DesktopBackend
 }
 
+/**
+ * DesktopBackend names the renderer the gateway should provision.
+ *
+ *  - `"freerdp"` — Plan 17–28 worker subprocess (libfreerdp via cgo) +
+ *    our self-rolled WebSocket frame protocol. The browser side mounts
+ *    FrameClient + OffscreenCanvas. **Legacy** — PR-C removes it.
+ *  - `"dummy"` — in-process test pattern worker, same wire shape.
+ *  - `"ironrdp"` — Plan 29 path. Browser runs the IronRDP Wasm client
+ *    (@devolutions/iron-remote-desktop-rdp) and talks WebSocket directly
+ *    to a Devolutions Gateway subprocess we supervise. The Go gateway
+ *    only signs the pre-auth JWT.
+ */
+export type DesktopBackend = "freerdp" | "dummy" | "ironrdp"
+
+/**
+ * StartSessionResponse covers both legacy (freerdp/dummy) and Plan 29
+ * (ironrdp) paths. `backend` echoes the resolved backend so the React
+ * layer can pick the right renderer; the ironrdp-specific fields are
+ * zero/empty on legacy paths and the browser ignores them then.
+ */
 export interface StartSessionResponse {
   session_id: string
   remote_width: number
   remote_height: number
+  backend?: DesktopBackend
+
+  // ironrdp-only fields. Present iff backend === "ironrdp".
+  gateway_url?: string
+  token?: string
+  destination?: string
+  username?: string
+  password?: string
+  domain?: string
 }
 
 // ----- Data plane (WS binary) -----
