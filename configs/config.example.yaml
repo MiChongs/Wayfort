@@ -144,7 +144,12 @@ insights:
 #                 from cmd/freerdp-worker on a libfreerdp-equipped host.
 desktop:
   enabled: true
-  default_backend: dummy
+  # default_backend can be:
+  #   "freerdp": spawn the cmd/freerdp-worker binary built with -tags
+  #              freerdp (libfreerdp 3.x linked, full RDP semantics).
+  #   "dummy"  : run the in-process test-pattern worker — useful for
+  #              development on hosts without libfreerdp installed.
+  default_backend: freerdp
   worker_path: "/usr/local/bin/freerdp-worker"
   worker_idle_timeout: 5m
   max_concurrent_sessions: 64

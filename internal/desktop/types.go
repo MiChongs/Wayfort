@@ -143,6 +143,16 @@ type InputMouse struct {
 	Wheel   int32  `json:"wheel"`
 }
 
+// Mouse button mask values — used both in InputMouse.Buttons over the wire
+// and by the freerdp-worker to compute press/release transitions before
+// passing to libfreerdp's PTR_FLAGS_*. Kept in lockstep with web/src/
+// lib/desktop/types.ts MOUSE_BUTTON_*.
+const (
+	MouseButtonMaskLeft   uint32 = 1 << 0
+	MouseButtonMaskMiddle uint32 = 1 << 1
+	MouseButtonMaskRight  uint32 = 1 << 2
+)
+
 type ResizeHint struct {
 	Width  uint32 `json:"width"`
 	Height uint32 `json:"height"`

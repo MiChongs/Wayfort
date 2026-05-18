@@ -20,7 +20,7 @@ import { desktopControl } from "@/lib/desktop/control-client"
 import { createRenderer, type CanvasRendererHandle } from "@/lib/desktop/canvas-renderer"
 import { FrameClient } from "@/lib/desktop/frame-client"
 import { attachInputs } from "@/lib/desktop/input"
-import type { Phase, SessionStatus } from "@/lib/desktop/types"
+import { base64ToBytes, type Phase, type SessionStatus } from "@/lib/desktop/types"
 
 export interface DesktopDisplayProps {
   nodeId: number
@@ -109,9 +109,45 @@ export function DesktopDisplay({
             setPhase("error")
             setError({ title: "传输错误", hint: msg })
           },
+          onClipboard: (data) => {
+            // Plan 17 M2 — remote CLIPRDR text → browser clipboard. The
+            // worker forwards in MS UTF-16LE per MS-RDPECLIP §2.2.5.2.1;
+            // decode here so navigator.clipboard receives a Unicode
+            // string. Other MIME types (image, file-list) are recognised
+            // but plumbed in M2.x.
+            if (data.mime.startsWith("text/plain;charset=utf-16le")) {
+              try {
+                const bytes = base64ToBytes(data.payload)
+                // Strip trailing null terminator(s) before decoding.
+                let end = bytes.length
+                while (end >= 2 && bytes[end - 1] === 0 && bytes[end - 2] === 0) end -= 2
+                const text = new TextDecoder("utf-16le").decode(bytes.subarray(0, end))
+                navigator.clipboard?.writeText(text).catch(() => {})
+              } catch {
+                /* malformed payload, ignore */
+              }
+            }
+          },
         })
         client.connect()
         clientRef.current = client
+
+        // Plan 17 M2 — bridge browser-side copy/paste to CLIPRDR.
+        // On paste in the host area: forward the clipboard text to the
+        // worker as `text/plain` so it can send a FORMAT_LIST + reply to
+        // the server's FormatDataRequest.
+        const onPaste = (e: ClipboardEvent) => {
+          const text = e.clipboardData?.getData("text/plain")
+          if (text) {
+            client.send({
+              clipboard: {
+                mime: "text/plain",
+                payload: btoa(unescape(encodeURIComponent(text))),
+              },
+            })
+          }
+        }
+        host.addEventListener("paste", onPaste)
 
         detachInputsRef.current = attachInputs({
           host,

@@ -4,7 +4,7 @@
 // owns the canvas — this class never touches pixels.
 
 import { getAccessToken } from "@/lib/auth/tokens"
-import type { ClientMessage, ServerMessage, SessionStatus } from "./types"
+import type { ClientMessage, ClipboardData, ServerMessage, SessionStatus } from "./types"
 
 const WS_BASE = process.env.NEXT_PUBLIC_BACKEND_WS_URL || "ws://127.0.0.1:8080"
 
@@ -17,6 +17,10 @@ export interface FrameClientOpts {
   onStatus(status: SessionStatus): void
   // High-level error (transport-level, before SessionStatus is available).
   onError(msg: string): void
+  // Plan 17 M2 — remote CLIPRDR data; the component writes text to
+  // navigator.clipboard. Image / file-list MIMEs land here too but
+  // browser-side handling is M2.x.
+  onClipboard?(data: ClipboardData): void
 }
 
 export class FrameClient {
@@ -100,8 +104,14 @@ export class FrameClient {
       this.opts.renderWorker.postMessage({ type: "server", msg })
       return
     }
+    if (msg.clipboard) {
+      // Plan 17 M2: CLIPRDR forwards from worker → gateway → here.
+      // text/plain*: write to navigator.clipboard. Other MIMEs (image,
+      // file-list) are recognised but not yet plumbed end-to-end.
+      this.opts.onClipboard?.(msg.clipboard)
+      return
+    }
     if (msg.bell) {
-      // No-op in M1; future plan can play a beep.
       return
     }
   }

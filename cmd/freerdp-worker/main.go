@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/cmd/freerdp-worker/rdp"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"go.uber.org/zap"
 )
@@ -81,8 +82,12 @@ func run(logger *zap.Logger) error {
 		return errors.New("first frame must be type=start")
 	}
 
-	// M1: dummy worker. M2 swaps to freerdp.NewWorker(...).
-	worker := desktop.NewDummyWorker(logger)
+	// Plan 17 M2: backend is libfreerdp via rdp.NewClient when built with
+	// `-tags freerdp`; otherwise the rdp package's stub returns an error
+	// the gateway forwards to the browser. The dummy worker remains as a
+	// gateway-side in-process alternative for hosts without libfreerdp —
+	// see internal/desktop/manager.go pickWorker().
+	worker := rdp.NewClient(logger)
 	if err := worker.Start(ctx, startMsg.P); err != nil {
 		return fmt.Errorf("worker start: %w", err)
 	}
