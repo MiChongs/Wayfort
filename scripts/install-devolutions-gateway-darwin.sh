@@ -1,51 +1,67 @@
 #!/usr/bin/env bash
 # install-devolutions-gateway-darwin.sh
 #
-# Downloads the Devolutions Gateway macOS .pkg, extracts it without
-# running the installer (no admin password prompt, no system-wide
-# install), and copies the binary into $INSTALL_PREFIX.
+# Devolutions does not currently publish a standalone macOS binary for
+# the Gateway (only the `jetsocat-macos-*` companion). On macOS we
+# build from the upstream Rust source via `cargo install`. The host
+# therefore needs a Rust toolchain; the script bails with a clear
+# bootstrap hint if cargo is missing.
 #
-# Environment overrides — see install-devolutions-gateway-linux.sh.
+# Environment overrides:
+#   DGW_VERSION     pinned upstream tag (default: latest from GitHub API)
+#   INSTALL_PREFIX  where the binary lands (default:
+#                   ~/Library/Application Support/JumpServer/devolutions-gateway)
 
 set -euo pipefail
 
-DGW_VERSION="${DGW_VERSION:-2025.3.5}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/Library/Application Support/JumpServer/devolutions-gateway}"
-DGW_MIRROR="${DGW_MIRROR:-https://github.com/Devolutions/devolutions-gateway/releases/download}"
+DGW_API="${DGW_API:-https://api.github.com/repos/Devolutions/devolutions-gateway/releases/latest}"
+DGW_REPO="${DGW_REPO:-https://github.com/Devolutions/devolutions-gateway.git}"
 
 log() { printf '[install-devolutions-gateway] %s\n' "$*" >&2; }
 die() { log "$*"; exit "${2:-2}"; }
 
-case "$(uname -m)" in
-  x86_64|amd64) arch="x86_64" ;;
-  arm64) arch="aarch64" ;;
-  *) die "unsupported architecture: $(uname -m)" 1 ;;
-esac
+if ! command -v cargo >/dev/null 2>&1; then
+  die "macOS install requires Rust. Install it with:
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      Then re-run this script. (Upstream does not publish a macOS
+      gateway binary; we build it via cargo install.)" 1
+fi
 
-for cmd in curl pkgutil cpio; do
-  command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required" 1
+for cmd in curl git; do
+  command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required (xcode-select --install or brew install $cmd)" 1
 done
+
+# Resolve version: explicit override or latest-from-GitHub-API.
+if [ -z "${DGW_VERSION:-}" ]; then
+  log "querying GitHub for latest release tag"
+  tag=$(curl -fsSL "$DGW_API" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/')
+  if [ -z "$tag" ]; then
+    die "could not parse tag_name from $DGW_API (rate-limited? set DGW_VERSION=<x.y.z> to skip)"
+  fi
+  DGW_VERSION="$tag"
+fi
+log "building Devolutions Gateway $DGW_VERSION from source via cargo"
 
 mkdir -p "$INSTALL_PREFIX"
 mkdir -p "$INSTALL_PREFIX/config"
 
-asset="DevolutionsGateway_macos_${DGW_VERSION}_${arch}.pkg"
-url="${DGW_MIRROR}/v${DGW_VERSION}/${asset}"
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+# `cargo install` builds the `devolutions-gateway` binary from the
+# pinned tag and drops it under $CARGO_HOME/bin (default ~/.cargo/bin).
+# `--locked` honours the upstream Cargo.lock so we don't pull
+# unexpectedly newer transitive deps. `--force` is set so a rerun
+# replaces a prior install of the same tag without complaints.
+cargo install \
+  --locked \
+  --force \
+  --git "$DGW_REPO" \
+  --tag "v${DGW_VERSION}" \
+  --bin devolutions-gateway \
+  devolutions-gateway
 
-log "downloading $url"
-if ! curl -fsSL "$url" -o "$tmpdir/dgw.pkg"; then
-  die "download failed (try mirror via DGW_MIRROR=, or verify DGW_VERSION=$DGW_VERSION exists upstream)"
-fi
-log "expanding pkg"
-pkgutil --expand-full "$tmpdir/dgw.pkg" "$tmpdir/expanded"
+src_bin="${CARGO_HOME:-$HOME/.cargo}/bin/devolutions-gateway"
+[ -x "$src_bin" ] || die "expected cargo-installed binary at $src_bin not found"
 
-# Locate the binary in the unpacked .pkg payload. Devolutions has
-# changed pkg layout between releases; pick the first match.
-bin=$(find "$tmpdir/expanded" -name devolutions-gateway -type f -perm -u+x | head -n1)
-[ -n "$bin" ] || die "devolutions-gateway binary not found in pkg payload"
-
-install -m 0755 "$bin" "$INSTALL_PREFIX/devolutions-gateway"
+install -m 0755 "$src_bin" "$INSTALL_PREFIX/devolutions-gateway"
 log "installed: $INSTALL_PREFIX/devolutions-gateway"
 "$INSTALL_PREFIX/devolutions-gateway" --version || true
