@@ -205,44 +205,108 @@ func (c *Client) applySettings() error {
 	}
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopWidth, C.UINT32(c.width))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopHeight, C.UINT32(c.height))
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_ColorDepth, 32)
-	// Enable all three security layers so FreeRDP picks the highest
-	// mutually-supported one during negotiation. Hard-coding NLA-only
-	// caused `BIO_read retries exceeded` on hosts where NLA is disabled
-	// (older Windows / GPO) — the client sat in TLS-read waiting for an
-	// NLA hello the server would never send.
-	C.freerdp_settings_set_bool(s, C.FreeRDP_NlaSecurity, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_TlsSecurity, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_RdpSecurity, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_IgnoreCertificate, C.TRUE)
+
+	opts := c.params.RDP
+
+	// Color depth — operator can drop to 16/24 for bandwidth-constrained
+	// links. Default 32 keeps full RGB+alpha for modern Windows visuals.
+	colorDepth := uint8(32)
+	if opts.ColorDepth != nil && (*opts.ColorDepth == 16 || *opts.ColorDepth == 24 || *opts.ColorDepth == 32) {
+		colorDepth = *opts.ColorDepth
+	}
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_ColorDepth, C.UINT32(colorDepth))
+
+	// Security mode: SecAny / unset enables all three layers so FreeRDP
+	// negotiates the best supported. Operators can force NLA / TLS / RDP
+	// individually when a server requires a specific protocol or rejects
+	// the others — e.g. SecTLS for older Windows where NLA is disabled
+	// (avoids the BIO_read retries exceeded symptom).
+	nla, tls, rdpSec := opts.SecurityFlags()
+	C.freerdp_settings_set_bool(s, C.FreeRDP_NlaSecurity, cBool(nla))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_TlsSecurity, cBool(tls))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RdpSecurity, cBool(rdpSec))
+
+	ignoreCert := true
+	if opts.IgnoreCert != nil {
+		ignoreCert = *opts.IgnoreCert
+	}
+	C.freerdp_settings_set_bool(s, C.FreeRDP_IgnoreCertificate, cBool(ignoreCert))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AuthenticationOnly, C.FALSE)
-	// TLS 1.0 still appears on Windows Server 2008 R2 / 2012 R2 hosts that
-	// haven't been patched up. SecLevel 0 lets OpenSSL accept the legacy
-	// protocols; the encrypted channel still protects the session.
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_TlsSecLevel, 0)
-	// Bounded connect-time timeouts so a wrong host doesn't hang the
-	// browser for ~30s waiting for FreeRDP's default. 8s is enough for a
-	// healthy TCP+TLS handshake across the public internet.
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpConnectTimeout, 8000)
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpAckTimeout, 9000)
+
+	// TLS SecLevel default 0 lets OpenSSL accept TLS 1.0+. Useful for
+	// older Windows Server 2008R2/2012R2 hosts; operators can raise to
+	// ≥3 for stricter policy.
+	tlsSecLevel := uint8(0)
+	if opts.TlsSecLevel != nil && *opts.TlsSecLevel <= 5 {
+		tlsSecLevel = *opts.TlsSecLevel
+	}
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TlsSecLevel, C.UINT32(tlsSecLevel))
+
+	tcpConnectTimeout := uint32(8000)
+	if opts.TcpConnectTimeoutMS != nil && *opts.TcpConnectTimeoutMS >= 1000 {
+		tcpConnectTimeout = *opts.TcpConnectTimeoutMS
+	}
+	tcpAckTimeout := uint32(9000)
+	if opts.TcpAckTimeoutMS != nil && *opts.TcpAckTimeoutMS >= 1000 {
+		tcpAckTimeout = *opts.TcpAckTimeoutMS
+	}
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpConnectTimeout, C.UINT32(tcpConnectTimeout))
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpAckTimeout, C.UINT32(tcpAckTimeout))
+
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AutoReconnectionEnabled, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_BitmapCacheEnabled, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_OffscreenSupportLevel, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxH264, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportGraphicsPipeline, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathInput, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathOutput, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectClipboard, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_DeviceRedirection, C.TRUE)
+
+	// Codec / GFX toggles. Defaults match the previous hardcoded values
+	// so existing nodes negotiate the same modern codecs.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, cBoolDefault(opts.EnableRemoteFx, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, cBoolDefault(opts.EnableNSCodec, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxH264, cBoolDefault(opts.EnableH264, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportGraphicsPipeline, cBoolDefault(opts.EnableGraphicsPipeline, true))
+
+	// Performance vs. fidelity tradeoffs. All default false (i.e. keep
+	// Windows visuals enabled), letting the operator switch them on to
+	// reduce bandwidth on slow links.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DisableWallpaper, cBoolDefault(opts.DisableWallpaper, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DisableFullWindowDrag, cBoolDefault(opts.DisableFullWindowDrag, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DisableMenuAnims, cBoolDefault(opts.DisableMenuAnims, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DisableThemes, cBoolDefault(opts.DisableThemes, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_AllowFontSmoothing, cBoolDefault(opts.AllowFontSmoothing, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_AllowDesktopComposition, cBoolDefault(opts.AllowDesktopComposition, true))
+
+	// Redirection toggles. Defaults preserve the previous hardcoded "on"
+	// behavior for clipboard / audio / device redirection.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectClipboard, cBoolDefault(opts.RedirectClipboard, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, cBoolDefault(opts.AudioPlayback, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DeviceRedirection, cBoolDefault(opts.DeviceRedirection, true))
+
+	// Optional /admin /console session for direct RDS console attach.
+	if opts.ConsoleSession != nil && *opts.ConsoleSession {
+		C.freerdp_settings_set_bool(s, C.FreeRDP_ConsoleSession, C.TRUE)
+	}
+
 	if kbd := c.params.Keyboard; kbd != "" {
 		// FreeRDP wants the layout via FreeRDP_KeyboardLayout numeric ID;
 		// our string form is informational for now. M2.x maps strings to IDs.
 		_ = kbd
 	}
 	return nil
+}
+
+func cBool(b bool) C.BOOL {
+	if b {
+		return C.TRUE
+	}
+	return C.FALSE
+}
+
+func cBoolDefault(p *bool, dflt bool) C.BOOL {
+	if p == nil {
+		return cBool(dflt)
+	}
+	return cBool(*p)
 }
 
 // runLoop owns the libfreerdp event loop. Must run on a single OS thread

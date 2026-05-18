@@ -41,6 +41,10 @@ export interface Node {
   username: string
   credential_id: number
   proxy_chain: string
+  // Per-protocol tuning, stored as a JSON string. RDP-specific fields go
+  // under the `rdp` sub-object; see RdpProtoOptions below. Older Guacamole
+  // nodes may have flat-form `{"security":..., "domain":...}` — the
+  // backend still parses both shapes.
   proto_options?: string
   tags?: string
   region?: string
@@ -48,6 +52,51 @@ export interface Node {
   disabled?: boolean
   created_at?: string
   updated_at?: string
+}
+
+// RDP security negotiation mode persisted under proto_options.rdp.security.
+//   "any" lets libfreerdp pick the strongest mutually-supported layer
+//   "nla" forces Network Level Authentication (CredSSP)
+//   "tls" forces plain TLS — used when NLA is disabled on the server
+//   "rdp" forces legacy RDP encryption (very old Windows compatibility)
+export type RdpSecurity = "any" | "nla" | "tls" | "rdp"
+
+// RdpProtoOptions mirrors internal/desktop/RdpOptions on the Go side. All
+// fields are optional — omitting one means "use the worker default".
+export interface RdpProtoOptions {
+  security?: RdpSecurity
+  tls_sec_level?: number
+  ignore_cert?: boolean
+  domain?: string
+  keyboard?: string
+  color_depth?: 16 | 24 | 32
+  console_session?: boolean
+
+  enable_remote_fx?: boolean
+  enable_nscodec?: boolean
+  enable_h264?: boolean
+  enable_graphics_pipeline?: boolean
+
+  disable_wallpaper?: boolean
+  disable_full_window_drag?: boolean
+  disable_menu_anims?: boolean
+  disable_themes?: boolean
+  allow_font_smoothing?: boolean
+  allow_desktop_composition?: boolean
+
+  redirect_clipboard?: boolean
+  audio_playback?: boolean
+  device_redirection?: boolean
+
+  tcp_connect_timeout_ms?: number
+  tcp_ack_timeout_ms?: number
+}
+
+// ProtoOptionsEnvelope is the structured shape persisted as a JSON string
+// in node.proto_options. Each protocol owns its own sub-object so future
+// VNC / SSH / DB tuning can land without colliding with RDP.
+export interface ProtoOptionsEnvelope {
+  rdp?: RdpProtoOptions
 }
 
 export interface Credential {

@@ -186,6 +186,11 @@ type StartParams struct {
 	Height   int
 	Keyboard string
 	Quality  Quality
+	// RDP carries per-node connection-tuning knobs sourced from
+	// node.proto_options (the `rdp` sub-object). Empty struct means "use
+	// worker defaults" — backward-compatible with nodes authored before
+	// this field existed.
+	RDP RdpOptions
 }
 
 // DesktopWorker is the contract every worker implementation satisfies.
