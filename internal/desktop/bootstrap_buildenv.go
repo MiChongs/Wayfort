@@ -54,17 +54,16 @@ func darwinBuildEnv() []string {
 	}
 }
 
-// windowsBuildEnv prepends every existing MSYS2 sub-environment's bin
-// dir (ucrt64 / mingw64 / clang64 / mingw32) plus `usr/bin` to PATH, and
-// builds PKG_CONFIG_PATH from the matching pkgconfig dirs. MSYS2's
-// "preferred" sub-env changed from MinGW64 → UCRT64 in 2022, and operators
-// commonly install only one of them — probing all four means the gateway
-// works regardless of which one they picked.
+// windowsBuildEnv builds the env extension for the worker compile step.
+// It locks the build to a single MSYS2 sub-environment (ucrt64 / mingw64
+// / clang64 / mingw32) — never the union — because subenvs use
+// incompatible C runtimes and thread models. Mixing them, e.g. UCRT64's
+// gcc compiling MinGW64's libfreerdp headers, fails the moment cgo
+// touches <threads.h> in winpr's platform.h.
 //
-// Order matters: ucrt64 first (MSYS2's modern recommendation), then
-// mingw64 (legacy default, still widespread), then clang64, then mingw32.
-// `usr/bin` is appended last so the cygwin-style pkg-config is reachable
-// as a fallback when no mingw subenv installed its own.
+// pickWindowsSubenv (see bootstrap_winhost.go) chooses the subenv that
+// already has the most pieces of the toolchain in place; ties prefer
+// ucrt64 (MSYS2's modern recommendation).
 //
 // When MSYS2 is installed via the vcpkg path (less common), the caller
 // should supply CC + CGO_LDFLAGS manually — we don't try to guess.
@@ -76,31 +75,29 @@ func windowsBuildEnv() []string {
 		// integration is more complex than cgo's pkg-config flow.
 		return nil
 	}
-	subenvs := []string{"ucrt64", "mingw64", "clang64", "mingw32"}
-	var binDirs []string
-	var pcDirs []string
-	for _, sub := range subenvs {
-		bin := filepath.Join(tk.Root, sub, "bin")
-		if !dirExists(bin) {
-			continue
-		}
-		binDirs = append(binDirs, bin)
-		for _, rel := range []string{"lib/pkgconfig", "share/pkgconfig"} {
-			d := filepath.Join(tk.Root, sub, filepath.FromSlash(rel))
-			if dirExists(d) {
-				pcDirs = append(pcDirs, d)
-			}
-		}
-	}
-	if usr := filepath.Join(tk.Root, "usr", "bin"); dirExists(usr) {
-		binDirs = append(binDirs, usr)
-	}
-	if len(binDirs) == 0 {
-		// MSYS2 root present but no sub-env populated — nothing to add.
+	sub := pickWindowsSubenv(tk.Root)
+	if sub == "" {
+		// MSYS2 root present but no sub-env populated.
 		return nil
 	}
+	bin := filepath.Join(tk.Root, sub, "bin")
+	pcDirs := []string{}
+	for _, rel := range []string{"lib/pkgconfig", "share/pkgconfig"} {
+		d := filepath.Join(tk.Root, sub, filepath.FromSlash(rel))
+		if dirExists(d) {
+			pcDirs = append(pcDirs, d)
+		}
+	}
 	sep := string(os.PathListSeparator)
-	newPath := strings.Join(binDirs, sep)
+	// PATH only gets the chosen subenv's bin plus usr/bin (for the MSYS
+	// shell utilities the worker module may call out to). Crucially, no
+	// other subenv's bin is included — cross-subenv gcc invocation is
+	// the failure mode we're avoiding.
+	pathDirs := []string{bin}
+	if usr := filepath.Join(tk.Root, "usr", "bin"); dirExists(usr) {
+		pathDirs = append(pathDirs, usr)
+	}
+	newPath := strings.Join(pathDirs, sep)
 	if existing := os.Getenv("PATH"); existing != "" {
 		newPath = newPath + sep + existing
 	}
@@ -124,4 +121,13 @@ func dirExists(p string) bool {
 	}
 	info, err := os.Stat(p)
 	return err == nil && info.IsDir()
+}
+
+// fileExists is the file-equivalent of dirExists.
+func fileExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
 }
