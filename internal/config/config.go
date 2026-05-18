@@ -60,6 +60,13 @@ type DesktopConfig struct {
 	// gateway binary's own directory are tried as fallbacks if this is
 	// not writeable.
 	InstallPrefix string `mapstructure:"install_prefix"`
+	// DebugLog turns on libfreerdp's WLOG_LEVEL=DEBUG for every freerdp-
+	// worker subprocess. The full RDP state machine (X.224 / TLS / MCS /
+	// CredSSP / channel join / capability negotiation) is then logged at
+	// DEBUG level via the worker's stderr → gateway log forwarder.
+	// Default false because DEBUG is loud (hundreds of lines per session
+	// connect). Enable when diagnosing a specific failure.
+	DebugLog bool `mapstructure:"debug_log"`
 }
 
 type AIConfig struct {
