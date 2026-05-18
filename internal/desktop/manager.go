@@ -155,16 +155,25 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	// on worker; the session row table doesn't need to know which backend
 	// is in use.
 	sessionID := uuid.NewString()
+	rdpOpts := ParseRdpOptions(node.ProtoOptions)
+	// Pick a keyboard layout: explicit per-session request wins, then the
+	// node-saved layout, then the worker's default ("us").
+	keyboard := req.Keyboard
+	if keyboard == "" {
+		keyboard = rdpOpts.Keyboard
+	}
 	startParams := StartParams{
 		NodeID:   req.NodeID,
 		Host:     node.Host,
 		Port:     node.Port,
 		Username: pkgssh.PreferredUser(cred, node.Username),
 		Password: string(pw),
+		Domain:   rdpOpts.Domain,
 		Width:    int(req.Width),
 		Height:   int(req.Height),
-		Keyboard: req.Keyboard,
+		Keyboard: keyboard,
 		Quality:  req.Quality,
+		RDP:      rdpOpts,
 	}
 
 	wctx, cancel := context.WithCancel(context.Background())

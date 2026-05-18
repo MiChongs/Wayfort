@@ -1,11 +1,17 @@
 "use client"
 
 import * as React from "react"
-import { AlertCircle, Loader2, RotateCw } from "lucide-react"
+import { AlertCircle, Loader2, RotateCw, ShieldOff } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { cn } from "@/lib/utils"
 import type { DesktopStatus } from "./desktop-types"
+
+// 0x0002000D = ERRCONNECT_CONNECT_TRANSPORT_FAILED — surfaced when TLS/NLA
+// handshake times out. Showing a "force TLS-only retry" shortcut for that
+// specific code lets the operator unblock connections to NLA-disabled
+// servers without bouncing through the admin/nodes editor.
+const ERR_TRANSPORT_FAILED = 0x0002000d
 
 type Props = {
   status: DesktopStatus
@@ -14,6 +20,10 @@ type Props = {
   elapsedMs: number
   nodeName?: string
   onRetry: () => void
+  // Optional. When provided AND the error code matches ERRCONNECT_*_FAILED,
+  // the overlay shows a "禁用 NLA 重试" button that the parent wires to a
+  // node.proto_options PATCH + reconnect.
+  onForceTlsOnly?: () => void
 }
 
 const PHASE_LABEL: Partial<Record<DesktopStatus, string>> = {
@@ -31,6 +41,7 @@ export function DesktopLoadingOverlay({
   elapsedMs,
   nodeName,
   onRetry,
+  onForceTlsOnly,
 }: Props) {
   if (status === "connected") return null
   const isError = status === "error"
@@ -88,7 +99,12 @@ export function DesktopLoadingOverlay({
         )}
 
         {isError && (
-          <div className="flex justify-end pt-1">
+          <div className="flex justify-end gap-2 pt-1">
+            {errorCode === ERR_TRANSPORT_FAILED && onForceTlsOnly && (
+              <Button size="sm" variant="outline" onClick={onForceTlsOnly}>
+                <ShieldOff className="w-3.5 h-3.5" /> 禁用 NLA 重试
+              </Button>
+            )}
             <Button size="sm" onClick={onRetry}>
               <RotateCw className="w-3.5 h-3.5" /> 重试
             </Button>

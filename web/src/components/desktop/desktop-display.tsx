@@ -23,6 +23,8 @@ import { Button } from "@/components/ui/button"
 import { createRenderer, type CanvasRendererHandle } from "@/lib/desktop/canvas-renderer"
 import { desktopControl } from "@/lib/desktop/control-client"
 import { FrameClient } from "@/lib/desktop/frame-client"
+import { nodeService } from "@/lib/api/services"
+import { patchRdpProtoOptions } from "@/lib/desktop/proto-options"
 import {
   MOUSE_BUTTON_LEFT,
   MOUSE_BUTTON_MIDDLE,
@@ -360,6 +362,23 @@ export function DesktopDisplay({
     clientRef.current?.close()
   }
 
+  // Force-TLS retry shortcut: surfaces on the loading overlay when the
+  // connection failed with ERRCONNECT_CONNECT_TRANSPORT_FAILED. Patches
+  // the node's proto_options to set rdp.security = "tls" and reconnects,
+  // so an operator unblocking an NLA-disabled Windows host doesn't have
+  // to leave the session and edit the node in admin/nodes.
+  async function handleForceTlsOnly() {
+    try {
+      const node = await nodeService.get(nodeId)
+      const next = patchRdpProtoOptions(node.proto_options, { security: "tls" })
+      await nodeService.update(nodeId, { proto_options: next })
+      toast.success("已切换到仅 TLS,正在重连…")
+      handleReconnect()
+    } catch (e) {
+      toast.error("切换失败", { description: (e as Error).message })
+    }
+  }
+
   // Smooth-scaling toggle applies to a (possibly already-mounted) canvas.
   React.useEffect(() => {
     const c = rendererRef.current?.canvas
@@ -415,6 +434,7 @@ export function DesktopDisplay({
               elapsedMs={Date.now() - startedAt}
               nodeName={nodeName}
               onRetry={handleReconnect}
+              onForceTlsOnly={handleForceTlsOnly}
             />
           </div>
         </DesktopContextMenu>

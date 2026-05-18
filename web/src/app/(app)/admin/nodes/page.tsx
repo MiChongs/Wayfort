@@ -18,6 +18,7 @@ import { credentialService, nodeService, proxyService } from "@/lib/api/services
 import type { Node, NodeProtocol } from "@/lib/api/types"
 import { DataTable, type Column } from "@/components/common/data-table"
 import { Badge } from "@/components/ui/badge"
+import { RdpOptionsForm } from "@/components/admin/nodes/rdp-options-form"
 
 export default function AdminNodesPage() {
   const qc = useQueryClient()
@@ -122,20 +123,25 @@ function CreateNodeDialog({
             <div className="space-y-1"><Label>标签（逗号分隔）</Label><Input value={draft.tags || ""} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} /></div>
           </div>
           <div className="space-y-1">
-            <Label>协议参数 JSON（可选）</Label>
-            <Textarea
-              placeholder='RDP 示例：{"security":"any","domain":"WORKGROUP"} · VNC 示例：{}'
-              value={draft.proto_options || ""}
-              onChange={(e) => setDraft({ ...draft, proto_options: e.target.value })}
-              rows={3}
-            />
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              RDP / VNC 默认 <code className="font-mono">ignore-cert: true</code>
-              （自签证书直连）。需强制校验填
-              <code className="font-mono">"ignore-cert":"false"</code>。其它支持的键：
-              <code className="font-mono">security</code>（any/nla/tls/rdp）、
-              <code className="font-mono">domain</code>（RDP 域）。
-            </p>
+            <Label>协议参数</Label>
+            {draft.protocol === "rdp" ? (
+              <RdpOptionsForm
+                value={draft.proto_options}
+                onChange={(v) => setDraft({ ...draft, proto_options: v })}
+              />
+            ) : (
+              <>
+                <Textarea
+                  placeholder='VNC 示例：{} · DB 示例：{"database":"main"}'
+                  value={draft.proto_options || ""}
+                  onChange={(e) => setDraft({ ...draft, proto_options: e.target.value })}
+                  rows={3}
+                />
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  其它协议暂用 JSON 文本。RDP 协议会显示结构化表单。
+                </p>
+              </>
+            )}
           </div>
           <div className="space-y-1"><Label>描述</Label><Textarea value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
         </div>
