@@ -2,6 +2,14 @@
 
 import * as React from "react"
 import { Plus } from "lucide-react"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 import { WorkspaceTab } from "./WorkspaceTab"
@@ -27,13 +35,11 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   const renameTab = useWorkspaceStore((s) => s.rename)
   const reorder = useWorkspaceStore((s) => s.reorder)
 
-  const [menu, setMenu] = React.useState<{ id: string; x: number; y: number } | null>(null)
   const [renamingId, setRenamingId] = React.useState<string | null>(null)
   const [drag, setDrag] = React.useState<DragState | null>(null)
 
   const onDragStart = (id: string) => (ev: React.DragEvent) => {
     ev.dataTransfer.effectAllowed = "move"
-    // Some browsers refuse to fire dragstart without setData.
     ev.dataTransfer.setData("text/plain", id)
     setDrag({ fromId: id, hoverId: null, side: null })
   }
@@ -66,29 +72,50 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
       className="flex items-stretch border-b bg-background h-9 overflow-x-auto overflow-y-hidden scrollbar-thin"
     >
       {tabs.map((tab) => (
-        <WorkspaceTab
-          key={tab.id}
-          tab={tab}
-          active={tab.id === activeId}
-          editingTitle={renamingId === tab.id}
-          onActivate={() => setActive(tab.id)}
-          onClose={() => close(tab.id)}
-          onContextMenu={(ev) => {
-            ev.preventDefault()
-            setMenu({ id: tab.id, x: ev.clientX, y: ev.clientY })
-          }}
-          onDoubleClick={() => setRenamingId(tab.id)}
-          onRenameSubmit={(v) => {
-            renameTab(tab.id, v)
-            setRenamingId(null)
-          }}
-          onRenameCancel={() => setRenamingId(null)}
-          onDragStart={onDragStart(tab.id)}
-          onDragOver={onDragOver(tab.id)}
-          onDrop={onDrop(tab.id)}
-          onDragEnd={onDragEnd}
-          dragOver={drag && drag.hoverId === tab.id ? drag.side : null}
-        />
+        <ContextMenu key={tab.id}>
+          <ContextMenuTrigger asChild>
+            <div className="contents">
+              <WorkspaceTab
+                tab={tab}
+                active={tab.id === activeId}
+                editingTitle={renamingId === tab.id}
+                onActivate={() => setActive(tab.id)}
+                onClose={() => close(tab.id)}
+                // Radix ContextMenuTrigger handles right-click; the
+                // explicit handler here is kept to swallow the legacy
+                // bubble so an outer listener doesn't see it.
+                onContextMenu={(ev) => {
+                  ev.preventDefault()
+                }}
+                onDoubleClick={() => setRenamingId(tab.id)}
+                onRenameSubmit={(v) => {
+                  renameTab(tab.id, v)
+                  setRenamingId(null)
+                }}
+                onRenameCancel={() => setRenamingId(null)}
+                onDragStart={onDragStart(tab.id)}
+                onDragOver={onDragOver(tab.id)}
+                onDrop={onDrop(tab.id)}
+                onDragEnd={onDragEnd}
+                dragOver={drag && drag.hoverId === tab.id ? drag.side : null}
+              />
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-52">
+            <ContextMenuItem onSelect={() => close(tab.id)}>
+              关闭
+              <ContextMenuShortcut>Ctrl+W</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => closeOthers(tab.id)}>关闭其他</ContextMenuItem>
+            <ContextMenuItem onSelect={() => closeToRight(tab.id)}>关闭右侧</ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => duplicate(tab.id)}>复制 Tab</ContextMenuItem>
+            <ContextMenuItem onSelect={() => setRenamingId(tab.id)}>
+              重命名
+              <ContextMenuShortcut>双击</ContextMenuShortcut>
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       ))}
       <button
         type="button"
@@ -101,105 +128,6 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
       >
         <Plus className="w-4 h-4" />
       </button>
-      {menu && (
-        <TabContextMenu
-          tabId={menu.id}
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          actions={{
-            close: () => close(menu.id),
-            closeOthers: () => closeOthers(menu.id),
-            closeToRight: () => closeToRight(menu.id),
-            duplicate: () => duplicate(menu.id),
-            rename: () => setRenamingId(menu.id),
-          }}
-        />
-      )}
-    </div>
-  )
-}
-
-function TabContextMenu({
-  tabId,
-  x,
-  y,
-  onClose,
-  actions,
-}: {
-  tabId: string
-  x: number
-  y: number
-  onClose: () => void
-  actions: {
-    close: () => void
-    closeOthers: () => void
-    closeToRight: () => void
-    duplicate: () => void
-    rename: () => void
-  }
-}) {
-  const ref = React.useRef<HTMLDivElement>(null)
-  React.useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose()
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose()
-    }
-    document.addEventListener("mousedown", onDown)
-    document.addEventListener("keydown", onKey)
-    return () => {
-      document.removeEventListener("mousedown", onDown)
-      document.removeEventListener("keydown", onKey)
-    }
-  }, [onClose])
-
-  const W = 200
-  const vw = typeof window !== "undefined" ? window.innerWidth : 1024
-  const left = Math.min(x, vw - W - 8)
-  const top = y
-
-  const Item = ({
-    label,
-    onClick,
-    accel,
-    danger,
-  }: {
-    label: string
-    onClick: () => void
-    accel?: string
-    danger?: boolean
-  }) => (
-    <button
-      type="button"
-      onClick={() => {
-        onClick()
-        onClose()
-      }}
-      className={cn(
-        "w-full flex items-center gap-2 px-2.5 py-1.5 text-sm rounded-sm text-left",
-        danger ? "text-destructive hover:bg-destructive/10" : "hover:bg-accent",
-      )}
-    >
-      <span className="flex-1 truncate">{label}</span>
-      {accel && <span className="text-xs text-muted-foreground">{accel}</span>}
-    </button>
-  )
-
-  return (
-    <div
-      ref={ref}
-      data-tab-context-for={tabId}
-      style={{ position: "fixed", left, top, width: W, zIndex: 90 }}
-      className="bg-popover text-popover-foreground border rounded-md shadow-lg p-1"
-    >
-      <Item label="关闭" onClick={actions.close} accel="Ctrl+W" />
-      <Item label="关闭其他" onClick={actions.closeOthers} />
-      <Item label="关闭右侧" onClick={actions.closeToRight} />
-      <div className="-mx-1 my-1 h-px bg-border" />
-      <Item label="复制 Tab" onClick={actions.duplicate} />
-      <Item label="重命名" onClick={actions.rename} accel="双击" />
     </div>
   )
 }

@@ -45,6 +45,13 @@ const (
 	PermAIAgentGlobal   = "ai:agent:global"  // create global agents (admin)
 	PermAIProviderUser  = "ai:provider:user" // configure personal providers
 	PermAIProviderGlobal = "ai:provider:global" // configure global providers (admin)
+
+	// Server-management — gated mutations exposed by workspace v2 panels.
+	// Reads (status / list rules / list containers) require ActionConnect on
+	// the node and don't need extra permission. Writes require the matching
+	// :manage code below.
+	PermFirewallManage = "firewall:manage"
+	PermDockerManage   = "docker:manage"
 )
 
 // AllPermissions is the catalogue that gets seeded into the DB on boot so the
@@ -80,6 +87,8 @@ var AllPermissions = []struct {
 	{PermAIAgentGlobal, "ai", "创建/管理全局 AI agent（管理员）"},
 	{PermAIProviderUser, "ai", "配置个人 AI 提供商"},
 	{PermAIProviderGlobal, "ai", "配置全局 AI 提供商（管理员）"},
+	{PermFirewallManage, "ops", "修改节点防火墙规则"},
+	{PermDockerManage, "ops", "启停 / 删除节点 Docker 容器"},
 }
 
 // BuiltinRoles are seeded on first boot and protected from deletion.

@@ -28,7 +28,9 @@ export interface DesktopDisplayProps {
   nodeHost?: string
   nodePort?: number
   backHref?: string
-  // M1 default "dummy" — real FreeRDP after M2.
+  // Default freerdp — server's desktop.default_backend config is the
+  // authoritative source; this prop only matters when a caller wants to
+  // override (e.g. force "dummy" for testing without libfreerdp).
   backend?: "freerdp" | "dummy"
 }
 
@@ -38,7 +40,7 @@ export function DesktopDisplay({
   nodeHost,
   nodePort,
   backHref,
-  backend = "dummy",
+  backend = "freerdp",
 }: DesktopDisplayProps) {
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const rendererRef = React.useRef<CanvasRendererHandle | null>(null)

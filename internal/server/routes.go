@@ -14,6 +14,23 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 )
 
+// firewallHandler / dockerHandler — 503-stub pattern shared with insights:
+// register routes unconditionally so a disabled-by-config feature returns a
+// structured 503 instead of gin's no-route 404. Lets the workspace UI
+// distinguish "deploy old" from "feature off".
+func firewallHandler(rt *Routes) *api.FirewallHandler {
+	if rt.Firewall != nil {
+		return rt.Firewall
+	}
+	return api.NewFirewallHandler(nil)
+}
+func dockerHandler(rt *Routes) *api.DockerHandler {
+	if rt.Docker != nil {
+		return rt.Docker
+	}
+	return api.NewDockerHandler(nil)
+}
+
 // insightsHandler returns rt.Insights if non-nil, else a stub that always
 // responds 503. Lets us register routes unconditionally so missing /
 // stale config never manifests as a 404.
@@ -77,6 +94,11 @@ type Routes struct {
 	// WebSocket data plane alongside the legacy guacd routes.
 	DesktopControl *desktop.ControlHandler
 	DesktopWS      *desktop.WSHandler
+
+	// Workspace v2 — server-management panels (firewall, docker) that
+	// run SSH commands on the managed node.
+	Firewall *api.FirewallHandler
+	Docker   *api.DockerHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -229,6 +251,23 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/insights/system", insightsHandler(rt).System)
 		ops.GET("/nodes/:id/insights/processes", insightsHandler(rt).Processes)
 		ops.GET("/nodes/:id/insights/network", insightsHandler(rt).Network)
+		// Workspace v2 — firewall & docker management. Reads are open to
+		// any authenticated user with node access; mutations require the
+		// matching :manage permission. 503 stubs when disabled.
+		ops.GET("/nodes/:id/firewall/status", firewallHandler(rt).Status)
+		ops.GET("/nodes/:id/firewall/rules", firewallHandler(rt).ListRules)
+		ops.POST("/nodes/:id/firewall/rules", perm(auth.PermFirewallManage), firewallHandler(rt).AddRule)
+		ops.DELETE("/nodes/:id/firewall/rules/:index", perm(auth.PermFirewallManage), firewallHandler(rt).DeleteRule)
+		ops.POST("/nodes/:id/firewall/enable", perm(auth.PermFirewallManage), firewallHandler(rt).Enable)
+		ops.POST("/nodes/:id/firewall/disable", perm(auth.PermFirewallManage), firewallHandler(rt).Disable)
+		ops.GET("/nodes/:id/docker/status", dockerHandler(rt).Status)
+		ops.GET("/nodes/:id/docker/containers", dockerHandler(rt).ListContainers)
+		ops.GET("/nodes/:id/docker/images", dockerHandler(rt).ListImages)
+		ops.GET("/nodes/:id/docker/containers/:cid/logs", dockerHandler(rt).Logs)
+		ops.POST("/nodes/:id/docker/containers/:cid/start", perm(auth.PermDockerManage), dockerHandler(rt).Start)
+		ops.POST("/nodes/:id/docker/containers/:cid/stop", perm(auth.PermDockerManage), dockerHandler(rt).Stop)
+		ops.POST("/nodes/:id/docker/containers/:cid/restart", perm(auth.PermDockerManage), dockerHandler(rt).Restart)
+		ops.DELETE("/nodes/:id/docker/containers/:cid", perm(auth.PermDockerManage), dockerHandler(rt).Remove)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

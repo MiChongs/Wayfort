@@ -16,6 +16,13 @@ import type {
   AssetTag,
   Credential,
   Department,
+  DockerContainer,
+  DockerImage,
+  DockerLogsResponse,
+  DockerStatus,
+  FirewallRule,
+  FirewallRuleSpec,
+  FirewallStatus,
   LoginHistory,
   MFADevice,
   Node,
@@ -120,9 +127,49 @@ export const credentialService = {
 
 // ----- sessions / port-forwards / sftp -----
 export const sessionService = {
-  list: (opts: { status?: string; limit?: number; offset?: number } = {}) =>
+  list: (opts: { status?: string; node_id?: number; limit?: number; offset?: number } = {}) =>
     api<{ sessions: Session[] }>("GET", "/sessions", { query: opts }),
   recordingURL: (id: string) => withTokenQuery(`/api/proxy/api/v1/sessions/${id}/recording`),
+}
+
+// ----- Workspace v2 — firewall + docker services -----
+
+export const firewallService = {
+  status: (nodeId: number) =>
+    api<FirewallStatus>("GET", `/nodes/${nodeId}/firewall/status`),
+  listRules: (nodeId: number) =>
+    api<{ rules: FirewallRule[] }>("GET", `/nodes/${nodeId}/firewall/rules`),
+  addRule: (nodeId: number, spec: FirewallRuleSpec) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/rules`, { body: spec }),
+  deleteRule: (nodeId: number, index: number) =>
+    api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/firewall/rules/${index}`),
+  enable: (nodeId: number) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/enable`),
+  disable: (nodeId: number) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/disable`),
+}
+
+export const dockerService = {
+  status: (nodeId: number) =>
+    api<DockerStatus>("GET", `/nodes/${nodeId}/docker/status`),
+  listContainers: (nodeId: number) =>
+    api<{ containers: DockerContainer[] }>("GET", `/nodes/${nodeId}/docker/containers`),
+  listImages: (nodeId: number) =>
+    api<{ images: DockerImage[] }>("GET", `/nodes/${nodeId}/docker/images`),
+  logs: (nodeId: number, cid: string, tail = 500) =>
+    api<DockerLogsResponse>("GET", `/nodes/${nodeId}/docker/containers/${cid}/logs`, {
+      query: { tail },
+    }),
+  start: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/start`),
+  stop: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/stop`),
+  restart: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/restart`),
+  remove: (nodeId: number, cid: string, force = false) =>
+    api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/docker/containers/${cid}`, {
+      query: force ? { force: "true" } : undefined,
+    }),
 }
 
 export const portfwdService = {

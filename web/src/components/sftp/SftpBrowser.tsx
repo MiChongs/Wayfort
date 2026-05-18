@@ -8,6 +8,7 @@ import type { SftpEntry } from "@/lib/api/services"
 import type { SortKey, SortDir } from "./SftpToolbar"
 import { iconColorForEntry, iconForEntry } from "./fileIcons"
 import { SftpRenameInline } from "./SftpRenameInline"
+import { SftpRowContextMenu, type SftpContextActions } from "./SftpContextMenu"
 
 type Props = {
   entries: SftpEntry[]
@@ -19,7 +20,10 @@ type Props = {
   isSelected: (path: string) => boolean
   onRowClick: (entry: SftpEntry, index: number, ev: React.MouseEvent) => void
   onRowDoubleClick: (entry: SftpEntry) => void
-  onContextMenu: (entry: SftpEntry, ev: React.MouseEvent) => void
+  // Workspace v2 — actions for the shadcn ContextMenu wrapper. onBeforeContextMenu
+  // lets the parent select the right-clicked row before any item fires.
+  contextActions: SftpContextActions
+  onBeforeContextMenu?: (entry: SftpEntry) => void
   renamingPath: string | null
   onRenameSubmit: (entry: SftpEntry, newName: string) => void
   onRenameCancel: () => void
@@ -47,7 +51,8 @@ export function SftpBrowser({
   isSelected,
   onRowClick,
   onRowDoubleClick,
-  onContextMenu,
+  contextActions,
+  onBeforeContextMenu,
   renamingPath,
   onRenameSubmit,
   onRenameCancel,
@@ -132,8 +137,13 @@ export function SftpBrowser({
             const sel = isSelected(e.path)
             const renaming = renamingPath === e.path
             return (
-              <li
+              <SftpRowContextMenu
                 key={e.path}
+                entry={e}
+                actions={contextActions}
+                onBeforeOpen={onBeforeContextMenu}
+              >
+              <li
                 role="row"
                 aria-selected={sel}
                 className={cn(
@@ -143,7 +153,6 @@ export function SftpBrowser({
                 )}
                 onClick={(ev) => onRowClick(e, i, ev)}
                 onDoubleClick={() => !renaming && onRowDoubleClick(e)}
-                onContextMenu={(ev) => onContextMenu(e, ev)}
               >
                 <span className="w-6 shrink-0 inline-flex items-center justify-center">
                   <Icon className={cn("w-4 h-4", iconColorForEntry(e))} />
@@ -192,6 +201,7 @@ export function SftpBrowser({
                   <span className="opacity-70">{relTime(e.mod_time)}</span>
                 </span>
               </li>
+              </SftpRowContextMenu>
             )
           })}
         </ul>

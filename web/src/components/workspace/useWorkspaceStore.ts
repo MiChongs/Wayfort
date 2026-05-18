@@ -13,6 +13,10 @@ export type Protocol =
 
 export type TabStatus = "fresh" | "connecting" | "connected" | "closed" | "error"
 
+// SideDock sub-tab key — which server-management panel is open inside a
+// connection tab. Persisted per-tab so refresh restores the user's last view.
+export type SubTab = "dashboard" | "firewall" | "docker" | "sessions" | "info"
+
 export type WorkspaceTab = {
   id: string
   nodeId: number
@@ -24,6 +28,10 @@ export type WorkspaceTab = {
   port?: number
   status: TabStatus
   createdAt: number
+  // Workspace v2 — per-tab sub-panel state. Optional so pre-v2 persisted
+  // payloads load cleanly.
+  subTab?: SubTab
+  dockOpen?: boolean
 }
 
 export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" | "all"
@@ -64,6 +72,9 @@ type Actions = {
   reopenLastClosed: () => string | null
   cycleTab: (delta: number) => void
   activateAt: (idx: number) => void
+  // Workspace v2 — sub-tab control inside a connection tab.
+  setSubTab: (id: string, sub: SubTab) => void
+  toggleDock: (id: string) => void
 }
 
 export type WorkspaceStore = State & Actions
@@ -224,13 +235,29 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         if (idx < 0 || idx >= tabs.length) return
         set({ activeId: tabs[idx].id })
       },
+
+      setSubTab: (id, sub) =>
+        set((s) => ({
+          tabs: s.tabs.map((t) => (t.id === id ? { ...t, subTab: sub } : t)),
+        })),
+
+      toggleDock: (id) =>
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === id ? { ...t, dockOpen: !(t.dockOpen ?? true) } : t,
+          ),
+        })),
     }),
     {
       name: "workspace:v1",
       // After a refresh the WS connections are gone — reset status so the
       // user knows to click Reconnect. Drop the recently-closed stack too.
       partialize: (s) => ({
-        tabs: s.tabs.map((t) => ({ ...t, status: "fresh" as const })),
+        tabs: s.tabs.map((t) => ({
+          ...t,
+          status: "fresh" as const,
+          // subTab and dockOpen are part of WorkspaceTab and ride along.
+        })),
         activeId: s.activeId,
         sidebarOpen: s.sidebarOpen,
         treeView: s.treeView,
