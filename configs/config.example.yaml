@@ -132,78 +132,201 @@ insights:
   ssh_timeout: 10s
   process_limit: 200
 
-# RDP backend used by /nodes/[id]/rdp-next pages and the workspace
-# "rdp_next" tab type. /nodes/[id]/rdp keeps using guacd (Plan 16).
+# =============================================================================
+# Desktop subsystem (RDP/VNC viewers reached from the workspace)
+# =============================================================================
+# Powers `/nodes/[id]/rdp-next` pages and the workspace "rdp_next" tab type.
+# `/nodes/[id]/rdp` keeps using guacd (Plan 16) and is unaffected by anything
+# below.
 #
-# Backends:
-#   - "ironrdp" (default, Plan 29): the browser runs the Devolutions IronRDP
-#                client (Rust → Wasm) and talks WebSocket directly to a
-#                Devolutions Gateway subprocess we supervise. The Go service
-#                only signs short-lived RS256 JWTs. Native RDP 10.x support,
-#                no cgo / libfreerdp / MSYS2 toolchain on the host.
-#   - "freerdp" (legacy, Plan 17–28): spawn `freerdp-worker` subprocess
-#                linked to libfreerdp 3.x. Stays in the tree as an opt-in
-#                fallback for hosts that already have the worker installed
-#                or environments where IronRDP isn't appropriate.
-#   - "dummy"  : in-process test-pattern worker, no external deps. CI only.
+# Backend matrix:
+#
+#   ironrdp (default, Plan 29) ────────────────────────────────────────────────
+#     The browser runs Devolutions IronRDP (Rust → Wasm) and opens a
+#     WebSocket directly to a Devolutions Gateway subprocess we supervise.
+#     Our Go service only signs short-lived RS256 JWTs. Native RDP 10.x
+#     support, no cgo / libfreerdp / MSYS2 toolchain required on the host.
+#     Upstream: https://github.com/Devolutions/IronRDP
+#                https://github.com/Devolutions/devolutions-gateway
+#
+#   freerdp (legacy, Plan 17–28) ──────────────────────────────────────────────
+#     `freerdp-worker` subprocess linked against libfreerdp 3.x speaks RDP
+#     and ships frames over our in-house WS protocol. Kept available for
+#     hosts that already have the worker installed or for environments
+#     where IronRDP isn't appropriate. Pre-build with scripts/build-worker-*.
+#
+#   dummy ─────────────────────────────────────────────────────────────────────
+#     In-process test-pattern worker, no external deps. CI / development.
+#
+# Selection precedence (lowest → highest): default_backend → request body
+# `backend` field. The workspace tab type "rdp_next" passes the default
+# through; per-session overrides come from explicit API calls.
 desktop:
   enabled: true
   default_backend: ironrdp
   max_concurrent_sessions: 64
 
-  # ----- Plan 29: IronRDP path (Devolutions Gateway subprocess) -----
+  # debug_log only affects the legacy "freerdp" backend (injects
+  # WLOG_LEVEL=DEBUG into the worker subprocess env). The ironrdp path's
+  # logging is controlled by devolutions_gateway.verbosity below.
+  debug_log: false
+
+  # ---------------------------------------------------------------------------
+  # ironrdp backend — Devolutions Gateway subprocess supervisor (default)
+  # ---------------------------------------------------------------------------
+  # Defaults assume single-host: gateway binary lives next to jumpserver,
+  # listens on loopback, our reverse proxy (or nothing, on dev) forwards
+  # browser WebSocket traffic to it. Multi-host / containerised setups
+  # override individual fields below — see "deployment scenarios" at the
+  # end of this section.
   devolutions_gateway:
-    # The supervisor is on by default since default_backend is ironrdp.
-    # Turn off if you want to stay on the legacy freerdp worker — then
-    # also set `default_backend: freerdp` and configure worker_path
-    # below.
+    # Master switch for the ironrdp path. Default true since
+    # default_backend = ironrdp; set false here AND switch default_backend
+    # back to "freerdp" if you want to stay on the legacy stack.
     enabled: true
-    # When true (default) and the gateway binary is missing, the install
-    # script under scripts/install-devolutions-gateway-*.{sh,ps1} runs
-    # at startup to download it from upstream.
+
+    # On startup, if `binary_path` doesn't exist on disk, run
+    # scripts/install-devolutions-gateway-{linux,darwin,windows}.{sh,ps1}
+    # which fetches the latest release from
+    # https://github.com/Devolutions/devolutions-gateway/releases and drops
+    # the binary into `install_prefix`. Pin a version with the DGW_VERSION
+    # env var; point at an internal mirror with DGW_MIRROR.
     auto_install: true
-    # When true (default) the gateway subprocess is spawned and
-    # supervised by jumpserver. Disable if you run the gateway under
-    # systemd / Windows service / Docker — then jumpserver only writes
-    # the JSON config + mints JWTs.
+
+    # When true (default) the gateway subprocess is spawned and supervised
+    # by jumpserver — crash-restart with bounded backoff, health probe on
+    # /jet/health, lifecycle bound to ours. Disable if you run the gateway
+    # under systemd / Windows service / Docker — then jumpserver only
+    # generates the JSON config and mints JWTs.
     auto_start: true
-    # Install / config / key locations. Empty entries pick platform
-    # defaults relative to install_prefix.
-    install_prefix: ""               # e.g. /opt/jumpserver/devolutions-gateway
-    binary_path: ""                  # <install_prefix>/devolutions-gateway[.exe]
-    config_path: ""                  # <install_prefix>/config/gateway.json
-    id_file: ""                      # <install_prefix>/config/gateway-id
-    jwt_private_key_file: ""         # <install_prefix>/config/jwt.key (auto-generated 2048-bit RSA on first run)
-    # Internal listener for the gateway. The browser does NOT hit this
-    # directly unless advertised_url is empty — typically you'd put
-    # nginx / Caddy in front and have it forward `/jet/*` here.
+
+    # ----- Filesystem layout -----
+    # Empty paths derive from `install_prefix` + platform conventions:
+    #   Linux           — /opt/jumpserver/devolutions-gateway
+    #   macOS           — ~/Library/Application Support/JumpServer/devolutions-gateway
+    #   Windows         — %LOCALAPPDATA%\Programs\JumpServer\devolutions-gateway
+    # `install_prefix` is also where the install script drops the binary.
+    install_prefix: ""
+    binary_path: ""                  # default: <install_prefix>/devolutions-gateway[.exe]
+    config_path: ""                  # default: <install_prefix>/config/gateway.json (regenerated each start)
+    id_file: ""                      # default: <install_prefix>/config/gateway-id  (UUIDv4, persists across restarts)
+    jwt_private_key_file: ""         # default: <install_prefix>/config/jwt.key      (2048-bit RSA, auto-generated on first run; <path>.pub is written too)
+
+    # ----- Networking -----
+    # listen_addr is what the gateway subprocess binds. Internal-only —
+    # we typically put nginx/Caddy in front to terminate TLS and forward
+    # /jet/* to this address. For dev you can hit it directly.
     listen_addr: "http://127.0.0.1:7171"
-    # WebSocket URL handed to the browser inside the start-session
-    # response. Empty → derive from listen_addr.
+    # advertised_url is the WebSocket URL handed to the browser inside the
+    # /api/v1/desktop/sessions response. Use wss:// once a reverse proxy
+    # is in front. Empty = derive from listen_addr (good for dev only).
+    # Example for production:
+    #   advertised_url: "wss://jumpserver.example.com/jet/rdp"
     advertised_url: ""
-    # RS256 JWT TTL. 90s is enough for one WebSocket connect; expired
-    # tokens force the browser to re-issue start-session.
+
+    # ----- JWT signing -----
+    # token_ttl caps how long one minted JWT stays valid. 90s is enough
+    # for the browser to open one WebSocket; tokens are single-use in
+    # practice because the Devolutions Gateway invalidates them after
+    # the upgrade handshake. Keep short to limit blast radius if leaked.
     token_ttl: 90s
-    # How long Ensure() waits for /jet/health to return 200 OK.
+
+    # ----- Health probing -----
+    # On startup the supervisor waits up to health_timeout for the gateway
+    # to respond 200 OK on /jet/health before considering it Ready. Bump
+    # on slow disks or when the binary itself takes long to start.
     health_timeout: 15s
-    # Pass-through to the gateway's `Verbosity` config (warn/info/debug).
+
+    # ----- Gateway logging -----
+    # Verbosity is passed straight through to the Devolutions Gateway's
+    # config and routed to its own log appender. Values: error / warn /
+    # info (default) / debug / trace. Use "debug" only while triaging
+    # connection issues — trace dumps every PDU.
     verbosity: info
 
-  # ----- Plan 17–28: legacy freerdp worker (kept as opt-in fallback) -----
+  # ---------------------------------------------------------------------------
+  # Legacy freerdp worker (kept as opt-in fallback; default OFF)
+  # ---------------------------------------------------------------------------
   # If you flip default_backend back to "freerdp" or pass backend="freerdp"
-  # per-session, the gateway expects a freerdp-worker binary at one of:
+  # in a session start request, the gateway expects a worker binary at one
+  # of:
   #   - worker_path (if set)
   #   - /usr/local/bin/freerdp-worker (Linux)
   #   - /opt/homebrew/bin/freerdp-worker (macOS Apple Si)
+  #   - /usr/local/bin/freerdp-worker (macOS Intel)
   #   - %ProgramFiles%\JumpServer\freerdp-worker.exe (Windows)
-  # Build via scripts/build-worker-*.{sh,ps1}.
+  # Build via scripts/build-worker-{linux,darwin,windows}.{sh,sh,ps1}.
+  # Requires libfreerdp 3.x + cgo toolchain at build time.
   worker_path: ""
   worker_idle_timeout: 5m
   # Runtime auto-install of the legacy worker was removed in favour of
-  # explicit pre-build scripts. Kept here for yaml backward compatibility
-  # (the gateway logs a deprecation notice if you set it true).
+  # explicit pre-build scripts. Field kept here for yaml back-compat —
+  # the gateway logs a deprecation notice if you set it true and ignores.
   auto_install: false
   install_prefix: ""
+
+  # ---------------------------------------------------------------------------
+  # Deployment scenarios (commented-out templates)
+  # ---------------------------------------------------------------------------
+  #
+  # ────────────────────────────────────────────────────────────────────────
+  # 1) Single-host with auto-everything (zero-config; the default above
+  #    already reflects this). Browser hits gateway over loopback in dev,
+  #    via reverse proxy in prod.
+  # ────────────────────────────────────────────────────────────────────────
+  #
+  # ────────────────────────────────────────────────────────────────────────
+  # 2) Reverse-proxy fronting (recommended for production)
+  # ────────────────────────────────────────────────────────────────────────
+  #   devolutions_gateway:
+  #     enabled: true
+  #     auto_install: true
+  #     auto_start: true
+  #     listen_addr: "http://127.0.0.1:7171"
+  #     advertised_url: "wss://jumpserver.example.com/jet/rdp"
+  #     # nginx snippet:
+  #     #   location /jet/ {
+  #     #     proxy_pass http://127.0.0.1:7171;
+  #     #     proxy_http_version 1.1;
+  #     #     proxy_set_header Upgrade $http_upgrade;
+  #     #     proxy_set_header Connection "upgrade";
+  #     #     proxy_set_header Host $host;
+  #     #     proxy_read_timeout 86400s;
+  #     #   }
+  #
+  # ────────────────────────────────────────────────────────────────────────
+  # 3) Gateway runs under systemd / Windows service / Docker, separate
+  #    from jumpserver
+  # ────────────────────────────────────────────────────────────────────────
+  #   devolutions_gateway:
+  #     enabled: true
+  #     auto_install: false              # operator manages binary install
+  #     auto_start: false                # operator runs the binary
+  #     # jumpserver still writes config_path + jwt.key.pub so the gateway
+  #     # picks up keys + listener layout.
+  #     binary_path: "/usr/local/bin/devolutions-gateway"
+  #     config_path: "/etc/devolutions-gateway/gateway.json"
+  #     jwt_private_key_file: "/etc/devolutions-gateway/jwt.key"
+  #     listen_addr: "http://devolutions-gateway:7171"
+  #     advertised_url: "wss://jumpserver.example.com/jet/rdp"
+  #
+  # ────────────────────────────────────────────────────────────────────────
+  # 4) Stay on legacy freerdp worker (no Devolutions Gateway at all)
+  # ────────────────────────────────────────────────────────────────────────
+  #   default_backend: freerdp
+  #   debug_log: false
+  #   devolutions_gateway:
+  #     enabled: false
+  #     auto_start: false
+  #     auto_install: false
+  #   worker_path: "/usr/local/bin/freerdp-worker"   # built from cmd/freerdp-worker
+  #
+  # ────────────────────────────────────────────────────────────────────────
+  # 5) China / behind-firewall: pin version and use internal mirror
+  # ────────────────────────────────────────────────────────────────────────
+  #   Set env vars BEFORE starting jumpserver (the install script reads them):
+  #     DGW_VERSION=2026.1.2
+  #     DGW_MIRROR=https://internal.mirror.example.com/devolutions-gateway/releases/download
 
 protocols:
   guacamole:
