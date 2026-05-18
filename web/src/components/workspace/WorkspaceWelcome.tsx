@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRight, Clock, Command, LayoutGrid, MousePointer2, Sparkles, Star } from "lucide-react"
+import { ArrowRight, Clock, Keyboard, LayoutGrid, MousePointer2, Plus, Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
@@ -46,28 +46,33 @@ export function WorkspaceWelcome({ onNewTab }: Props) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto px-6 py-10 space-y-10">
+      <div className="min-h-full max-w-3xl mx-auto px-6 py-10 flex flex-col justify-center gap-10">
         <div className="text-center space-y-3">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 text-primary">
             <LayoutGrid className="w-7 h-7" />
           </div>
-          <h1 className="text-2xl font-semibold tracking-tight">欢迎来到工作台</h1>
-          <p className="text-sm text-muted-foreground max-w-xl mx-auto">
-            把多个 SSH / RDP / VNC / SFTP / 端口转发会话装在一个浏览器窗口里。Tab 切换瞬时,
-            后台会话不会被掐断,所有操作进入审计。
+          <h1 className="text-2xl font-semibold tracking-tight">工作台</h1>
+          <p className="text-sm text-muted-foreground max-w-xl mx-auto leading-relaxed">
+            在单一窗口管理 SSH、RDP、VNC、SFTP 与端口转发会话。切换 Tab 不中断后台连接,
+            所有操作均纳入会话审计。
           </p>
           <div className="flex items-center justify-center gap-2 pt-2">
             <Button onClick={onNewTab}>
-              <Sparkles className="w-4 h-4" /> 打开命令面板新建 Tab
+              <Plus className="w-4 h-4" /> 新建会话
               <kbd className="ml-2 px-1.5 py-0.5 rounded bg-card/40 text-xs">Ctrl+T</kbd>
             </Button>
             <Button variant="outline" asChild>
               {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
               <Link href={"/nodes" as any}>
-                浏览全部节点 <ArrowRight className="w-4 h-4" />
+                查看资产列表 <ArrowRight className="w-4 h-4" />
               </Link>
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground pt-1">
+            也可按{" "}
+            <kbd className="px-1 py-0.5 rounded bg-muted font-mono text-[10px]">Ctrl/⌘ + K</kbd>{" "}
+            唤起命令面板,或在左侧资产树中双击节点直接连接。
+          </p>
         </div>
 
         {favNodes.length > 0 && (
@@ -86,20 +91,22 @@ export function WorkspaceWelcome({ onNewTab }: Props) {
           </Section>
         )}
 
-        <div className="rounded-lg border bg-card/30 p-4 text-xs text-muted-foreground space-y-1.5">
-          <div className="flex items-center gap-1.5 font-medium text-foreground">
-            <Command className="w-3.5 h-3.5" /> 键盘快捷键
+        <div className="rounded-lg border bg-card/30 p-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5 font-medium text-foreground mb-2">
+            <Keyboard className="w-3.5 h-3.5" /> 快捷键速查
           </div>
-          <Kbd combo="Ctrl/⌘ + T" desc="新建 Tab（命令面板）" />
-          <Kbd combo="Ctrl/⌘ + W" desc="关闭当前 Tab" />
-          <Kbd combo="Ctrl/⌘ + Shift + T" desc="撤销关闭" />
-          <Kbd combo="Ctrl/⌘ + Tab" desc="下一个 / 上一个 Tab" />
-          <Kbd combo="Ctrl/⌘ + 1..9" desc="跳到第 N 个 Tab" />
-          <Kbd combo="Ctrl/⌘ + K" desc="命令面板" />
-          <Kbd combo="Ctrl/⌘ + B" desc="切换侧边栏" />
-          <Kbd combo="F11" desc="当前 Tab 全屏" />
-          <div className="pt-1 inline-flex items-center gap-1.5">
-            <MousePointer2 className="w-3 h-3" /> 树里双击节点直接连接 · 右键选具体协议
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+            <Kbd combo="Ctrl/⌘ + T" desc="新建会话" />
+            <Kbd combo="Ctrl/⌘ + W" desc="关闭当前 Tab" />
+            <Kbd combo="Ctrl/⌘ + Shift + T" desc="撤销关闭" />
+            <Kbd combo="Ctrl/⌘ + Tab" desc="切换上一/下一 Tab" />
+            <Kbd combo="Ctrl/⌘ + 1..9" desc="跳转到第 N 个 Tab" />
+            <Kbd combo="Ctrl/⌘ + K" desc="命令面板" />
+            <Kbd combo="Ctrl/⌘ + B" desc="切换侧边栏" />
+            <Kbd combo="F11" desc="当前 Tab 全屏" />
+          </div>
+          <div className="pt-2 mt-2 border-t border-border/40 inline-flex items-center gap-1.5">
+            <MousePointer2 className="w-3 h-3" /> 左侧资产树:双击节点直接连接,右键选择具体协议。
           </div>
         </div>
       </div>

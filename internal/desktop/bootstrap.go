@@ -24,6 +24,13 @@ import (
 // Entry point: Manager.EnsureWorker (called from cmd/jumpserver/main.go
 // in a background goroutine so HTTP comes up immediately).
 
+// ErrToolchainUnavailable is the typed error returned when the host
+// genuinely can't build the native FreeRDP worker (e.g. Windows without
+// MSYS2/vcpkg). It tells EnsureWorker this isn't an operator error worth
+// surfacing as ERROR — the gateway is fully functional via Guacamole's
+// RDP/VNC path; only the new "rdp_next" desktop protocol is unavailable.
+var ErrToolchainUnavailable = errors.New("native FreeRDP worker unavailable: build toolchain missing on this host")
+
 // candidateWorkerPaths returns the existence-check sweep before invoking
 // the bootstrap pipeline. Plan 19 moved the body to bootstrap_paths.go
 // so it can branch on runtime.GOOS (Windows uses .exe, macOS uses brew
@@ -100,9 +107,21 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 		zap.Strings("searched", candidates))
 	startedAt := time.Now()
 	if err := m.runBootstrap(ctx); err != nil {
-		m.logger.Error("desktop worker bootstrap failed", zap.Error(err),
-			zap.Duration("elapsed", time.Since(startedAt)),
-			zap.String("hint", "fix the reported issue, then POST /api/v1/desktop/bootstrap to retry without restart"))
+		if errors.Is(err, ErrToolchainUnavailable) {
+			// Expected, non-actionable on this host. Log a single INFO
+			// line (zap won't attach a stack trace at this level) so the
+			// startup log stays clean. The classic Guacamole RDP/VNC
+			// path is unaffected; only "rdp_next" protocol is offline.
+			m.logger.Info("native FreeRDP worker disabled on this host — classic RDP/VNC via Guacamole continue to work",
+				zap.String("reason", err.Error()),
+				zap.Duration("elapsed", time.Since(startedAt)),
+				zap.String("how_to_enable_windows", "install MSYS2 from https://www.msys2.org/ then in an MSYS2 shell: pacman -S mingw-w64-x86_64-freerdp mingw-w64-x86_64-pkgconf mingw-w64-x86_64-gcc mingw-w64-x86_64-go"),
+				zap.String("retry", "POST /api/v1/desktop/bootstrap after installing the toolchain"))
+		} else {
+			m.logger.Error("desktop worker bootstrap failed", zap.Error(err),
+				zap.Duration("elapsed", time.Since(startedAt)),
+				zap.String("hint", "fix the reported issue, then POST /api/v1/desktop/bootstrap to retry without restart"))
+		}
 		m.recordBootstrap(err)
 		// Don't return the error — we want the gateway to keep running.
 		return nil
@@ -138,9 +157,17 @@ func (m *Manager) runBootstrap(ctx context.Context) error {
 	m.logger.Info("detected platform",
 		zap.String("pretty", info.PrettyName), zap.String("id", string(info.ID)))
 
-	// 2. Install build deps (best-effort — if it fails AND go+pkg-config
-	//    are already present, continue).
-	if len(plan.Cmds) > 0 {
+	// 2. If the toolchain is already usable, skip the install step
+	//    entirely. This is the common case on hosts where the operator
+	//    pre-installed deps (manually or through a previous bootstrap),
+	//    and on Windows where the user may have set up MSYS2 with a
+	//    sub-environment (ucrt64 / mingw64 / clang64) we now probe.
+	if err := verifyBuildToolchain(ctx); err == nil {
+		m.logger.Info("toolchain already present — skipping package install")
+	} else if len(plan.Cmds) > 0 {
+		// 3. Install build deps. Best-effort: a partial failure still
+		//    runs the verify below, since some hosts have the binaries
+		//    we need from a different source.
 		m.logger.Info("installing system packages", zap.String("hint", plan.HumanInstall))
 		for _, c := range plan.Cmds {
 			if out, err := runInstallCmd(ctx, c); err != nil {
@@ -148,17 +175,26 @@ func (m *Manager) runBootstrap(ctx context.Context) error {
 					zap.Strings("cmd", c.Argv),
 					zap.String("output", truncate(string(out), 400)),
 					zap.Error(err))
-				// Don't abort yet — maybe deps are already there.
 			}
 		}
 	} else if plan.Reason != "" {
-		m.logger.Warn("no automatic install plan", zap.String("reason", plan.Reason),
-			zap.String("manual", plan.HumanInstall))
-		// Continue — operator may have installed deps manually.
+		// No install plan for this platform and the toolchain isn't
+		// available. Surface as the typed error so EnsureWorker logs
+		// INFO rather than ERROR.
+		return fmt.Errorf("%w (probe: %v); install hint:\n%s",
+			ErrToolchainUnavailable, err, plan.HumanInstall)
 	}
 
-	// 3. Verify the toolchain we need is now reachable.
+	// 4. Re-verify after the install attempt. On Windows we treat a
+	//    miss as ErrToolchainUnavailable so the startup log stays clean
+	//    (the gateway keeps working through the Guacamole RDP path);
+	//    on Linux/macOS this means the install step failed silently and
+	//    the operator needs to investigate.
 	if err := verifyBuildToolchain(ctx); err != nil {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("%w (probe: %v); install hint:\n%s",
+				ErrToolchainUnavailable, err, plan.HumanInstall)
+		}
 		return fmt.Errorf("toolchain check: %w (hint: %s)", err, plan.HumanInstall)
 	}
 
@@ -196,11 +232,19 @@ func truncate(s string, n int) string {
 
 // verifyBuildToolchain confirms `go`, `gcc`, and `pkg-config` are usable
 // after the install attempt. If any is missing or `go` is < 1.22 we abort.
+//
+// On Windows we additionally probe MSYS2's standard install paths
+// (C:\msys64\mingw64\bin etc.) because operators frequently install
+// MSYS2 without appending its bin dir to %PATH%. Tools resolved here are
+// passed back to the build step via buildEnv() so the augmented PATH is
+// applied consistently.
 func verifyBuildToolchain(ctx context.Context) error {
-	if _, err := exec.LookPath("go"); err != nil {
+	extra := pathDirsFromBuildEnv()
+	if _, err := lookToolPath("go", extra); err != nil {
 		return errors.New("go toolchain not found in PATH")
 	}
-	if out, err := exec.CommandContext(ctx, "go", "version").CombinedOutput(); err != nil {
+	goExe, _ := lookToolPath("go", extra)
+	if out, err := exec.CommandContext(ctx, goExe, "version").CombinedOutput(); err != nil {
 		return fmt.Errorf("go version: %w (%s)", err, string(out))
 	} else {
 		ver := string(out)
@@ -208,17 +252,82 @@ func verifyBuildToolchain(ctx context.Context) error {
 			return fmt.Errorf("go ≥1.22 required, got: %s", strings.TrimSpace(ver))
 		}
 	}
-	if _, err := exec.LookPath("gcc"); err != nil {
+	if _, err := lookToolPath("gcc", extra); err != nil {
 		// cc symlink works too on some distros (clang→cc, etc.).
-		if _, err2 := exec.LookPath("cc"); err2 != nil {
+		if _, err2 := lookToolPath("cc", extra); err2 != nil {
 			return errors.New("C compiler (gcc/cc) not found")
 		}
 	}
-	if _, err := exec.LookPath("pkg-config"); err != nil {
+	pkgConfig, err := lookToolPath("pkg-config", extra)
+	if err != nil {
 		return errors.New("pkg-config not found")
 	}
-	if out, err := exec.CommandContext(ctx, "pkg-config", "--exists", "freerdp3").CombinedOutput(); err != nil {
+	// On Windows, pkg-config can't read PKG_CONFIG_PATH unless we pass it
+	// in the child's env. buildEnv() already constructs the right value;
+	// reuse it so the verify probe sees the same .pc files the build will.
+	cmd := exec.CommandContext(ctx, pkgConfig, "--exists", "freerdp3")
+	cmd.Env = append(os.Environ(), buildEnv()...)
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("pkg-config can't find freerdp3 (%s)", string(out))
+	}
+	return nil
+}
+
+// lookToolPath finds `name` in normal PATH first, then in extra dirs.
+// On Windows tries `name` and `name.exe`. Returns the resolved absolute
+// path or an error.
+func lookToolPath(name string, extraDirs []string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	candidates := []string{name}
+	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(name), ".exe") {
+		candidates = append(candidates, name+".exe")
+	}
+	for _, dir := range extraDirs {
+		for _, c := range candidates {
+			full := filepath.Join(dir, c)
+			info, err := os.Stat(full)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			return full, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found", name)
+}
+
+// pathDirsFromBuildEnv extracts the dirs that buildEnv() prepends to
+// PATH (MSYS2's mingw64/bin on Windows, brew prefix's bin on macOS).
+// Returned in the order they appear; empty on Linux where defaults are
+// already enough.
+func pathDirsFromBuildEnv() []string {
+	sep := string(os.PathListSeparator)
+	for _, kv := range buildEnv() {
+		if !strings.HasPrefix(kv, "PATH=") {
+			continue
+		}
+		val := strings.TrimPrefix(kv, "PATH=")
+		// buildEnv() prepends new dirs to the existing PATH, so we want
+		// the ones that come before the original PATH. Easiest: split
+		// and dedupe vs. the existing PATH entries.
+		existing := map[string]struct{}{}
+		for _, d := range strings.Split(os.Getenv("PATH"), sep) {
+			if d != "" {
+				existing[d] = struct{}{}
+			}
+		}
+		var extra []string
+		for _, d := range strings.Split(val, sep) {
+			if d == "" {
+				continue
+			}
+			if _, was := existing[d]; was {
+				continue
+			}
+			extra = append(extra, d)
+		}
+		return extra
 	}
 	return nil
 }

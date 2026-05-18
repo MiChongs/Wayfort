@@ -54,11 +54,20 @@ func darwinBuildEnv() []string {
 	}
 }
 
-// windowsBuildEnv prepends MSYS2's mingw64 bin to PATH so cgo's default
-// `gcc` lookup finds the MinGW-w64 toolchain, and adds the matching
-// pkgconfig dir. When MSYS2 is installed via the vcpkg path (less
-// common), the caller should supply CC + CGO_LDFLAGS manually — we
-// don't try to guess.
+// windowsBuildEnv prepends every existing MSYS2 sub-environment's bin
+// dir (ucrt64 / mingw64 / clang64 / mingw32) plus `usr/bin` to PATH, and
+// builds PKG_CONFIG_PATH from the matching pkgconfig dirs. MSYS2's
+// "preferred" sub-env changed from MinGW64 → UCRT64 in 2022, and operators
+// commonly install only one of them — probing all four means the gateway
+// works regardless of which one they picked.
+//
+// Order matters: ucrt64 first (MSYS2's modern recommendation), then
+// mingw64 (legacy default, still widespread), then clang64, then mingw32.
+// `usr/bin` is appended last so the cygwin-style pkg-config is reachable
+// as a fallback when no mingw subenv installed its own.
+//
+// When MSYS2 is installed via the vcpkg path (less common), the caller
+// should supply CC + CGO_LDFLAGS manually — we don't try to guess.
 func windowsBuildEnv() []string {
 	tk := detectWindowsToolkit()
 	if tk.Kind != "msys2" || tk.Root == "" {
@@ -67,23 +76,52 @@ func windowsBuildEnv() []string {
 		// integration is more complex than cgo's pkg-config flow.
 		return nil
 	}
-	mingw := filepath.Join(tk.Root, "mingw64")
-	bin := filepath.Join(mingw, "bin")
-	pc := []string{
-		filepath.Join(mingw, "lib", "pkgconfig"),
-		filepath.Join(mingw, "share", "pkgconfig"),
+	subenvs := []string{"ucrt64", "mingw64", "clang64", "mingw32"}
+	var binDirs []string
+	var pcDirs []string
+	for _, sub := range subenvs {
+		bin := filepath.Join(tk.Root, sub, "bin")
+		if !dirExists(bin) {
+			continue
+		}
+		binDirs = append(binDirs, bin)
+		for _, rel := range []string{"lib/pkgconfig", "share/pkgconfig"} {
+			d := filepath.Join(tk.Root, sub, filepath.FromSlash(rel))
+			if dirExists(d) {
+				pcDirs = append(pcDirs, d)
+			}
+		}
 	}
+	if usr := filepath.Join(tk.Root, "usr", "bin"); dirExists(usr) {
+		binDirs = append(binDirs, usr)
+	}
+	if len(binDirs) == 0 {
+		// MSYS2 root present but no sub-env populated — nothing to add.
+		return nil
+	}
+	sep := string(os.PathListSeparator)
+	newPath := strings.Join(binDirs, sep)
+	if existing := os.Getenv("PATH"); existing != "" {
+		newPath = newPath + sep + existing
+	}
+	pc := pcDirs
 	if existing := os.Getenv("PKG_CONFIG_PATH"); existing != "" {
 		pc = append(pc, existing)
 	}
-	newPath := bin
-	if existing := os.Getenv("PATH"); existing != "" {
-		newPath = bin + ";" + existing
-	}
 	return []string{
-		"PKG_CONFIG_PATH=" + strings.Join(pc, string(os.PathListSeparator)),
+		"PKG_CONFIG_PATH=" + strings.Join(pc, sep),
 		"PATH=" + newPath,
 		"CC=gcc",
 		"CGO_ENABLED=1",
 	}
+}
+
+// dirExists is a small helper used by buildEnv probes; nil-safe and
+// returns false on any stat error.
+func dirExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
 }
