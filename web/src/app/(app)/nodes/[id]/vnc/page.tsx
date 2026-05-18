@@ -1,7 +1,8 @@
 "use client"
 import { use } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { GuacamoleDisplay } from "@/components/guacamole/guac-display"
+// Plan 15: switched from GuacamoleDisplay → RDPDisplay (PixiJS WebGL).
+import { RDPDisplay } from "@/components/rdp/rdp-display"
 import { nodeService } from "@/lib/api/services"
 
 export default function Page({ params }: { params: Promise<{ id: string }> }) {
@@ -13,7 +14,7 @@ export default function Page({ params }: { params: Promise<{ id: string }> }) {
   })
   return (
     <div className="h-[calc(100vh-56px)]">
-      <GuacamoleDisplay
+      <RDPDisplay
         protocol="vnc"
         nodeId={nodeId}
         nodeName={node.data?.name}
