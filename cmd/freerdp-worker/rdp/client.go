@@ -232,15 +232,27 @@ func (c *Client) applySettings() error {
 	}
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_ColorDepth, C.UINT32(colorDepth))
 
-	// Security mode: SecAny / unset enables all three layers so FreeRDP
-	// negotiates the best supported. Operators can force NLA / TLS / RDP
-	// individually when a server requires a specific protocol or rejects
-	// the others — e.g. SecTLS for older Windows where NLA is disabled
-	// (avoids the BIO_read retries exceeded symptom).
+	// Security mode: SecAny / unset enables every layer FreeRDP supports
+	// so the server picks the strongest mutually-supported one. Operators
+	// can force a single layer when a server rejects negotiation — e.g.
+	// SecTLS for older Windows where NLA is off; SecRDP for very old
+	// XP/Server 2003 hosts with only legacy RDP encryption.
 	nla, tls, rdpSec := opts.SecurityFlags()
 	C.freerdp_settings_set_bool(s, C.FreeRDP_NlaSecurity, cBool(nla))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_TlsSecurity, cBool(tls))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RdpSecurity, cBool(rdpSec))
+	// HYBRID_EX (NLA-EX) is required by Windows 10/11/2022 with recent
+	// CredSSP patches — without it the server replies with
+	// ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED (0x0002000C) because none
+	// of the offered protocols match its policy. Only enable in "any"
+	// mode; explicit SecNLA / SecTLS / SecRDP shapes mean the operator
+	// asked for that specific protocol only.
+	extSec := opts.Security == desktop.SecAny || opts.Security == ""
+	C.freerdp_settings_set_bool(s, C.FreeRDP_ExtSecurity, cBool(extSec))
+	// NegotiateSecurityLayer is TRUE by default in FreeRDP 3.x but make
+	// it explicit so future libfreerdp versions can't flip the default
+	// without us noticing.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_NegotiateSecurityLayer, C.TRUE)
 
 	ignoreCert := true
 	if opts.IgnoreCert != nil {
