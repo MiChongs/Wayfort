@@ -1,40 +1,38 @@
-# Plan 18 — build helpers. The most important target is `sync-workersrc`
-# which keeps internal/desktop/_workersrc/ in lockstep with the real
-# worker source (cmd/freerdp-worker/) + the desktop type files the
-# worker depends on. CI runs `make verify-workersrc` to catch drift.
+# Build helpers.
+#
+# The freerdp-worker binary is built via OS-native scripts under scripts/
+# rather than at gateway startup — see scripts/README.md for rationale.
+# `make install-worker` dispatches to the right script for the current OS.
 
-.PHONY: help build build-worker sync-workersrc verify-workersrc test test-bootstrap
+.PHONY: help build build-worker install-worker install-worker-linux install-worker-darwin install-worker-windows test
 
 help:
-	@echo "Common targets:"
-	@echo "  make sync-workersrc    # Refresh internal/desktop/_workersrc mirror"
-	@echo "  make verify-workersrc  # CI: error if sync-workersrc would change anything"
-	@echo "  make build             # Build gateway (untagged — dummy worker backend)"
-	@echo "  make build-worker      # Build freerdp-worker binary (-tags freerdp)"
-	@echo "  make test              # Unit tests"
-	@echo "  make test-bootstrap    # Integration test: real bootstrap pipeline"
+	@echo "Targets:"
+	@echo "  make build                   # Build gateway binary (no CGo) → ./bin/jumpserver"
+	@echo "  make build-worker            # Build worker binary (-tags freerdp) → ./bin/freerdp-worker"
+	@echo "  make install-worker          # Build + install worker (auto-detects OS)"
+	@echo "  make install-worker-linux    # Force Linux script"
+	@echo "  make install-worker-darwin   # Force macOS script"
+	@echo "  make install-worker-windows  # Force Windows PowerShell script"
+	@echo "  make test                    # Unit tests"
 
 build:
-	go build -o ./bin/jumpserver ./cmd/jumpserver
+	bash scripts/build-gateway.sh
 
 build-worker:
-	go build -tags freerdp -o ./bin/freerdp-worker ./cmd/freerdp-worker
+	go build -tags freerdp -trimpath -o ./bin/freerdp-worker ./cmd/freerdp-worker
 
-sync-workersrc:
-	./scripts/sync-workersrc.sh
+install-worker:
+	bash scripts/build-worker.sh
 
-verify-workersrc: sync-workersrc
-	@# SOURCE_SHA always changes (it stamps current HEAD); exclude from drift check.
-	@if ! git diff --quiet --exit-code -- internal/desktop/_workersrc ':(exclude)internal/desktop/_workersrc/SOURCE_SHA'; then \
-	  echo "ERROR: internal/desktop/_workersrc is out of sync with cmd/freerdp-worker."; \
-	  echo "Run 'make sync-workersrc' and commit the result."; \
-	  git diff --stat -- internal/desktop/_workersrc ':(exclude)internal/desktop/_workersrc/SOURCE_SHA'; \
-	  exit 1; \
-	fi
-	@echo "internal/desktop/_workersrc is in sync (SOURCE_SHA drift ignored)."
+install-worker-linux:
+	bash scripts/build-worker-linux.sh
+
+install-worker-darwin:
+	bash scripts/build-worker-darwin.sh
+
+install-worker-windows:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1
 
 test:
 	go test ./...
-
-test-bootstrap:
-	JUMPSERVER_TEST_BOOTSTRAP=1 go test ./internal/desktop/... -v -run TestEnsureWorker_RealBootstrap

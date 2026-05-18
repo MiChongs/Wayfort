@@ -330,17 +330,20 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("insights.ssh_timeout", 10*time.Second)
 	v.SetDefault("insights.process_limit", 200)
 
-	// Plan 17 — new RDP backend, opt-in until M2 (libfreerdp wired).
+	// Desktop subsystem — workspace-v2 "rdp_next" protocol. Operators
+	// build the freerdp-worker binary explicitly via
+	// scripts/build-worker-*.{sh,ps1} (see scripts/README.md). The
+	// gateway only searches standard install paths at startup.
 	v.SetDefault("desktop.enabled", true)
 	v.SetDefault("desktop.default_backend", "freerdp")
 	v.SetDefault("desktop.worker_path", "")
 	v.SetDefault("desktop.worker_idle_timeout", 5*time.Minute)
 	v.SetDefault("desktop.max_concurrent_sessions", 64)
-	// Plan 18 — auto-install on missing worker.
-	v.SetDefault("desktop.auto_install", true)
-	// Plan 19 — leave install_prefix empty so the bootstrap picks the
-	// platform default (brew prefix on macOS, ProgramFiles on Windows,
-	// /usr/local/bin on Linux). Operators can override explicitly.
+	// Deprecated: runtime auto-install was removed in favour of explicit
+	// pre-build scripts. Field kept for yaml backward compatibility — if
+	// set to true the gateway logs a one-time deprecation notice at
+	// startup and otherwise ignores it. Remove from new configs.
+	v.SetDefault("desktop.auto_install", false)
 	v.SetDefault("desktop.install_prefix", "")
 
 	v.SetDefault("protocols.guacamole.enabled", false)
