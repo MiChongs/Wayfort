@@ -42,6 +42,9 @@ extern rdpSettings* wContextSettings(rdpContext* ctx);
 extern rdpInput*    wContextInput(rdpContext* ctx);
 extern rdpUpdate*   wContextUpdate(rdpContext* ctx);
 extern const char*  wErrorStr(rdpContext* ctx);
+extern UINT32       wGetRequestedProtocols(rdpContext* ctx);
+extern UINT32       wGetSelectedProtocol(rdpContext* ctx);
+extern UINT32       wGetNegotiationFlags(rdpContext* ctx);
 */
 import "C"
 
@@ -249,6 +252,18 @@ func (c *Client) applySettings() error {
 	// asked for that specific protocol only.
 	extSec := opts.Security == desktop.SecAny || opts.Security == ""
 	C.freerdp_settings_set_bool(s, C.FreeRDP_ExtSecurity, cBool(extSec))
+	// RDSTLS (PROTOCOL_RDSTLS, 0x10) is required by RDS Gateway / RD Web
+	// Access scenarios. Plain RDP servers ignore the unrecognised bit so
+	// this is purely additive — turning it on in "any" mode broadens the
+	// set of hosts we can reach without affecting direct-RDP nodes.
+	if extSec {
+		C.freerdp_settings_set_bool(s, C.FreeRDP_RdstlsSecurity, C.TRUE)
+	}
+	// Explicit RestrictedAdminModeRequired = FALSE. If the server thinks
+	// the client is asking for restricted-admin (a special NLA sub-mode
+	// that disables LSASS credential extraction) it may reject the
+	// credential exchange in some lockdown GPOs.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RestrictedAdminModeRequired, C.FALSE)
 	// NegotiateSecurityLayer is TRUE by default in FreeRDP 3.x but make
 	// it explicit so future libfreerdp versions can't flip the default
 	// without us noticing.
@@ -357,9 +372,23 @@ func (c *Client) runLoop(ctx context.Context) {
 	if !goBool(C.freerdp_connect(instance)) {
 		code := uint32(C.freerdp_get_last_error(rctx))
 		raw := C.GoString(C.wErrorStr(rctx))
+		// Read what the X.224 negotiation actually said so the error
+		// message can tell the operator whether the server rejected
+		// every protocol (selected=0) or accepted one (e.g. HYBRID/NLA)
+		// and broke later in the same handshake. Saves a round of
+		// guesswork between "wrong creds" and "wrong security mode".
+		requested := uint32(C.wGetRequestedProtocols(rctx))
+		selected := uint32(C.wGetSelectedProtocol(rctx))
+		c.logger.Error("freerdp_connect failed",
+			zap.Uint32("code", code),
+			zap.String("raw", raw),
+			zap.Uint32("requested_protocols_mask", requested),
+			zap.Uint32("selected_protocol_mask", selected),
+			zap.String("requested_protocols", protocolMaskString(requested)),
+			zap.String("selected_protocol", protocolMaskString(selected)))
 		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
 			Phase:   desktop.PhaseError,
-			Message: humanizeConnectError(code, raw),
+			Message: humanizeConnectErrorWithNego(code, raw, requested, selected),
 			Code:    code,
 		}})
 		return
