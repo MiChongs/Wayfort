@@ -1,0 +1,53 @@
+// Plan 17 — DesktopControl: ConnectRPC service for session lifecycle.
+//
+// V1 M1 ships JSON-encoded equivalents of these messages (see
+// internal/desktop/types.go and web/src/lib/desktop/wire.ts). This .proto
+// file is the canonical schema; buf-generated bindings replace the
+// hand-written types in M1.5.
+syntax = "proto3";
+
+package desktop.v1;
+
+option go_package = "github.com/michongs/jumpserver-anonymous/internal/desktop/protov1";
+
+service DesktopControl {
+  rpc StartSession (StartSessionRequest) returns (StartSessionResponse);
+  rpc Resize       (ResizeRequest)       returns (ResizeResponse);
+  rpc EndSession   (EndSessionRequest)   returns (EndSessionResponse);
+  rpc GetStatus    (GetStatusRequest)    returns (GetStatusResponse);
+}
+
+enum Quality {
+  QUALITY_AUTO   = 0;
+  QUALITY_HIGH   = 1;
+  QUALITY_MEDIUM = 2;
+  QUALITY_LOW    = 3;
+}
+
+message StartSessionRequest {
+  uint64  node_id  = 1;
+  uint32  width    = 2;   // initial viewport pixels
+  uint32  height   = 3;
+  uint32  dpi      = 4;
+  string  keyboard = 5;   // e.g. "en-us-qwerty"
+  Quality quality  = 6;
+  string  backend  = 7;   // "freerdp" (default) | "dummy" (test pattern)
+}
+message StartSessionResponse {
+  string session_id    = 1;   // opaque token for WS data channel
+  uint32 remote_width  = 2;
+  uint32 remote_height = 3;
+}
+
+message ResizeRequest  { string session_id = 1; uint32 width = 2; uint32 height = 3; }
+message ResizeResponse {}
+
+message EndSessionRequest  { string session_id = 1; }
+message EndSessionResponse {}
+
+message GetStatusRequest  { string session_id = 1; }
+message GetStatusResponse {
+  string phase = 1;        // CONNECTING/HANDSHAKE/CONNECTED/...
+  uint32 code  = 2;        // last error code, 0 if none
+  uint64 uptime_ms = 3;
+}

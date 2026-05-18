@@ -186,6 +186,15 @@ function actionList(protocol: string): ActionItem[] {
     out.push({ href: "/telnet", label: "Telnet 终端", hint: "适合网络设备", icon: TerminalIcon })
   } else if (protocol === "rdp") {
     out.push({ href: "/rdp", label: "RDP 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor })
+    // Plan 17 — surface the new worker-based stack as a Beta entry. Once
+    // M2 reaches parity this becomes the default and the guacd link goes
+    // away.
+    out.push({
+      href: "/rdp-next",
+      label: "RDP (Beta · 新栈)",
+      hint: "DesktopWorker 子进程 + 浏览器自研 viewer (M1: test pattern)",
+      icon: Monitor,
+    })
   } else if (protocol === "vnc") {
     out.push({ href: "/vnc", label: "VNC 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor })
   } else if (["mysql", "postgres", "redis", "mongo"].includes(protocol)) {

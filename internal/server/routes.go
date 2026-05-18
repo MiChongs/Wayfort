@@ -5,6 +5,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
@@ -21,6 +22,21 @@ func insightsHandler(rt *Routes) *insights.Handler {
 		return rt.Insights
 	}
 	return insights.NewHandler(nil)
+}
+
+// Plan 17 — same pattern for the desktop control / WS handlers. When the
+// subsystem is disabled the stub returns 503 from its own gate logic.
+func desktopControl(rt *Routes) *desktop.ControlHandler {
+	if rt.DesktopControl != nil {
+		return rt.DesktopControl
+	}
+	return desktop.NewControlHandler(nil)
+}
+func desktopWS(rt *Routes) *desktop.WSHandler {
+	if rt.DesktopWS != nil {
+		return rt.DesktopWS
+	}
+	return desktop.NewWSHandler(nil, nil)
 }
 
 type Routes struct {
@@ -54,6 +70,13 @@ type Routes struct {
 
 	// Plan 14 — per-node live system telemetry served on the SSH page.
 	Insights *insights.Handler
+
+	// Plan 17 — new RDP/desktop backend (FreeRDP worker subprocess +
+	// custom browser viewer). When set the gateway exposes the
+	// /desktop/sessions REST control plane and the /ws/v2/desktop/:id
+	// WebSocket data plane alongside the legacy guacd routes.
+	DesktopControl *desktop.ControlHandler
+	DesktopWS      *desktop.WSHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -195,6 +218,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/insights/system", insightsHandler(rt).System)
 		ops.GET("/nodes/:id/insights/processes", insightsHandler(rt).Processes)
 		ops.GET("/nodes/:id/insights/network", insightsHandler(rt).Network)
+		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
+		// Always registered for the same observability reason as insights:
+		// missing/stale config returns 503, not 404.
+		ops.POST("/desktop/sessions", desktopControl(rt).Start)
+		ops.DELETE("/desktop/sessions/:session_id", desktopControl(rt).End)
+		ops.GET("/desktop/stats", desktopControl(rt).Stats)
+		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
 		if rt.Guacamole != nil {

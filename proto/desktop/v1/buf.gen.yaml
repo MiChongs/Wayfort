@@ -1,0 +1,16 @@
+# Plan 17 — buf code-gen config. M1 hand-writes the equivalent types in
+# Go and TS; M1.5 enables this generator and replaces hand-written code.
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: ../../../internal/desktop/protov1
+    opt: paths=source_relative
+  - remote: buf.build/connectrpc/go
+    out: ../../../internal/desktop/protov1
+    opt: paths=source_relative
+  - remote: buf.build/bufbuild/es
+    out: ../../../web/src/lib/desktop/gen
+    opt: target=ts
+  - remote: buf.build/connectrpc/es
+    out: ../../../web/src/lib/desktop/gen
+    opt: target=ts

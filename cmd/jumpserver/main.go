@@ -30,6 +30,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
@@ -303,6 +304,25 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Asset: assetResolver,
 		})
 		routes.Insights = insights.NewHandler(insightsMgr)
+	}
+
+	// Plan 17 — wire the new desktop subsystem (FreeRDP worker abstraction
+	// + browser viewer). In M1 the default backend is "dummy" so this runs
+	// out-of-the-box on machines without libfreerdp; M2 swaps in the real
+	// FreeRDP worker by setting `desktop.default_backend: freerdp` +
+	// `desktop.worker_path: /usr/local/bin/freerdp-worker`.
+	if cfg.Desktop.Enabled {
+		desktopMgr := desktop.NewManager(cfg.Desktop, desktop.Deps{
+			Logger:   logger,
+			Nodes:    nodeRepo,
+			Creds:    credRepo,
+			Asset:    assetResolver,
+			Sealer:   sealer,
+			Audit:    auditWriter,
+			Sessions: sessionRepo,
+		})
+		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
+		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
 	}
 
 	// AI assistant subsystem

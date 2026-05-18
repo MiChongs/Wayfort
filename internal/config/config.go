@@ -24,6 +24,7 @@ type Config struct {
 	Notify    NotifyConfig    `mapstructure:"notify"`
 	AI        AIConfig        `mapstructure:"ai"`
 	Insights  InsightsConfig  `mapstructure:"insights"`
+	Desktop   DesktopConfig   `mapstructure:"desktop"`
 }
 
 // InsightsConfig — Plan 14: SSH-page live system dashboard. The frontend
@@ -35,6 +36,20 @@ type InsightsConfig struct {
 	CacheTTL     time.Duration `mapstructure:"cache_ttl"`
 	SSHTimeout   time.Duration `mapstructure:"ssh_timeout"`
 	ProcessLimit int           `mapstructure:"process_limit"`
+}
+
+// DesktopConfig — Plan 17: new RDP backend with worker-process abstraction
+// (FreeRDP / IronRDP / dummy). DefaultBackend "freerdp" requires WorkerPath
+// to point at the `freerdp-worker` binary built from cmd/freerdp-worker.
+// During Plan 17 M1 (no libfreerdp linkage yet) leave DefaultBackend
+// "dummy" so the test-pattern worker runs in-process and the pipeline is
+// exercisable.
+type DesktopConfig struct {
+	Enabled               bool          `mapstructure:"enabled"`
+	DefaultBackend        string        `mapstructure:"default_backend"`
+	WorkerPath            string        `mapstructure:"worker_path"`
+	WorkerIdleTimeout     time.Duration `mapstructure:"worker_idle_timeout"`
+	MaxConcurrentSessions int           `mapstructure:"max_concurrent_sessions"`
 }
 
 type AIConfig struct {
@@ -304,6 +319,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("insights.cache_ttl", 3*time.Second)
 	v.SetDefault("insights.ssh_timeout", 10*time.Second)
 	v.SetDefault("insights.process_limit", 200)
+
+	// Plan 17 — new RDP backend, opt-in until M2 (libfreerdp wired).
+	v.SetDefault("desktop.enabled", true)
+	v.SetDefault("desktop.default_backend", "dummy")
+	v.SetDefault("desktop.worker_path", "")
+	v.SetDefault("desktop.worker_idle_timeout", 5*time.Minute)
+	v.SetDefault("desktop.max_concurrent_sessions", 64)
 
 	v.SetDefault("protocols.guacamole.enabled", false)
 	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")

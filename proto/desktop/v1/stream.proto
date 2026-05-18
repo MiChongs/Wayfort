@@ -1,0 +1,79 @@
+// Plan 17 — Desktop stream messages, exchanged over the WS data channel
+// (/api/v1/ws/v2/desktop/:session_id) AND between Gateway and Worker over
+// length-prefixed stdio. V1 M1 ships JSON; M1.5 swaps to Protobuf wire
+// encoding with buf-generated bindings.
+syntax = "proto3";
+
+package desktop.v1;
+
+option go_package = "github.com/michongs/jumpserver-anonymous/internal/desktop/protov1";
+
+enum Encoding {
+  ENC_RAW_BGRA = 0;
+  ENC_JPEG     = 1;
+  ENC_PNG      = 2;
+  // Reserved for Plan 18/19:
+  // ENC_H264_FRAGMENT = 10;
+}
+
+enum Phase {
+  PHASE_CONNECTING   = 0;
+  PHASE_HANDSHAKE    = 1;
+  PHASE_CONNECTED    = 2;
+  PHASE_RECONNECTING = 3;
+  PHASE_CLOSED       = 4;
+  PHASE_ERROR        = 5;
+}
+
+// ----- Server → Browser (and Worker → Gateway) -----
+
+message ServerMessage {
+  oneof payload {
+    FrameRect     frame     = 1;
+    CursorUpdate  cursor    = 2;
+    SessionStatus status    = 3;
+    BellEvent     bell      = 4;
+    ClipboardData clipboard = 5;  // Plan 18
+  }
+}
+
+message FrameRect {
+  uint32   x        = 1;
+  uint32   y        = 2;
+  uint32   width    = 3;
+  uint32   height   = 4;
+  Encoding encoding = 5;
+  bytes    payload  = 6;
+}
+message CursorUpdate {
+  uint32 hotspot_x = 1;
+  uint32 hotspot_y = 2;
+  bytes  png       = 3;   // 32-bit PNG of cursor sprite
+}
+message SessionStatus { Phase phase = 1; string message = 2; uint32 code = 3; }
+message BellEvent     {}
+message ClipboardData { string mime = 1; bytes payload = 2; }
+
+// ----- Browser → Server (and Gateway → Worker) -----
+
+message ClientMessage {
+  oneof payload {
+    InputKey      key       = 1;
+    InputMouse    mouse     = 2;
+    Heartbeat     hb        = 3;
+    ClipboardData clipboard = 4;
+    ResizeHint    resize    = 5;
+  }
+}
+message InputKey {
+  uint32 keysym  = 1;   // X11 keysym (libfreerdp accepts via XKB map)
+  bool   pressed = 2;
+}
+message InputMouse {
+  sint32 x       = 1;
+  sint32 y       = 2;
+  uint32 buttons = 3;   // bit 0=left, 1=middle, 2=right
+  sint32 wheel   = 4;
+}
+message ResizeHint  { uint32 width = 1; uint32 height = 2; }
+message Heartbeat   { uint64 ts_ms = 1; }
