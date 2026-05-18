@@ -132,50 +132,77 @@ insights:
   ssh_timeout: 10s
   process_limit: 200
 
-# Plan 17 — new RDP backend. Replaces guacd for /nodes/[id]/rdp-next pages.
-# Old /nodes/[id]/rdp keeps using guacd (Plan 16) until M2 reaches parity.
+# RDP backend used by /nodes/[id]/rdp-next pages and the workspace
+# "rdp_next" tab type. /nodes/[id]/rdp keeps using guacd (Plan 16).
 #
 # Backends:
-#   - "dummy"   : in-process test-pattern worker, no external deps.
-#                 Use for development / smoke / CI. Default in M1.
-#   - "freerdp" : spawn `freerdp-worker` subprocess linked to libfreerdp 3.x.
-#                 Requires libfreerdp3 + libfreerdp-client3 + libwinpr3 at
-#                 runtime. Switch to this once you've built the worker
-#                 from cmd/freerdp-worker on a libfreerdp-equipped host.
+#   - "ironrdp" (default, Plan 29): the browser runs the Devolutions IronRDP
+#                client (Rust → Wasm) and talks WebSocket directly to a
+#                Devolutions Gateway subprocess we supervise. The Go service
+#                only signs short-lived RS256 JWTs. Native RDP 10.x support,
+#                no cgo / libfreerdp / MSYS2 toolchain on the host.
+#   - "freerdp" (legacy, Plan 17–28): spawn `freerdp-worker` subprocess
+#                linked to libfreerdp 3.x. Stays in the tree as an opt-in
+#                fallback for hosts that already have the worker installed
+#                or environments where IronRDP isn't appropriate.
+#   - "dummy"  : in-process test-pattern worker, no external deps. CI only.
 desktop:
   enabled: true
-  # default_backend:
-  #   "freerdp": spawn cmd/freerdp-worker (libfreerdp 3.x). Recommended.
-  #   "dummy":   in-process test-pattern worker for dev without libfreerdp.
-  default_backend: freerdp
-  worker_path: "/usr/local/bin/freerdp-worker"
-  worker_idle_timeout: 5m
+  default_backend: ironrdp
   max_concurrent_sessions: 64
-  # Plan 18 / 19 — startup self-check. If the gateway can't find a worker
-  # binary at worker_path (or the platform fallback table), and
-  # auto_install is true, it will:
-  #   1. Detect platform (Linux distro / macOS / Windows)
-  #   2. Install libfreerdp 3.x + pkg-config + Go ≥1.22 via the host's
-  #      package manager:
-  #        Ubuntu 24.04 / Debian 13+ : apt-get install -y freerdp3-dev …
-  #        Fedora / RHEL 9+         : dnf install freerdp-devel …
-  #        Alpine                   : apk add freerdp-dev …
-  #        macOS (Intel + Silicon)  : brew install freerdp pkg-config go
-  #        Windows (MSYS2 present)  : pacman -S mingw-w64-x86_64-freerdp …
-  #        Windows (vcpkg present)  : vcpkg install freerdp[client]:x64-windows
-  #   3. Extract the embedded worker source (//go:embed) to a temp dir
-  #   4. go build -tags freerdp -mod=vendor → produces a fresh worker
-  #   5. Install to install_prefix (leave empty to pick the platform default)
-  #
-  # The bootstrap runs in a background goroutine; the HTTP listener comes
-  # up immediately. Session-start requests during the bootstrap return
-  # 503 "worker bootstrapping" until completion (~30-90s, mostly compile).
-  auto_install: true
-  # install_prefix defaults per platform when left empty:
-  #   Linux           — /usr/local/bin/freerdp-worker
-  #   macOS Apple Si  — /opt/homebrew/bin/freerdp-worker
-  #   macOS Intel     — /usr/local/bin/freerdp-worker
-  #   Windows         — %ProgramFiles%\JumpServer\freerdp-worker.exe
+
+  # ----- Plan 29: IronRDP path (Devolutions Gateway subprocess) -----
+  devolutions_gateway:
+    # The supervisor is on by default since default_backend is ironrdp.
+    # Turn off if you want to stay on the legacy freerdp worker — then
+    # also set `default_backend: freerdp` and configure worker_path
+    # below.
+    enabled: true
+    # When true (default) and the gateway binary is missing, the install
+    # script under scripts/install-devolutions-gateway-*.{sh,ps1} runs
+    # at startup to download it from upstream.
+    auto_install: true
+    # When true (default) the gateway subprocess is spawned and
+    # supervised by jumpserver. Disable if you run the gateway under
+    # systemd / Windows service / Docker — then jumpserver only writes
+    # the JSON config + mints JWTs.
+    auto_start: true
+    # Install / config / key locations. Empty entries pick platform
+    # defaults relative to install_prefix.
+    install_prefix: ""               # e.g. /opt/jumpserver/devolutions-gateway
+    binary_path: ""                  # <install_prefix>/devolutions-gateway[.exe]
+    config_path: ""                  # <install_prefix>/config/gateway.json
+    id_file: ""                      # <install_prefix>/config/gateway-id
+    jwt_private_key_file: ""         # <install_prefix>/config/jwt.key (auto-generated 2048-bit RSA on first run)
+    # Internal listener for the gateway. The browser does NOT hit this
+    # directly unless advertised_url is empty — typically you'd put
+    # nginx / Caddy in front and have it forward `/jet/*` here.
+    listen_addr: "http://127.0.0.1:7171"
+    # WebSocket URL handed to the browser inside the start-session
+    # response. Empty → derive from listen_addr.
+    advertised_url: ""
+    # RS256 JWT TTL. 90s is enough for one WebSocket connect; expired
+    # tokens force the browser to re-issue start-session.
+    token_ttl: 90s
+    # How long Ensure() waits for /jet/health to return 200 OK.
+    health_timeout: 15s
+    # Pass-through to the gateway's `Verbosity` config (warn/info/debug).
+    verbosity: info
+
+  # ----- Plan 17–28: legacy freerdp worker (kept as opt-in fallback) -----
+  # If you flip default_backend back to "freerdp" or pass backend="freerdp"
+  # per-session, the gateway expects a freerdp-worker binary at one of:
+  #   - worker_path (if set)
+  #   - /usr/local/bin/freerdp-worker (Linux)
+  #   - /opt/homebrew/bin/freerdp-worker (macOS Apple Si)
+  #   - %ProgramFiles%\JumpServer\freerdp-worker.exe (Windows)
+  # Build via scripts/build-worker-*.{sh,ps1}.
+  worker_path: ""
+  worker_idle_timeout: 5m
+  # Runtime auto-install of the legacy worker was removed in favour of
+  # explicit pre-build scripts. Kept here for yaml backward compatibility
+  # (the gateway logs a deprecation notice if you set it true).
+  auto_install: false
   install_prefix: ""
 
 protocols:
