@@ -16,13 +16,15 @@ import (
 
 // firewallHandler / dockerHandler — 503-stub pattern shared with insights:
 // register routes unconditionally so a disabled-by-config feature returns a
-// structured 503 instead of gin's no-route 404. Lets the workspace UI
-// distinguish "deploy old" from "feature off".
+// structured 503 instead of gin's no-route 404. The stub carries a reason
+// string so the UI can render "rebuild from latest source" instead of an
+// opaque "subsystem unavailable".
 func firewallHandler(rt *Routes) *api.FirewallHandler {
 	if rt.Firewall != nil {
 		return rt.Firewall
 	}
-	return api.NewFirewallHandler(nil)
+	return api.NewFirewallHandlerStub("firewall subsystem not initialised on this gateway — " +
+		"the binary may predate the firewall feature; rebuild from latest source")
 }
 func dockerHandler(rt *Routes) *api.DockerHandler {
 	if rt.Docker != nil {
@@ -256,6 +258,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// matching :manage permission. 503 stubs when disabled.
 		ops.GET("/nodes/:id/firewall/status", firewallHandler(rt).Status)
 		ops.GET("/nodes/:id/firewall/rules", firewallHandler(rt).ListRules)
+		ops.GET("/nodes/:id/firewall/diagnose", firewallHandler(rt).Diagnose)
 		ops.POST("/nodes/:id/firewall/rules", perm(auth.PermFirewallManage), firewallHandler(rt).AddRule)
 		ops.DELETE("/nodes/:id/firewall/rules/:index", perm(auth.PermFirewallManage), firewallHandler(rt).DeleteRule)
 		ops.POST("/nodes/:id/firewall/enable", perm(auth.PermFirewallManage), firewallHandler(rt).Enable)
