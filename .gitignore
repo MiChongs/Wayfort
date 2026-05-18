@@ -1,6 +1,13 @@
 bin/
-freerdp-worker
-freerdp-worker
+# Anchor at repo root only. The bare `freerdp-worker` pattern (unanchored,
+# no slash) was matching every directory tree named `freerdp-worker`,
+# including the embed mirror at internal/desktop/_workersrc/cmd/freerdp-worker/,
+# which silently dropped the worker source out of every commit and caused
+# bootstrap to fail with "directory not found" at runtime.
+/freerdp-worker
+/freerdp-worker.exe
+/jumpserver
+/jumpserver.exe
 /bin/
 /var/
 /configs/config.yaml
