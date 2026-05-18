@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -112,4 +113,20 @@ func osDefaultWorkerPaths() []string {
 		}
 	}
 	return paths
+}
+
+// darwinBrewPrefix returns the standard Homebrew prefix for the current
+// architecture. Apple Silicon brews install under /opt/homebrew; Intel
+// under /usr/local. `brew --prefix` is honoured first so non-standard
+// installs (e.g. ~/homebrew) are picked up correctly.
+func darwinBrewPrefix() string {
+	if out, err := exec.Command("brew", "--prefix").Output(); err == nil {
+		if p := strings.TrimSpace(string(out)); p != "" {
+			return p
+		}
+	}
+	if runtime.GOARCH == "arm64" {
+		return "/opt/homebrew"
+	}
+	return "/usr/local"
 }
