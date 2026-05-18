@@ -205,10 +205,15 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/sessions/:id/recording", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/sessions/:id/cast", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
+		ops.GET("/nodes/:id/sftp/stat", rt.SFTP.Stat)
 		ops.POST("/nodes/:id/sftp/mkdir", rt.SFTP.Mkdir)
 		ops.DELETE("/nodes/:id/sftp/rm", rt.SFTP.Remove)
 		ops.POST("/nodes/:id/sftp/upload", rt.SFTP.Upload)
 		ops.GET("/nodes/:id/sftp/download", rt.SFTP.Download)
+		ops.POST("/nodes/:id/sftp/rename", rt.SFTP.Rename)
+		ops.POST("/nodes/:id/sftp/chmod", rt.SFTP.Chmod)
+		ops.GET("/nodes/:id/sftp/read", rt.SFTP.ReadText)
+		ops.POST("/nodes/:id/sftp/write", rt.SFTP.WriteText)
 		// Plan 14 — system insights endpoints (sibling to SFTP, same auth).
 		// Routes are ALWAYS registered. When the manager is disabled the
 		// handler returns 503 with a structured body. This way a stale

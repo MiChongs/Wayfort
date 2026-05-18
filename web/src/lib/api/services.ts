@@ -3,7 +3,7 @@
 // is a thin wrapper around the api client so React Query can cache against
 // stable URLs.
 
-import { api, withTokenQuery } from "./client"
+import { api, apiUpload, withTokenQuery, type UploadOptions } from "./client"
 import type {
   AIAgent,
   AIConversation,
@@ -136,24 +136,64 @@ export type SftpEntry = {
   path: string
   size: number
   mode: string
+  mode_octal: string
   is_dir: boolean
+  is_link: boolean
+  link_target?: string
+  uid?: number
+  gid?: number
+  owner?: string
+  group?: string
   mod_time: string
+}
+export type SftpReadResponse = {
+  path: string
+  size: number
+  content: string
+  truncated: boolean
+  mode?: string
 }
 export const sftpService = {
   list: (nodeId: number, path = "/") =>
     api<{ path: string; entries: SftpEntry[] }>("GET", `/nodes/${nodeId}/sftp/ls`, { query: { path } }),
+  stat: (nodeId: number, path: string) =>
+    api<SftpEntry>("GET", `/nodes/${nodeId}/sftp/stat`, { query: { path } }),
   mkdir: (nodeId: number, path: string) =>
-    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/sftp/mkdir`, { body: { path } }),
+    api<{ ok: boolean; path: string }>("POST", `/nodes/${nodeId}/sftp/mkdir`, { body: { path } }),
   remove: (nodeId: number, path: string) =>
     api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/sftp/rm`, { query: { path } }),
-  upload: (nodeId: number, path: string, file: File) => {
-    const fd = new FormData()
-    fd.append("file", file)
-    return api<{ ok: boolean; bytes: number; path: string }>("POST", `/nodes/${nodeId}/sftp/upload`, {
-      query: { path },
-      body: fd,
-    })
-  },
+  rename: (nodeId: number, from: string, to: string) =>
+    api<{ ok: boolean; from: string; to: string }>("POST", `/nodes/${nodeId}/sftp/rename`, {
+      body: { from, to },
+    }),
+  chmod: (nodeId: number, path: string, mode: number) =>
+    api<{ ok: boolean; path: string; mode: number }>("POST", `/nodes/${nodeId}/sftp/chmod`, {
+      body: { path, mode },
+    }),
+  readText: (nodeId: number, path: string) =>
+    api<SftpReadResponse>("GET", `/nodes/${nodeId}/sftp/read`, { query: { path } }),
+  writeText: (nodeId: number, path: string, content: string, mode?: number) =>
+    api<{ ok: boolean; bytes: number; path: string }>("POST", `/nodes/${nodeId}/sftp/write`, {
+      body: mode != null ? { path, content, mode } : { path, content },
+    }),
+  // Upload with optional onProgress callback and AbortSignal. The caller can
+  // pass a custom filename through `name` (e.g. for folder-uploads that need
+  // to flatten path segments).
+  upload: (
+    nodeId: number,
+    path: string,
+    file: File | Blob,
+    opts: { name?: string; onProgress?: UploadOptions["onProgress"]; signal?: AbortSignal } = {},
+  ) =>
+    apiUpload<{ ok: boolean; bytes: number; path: string }>(
+      `/nodes/${nodeId}/sftp/upload`,
+      file,
+      {
+        query: { path, ...(opts.name ? { name: opts.name } : {}) },
+        onProgress: opts.onProgress,
+        signal: opts.signal,
+      },
+    ),
   downloadURL: (nodeId: number, path: string) =>
     withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/sftp/download?path=${encodeURIComponent(path)}`),
 }
