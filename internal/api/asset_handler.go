@@ -25,13 +25,37 @@ type assetGroupPayload struct {
 	Description string  `json:"description"`
 }
 
+// assetGroupView wraps a model.AssetGroup with its current member node IDs.
+// The frontend workspace tree uses node_ids to render "group → members"
+// without a second round-trip.
+type assetGroupView struct {
+	model.AssetGroup
+	NodeIDs []uint64 `json:"node_ids"`
+}
+
 func (h *AssetGroupHandler) List(c *gin.Context) {
 	rows, err := h.Repo.List(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"asset_groups": rows})
+	out := make([]assetGroupView, 0, len(rows))
+	if len(rows) > 0 {
+		ids := make([]uint64, 0, len(rows))
+		for _, g := range rows {
+			ids = append(ids, g.ID)
+		}
+		// One query, group by group_id client-side.
+		members, err := h.Repo.MembersByGroup(c.Request.Context(), ids)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		for _, g := range rows {
+			out = append(out, assetGroupView{AssetGroup: g, NodeIDs: members[g.ID]})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"asset_groups": out})
 }
 
 func (h *AssetGroupHandler) Create(c *gin.Context) {

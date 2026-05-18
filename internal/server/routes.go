@@ -129,6 +129,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/login-history", rt.Me.LoginHistory)
 		me.GET("/nodes", rt.Me.VisibleNodes)
 
+		// Asset catalogue — read-only for every authenticated user. The
+		// workspace tree needs the full group/tag taxonomy to render
+		// "by group" / "by tag" views even for non-admins; mutations
+		// remain admin-locked further down.
+		authed.GET("/asset-groups", rt.AssetGroup.List)
+		authed.GET("/tags", rt.Tag.List)
+
 		// Admin: users / roles / orgs
 		admin := authed.Group("")
 		admin.GET("/users", perm(auth.PermUserManage), rt.User.List)
@@ -175,13 +182,12 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/credentials", perm(auth.PermCredentialManage), rt.Cred.Create)
 		admin.PATCH("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Update)
 		admin.DELETE("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Delete)
-		admin.GET("/asset-groups", perm(auth.PermAssetGroupManage), rt.AssetGroup.List)
+		// asset-groups / tags read routes moved up to authed (catalogue).
 		admin.POST("/asset-groups", perm(auth.PermAssetGroupManage), rt.AssetGroup.Create)
 		admin.PATCH("/asset-groups/:id", perm(auth.PermAssetGroupManage), rt.AssetGroup.Update)
 		admin.DELETE("/asset-groups/:id", perm(auth.PermAssetGroupManage), rt.AssetGroup.Delete)
 		admin.POST("/asset-groups/:id/nodes", perm(auth.PermAssetGroupManage), rt.AssetGroup.AddNode)
 		admin.DELETE("/asset-groups/:id/nodes/:nid", perm(auth.PermAssetGroupManage), rt.AssetGroup.RemoveNode)
-		admin.GET("/tags", perm(auth.PermTagManage), rt.Tag.List)
 		admin.POST("/tags", perm(auth.PermTagManage), rt.Tag.Create)
 		admin.DELETE("/tags/:id", perm(auth.PermTagManage), rt.Tag.Delete)
 		admin.POST("/nodes/:id/tags", perm(auth.PermTagManage), rt.Tag.Attach)

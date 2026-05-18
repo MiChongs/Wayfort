@@ -61,6 +61,23 @@ func (r *AssetGroupRepo) NodesIn(ctx context.Context, groupIDs []uint64) ([]uint
 	}
 	return out, nil
 }
+
+// MembersByGroup returns a per-group map of node IDs. Used by the workspace
+// tree to render groups → members without N round-trips.
+func (r *AssetGroupRepo) MembersByGroup(ctx context.Context, groupIDs []uint64) (map[uint64][]uint64, error) {
+	if len(groupIDs) == 0 {
+		return map[uint64][]uint64{}, nil
+	}
+	var rows []model.AssetGroupNode
+	if err := r.db.WithContext(ctx).Where("group_id IN ?", groupIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint64][]uint64, len(groupIDs))
+	for _, row := range rows {
+		out[row.GroupID] = append(out[row.GroupID], row.NodeID)
+	}
+	return out, nil
+}
 func (r *AssetGroupRepo) AddNode(ctx context.Context, groupID, nodeID uint64) error {
 	rel := model.AssetGroupNode{GroupID: groupID, NodeID: nodeID}
 	return r.db.WithContext(ctx).Where("group_id = ? AND node_id = ?", groupID, nodeID).

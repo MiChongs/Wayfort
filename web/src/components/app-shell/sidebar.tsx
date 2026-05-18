@@ -11,6 +11,7 @@ import {
   FileLock2,
   KeyRound,
   LayoutDashboard,
+  LayoutGrid,
   Network,
   ScrollText,
   Server,
@@ -33,6 +34,7 @@ const NAV: NavGroup[] = [
   {
     items: [
       { href: "/dashboard", label: "总览", icon: LayoutDashboard },
+      { href: "/workspace", label: "工作台", icon: LayoutGrid },
       { href: "/nodes", label: "节点", icon: Server },
       { href: "/sessions", label: "会话", icon: Activity },
       { href: "/port-forwards", label: "端口转发", icon: Share2 },
