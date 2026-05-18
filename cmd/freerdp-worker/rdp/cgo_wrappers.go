@@ -17,9 +17,12 @@ package rdp
 #cgo windows CFLAGS: -D__STDC_NO_THREADS__
 
 #include <freerdp/freerdp.h>
+#include <freerdp/addin.h>
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/channels/channels.h>
 #include <freerdp/channels/cliprdr.h>
+#include <freerdp/channels/drdynvc.h>
 #include <freerdp/channels/rdpsnd.h>
 #include <freerdp/channels/rdpdr.h>
 #include <freerdp/channels/rdpgfx.h>
@@ -27,6 +30,7 @@ package rdp
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/event.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/update.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/input.h>
 #include <freerdp/locale/keyboard.h>
@@ -40,9 +44,12 @@ extern BOOL goPreConnect(freerdp* instance);
 extern BOOL goPostConnect(freerdp* instance);
 extern void goPostDisconnect(freerdp* instance);
 extern BOOL goAuthenticate(freerdp* instance, char** username, char** password, char** domain);
+extern BOOL goAuthenticateEx(freerdp* instance, char** username, char** password, char** domain,
+                             rdp_auth_reason reason);
 extern DWORD goVerifyCertificate(freerdp* instance, const char* host, UINT16 port,
                                  const char* common_name, const char* subject,
                                  const char* issuer, const char* fingerprint, DWORD flags);
+extern int goLogonErrorInfo(freerdp* instance, UINT32 data, UINT32 type);
 extern void goOnChannelConnected(rdpContext* ctx, const char* name, void* iface);
 extern void goOnChannelDisconnected(rdpContext* ctx, const char* name, void* iface);
 extern BOOL goOnBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap);
@@ -65,6 +72,7 @@ extern UINT goRdpgfxCreateSurface(RdpgfxClientContext* ctx, const RDPGFX_CREATE_
 extern UINT goRdpgfxDeleteSurface(RdpgfxClientContext* ctx, const RDPGFX_DELETE_SURFACE_PDU* pdu);
 extern UINT goRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* pdu);
 extern UINT goRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu);
+extern void goAfterLoadChannels(rdpContext* ctx, BOOL ok);
 
 // ----- PubSub trampolines -----
 void wOnChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
@@ -108,9 +116,120 @@ UINT32 wGetNegotiationFlags(rdpContext* ctx) {
     return freerdp_settings_get_uint32(ctx->settings, FreeRDP_NegotiationFlags);
 }
 
+// ----- channel collection introspection -----
+UINT32 wStaticChannelCount(rdpSettings* settings) {
+    return freerdp_settings_get_uint32(settings, FreeRDP_StaticChannelCount);
+}
+UINT32 wDynamicChannelCount(rdpSettings* settings) {
+    return freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount);
+}
+const char* wStaticChannelName(rdpSettings* settings, UINT32 index) {
+    ADDIN_ARGV* args = freerdp_settings_get_pointer_array_writable(
+        settings, FreeRDP_StaticChannelArray, index);
+    if (!args || args->argc == 0 || !args->argv || !args->argv[0]) {
+        return NULL;
+    }
+    return args->argv[0];
+}
+const char* wDynamicChannelName(rdpSettings* settings, UINT32 index) {
+    ADDIN_ARGV* args = freerdp_settings_get_pointer_array_writable(
+        settings, FreeRDP_DynamicChannelArray, index);
+    if (!args || args->argc == 0 || !args->argv || !args->argv[0]) {
+        return NULL;
+    }
+    return args->argv[0];
+}
+
 // ----- callback installers -----
+
+static BOOL wLoadStaticChannelAddin(rdpChannels* channels, rdpSettings* settings,
+                                    const char* name, void* data) {
+    PVIRTUALCHANNELENTRY entry = NULL;
+    PVIRTUALCHANNELENTRY pvce = freerdp_load_channel_addin_entry(
+        name, NULL, NULL, FREERDP_ADDIN_CHANNEL_STATIC | FREERDP_ADDIN_CHANNEL_ENTRYEX);
+    PVIRTUALCHANNELENTRYEX pvceex = WINPR_FUNC_PTR_CAST(pvce, PVIRTUALCHANNELENTRYEX);
+
+    if (!pvceex) {
+        entry = freerdp_load_channel_addin_entry(
+            name, NULL, NULL, FREERDP_ADDIN_CHANNEL_STATIC);
+    }
+
+    if (pvceex) {
+        return freerdp_channels_client_load_ex(channels, settings, pvceex, data) == 0;
+    }
+    if (entry) {
+        return freerdp_channels_client_load(channels, settings, entry, data) == 0;
+    }
+    return FALSE;
+}
+
+BOOL wLoadChannels(freerdp* instance) {
+    BOOL ok = TRUE;
+    rdpContext* ctx = instance ? instance->context : NULL;
+
+    if (!ctx || !ctx->channels || !ctx->settings) {
+        if (ctx) {
+            goAfterLoadChannels(ctx, FALSE);
+        }
+        return FALSE;
+    }
+
+    rdpSettings* settings = ctx->settings;
+    rdpChannels* channels = ctx->channels;
+
+    if (freerdp_settings_get_bool(settings, FreeRDP_RedirectClipboard)) {
+        const char* const p[] = { CLIPRDR_SVC_CHANNEL_NAME };
+        ok = freerdp_client_add_static_channel(settings, ARRAYSIZE(p), p);
+    }
+
+#if defined(CHANNEL_RDPGFX_CLIENT)
+    if (ok && freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline)) {
+        const char* const p[] = { RDPGFX_CHANNEL_NAME };
+        ok = freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p);
+    }
+#endif
+
+    if (ok) {
+        for (UINT32 i = 0; i < freerdp_settings_get_uint32(settings, FreeRDP_StaticChannelCount); i++) {
+            ADDIN_ARGV* args = freerdp_settings_get_pointer_array_writable(
+                settings, FreeRDP_StaticChannelArray, i);
+            if (!args || !wLoadStaticChannelAddin(channels, settings, args->argv[0], args)) {
+                ok = FALSE;
+                break;
+            }
+        }
+    }
+
+    if (ok && (freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount) > 0)) {
+        ok = freerdp_settings_set_bool(settings, FreeRDP_SupportDynamicChannels, TRUE);
+        if (ok) {
+            ok = wLoadStaticChannelAddin(
+                channels, settings, DRDYNVC_SVC_CHANNEL_NAME, settings);
+        }
+    }
+
+    goAfterLoadChannels(ctx, ok);
+    return ok;
+}
+
+//
+// gdi_init() installs FreeRDP's own bitmap callback. Keep that callback in
+// front of ours so compressed RDP bitmap updates are decoded/composited into
+// context->gdi->primary_buffer before Go copies the updated rectangle.
+static pBitmapUpdate wOriginalBitmapUpdate = NULL;
+
+BOOL wBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap) {
+    if (wOriginalBitmapUpdate && !wOriginalBitmapUpdate(ctx, bitmap)) {
+        return FALSE;
+    }
+    return goOnBitmapUpdate(ctx, bitmap);
+}
+
 void wInstallUpdateCallbacks(rdpUpdate* update) {
-    update->BitmapUpdate  = goOnBitmapUpdate;
+    if (update->BitmapUpdate != wBitmapUpdate) {
+        wOriginalBitmapUpdate = update->BitmapUpdate;
+    }
+    update->BitmapUpdate  = wBitmapUpdate;
     update->DesktopResize = goOnDesktopResize;
 }
 void wInstallPointerCallbacks(rdpPointer* pt) {
@@ -125,8 +244,11 @@ void wInstallInstanceCallbacks(freerdp* instance) {
     instance->PreConnect           = goPreConnect;
     instance->PostConnect          = goPostConnect;
     instance->PostDisconnect       = goPostDisconnect;
+    instance->LoadChannels         = wLoadChannels;
     instance->Authenticate         = goAuthenticate;
+    instance->AuthenticateEx       = goAuthenticateEx;
     instance->VerifyCertificateEx  = goVerifyCertificate;
+    instance->LogonErrorInfo       = goLogonErrorInfo;
 }
 void wRegisterChannelPubSub(rdpContext* ctx) {
     PubSub_SubscribeChannelConnected(ctx->pubSub, wOnChannelConnected);

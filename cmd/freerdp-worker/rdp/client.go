@@ -9,9 +9,9 @@
 //   (BitmapUpdate, Pointer, Synchronize); polls freerdp_get_event_handles
 //   until disconnect; finally freerdp_disconnect + freerdp_context_free.
 //
-// Channels (CLIPRDR / RDPSND / RDPGFX / RDPDR) are subscribed in
-// channels.go. They emit ServerMessage events through the same `out`
-// channel as the surface pipeline.
+// Channels are subscribed in channels.go. During display stabilization the
+// default channel set is intentionally minimal: clipboard only, with audio,
+// device redirection, and GFX disabled until their payload paths are complete.
 
 package rdp
 
@@ -45,6 +45,10 @@ extern const char*  wErrorStr(rdpContext* ctx);
 extern UINT32       wGetRequestedProtocols(rdpContext* ctx);
 extern UINT32       wGetSelectedProtocol(rdpContext* ctx);
 extern UINT32       wGetNegotiationFlags(rdpContext* ctx);
+extern UINT32       wStaticChannelCount(rdpSettings* settings);
+extern UINT32       wDynamicChannelCount(rdpSettings* settings);
+extern const char*  wStaticChannelName(rdpSettings* settings, UINT32 index);
+extern const char*  wDynamicChannelName(rdpSettings* settings, UINT32 index);
 */
 import "C"
 
@@ -149,9 +153,9 @@ func (c *Client) Start(ctx context.Context, p desktop.StartParams) error {
 		c.height = 720
 	}
 
-	// Plan 17 M2 enables RemoteFX + GFX + H.264 so the modern codecs come
-	// into play; CLIPRDR/RDPSND/RDPGFX/RDPDR channels are loaded later in
-	// goPreConnect.
+	// Build the FreeRDP instance and stage settings before the event loop calls
+	// freerdp_connect. Our LoadChannels wrapper queues only the settings-backed
+	// channels we actually support.
 	if err := c.bringUpInstance(); err != nil {
 		return err
 	}
@@ -258,26 +262,32 @@ func (c *Client) applySettings() error {
 	// index 153 ... FREERDP_SETTINGS_TYPE_UINT16" and silently no-ops.
 	C.freerdp_settings_set_uint16(s, C.FreeRDP_SupportedColorDepths, 0x000F)
 
+	opts := c.params.RDP
+
 	// EarlyCapabilityFlags:
 	//   0x0001 RNS_UD_CS_SUPPORT_ERRINFO_PDU
 	//   0x0020 RNS_UD_CS_VALID_CONNECTION_TYPE   (must accompany ConnectionType)
 	//   0x0080 RNS_UD_CS_SUPPORT_STATUSINFO_PDU
 	//   0x0200 RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, 0x0001|0x0020|0x0080|0x0200)
+	earlyCapabilityFlags := uint32(0x0001 | 0x0020 | 0x0080)
+	if opts.EnableGraphicsPipeline != nil && *opts.EnableGraphicsPipeline {
+		earlyCapabilityFlags |= 0x0200
+	}
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, C.UINT32(earlyCapabilityFlags))
 
 	// ConnectionType = CONNECTION_TYPE_BROADBAND_LOW (2). Tunnelled
 	// gateway → RDS link is RTT-bounded, not LAN.
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_ConnectionType, 2)
 
-	// Multitransport / network autodetect / batched channel join: off.
-	// The gateway has no UDP sidechannel, some Server 2022 builds
-	// deadlock on the network autodetect PDU, and RDP 8.1's batched
-	// channel-join sequence is rejected by older RDS we still target.
+	// Multitransport / network autodetect / heartbeat / batched channel join:
+	// off. The gateway has no UDP sidechannel, some Server 2022 builds
+	// deadlock on the network autodetect PDU, and FreeRDP treats heartbeat as
+	// requiring RDPDR. That in turn auto-adds fake RDPSND and DRDYNVC, which
+	// we don't fully wire yet and which can kill display before the first frame.
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportMultitransport, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_NetworkAutoDetect, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportHeartbeatPdu, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportSkipChannelJoin, C.FALSE)
-
-	opts := c.params.RDP
 
 	// Color depth — operator can drop to 16/24 for bandwidth-constrained
 	// links. Default 32 keeps full RGB+alpha for modern Windows visuals.
@@ -362,12 +372,14 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathInput, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathOutput, C.TRUE)
 
-	// Codec / GFX toggles. Defaults match the previous hardcoded values
-	// so existing nodes negotiate the same modern codecs.
-	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, cBoolDefault(opts.EnableRemoteFx, true))
+	// Codec / GFX toggles. The browser renderer currently accepts decoded
+	// BGRA/JPEG/PNG rectangles, not RDPGFX H.264/RemoteFX codec payloads.
+	// Keep GFX/H.264 off by default so FreeRDP's GDI path decodes classic
+	// bitmap updates into a BGRA primary surface before we forward them.
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, cBoolDefault(opts.EnableRemoteFx, false))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, cBoolDefault(opts.EnableNSCodec, true))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxH264, cBoolDefault(opts.EnableH264, true))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportGraphicsPipeline, cBoolDefault(opts.EnableGraphicsPipeline, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxH264, cBoolDefault(opts.EnableH264, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportGraphicsPipeline, cBoolDefault(opts.EnableGraphicsPipeline, false))
 
 	// Performance vs. fidelity tradeoffs. All default false (i.e. keep
 	// Windows visuals enabled), letting the operator switch them on to
@@ -379,11 +391,25 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AllowFontSmoothing, cBoolDefault(opts.AllowFontSmoothing, true))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AllowDesktopComposition, cBoolDefault(opts.AllowDesktopComposition, true))
 
-	// Redirection toggles. Defaults preserve the previous hardcoded "on"
-	// behavior for clipboard / audio / device redirection.
+	// Redirection toggles. Clipboard is wired enough for text. Audio, drive,
+	// printers, smartcards, and dynamic virtual channels are not wired end to
+	// end yet; force them off for now so the display path cannot be killed by
+	// half-attached post-connect channels even if a node persisted old opts.
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectClipboard, cBoolDefault(opts.RedirectClipboard, true))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, cBoolDefault(opts.AudioPlayback, true))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_DeviceRedirection, cBoolDefault(opts.DeviceRedirection, true))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_DeviceRedirection, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectDrives, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectPrinters, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectSmartCards, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportDynamicChannels, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_SynchronousDynamicChannels, C.FALSE)
+	c.logger.Info("freerdp channel settings",
+		zap.Bool("redirect_clipboard", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_RedirectClipboard))),
+		zap.Bool("audio_playback", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_AudioPlayback))),
+		zap.Bool("device_redirection", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_DeviceRedirection))),
+		zap.Bool("dynamic_channels", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_SupportDynamicChannels))),
+		zap.Bool("heartbeat_pdu", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_SupportHeartbeatPdu))))
+	c.logChannelCollections(s, "after applySettings before FreeRDP load_addins")
 
 	// Optional /admin /console session for direct RDS console attach.
 	if opts.ConsoleSession != nil && *opts.ConsoleSession {
@@ -412,6 +438,43 @@ func cBoolDefault(p *bool, dflt bool) C.BOOL {
 		return cBool(dflt)
 	}
 	return cBool(*p)
+}
+
+func (c *Client) logChannelCollections(s *C.rdpSettings, stage string) {
+	c.logger.Info("freerdp channel collections",
+		zap.String("stage", stage),
+		zap.Uint32("static_count", uint32(C.wStaticChannelCount(s))),
+		zap.Strings("static_channels", readStaticChannelNames(s)),
+		zap.Uint32("dynamic_count", uint32(C.wDynamicChannelCount(s))),
+		zap.Strings("dynamic_channels", readDynamicChannelNames(s)))
+}
+
+func readStaticChannelNames(s *C.rdpSettings) []string {
+	count := uint32(C.wStaticChannelCount(s))
+	out := make([]string, 0, count)
+	for i := uint32(0); i < count; i++ {
+		name := C.wStaticChannelName(s, C.UINT32(i))
+		if name == nil {
+			out = append(out, "<nil>")
+			continue
+		}
+		out = append(out, C.GoString(name))
+	}
+	return out
+}
+
+func readDynamicChannelNames(s *C.rdpSettings) []string {
+	count := uint32(C.wDynamicChannelCount(s))
+	out := make([]string, 0, count)
+	for i := uint32(0); i < count; i++ {
+		name := C.wDynamicChannelName(s, C.UINT32(i))
+		if name == nil {
+			out = append(out, "<nil>")
+			continue
+		}
+		out = append(out, C.GoString(name))
+	}
+	return out
 }
 
 // runLoop owns the libfreerdp event loop. Must run on a single OS thread
@@ -446,8 +509,18 @@ func (c *Client) runLoop(ctx context.Context) {
 			return
 		}
 		// 100ms tick so a stuck network doesn't block the worker from
-		// noticing ctx cancellation.
-		_ = C.WaitForMultipleObjects(count, &handles[0], C.FALSE, 100)
+		// noticing ctx cancellation. Only ask FreeRDP to process handles when
+		// WinPR reports one is signaled; calling check_event_handles after a
+		// timeout can force a transport read with no data ready and trip
+		// BIO_read retry limits.
+		waitStatus := C.WaitForMultipleObjects(count, &handles[0], C.FALSE, 100)
+		if waitStatus == C.WAIT_TIMEOUT {
+			continue
+		}
+		if waitStatus == C.WAIT_FAILED {
+			c.logger.Warn("WaitForMultipleObjects failed")
+			return
+		}
 		if !goBool(C.freerdp_check_event_handles(rctx)) {
 			if C.freerdp_get_last_error(rctx) != C.FREERDP_ERROR_SUCCESS {
 				code := uint32(C.freerdp_get_last_error(rctx))
@@ -567,8 +640,8 @@ func (c *Client) logSelectedProtocol(rctx *C.rdpContext, message string) {
 // without a live worker.
 func shouldAutoRetryWithNla(code, requested, selected uint32) bool {
 	const errSecNego = 0x0002000C
-	const protoHybrid = 0x00000002    // PROTOCOL_HYBRID  (NLA / CredSSP)
-	const protoHybridEx = 0x00000008  // PROTOCOL_HYBRID_EX (NLA-EX, Win10+)
+	const protoHybrid = 0x00000002   // PROTOCOL_HYBRID  (NLA / CredSSP)
+	const protoHybridEx = 0x00000008 // PROTOCOL_HYBRID_EX (NLA-EX, Win10+)
 	if code != errSecNego {
 		return false
 	}

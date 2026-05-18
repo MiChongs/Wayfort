@@ -38,11 +38,11 @@ import (
 
 //export goPreConnect
 func goPreConnect(instance *C.freerdp) C.BOOL {
-	// Channels are loaded automatically by FreeRDP_RedirectClipboard /
-	// FreeRDP_AudioPlayback / FreeRDP_SupportGraphicsPipeline /
-	// FreeRDP_DeviceRedirection settings we already enabled. We just need
-	// the channel listener registration which happens in registerChannelPubSub
-	// at context-new time.
+	// Channels are loaded by our FreeRDP LoadChannels wrapper from applySettings.
+	// During display stabilization only CLIPRDR is enabled by default; audio,
+	// drive, and dynamic virtual channels are forced off until fully wired.
+	// The channel listener registration happens in registerChannelPubSub at
+	// context-new time.
 	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
 		c.logger.Info("phase: pre-connect (settings staged, x224 not yet sent)")
 	}
@@ -94,6 +94,13 @@ func goAuthenticate(instance *C.freerdp, username, password, domain **C.char) C.
 	return C.TRUE
 }
 
+//export goAuthenticateEx
+func goAuthenticateEx(instance *C.freerdp, username, password, domain **C.char, reason C.rdp_auth_reason) C.BOOL {
+	// Same as goAuthenticate, but FreeRDP 3.25+ prefers AuthenticateEx.
+	// Credentials are already staged in rdpSettings.
+	return C.TRUE
+}
+
 //export goVerifyCertificate
 func goVerifyCertificate(instance *C.freerdp, host *C.char, port C.UINT16,
 	commonName, subject, issuer, fingerprint *C.char, flags C.DWORD) C.DWORD {
@@ -106,6 +113,28 @@ func goVerifyCertificate(instance *C.freerdp, host *C.char, port C.UINT16,
 	// 2 == accept permanently (matches FreeRDP's CERT_ACCEPT_PERMANENTLY).
 	// Mirrors the IgnoreCertificate=TRUE setting we already turned on.
 	return 2
+}
+
+//export goLogonErrorInfo
+func goLogonErrorInfo(instance *C.freerdp, data C.UINT32, typ C.UINT32) C.int {
+	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
+		c.logger.Warn("freerdp logon error info",
+			zap.Uint32("data", uint32(data)),
+			zap.Uint32("type", uint32(typ)))
+	}
+	return 1
+}
+
+//export goAfterLoadChannels
+func goAfterLoadChannels(ctx *C.rdpContext, ok C.BOOL) {
+	c := registry.get(unsafe.Pointer(ctx))
+	if c == nil {
+		return
+	}
+	if !goBool(ok) {
+		c.logger.Warn("freerdp channel loading failed")
+	}
+	c.logChannelCollections(C.wContextSettings(ctx), "after FreeRDP load_addins")
 }
 
 // ----- channel connect/disconnect (PubSub) -----
@@ -173,28 +202,54 @@ func goOnBitmapUpdate(ctx *C.rdpContext, bitmap *C.BITMAP_UPDATE) C.BOOL {
 		c.logger.Info("phase: first bitmap update from server",
 			zap.Uint32("rectangle_count", uint32(bitmap.number)))
 	}
-	// Walk the array of rectangles libfreerdp produced; each is a self-
-	// contained tile we forward to the browser. We currently send the
-	// per-tile DSTRECT directly without coalescing.
+	if ctx.gdi == nil || ctx.gdi.primary_buffer == nil || ctx.gdi.bitmap_stride == 0 {
+		c.logger.Warn("bitmap update arrived before GDI primary surface was ready")
+		return C.TRUE
+	}
+	stride := uint32(ctx.gdi.bitmap_stride)
+	surfaceW := uint32(ctx.gdi.width)
+	surfaceH := uint32(ctx.gdi.height)
+
+	// wBitmapUpdate in cgo_wrappers.go has already let FreeRDP's GDI decode
+	// and composite the update. Copy the touched rectangle from the decoded
+	// BGRA primary surface instead of forwarding compressed bitmapDataStream.
 	n := uint32(bitmap.number)
 	rects := unsafe.Slice((*C.BITMAP_DATA)(unsafe.Pointer(bitmap.rectangles)), n)
 	for i := uint32(0); i < n; i++ {
 		r := &rects[i]
-		// BITMAP_DATA.bitmapDataStream is the decoded RGB buffer when
-		// compressed==FALSE; if compressed it's the on-wire payload and
-		// would need decode_bitmap. Setting BitmapCacheEnabled=TRUE means
-		// FreeRDP will decode for us — the data is BGRA when negotiating
-		// 32bpp. Either way we forward raw bytes with the negotiated
-		// pixel format documented on the wire.
-		if r.bitmapDataStream == nil || r.bitmapLength == 0 {
+		x := uint32(r.destLeft)
+		y := uint32(r.destTop)
+		w := uint32(r.width)
+		h := uint32(r.height)
+		if r.destRight >= r.destLeft && r.destBottom >= r.destTop {
+			w = uint32(r.destRight-r.destLeft) + 1
+			h = uint32(r.destBottom-r.destTop) + 1
+		}
+		if x >= surfaceW || y >= surfaceH || w == 0 || h == 0 {
 			continue
 		}
-		buf := C.GoBytes(unsafe.Pointer(r.bitmapDataStream), C.int(r.bitmapLength))
+		if x+w > surfaceW {
+			w = surfaceW - x
+		}
+		if y+h > surfaceH {
+			h = surfaceH - y
+		}
+		rowBytes := w * 4
+		if rowBytes == 0 || (x*4)+rowBytes > stride {
+			continue
+		}
+		buf := make([]byte, 0, rowBytes*h)
+		base := unsafe.Pointer(ctx.gdi.primary_buffer)
+		for row := uint32(0); row < h; row++ {
+			offset := uintptr((y+row)*stride + x*4)
+			src := unsafe.Slice((*byte)(unsafe.Add(base, offset)), rowBytes)
+			buf = append(buf, src...)
+		}
 		c.emit(desktop.ServerMessage{Frame: &desktop.FrameRect{
-			X:        uint32(r.destLeft),
-			Y:        uint32(r.destTop),
-			Width:    uint32(r.width),
-			Height:   uint32(r.height),
+			X:        x,
+			Y:        y,
+			Width:    w,
+			Height:   h,
 			Encoding: desktop.EncodingRawBGRA,
 			Payload:  buf,
 		}})

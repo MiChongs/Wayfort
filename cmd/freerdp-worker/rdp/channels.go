@@ -152,9 +152,7 @@ func (c *Client) pushClipboardText(text string) {
 // forward server audio to the browser we'd need to register a custom
 // rdpsndDevicePlugin whose pcPlay/pcPlayEx callbacks ship bytes through
 // our `emit`. That's ~300 lines of cgo on its own and lands in Plan 17
-// M2.x (audio scaffolding deferred but `FreeRDP_AudioPlayback` setting
-// is already enabled in client.go so negotiation completes; bytes just
-// aren't routed to the browser yet).
+// M2.x. Audio playback is forced off in client.go until that path exists.
 func (c *Client) attachAudio(iface unsafe.Pointer) {
 	c.logger.Info("rdpsnd channel attached (device-plugin wiring deferred to M2.x)")
 }

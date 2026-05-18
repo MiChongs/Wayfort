@@ -84,7 +84,7 @@ type LiveDesktopSession = {
   lastStatus: DesktopStatus
 }
 const liveDesktopSessions = new Map<string, LiveDesktopSession>()
-const TEARDOWN_GRACE_MS = 200
+const TEARDOWN_GRACE_MS = 5000
 
 export function DesktopDisplay({
   nodeId,
@@ -169,14 +169,16 @@ export function DesktopDisplay({
     let reconnectTimer: number | null = null
 
     const cached = liveDesktopSessions.get(cacheKey)
-    if (cached && cached.teardownTimer != null) {
+    if (cached) {
       console.info("[DesktopDisplay] strict-mode remount detected — reusing live session", {
         cacheKey,
         sessionId: cached.sessionId,
         status: cached.lastStatus,
       })
-      window.clearTimeout(cached.teardownTimer)
-      cached.teardownTimer = null
+      if (cached.teardownTimer != null) {
+        window.clearTimeout(cached.teardownTimer)
+        cached.teardownTimer = null
+      }
 
       sessionIdRef.current = cached.sessionId
       clientRef.current = cached.client
@@ -200,6 +202,7 @@ export function DesktopDisplay({
         if (!live) return
         if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
         live.teardownTimer = window.setTimeout(() => {
+          if (liveDesktopSessions.get(cacheKey) !== live) return
           liveDesktopSessions.delete(cacheKey)
           live.detachInputs?.()
           live.client.close()
@@ -283,6 +286,9 @@ export function DesktopDisplay({
             lastCursorRef.current,
             settingsRef.current.cursorMode,
           )
+        })
+        renderer.onError((message) => {
+          console.warn("[DesktopDisplay] render worker", message)
         })
       }
       const renderer = rendererRef.current
@@ -410,6 +416,7 @@ export function DesktopDisplay({
         // reattach without paying for a fresh POST /start.
         if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
         live.teardownTimer = window.setTimeout(() => {
+          if (liveDesktopSessions.get(cacheKey) !== live) return
           liveDesktopSessions.delete(cacheKey)
           live.detachInputs?.()
           live.client.close()
@@ -484,7 +491,17 @@ export function DesktopDisplay({
     setBumpKey((v) => v + 1)
   }
   function handleDisconnect() {
+    const cacheKey = `${nodeId}:${backend}:${bumpKey}`
+    const live = liveDesktopSessions.get(cacheKey)
+    if (live?.teardownTimer != null) window.clearTimeout(live.teardownTimer)
+    if (live) liveDesktopSessions.delete(cacheKey)
+    live?.detachInputs?.()
+    live?.renderer.destroy()
     clientRef.current?.close()
+    if (sessionIdRef.current) {
+      desktopControl.endSession(sessionIdRef.current).catch(() => {})
+      sessionIdRef.current = ""
+    }
   }
 
   // Escape hatch: close the failing rdp_next session and open the same

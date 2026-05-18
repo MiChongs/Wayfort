@@ -18,6 +18,8 @@
 // to fit the host.
 
 /// <reference lib="webworker" />
+import { decode as decodePng } from "fast-png"
+import { decode as decodeJpeg } from "jpeg-js"
 import { base64ToBytes, type FrameRect, type ServerMessage } from "./types"
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope
@@ -118,9 +120,81 @@ async function paintFrame(f: FrameRect): Promise<void> {
         g2d.drawImage(bmp, f.x, f.y, f.width, f.height)
         bmp.close()
       } catch {
-        /* malformed frame — skip */
+        try {
+          const image = decodeFrameBytes(bytes, f.encoding)
+          g2d.putImageData(image, f.x, f.y)
+        } catch (error) {
+          ctx.postMessage({
+            type: "error",
+            message: `frame decode failed: ${String(error)}`,
+          })
+        }
       }
       return
     }
   }
+}
+
+function decodeFrameBytes(bytes: Uint8Array, encoding: "jpeg" | "png"): ImageData {
+  if (encoding === "jpeg") {
+    const jpeg = decodeJpeg(bytes, {
+      colorTransform: true,
+      formatAsRGBA: true,
+      maxMemoryUsageInMB: 256,
+      maxResolutionInMP: 64,
+      tolerantDecoding: true,
+      useTArray: true,
+    })
+    return new ImageData(new Uint8ClampedArray(jpeg.data), jpeg.width, jpeg.height)
+  }
+
+  const png = decodePng(bytes)
+  return new ImageData(
+    normalizePngData(png.data, png.width, png.height, png.channels, png.depth),
+    png.width,
+    png.height,
+  )
+}
+
+function normalizePngData(
+  data: Uint8Array | Uint8ClampedArray | Uint16Array,
+  width: number,
+  height: number,
+  channels: number,
+  depth: number,
+) {
+  const pixels = width * height
+  const rgba = new Uint8ClampedArray(pixels * 4)
+  const max = depth >= 16 ? 65535 : (1 << depth) - 1
+
+  for (let i = 0; i < pixels; i++) {
+    const src = i * channels
+    const dst = i * 4
+
+    if (channels === 1) {
+      const gray = scaleSample(data[src], max)
+      rgba[dst] = gray
+      rgba[dst + 1] = gray
+      rgba[dst + 2] = gray
+      rgba[dst + 3] = 255
+    } else if (channels === 2) {
+      const gray = scaleSample(data[src], max)
+      rgba[dst] = gray
+      rgba[dst + 1] = gray
+      rgba[dst + 2] = gray
+      rgba[dst + 3] = scaleSample(data[src + 1], max)
+    } else {
+      rgba[dst] = scaleSample(data[src], max)
+      rgba[dst + 1] = scaleSample(data[src + 1], max)
+      rgba[dst + 2] = scaleSample(data[src + 2], max)
+      rgba[dst + 3] = channels >= 4 ? scaleSample(data[src + 3], max) : 255
+    }
+  }
+
+  return rgba
+}
+
+function scaleSample(value: number, max: number) {
+  if (max === 255) return value
+  return Math.round((value / max) * 255)
 }

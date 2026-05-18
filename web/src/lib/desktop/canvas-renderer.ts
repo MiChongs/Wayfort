@@ -13,6 +13,7 @@ export interface CanvasRendererHandle {
   // Called when the worker forwards a cursor update; consumer applies
   // the PNG as `style.cursor: url(...) hotX hotY, auto`.
   onCursor(cb: (data: { x: number; y: number; png: string }) => void): () => void
+  onError(cb: (message: string) => void): () => void
   destroy(): void
 }
 
@@ -34,6 +35,7 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
 
   const resizeCbs: Array<(w: number, h: number) => void> = []
   const cursorCbs: Array<(d: { x: number; y: number; png: string }) => void> = []
+  const errorCbs: Array<(message: string) => void> = []
   worker.addEventListener("message", (ev: MessageEvent) => {
     const data = ev.data as
       | { type: "ready" }
@@ -44,6 +46,8 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       for (const cb of resizeCbs) cb(data.width, data.height)
     } else if (data.type === "cursor") {
       for (const cb of cursorCbs) cb(data)
+    } else if (data.type === "error") {
+      for (const cb of errorCbs) cb(data.message)
     }
   })
 
@@ -62,6 +66,13 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       return () => {
         const i = cursorCbs.indexOf(cb)
         if (i >= 0) cursorCbs.splice(i, 1)
+      }
+    },
+    onError: (cb) => {
+      errorCbs.push(cb)
+      return () => {
+        const i = errorCbs.indexOf(cb)
+        if (i >= 0) errorCbs.splice(i, 1)
       }
     },
     destroy: () => {
