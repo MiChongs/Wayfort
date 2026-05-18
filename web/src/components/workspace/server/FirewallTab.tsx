@@ -126,6 +126,23 @@ export function FirewallTab({ nodeId, active }: Props) {
       toast.error("切换失败", { description: e?.message }),
   })
 
+  // Group rules by chain (iptables/nft surface multiple chains; ufw and
+  // firewalld emit only one effective chain so the grouping collapses).
+  // MUST be declared before any conditional early-return below so the
+  // hook call order stays stable across renders — moving this past the
+  // loading / error branches caused the "change in the order of Hooks"
+  // warning in React strict mode.
+  const grouped = React.useMemo(() => {
+    const groups: Record<string, NonNullable<typeof rules.data>["rules"]> = {}
+    const list = rules.data?.rules ?? []
+    for (const r of list) {
+      const key = r.chain || "rules"
+      if (!groups[key]) groups[key] = []
+      groups[key].push(r)
+    }
+    return groups
+  }, [rules.data])
+
   if (!active) return null
 
   if (status.isLoading) {
@@ -181,19 +198,6 @@ export function FirewallTab({ nodeId, active }: Props) {
       </div>
     )
   }
-
-  // Group rules by chain (iptables/nft surface multiple chains; ufw and
-  // firewalld emit only one effective chain so the grouping collapses).
-  const grouped = React.useMemo(() => {
-    const groups: Record<string, typeof rules.data extends { rules: infer R } ? R : never> = {}
-    const list = rules.data?.rules ?? []
-    for (const r of list) {
-      const key = r.chain || "rules"
-      if (!groups[key]) groups[key] = [] as never
-      ;(groups[key] as unknown as typeof list).push(r)
-    }
-    return groups
-  }, [rules.data])
 
   return (
     <div className="flex flex-col h-full">
