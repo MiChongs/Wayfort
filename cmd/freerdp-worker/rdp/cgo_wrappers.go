@@ -90,6 +90,24 @@ const char*  wErrorStr(rdpContext* ctx) {
     return freerdp_get_last_error_string(freerdp_get_last_error(ctx));
 }
 
+// ----- X.224 negotiation introspection -----
+//
+// Called after freerdp_connect fails to learn what the server actually said.
+// RequestedProtocols is the bitfield libfreerdp put in the X.224 client
+// request; SelectedProtocol is the value the server returned (0 = rejected
+// all, otherwise the single accepted bit). Together they answer "which
+// security layer was the sticking point" without forcing the operator to
+// brute-force-try modes manually.
+UINT32 wGetRequestedProtocols(rdpContext* ctx) {
+    return freerdp_settings_get_uint32(ctx->settings, FreeRDP_RequestedProtocols);
+}
+UINT32 wGetSelectedProtocol(rdpContext* ctx) {
+    return freerdp_settings_get_uint32(ctx->settings, FreeRDP_SelectedProtocol);
+}
+UINT32 wGetNegotiationFlags(rdpContext* ctx) {
+    return freerdp_settings_get_uint32(ctx->settings, FreeRDP_NegotiationFlags);
+}
+
 // ----- callback installers -----
 void wInstallUpdateCallbacks(rdpUpdate* update) {
     update->BitmapUpdate  = goOnBitmapUpdate;

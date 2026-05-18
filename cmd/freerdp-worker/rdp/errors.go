@@ -2,7 +2,10 @@
 
 package rdp
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // humanizeConnectError turns FreeRDP's ERRCONNECT_* numeric codes into
 // operator-readable Chinese messages. The raw libfreerdp string is
@@ -88,4 +91,60 @@ func humanizeConnectError(code uint32, raw string) string {
 		return prefix
 	}
 	return prefix + " (libfreerdp: " + tail + ")"
+}
+
+// protocolMaskString renders an X.224 protocol bitfield as a human-
+// readable list. Bits are defined in [MS-RDPBCGR] §2.2.1.1.1 and
+// FreeRDP_RequestedProtocols / FreeRDP_SelectedProtocol use them:
+//
+//	0x01 PROTOCOL_SSL       (TLS)
+//	0x02 PROTOCOL_HYBRID    (NLA / CredSSP)
+//	0x04 PROTOCOL_RDSTLS    (RDS Gateway TLS)
+//	0x08 PROTOCOL_HYBRID_EX (NLA-EX, Windows 10+)
+//	0x10 PROTOCOL_RDSAAD    (Microsoft Entra ID, FreeRDP 3.x)
+//
+// mask == 0 means "legacy RDP encryption" (PROTOCOL_RDP); for the
+// SelectedProtocol field it also means the server rejected every offered
+// modern protocol.
+func protocolMaskString(mask uint32) string {
+	if mask == 0 {
+		return "RDP"
+	}
+	parts := make([]string, 0, 5)
+	if mask&0x01 != 0 {
+		parts = append(parts, "TLS")
+	}
+	if mask&0x02 != 0 {
+		parts = append(parts, "HYBRID/NLA")
+	}
+	if mask&0x04 != 0 {
+		parts = append(parts, "RDSTLS")
+	}
+	if mask&0x08 != 0 {
+		parts = append(parts, "HYBRID_EX/NLA-EX")
+	}
+	if mask&0x10 != 0 {
+		parts = append(parts, "RDSAAD")
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("0x%X", mask)
+	}
+	return strings.Join(parts, "+")
+}
+
+// humanizeConnectErrorWithNego is humanizeConnectError plus an "[协商详情]"
+// suffix when the error class implies X.224 negotiation was involved
+// (SECURITY_NEGO / CONNECT_TRANSPORT). The two extra bitfields turn a
+// rejection like 0x0002000C from "服务器拒绝了所有协议" into
+// "服务器拒绝了所有协议; 本地请求 TLS+HYBRID/NLA+...; 服务器选择 RDP",
+// which immediately tells the operator whether to switch security mode
+// (server picked legacy RDP) or to check credentials (server picked NLA
+// but CredSSP died).
+func humanizeConnectErrorWithNego(code uint32, raw string, requested, selected uint32) string {
+	base := humanizeConnectError(code, raw)
+	if code == 0x0002000C || code == 0x0002000D {
+		base += fmt.Sprintf(" [协商详情] 本地请求: %s; 服务器选择: %s",
+			protocolMaskString(requested), protocolMaskString(selected))
+	}
+	return base
 }
