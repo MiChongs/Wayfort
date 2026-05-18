@@ -142,30 +142,11 @@ func (c *Client) Start(ctx context.Context, p desktop.StartParams) error {
 		c.height = 720
 	}
 
-	// Bring up the freerdp instance + context.
-	C.wRegisterStaticAddins()
-	instance := C.freerdp_new()
-	if instance == nil {
-		return errors.New("freerdp_new failed")
-	}
-	c.instance = unsafe.Pointer(instance)
-	C.wInstallInstanceCallbacks(instance)
-	if !goBool(C.freerdp_context_new(instance)) {
-		C.freerdp_free(instance)
-		return errors.New("freerdp_context_new failed")
-	}
-	rctx := instance.context
-	c.context = unsafe.Pointer(rctx)
-	registry.put(unsafe.Pointer(rctx), c)
-	C.wRegisterChannelPubSub(rctx)
-
-	// Settings. Plan 17 M2 enables RemoteFX + GFX + H.264 so the modern
-	// codecs come in to play; CLIPRDR/RDPSND/RDPGFX/RDPDR channels are
-	// loaded later in goPreConnect.
-	if err := c.applySettings(); err != nil {
-		C.freerdp_context_free(instance)
-		C.freerdp_free(instance)
-		return fmt.Errorf("settings: %w", err)
+	// Plan 17 M2 enables RemoteFX + GFX + H.264 so the modern codecs come
+	// into play; CLIPRDR/RDPSND/RDPGFX/RDPDR channels are loaded later in
+	// goPreConnect.
+	if err := c.bringUpInstance(); err != nil {
+		return err
 	}
 	// Surface the actual security mode the worker will offer so
 	// "ERRCONNECT_CONNECT_TRANSPORT_FAILED" sessions are debuggable from
@@ -265,8 +246,10 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardSubType, 0)
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_KeyboardFunctionKey, 12)
 
-	// SupportedColorDepths bitmask: 15+16+24+32 bpp; server picks.
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_SupportedColorDepths, 0x000F)
+	// SupportedColorDepths bitmask: 15+16+24+32 bpp; server picks. Typed
+	// as UINT16 in libfreerdp 3.x — using set_uint32 logs "Invalid key
+	// index 153 ... FREERDP_SETTINGS_TYPE_UINT16" and silently no-ops.
+	C.freerdp_settings_set_uint16(s, C.FreeRDP_SupportedColorDepths, 0x000F)
 
 	// EarlyCapabilityFlags:
 	//   0x0001 RNS_UD_CS_SUPPORT_ERRINFO_PDU
@@ -431,37 +414,14 @@ func (c *Client) runLoop(ctx context.Context) {
 	defer close(c.done)
 	defer c.teardown()
 
-	instance := (*C.freerdp)(c.instance)
-	rctx := (*C.rdpContext)(c.context)
-
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnecting}})
 
-	if !goBool(C.freerdp_connect(instance)) {
-		code := uint32(C.freerdp_get_last_error(rctx))
-		raw := C.GoString(C.wErrorStr(rctx))
-		// Read what the X.224 negotiation actually said so the error
-		// message can tell the operator whether the server rejected
-		// every protocol (selected=0) or accepted one (e.g. HYBRID/NLA)
-		// and broke later in the same handshake. Saves a round of
-		// guesswork between "wrong creds" and "wrong security mode".
-		requested := uint32(C.wGetRequestedProtocols(rctx))
-		selected := uint32(C.wGetSelectedProtocol(rctx))
-		c.logger.Error("freerdp_connect failed",
-			zap.Uint32("code", code),
-			zap.String("raw", raw),
-			zap.Uint32("requested_protocols_mask", requested),
-			zap.Uint32("selected_protocol_mask", selected),
-			zap.String("requested_protocols", protocolMaskString(requested)),
-			zap.String("selected_protocol", protocolMaskString(selected)))
-		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
-			Phase:   desktop.PhaseError,
-			Message: humanizeConnectErrorWithNego(code, raw, requested, selected),
-			Code:    code,
-		}})
+	if !c.connectWithAutoNlaRetry() {
 		return
 	}
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnected}})
 
+	rctx := (*C.rdpContext)(c.context)
 	// 16 is enough for the typical channel set; bump if we observe handle
 	// exhaustion in the wild.
 	const maxHandles = 64
@@ -498,6 +458,109 @@ func (c *Client) runLoop(ctx context.Context) {
 	}
 }
 
+// connectWithAutoNlaRetry calls freerdp_connect once with the operator's
+// chosen security mode and, on a specific failure signature, transparently
+// rebuilds the instance with NLA forced on and retries once. Returns true
+// on success.
+//
+// The retry only fires when:
+//   - code == ERRCONNECT_SECURITY_NEGO_CONNECT_FAILED (0x0002000C)
+//   - selected_protocol mask == 0 (server rejected every protocol we offered)
+//   - we did NOT already offer HYBRID / HYBRID_EX (i.e. NLA wasn't in the set)
+//   - the operator's chosen mode wasn't already "any" (so we have somewhere
+//     to escalate to)
+//
+// This mirrors what mstsc.exe does internally when HYBRID_REQUIRED_BY_SERVER
+// is signalled in the X.224 negResponse: the client gives up on its
+// preferred mode and falls back to the server's demand. Without the retry
+// we leave the operator stuck on a confusing 0x0002000C even though the
+// connection would succeed two seconds later if we just offered NLA.
+func (c *Client) connectWithAutoNlaRetry() bool {
+	instance := (*C.freerdp)(c.instance)
+	rctx := (*C.rdpContext)(c.context)
+
+	if goBool(C.freerdp_connect(instance)) {
+		return true
+	}
+
+	code := uint32(C.freerdp_get_last_error(rctx))
+	raw := C.GoString(C.wErrorStr(rctx))
+	requested := uint32(C.wGetRequestedProtocols(rctx))
+	selected := uint32(C.wGetSelectedProtocol(rctx))
+	c.logger.Error("freerdp_connect failed",
+		zap.Uint32("code", code),
+		zap.String("raw", raw),
+		zap.Uint32("requested_protocols_mask", requested),
+		zap.Uint32("selected_protocol_mask", selected),
+		zap.String("requested_protocols", protocolMaskString(requested)),
+		zap.String("selected_protocol", protocolMaskString(selected)))
+
+	if shouldAutoRetryWithNla(code, requested, selected) && c.params.RDP.Security != desktop.SecAny && c.params.RDP.Security != "" {
+		c.logger.Warn("server rejected our security set — auto-retry with security=any (NLA enabled)",
+			zap.String("original_security", string(c.params.RDP.Security)),
+			zap.String("requested_protocols", protocolMaskString(requested)))
+
+		c.tearDownInstanceQuietly()
+		c.params.RDP.Security = desktop.SecAny
+		if err := c.bringUpInstance(); err != nil {
+			c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+				Phase:   desktop.PhaseError,
+				Message: "auto-retry 实例重建失败: " + err.Error(),
+				Code:    code,
+			}})
+			return false
+		}
+		instance = (*C.freerdp)(c.instance)
+		rctx = (*C.rdpContext)(c.context)
+		if goBool(C.freerdp_connect(instance)) {
+			c.logger.Info("auto-retry with NLA succeeded")
+			return true
+		}
+		// Second attempt also failed — pull updated state for the user
+		// visible error.
+		code = uint32(C.freerdp_get_last_error(rctx))
+		raw = C.GoString(C.wErrorStr(rctx))
+		requested = uint32(C.wGetRequestedProtocols(rctx))
+		selected = uint32(C.wGetSelectedProtocol(rctx))
+		c.logger.Error("auto-retry with NLA also failed",
+			zap.Uint32("code", code),
+			zap.String("raw", raw),
+			zap.Uint32("requested_protocols_mask", requested),
+			zap.Uint32("selected_protocol_mask", selected))
+	}
+
+	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+		Phase:   desktop.PhaseError,
+		Message: humanizeConnectErrorWithNego(code, raw, requested, selected),
+		Code:    code,
+	}})
+	return false
+}
+
+// shouldAutoRetryWithNla decides whether the failure signature from
+// freerdp_connect matches the "server demanded HYBRID but we didn't offer
+// it" pattern. Kept as a free function so a future test can exercise it
+// without a live worker.
+func shouldAutoRetryWithNla(code, requested, selected uint32) bool {
+	const errSecNego = 0x0002000C
+	const protoHybrid = 0x00000002    // PROTOCOL_HYBRID  (NLA / CredSSP)
+	const protoHybridEx = 0x00000008  // PROTOCOL_HYBRID_EX (NLA-EX, Win10+)
+	if code != errSecNego {
+		return false
+	}
+	if selected != 0 {
+		// Server picked one of our protocols — failure is not "rejected
+		// the whole set"; auto-retry won't help.
+		return false
+	}
+	if requested&(protoHybrid|protoHybridEx) != 0 {
+		// We already offered NLA; the server is rejecting it for a
+		// reason that retrying won't fix (creds, lockout, etc.).
+		return false
+	}
+	return true
+}
+
 func (c *Client) teardown() {
 	if c.instance == nil {
 		return
@@ -510,6 +573,54 @@ func (c *Client) teardown() {
 	c.instance = nil
 	c.context = nil
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseClosed}})
+}
+
+// bringUpInstance allocates a fresh freerdp instance + context, wires the
+// instance/channel callbacks, then applies the current params/settings.
+// Used by Start() on first attempt and by the auto-NLA-retry path in
+// runLoop when the server rejected the original security set.
+func (c *Client) bringUpInstance() error {
+	C.wRegisterStaticAddins()
+	instance := C.freerdp_new()
+	if instance == nil {
+		return errors.New("freerdp_new failed")
+	}
+	C.wInstallInstanceCallbacks(instance)
+	if !goBool(C.freerdp_context_new(instance)) {
+		C.freerdp_free(instance)
+		return errors.New("freerdp_context_new failed")
+	}
+	rctx := instance.context
+	c.instance = unsafe.Pointer(instance)
+	c.context = unsafe.Pointer(rctx)
+	registry.put(unsafe.Pointer(rctx), c)
+	C.wRegisterChannelPubSub(rctx)
+	if err := c.applySettings(); err != nil {
+		C.freerdp_context_free(instance)
+		C.freerdp_free(instance)
+		registry.remove(c.context)
+		c.instance = nil
+		c.context = nil
+		return fmt.Errorf("settings: %w", err)
+	}
+	return nil
+}
+
+// tearDownInstanceQuietly releases the current freerdp instance without
+// emitting PhaseClosed — used by the auto-retry path so the browser keeps
+// seeing PhaseConnecting between the failed first attempt and the second
+// attempt.
+func (c *Client) tearDownInstanceQuietly() {
+	if c.instance == nil {
+		return
+	}
+	instance := (*C.freerdp)(c.instance)
+	C.freerdp_disconnect(instance)
+	C.freerdp_context_free(instance)
+	C.freerdp_free(instance)
+	registry.remove(c.context)
+	c.instance = nil
+	c.context = nil
 }
 
 // emit posts to out without blocking for more than ~250ms; drops if the
