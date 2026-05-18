@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"embed"
+	"fmt"
 	"io/fs"
 )
 
@@ -18,9 +19,35 @@ import (
 //go:embed all:_workersrc
 var workerSourceFS embed.FS
 
+// requiredEmbedFiles lists files that MUST be present in the embed for
+// the worker build to succeed. Any extension (a new rdp/ source file,
+// say) should keep the list short — these are the entry points the
+// extract+build pipeline calls into.
+var requiredEmbedFiles = []string{
+	"cmd/freerdp-worker/main.go",
+	"desktop/types.go",
+	"desktop/framed.go",
+	"go.mod.tmpl",
+}
+
 // workerSourceTree returns a sub-filesystem rooted at `_workersrc/` so the
 // extract step writes a clean module tree without the `_workersrc/`
 // prefix baked into every path.
+//
+// Validates the mirror is intact before returning — a stale binary built
+// against an out-of-sync mirror would otherwise fail later with a cryptic
+// "directory not found" from `go build`, and the operator has no way to
+// figure out it's a release-process bug rather than their environment.
 func workerSourceTree() (fs.FS, error) {
-	return fs.Sub(workerSourceFS, "_workersrc")
+	sub, err := fs.Sub(workerSourceFS, "_workersrc")
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range requiredEmbedFiles {
+		if _, err := fs.Stat(sub, p); err != nil {
+			return nil, fmt.Errorf("%w: %s is missing — rebuild the gateway after running scripts/sync-workersrc.sh",
+				ErrEmbedIncomplete, p)
+		}
+	}
+	return sub, nil
 }

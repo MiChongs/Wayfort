@@ -31,6 +31,14 @@ import (
 // RDP/VNC path; only the new "rdp_next" desktop protocol is unavailable.
 var ErrToolchainUnavailable = errors.New("native FreeRDP worker unavailable: build toolchain missing on this host")
 
+// ErrEmbedIncomplete is the typed error returned when the embedded
+// _workersrc/ mirror inside this binary is missing files the worker
+// build needs. This is a release-process bug (whoever built this binary
+// forgot to run scripts/sync-workersrc.sh), not an operator one — config
+// changes can't help. EnsureWorker surfaces it at WARN so the startup
+// log is clear about who needs to act.
+var ErrEmbedIncomplete = errors.New("embedded worker source mirror is incomplete")
+
 // candidateWorkerPaths returns the existence-check sweep before invoking
 // the bootstrap pipeline. Plan 19 moved the body to bootstrap_paths.go
 // so it can branch on runtime.GOOS (Windows uses .exe, macOS uses brew
@@ -107,7 +115,8 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 		zap.Strings("searched", candidates))
 	startedAt := time.Now()
 	if err := m.runBootstrap(ctx); err != nil {
-		if errors.Is(err, ErrToolchainUnavailable) {
+		switch {
+		case errors.Is(err, ErrToolchainUnavailable):
 			// Expected, non-actionable on this host. Log a single INFO
 			// line (zap won't attach a stack trace at this level) so the
 			// startup log stays clean. The classic Guacamole RDP/VNC
@@ -117,7 +126,17 @@ func (m *Manager) EnsureWorker(ctx context.Context) error {
 				zap.Duration("elapsed", time.Since(startedAt)),
 				zap.String("how_to_enable_windows", "install MSYS2 from https://www.msys2.org/ then in an MSYS2 shell: pacman -S mingw-w64-x86_64-freerdp mingw-w64-x86_64-pkgconf mingw-w64-x86_64-gcc mingw-w64-x86_64-go"),
 				zap.String("retry", "POST /api/v1/desktop/bootstrap after installing the toolchain"))
-		} else {
+		case errors.Is(err, ErrEmbedIncomplete):
+			// Release-process bug — this binary was built without a
+			// freshly-synced _workersrc/ mirror. Operator can't fix it
+			// via config or environment. Log WARN with a clear pointer
+			// to who needs to act, and what they need to do.
+			m.logger.Warn("embedded worker source mirror is incomplete — this binary was built without a current _workersrc/ snapshot",
+				zap.String("reason", err.Error()),
+				zap.Duration("elapsed", time.Since(startedAt)),
+				zap.String("how_to_fix", "from the source tree: bash scripts/sync-workersrc.sh, commit the resulting internal/desktop/_workersrc/ changes, rebuild the gateway"),
+				zap.String("impact", "native FreeRDP worker won't build on this gateway; classic RDP/VNC via Guacamole continue to work"))
+		default:
 			m.logger.Error("desktop worker bootstrap failed", zap.Error(err),
 				zap.Duration("elapsed", time.Since(startedAt)),
 				zap.String("hint", "fix the reported issue, then POST /api/v1/desktop/bootstrap to retry without restart"))
