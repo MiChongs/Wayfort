@@ -116,6 +116,13 @@ type DevolutionsGatewayConfig struct {
 	// starts a session. Typically a wss://… URL once the reverse proxy
 	// terminates TLS. Empty = derived from ListenAddr.
 	AdvertisedURL string `mapstructure:"advertised_url"`
+	// ExternalURL is the gateway's own public-face URL (HTTP/HTTPS) that
+	// it bakes into its config and uses for callbacks. Devolutions
+	// Gateway rejects the config outright when this field is missing,
+	// hence it's plumbed through here. Empty = same as ListenAddr (fine
+	// for single-host loopback deploys; reverse-proxy fronting sets
+	// e.g. "https://jumpserver.example.com").
+	ExternalURL string `mapstructure:"external_url"`
 	// JWTPrivateKeyFile holds the RS256 private key the signer uses to
 	// mint pre-auth tokens. Generated on first run if missing.
 	JWTPrivateKeyFile string `mapstructure:"jwt_private_key_file"`
@@ -422,6 +429,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("desktop.devolutions_gateway.auto_start", true)
 	v.SetDefault("desktop.devolutions_gateway.listen_addr", "http://127.0.0.1:7171")
 	v.SetDefault("desktop.devolutions_gateway.advertised_url", "")
+	v.SetDefault("desktop.devolutions_gateway.external_url", "")
 	v.SetDefault("desktop.devolutions_gateway.install_prefix", "")
 	v.SetDefault("desktop.devolutions_gateway.binary_path", "")
 	v.SetDefault("desktop.devolutions_gateway.config_path", "")

@@ -27,8 +27,14 @@ type devolutionsGatewayConfig struct {
 }
 
 type devGwListener struct {
+	// InternalUrl is what the gateway binds inside the host (typically
+	// loopback). ExternalUrl is the public-facing URL clients use to
+	// reach the gateway — Devolutions Gateway rejects the config file
+	// outright if ExternalUrl is absent (observed at runtime as
+	// "missing field `ExternalUrl` at line 8 column 5"). When no reverse
+	// proxy is in front, both URLs are usually identical.
 	InternalUrl string `json:"InternalUrl"`
-	ExternalUrl string `json:"ExternalUrl,omitempty"`
+	ExternalUrl string `json:"ExternalUrl"`
 }
 
 // devGwSogar reserved for future session recording integration; left
@@ -44,7 +50,8 @@ type devGwSogar struct {
 type gatewayConfigInputs struct {
 	ConfigPath    string // e.g. /var/lib/jumpserver/devolutions-gateway/gateway.json
 	PublicKeyPath string // path to the .pub PEM file from JWTSigner
-	ListenURL     string // e.g. http://127.0.0.1:7171
+	ListenURL     string // e.g. http://127.0.0.1:7171 — gateway binds here
+	ExternalURL   string // e.g. https://jumpserver.example.com — gateway's public face (empty → same as ListenURL)
 	Hostname      string // e.g. "jumpserver-anonymous"
 	IDFile        string // where to persist the gateway's stable Id (uuid)
 	Verbosity     string // "warn" | "info" | "debug" — passed straight to gateway
@@ -68,6 +75,13 @@ func writeGatewayConfig(in gatewayConfigInputs) error {
 	if in.ListenURL == "" {
 		in.ListenURL = "http://127.0.0.1:7171"
 	}
+	if in.ExternalURL == "" {
+		// Single-host deploy: the gateway is reachable at the same URL
+		// it binds to (loopback or whatever the operator configured).
+		// With a reverse proxy in front, operators set advertised_url
+		// in YAML and this branch is bypassed.
+		in.ExternalURL = in.ListenURL
+	}
 	if in.Verbosity == "" {
 		in.Verbosity = "info"
 	}
@@ -81,7 +95,7 @@ func writeGatewayConfig(in gatewayConfigInputs) error {
 		ProvisionerPublicKeyFile: in.PublicKeyPath,
 		Verbosity:                in.Verbosity,
 		Listeners: []devGwListener{
-			{InternalUrl: in.ListenURL},
+			{InternalUrl: in.ListenURL, ExternalUrl: in.ExternalURL},
 		},
 	}
 	body, err := json.MarshalIndent(cfg, "", "  ")
