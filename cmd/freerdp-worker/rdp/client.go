@@ -206,9 +206,25 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopWidth, C.UINT32(c.width))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopHeight, C.UINT32(c.height))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_ColorDepth, 32)
+	// Enable all three security layers so FreeRDP picks the highest
+	// mutually-supported one during negotiation. Hard-coding NLA-only
+	// caused `BIO_read retries exceeded` on hosts where NLA is disabled
+	// (older Windows / GPO) — the client sat in TLS-read waiting for an
+	// NLA hello the server would never send.
 	C.freerdp_settings_set_bool(s, C.FreeRDP_NlaSecurity, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_TlsSecurity, C.TRUE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_RdpSecurity, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_IgnoreCertificate, C.TRUE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_AuthenticationOnly, C.FALSE)
+	// TLS 1.0 still appears on Windows Server 2008 R2 / 2012 R2 hosts that
+	// haven't been patched up. SecLevel 0 lets OpenSSL accept the legacy
+	// protocols; the encrypted channel still protects the session.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TlsSecLevel, 0)
+	// Bounded connect-time timeouts so a wrong host doesn't hang the
+	// browser for ~30s waiting for FreeRDP's default. 8s is enough for a
+	// healthy TCP+TLS handshake across the public internet.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpConnectTimeout, 8000)
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpAckTimeout, 9000)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AutoReconnectionEnabled, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_BitmapCacheEnabled, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_OffscreenSupportLevel, C.TRUE)
@@ -242,11 +258,12 @@ func (c *Client) runLoop(ctx context.Context) {
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnecting}})
 
 	if !goBool(C.freerdp_connect(instance)) {
-		errStr := C.GoString(C.wErrorStr(rctx))
+		code := uint32(C.freerdp_get_last_error(rctx))
+		raw := C.GoString(C.wErrorStr(rctx))
 		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
 			Phase:   desktop.PhaseError,
-			Message: errStr,
-			Code:    uint32(C.freerdp_get_last_error(rctx)),
+			Message: humanizeConnectError(code, raw),
+			Code:    code,
 		}})
 		return
 	}
@@ -273,10 +290,12 @@ func (c *Client) runLoop(ctx context.Context) {
 		_ = C.WaitForMultipleObjects(count, &handles[0], C.FALSE, 100)
 		if !goBool(C.freerdp_check_event_handles(rctx)) {
 			if C.freerdp_get_last_error(rctx) != C.FREERDP_ERROR_SUCCESS {
+				code := uint32(C.freerdp_get_last_error(rctx))
+				raw := C.GoString(C.wErrorStr(rctx))
 				c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
 					Phase:   desktop.PhaseError,
-					Message: C.GoString(C.wErrorStr(rctx)),
-					Code:    uint32(C.freerdp_get_last_error(rctx)),
+					Message: humanizeConnectError(code, raw),
+					Code:    code,
 				}})
 				return
 			}

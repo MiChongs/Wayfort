@@ -1,26 +1,49 @@
 "use client"
 
-// DesktopDisplay — Plan 17 M1 top-level React component. Mounts the
-// OffscreenCanvas renderer, opens the WS data channel via FrameClient,
-// attaches input handlers, and surfaces phase + errors with the existing
-// GuacLoader overlay so users get consistent loading UX across stacks.
-//
-// This component DOES NOT touch guacd / guacamole-common-js. It's the
-// browser counterpart to the worker-based backend.
+// DesktopDisplay v2 — top-level React component for the workspace-v2
+// `rdp_next` protocol. Mounts an OffscreenCanvas renderer, opens the WS
+// data channel via FrameClient, attaches keyboard/mouse handlers, and
+// coordinates a shadcn-styled toolbar + status bar + settings drawer +
+// command palette + context menu. Mirrors the WebSSHTerminal v2 layout
+// for a consistent workspace experience across protocols.
 
 import * as React from "react"
+import { useReducedMotion } from "motion/react"
 import { toast } from "sonner"
-import { ArrowLeft } from "lucide-react"
-import Link from "next/link"
-import { Badge } from "@/components/ui/badge"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { GuacLoader } from "@/components/guacamole/guac-loader"
-import { describeGuacError, type GuacPhase } from "@/components/guacamole/guac-errors"
-import { desktopControl } from "@/lib/desktop/control-client"
 import { createRenderer, type CanvasRendererHandle } from "@/lib/desktop/canvas-renderer"
+import { desktopControl } from "@/lib/desktop/control-client"
 import { FrameClient } from "@/lib/desktop/frame-client"
-import { attachInputs } from "@/lib/desktop/input"
-import { base64ToBytes, type Phase, type SessionStatus } from "@/lib/desktop/types"
+import {
+  MOUSE_BUTTON_LEFT,
+  MOUSE_BUTTON_MIDDLE,
+  MOUSE_BUTTON_RIGHT,
+  base64ToBytes,
+  type ClientMessage,
+  type CursorUpdate,
+  type Phase,
+  type SessionStatus,
+} from "@/lib/desktop/types"
+import { cn } from "@/lib/utils"
+import { DesktopCommandPalette } from "./desktop-command-palette"
+import { DesktopContextMenu } from "./desktop-context-menu"
+import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
+import { DesktopSettingsSheet } from "./desktop-settings-sheet"
+import { DesktopStatusBar } from "./desktop-status-bar"
+import { DesktopToolbar } from "./desktop-toolbar"
+import { bitmapCursorCss, x11CursorToCss } from "./desktop-cursor-map"
+import { expandCombo, keysymForEvent } from "./desktop-key-map"
+import { useDesktopSettings } from "./use-desktop-settings"
+import type { DesktopStatus, SessionStats } from "./desktop-types"
 
 export interface DesktopDisplayProps {
   nodeId: number
@@ -28,219 +51,594 @@ export interface DesktopDisplayProps {
   nodeHost?: string
   nodePort?: number
   backHref?: string
-  // Default freerdp — server's desktop.default_backend config is the
-  // authoritative source; this prop only matters when a caller wants to
-  // override (e.g. force "dummy" for testing without libfreerdp).
   backend?: "freerdp" | "dummy"
 }
+
+const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
 
 export function DesktopDisplay({
   nodeId,
   nodeName,
   nodeHost,
   nodePort,
-  backHref,
   backend = "freerdp",
 }: DesktopDisplayProps) {
+  const { settings, update, reset } = useDesktopSettings()
+  useReducedMotion() // currently unused; reserved for future micro-animations
+
+  const wrapRef = React.useRef<HTMLDivElement | null>(null)
   const hostRef = React.useRef<HTMLDivElement | null>(null)
   const rendererRef = React.useRef<CanvasRendererHandle | null>(null)
   const clientRef = React.useRef<FrameClient | null>(null)
+  const sessionIdRef = React.useRef<string>("")
+  const reconnectAttemptRef = React.useRef(0)
   const detachInputsRef = React.useRef<(() => void) | null>(null)
-  const [phase, setPhase] = React.useState<GuacPhase>("loading-script")
-  const [error, setError] = React.useState<{ title: string; hint?: string; code?: number } | undefined>()
-  const [startedAt] = React.useState(() => Date.now())
-  const [, force] = React.useState(0)
+  const lastCursorRef = React.useRef<CursorUpdate | null>(null)
 
-  // Tick once per second so GuacLoader.elapsedMs updates the "已用时 X.Xs"
-  // counter while pre-CONNECTED. Cheap.
+  const [status, setStatus] = React.useState<DesktopStatus>("loading-script")
+  const [startedAt, setStartedAt] = React.useState<number>(() => Date.now())
+  const [errorInfo, setErrorInfo] = React.useState<{ message: string; code?: number } | undefined>()
+  const [, force] = React.useState(0)
+  const [fullscreen, setFullscreen] = React.useState(false)
+  const [settingsOpen, setSettingsOpen] = React.useState(false)
+  const [paletteOpen, setPaletteOpen] = React.useState(false)
+  const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
+  const [pointer, setPointer] = React.useState({ x: 0, y: 0 })
+  const [stats, setStats] = React.useState<SessionStats>({
+    bytesIn: 0,
+    bytesOut: 0,
+    latencyMs: null,
+    fps: null,
+  })
+  const [pasteConfirm, setPasteConfirm] = React.useState<string | null>(null)
+  const [bumpKey, setBumpKey] = React.useState(0)
+
+  // Settings live in a ref so the WS connect effect (which depends on
+  // nodeId / backend / bumpKey) doesn't re-fire on every checkbox toggle.
+  const settingsRef = React.useRef(settings)
   React.useEffect(() => {
-    if (phase === "connected" || phase === "error") return
+    settingsRef.current = settings
+  }, [settings])
+
+  // Loading-elapsed counter — drives the "已用时 X.Xs" text in the overlay.
+  React.useEffect(() => {
+    if (status === "connected" || status === "error" || status === "closed") return
     const t = window.setInterval(() => force((v) => v + 1), 250)
     return () => window.clearInterval(t)
-  }, [phase])
+  }, [status])
 
+  // Fullscreen subscription.
+  React.useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === wrapRef.current)
+    document.addEventListener("fullscreenchange", onChange)
+    return () => document.removeEventListener("fullscreenchange", onChange)
+  }, [])
+
+  // Apply the current cursor whenever cursorMode flips. The renderer
+  // doesn't track this — we cache the last cursor server-side update in
+  // lastCursorRef and re-apply on mode change.
+  React.useEffect(() => {
+    const canvas = rendererRef.current?.canvas
+    if (!canvas) return
+    canvas.style.cursor = computeCursorCss(lastCursorRef.current, settings.cursorMode)
+  }, [settings.cursorMode])
+
+  // Main connect lifecycle. Re-runs when nodeId / backend / bumpKey change;
+  // bumpKey is the manual "重新连接" trigger.
   React.useEffect(() => {
     let cancelled = false
-    let sessionId = ""
+    let reconnectTimer: number | null = null
+    setStatus("loading-script")
+    setErrorInfo(undefined)
+    setStartedAt(Date.now())
 
-    ;(async () => {
-      try {
-        const start = await desktopControl.startSession({
-          node_id: nodeId,
-          width: 1280,
-          height: 720,
-          dpi: 96,
-          quality: "auto",
-          backend,
-        })
+    function scheduleReconnect() {
+      if (cancelled) return
+      if (!settingsRef.current.reconnectOnDrop) return
+      const attempt = reconnectAttemptRef.current
+      if (attempt >= RECONNECT_BACKOFFS_MS.length) {
+        setStatus("error")
+        setErrorInfo({ message: "多次重连失败,请检查网络或手动重试" })
+        return
+      }
+      const delay = RECONNECT_BACKOFFS_MS[attempt]
+      reconnectAttemptRef.current = attempt + 1
+      setStatus("reconnecting")
+      reconnectTimer = window.setTimeout(() => {
         if (cancelled) return
-        sessionId = start.session_id
+        connect().catch((e) => {
+          if (cancelled) return
+          setStatus("error")
+          setErrorInfo({ message: (e as Error).message })
+        })
+      }, delay)
+    }
 
-        const renderer = createRenderer(start.remote_width || 1280, start.remote_height || 720)
+    async function connect() {
+      const start = await desktopControl.startSession({
+        node_id: nodeId,
+        width: settingsRef.current.preferredWidth,
+        height: settingsRef.current.preferredHeight,
+        dpi: 96,
+        quality: "auto",
+        backend,
+      })
+      if (cancelled) return
+      sessionIdRef.current = start.session_id
+
+      const remoteW = start.remote_width || settingsRef.current.preferredWidth
+      const remoteH = start.remote_height || settingsRef.current.preferredHeight
+      setRemote({ w: remoteW, h: remoteH })
+
+      // Only build a fresh renderer on first connect. Reconnect attempts
+      // re-use the existing canvas so the user doesn't see a black flash.
+      if (!rendererRef.current) {
+        const renderer = createRenderer(remoteW, remoteH)
         rendererRef.current = renderer
         const host = hostRef.current
         if (!host) return
         host.innerHTML = ""
         host.appendChild(renderer.canvas)
-
-        // Worker may grow the canvas when the remote desktop reports a
-        // different size; mirror to the React side so the loader / sizing
-        // computations stay accurate.
+        applySmoothScaling(renderer.canvas, settingsRef.current.smoothScaling)
         renderer.onResize((w, h) => {
           renderer.canvas.width = w
           renderer.canvas.height = h
+          setRemote({ w, h })
         })
-        // Cursor: apply remote PNG as the canvas's CSS cursor.
         renderer.onCursor(({ x, y, png }) => {
-          renderer.canvas.style.cursor = `url(data:image/png;base64,${png}) ${x} ${y}, default`
+          // The legacy renderer emits a CursorUpdate-shaped event. Reconstruct
+          // the full record so the mode-toggle effect can re-apply later.
+          lastCursorRef.current = { hotspot_x: x, hotspot_y: y, png } as unknown as CursorUpdate
+          renderer.canvas.style.cursor = computeCursorCss(
+            lastCursorRef.current,
+            settingsRef.current.cursorMode,
+          )
         })
-
-        const client = new FrameClient({
-          sessionId,
-          renderWorker: renderer.worker,
-          onStatus: (s: SessionStatus) => {
-            const next = phaseFromStatus(s.phase)
-            setPhase(next)
-            if (next === "error") {
-              const friendly = describeGuacError(s.code, s.message)
-              setError({ title: friendly.title, hint: friendly.hint, code: s.code })
-              toast.error(friendly.title, { description: friendly.hint })
-            }
-          },
-          onError: (msg) => {
-            setPhase("error")
-            setError({ title: "传输错误", hint: msg })
-          },
-          onClipboard: (data) => {
-            // Plan 17 M2 — remote CLIPRDR text → browser clipboard. The
-            // worker forwards in MS UTF-16LE per MS-RDPECLIP §2.2.5.2.1;
-            // decode here so navigator.clipboard receives a Unicode
-            // string. Other MIME types (image, file-list) are recognised
-            // but plumbed in M2.x.
-            if (data.mime.startsWith("text/plain;charset=utf-16le")) {
-              try {
-                const bytes = base64ToBytes(data.payload)
-                // Strip trailing null terminator(s) before decoding.
-                let end = bytes.length
-                while (end >= 2 && bytes[end - 1] === 0 && bytes[end - 2] === 0) end -= 2
-                const text = new TextDecoder("utf-16le").decode(bytes.subarray(0, end))
-                navigator.clipboard?.writeText(text).catch(() => {})
-              } catch {
-                /* malformed payload, ignore */
-              }
-            }
-          },
-        })
-        client.connect()
-        clientRef.current = client
-
-        // Plan 17 M2 — bridge browser-side copy/paste to CLIPRDR.
-        // On paste in the host area: forward the clipboard text to the
-        // worker as `text/plain` so it can send a FORMAT_LIST + reply to
-        // the server's FormatDataRequest.
-        const onPaste = (e: ClipboardEvent) => {
-          const text = e.clipboardData?.getData("text/plain")
-          if (text) {
-            client.send({
-              clipboard: {
-                mime: "text/plain",
-                payload: btoa(unescape(encodeURIComponent(text))),
-              },
-            })
-          }
-        }
-        host.addEventListener("paste", onPaste)
-
-        detachInputsRef.current = attachInputs({
-          host,
-          send: (msg) => client.send(msg),
-          getScale: () => {
-            const c = renderer.canvas
-            const rect = host.getBoundingClientRect()
-            const sx = c.width > 0 ? rect.width / c.width : 1
-            const sy = c.height > 0 ? rect.height / c.height : 1
-            // We send remote pixels; toRemote divides by host/canvas ratio.
-            // Returning the host/canvas ratio means dividing by it inverts.
-            return { x: sx, y: sy }
-          },
-        })
-      } catch (e) {
-        if (cancelled) return
-        setPhase("error")
-        setError({ title: "无法建立桌面会话", hint: (e as Error).message })
       }
-    })()
+      const renderer = rendererRef.current
+      const host = hostRef.current
+      if (!host) return
+
+      const client = new FrameClient({
+        sessionId: start.session_id,
+        renderWorker: renderer.worker,
+        onStatus: (s: SessionStatus) => {
+          const next = phaseToStatus(s.phase)
+          setStatus(next)
+          if (next === "connected") {
+            reconnectAttemptRef.current = 0
+            setErrorInfo(undefined)
+          }
+          if (next === "error") {
+            setErrorInfo({ message: s.message || "未知错误", code: s.code })
+            toast.error(s.message || "桌面会话错误")
+          }
+          if (next === "closed" && !cancelled) {
+            if (settingsRef.current.reconnectOnDrop && reconnectAttemptRef.current === 0) {
+              // First close → try one immediate reconnect with the same
+              // session metadata.
+              scheduleReconnect()
+            }
+          }
+        },
+        onError: (msg) => {
+          if (cancelled) return
+          if (settingsRef.current.reconnectOnDrop) {
+            scheduleReconnect()
+            return
+          }
+          setStatus("error")
+          setErrorInfo({ message: msg })
+        },
+        onStats: (s) => {
+          setStats((prev) => ({ ...prev, bytesIn: s.bytesIn, bytesOut: s.bytesOut }))
+        },
+        onClipboard: (data) => {
+          if (settingsRef.current.clipboardDirection === "off" ||
+              settingsRef.current.clipboardDirection === "out-only") {
+            return
+          }
+          if (data.mime.startsWith("text/plain;charset=utf-16le")) {
+            try {
+              const bytes = base64ToBytes(data.payload)
+              let end = bytes.length
+              while (end >= 2 && bytes[end - 1] === 0 && bytes[end - 2] === 0) end -= 2
+              const text = new TextDecoder("utf-16le").decode(bytes.subarray(0, end))
+              navigator.clipboard?.writeText(text).catch(() => {})
+            } catch {
+              /* */
+            }
+          }
+        },
+      })
+      client.connect()
+      clientRef.current = client
+
+      // Browser→remote clipboard. Bound to host so it picks up paste
+      // events while focus is on the desktop. Multi-line pastes hit the
+      // confirm dialog before reaching the worker.
+      const onPaste = (e: ClipboardEvent) => {
+        if (settingsRef.current.clipboardDirection === "off" ||
+            settingsRef.current.clipboardDirection === "in-only") {
+          return
+        }
+        const text = e.clipboardData?.getData("text/plain")
+        if (!text) return
+        const lines = text.split("\n").length
+        const threshold = settingsRef.current.clipboardConfirmLines
+        if (threshold > 0 && lines >= threshold) {
+          setPasteConfirm(text)
+          return
+        }
+        forwardClipboardText(text)
+      }
+      host.addEventListener("paste", onPaste)
+
+      detachInputsRef.current = attachInputs(host, renderer.canvas, client, () => settingsRef.current, setPointer)
+
+      // Stitch the cleanup helpers into the same teardown closure.
+      const detach = detachInputsRef.current
+      detachInputsRef.current = () => {
+        host.removeEventListener("paste", onPaste)
+        detach?.()
+      }
+    }
+
+    connect().catch((e) => {
+      if (cancelled) return
+      setStatus("error")
+      setErrorInfo({ message: (e as Error).message || "无法建立桌面会话" })
+    })
 
     return () => {
       cancelled = true
+      if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
       detachInputsRef.current?.()
       detachInputsRef.current = null
       clientRef.current?.close()
       clientRef.current = null
+      if (sessionIdRef.current) {
+        desktopControl.endSession(sessionIdRef.current).catch(() => {})
+        sessionIdRef.current = ""
+      }
+      reconnectAttemptRef.current = 0
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeId, backend, bumpKey])
+
+  // Hard reset on `Disconnect`: also drop the renderer so the next
+  // connect rebuilds from scratch (e.g. resolution settings changed).
+  React.useEffect(() => {
+    return () => {
       rendererRef.current?.destroy()
       rendererRef.current = null
-      if (sessionId) {
-        // Fire-and-forget — gateway also cleans up when WS closes.
-        desktopControl.endSession(sessionId).catch(() => {})
-      }
     }
-  }, [nodeId, backend])
+  }, [])
 
-  const showLoader = phase !== "connected"
+  function forwardClipboardText(text: string) {
+    const client = clientRef.current
+    if (!client) return
+    const utf16 = encodeUtf16Le(text)
+    client.send({
+      clipboard: {
+        mime: "text/plain;charset=utf-16le",
+        payload: btoaBytes(utf16),
+      },
+    })
+  }
+  function confirmPaste() {
+    if (!pasteConfirm) return
+    forwardClipboardText(pasteConfirm)
+    setPasteConfirm(null)
+  }
+
+  function sendCombo(combo: string) {
+    const client = clientRef.current
+    if (!client) return
+    const frames = expandCombo(combo)
+    if (frames.length === 0) {
+      toast.error("无法解析组合键", { description: combo })
+      return
+    }
+    for (const f of frames) {
+      client.send({ key: { keysym: f.keysym, pressed: f.pressed } })
+    }
+  }
+
+  function toggleFullscreen() {
+    const el = wrapRef.current
+    if (!el) return
+    if (!document.fullscreenElement) el.requestFullscreen?.().catch(() => {})
+    else document.exitFullscreen?.().catch(() => {})
+  }
+
+  function handleReconnect() {
+    reconnectAttemptRef.current = 0
+    setBumpKey((v) => v + 1)
+  }
+  function handleDisconnect() {
+    clientRef.current?.close()
+  }
+
+  // Smooth-scaling toggle applies to a (possibly already-mounted) canvas.
+  React.useEffect(() => {
+    const c = rendererRef.current?.canvas
+    if (c) applySmoothScaling(c, settings.smoothScaling)
+  }, [settings.smoothScaling])
 
   return (
-    <div className="relative h-full w-full bg-black overflow-hidden">
-      <div className="absolute top-0 left-0 right-0 z-20 px-3 py-2 flex items-center gap-2 bg-background/80 backdrop-blur border-b border-border/60">
-        {backHref && (
-          <Button asChild variant="ghost" size="icon" className="h-7 w-7">
-            <Link href={backHref as Parameters<typeof Link>[0]["href"]}>
-              <ArrowLeft className="w-3.5 h-3.5" />
-            </Link>
-          </Button>
-        )}
-        <span className="text-sm font-medium truncate">{nodeName || `node #${nodeId}`}</span>
-        <Badge variant="outline" className="text-[10px] h-4 px-1.5 uppercase">
-          desktop · v2
-        </Badge>
-        <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
-          {backend}
-        </Badge>
-        {nodeHost && (
-          <span className="text-[11px] font-mono text-muted-foreground truncate">
-            {nodeHost}:{nodePort}
-          </span>
-        )}
-        <span className="ml-auto text-[10px] text-muted-foreground">phase: {phase}</span>
-      </div>
-
+    <TooltipProvider delayDuration={300}>
       <div
-        ref={hostRef}
-        className="absolute inset-0 mt-10 flex items-center justify-center"
-        tabIndex={0}
-      />
-
-      {showLoader && (
-        <GuacLoader
-          phase={phase}
-          elapsedMs={Date.now() - startedAt}
-          errorTitle={error?.title}
-          errorHint={error?.hint}
-          errorCode={error?.code}
+        ref={wrapRef}
+        className={cn(
+          "flex flex-col h-full w-full bg-background isolate",
+          fullscreen && "fixed inset-0 z-[60]",
+        )}
+      >
+        <DesktopToolbar
+          status={status}
           nodeName={nodeName}
-          onRetry={() => window.location.reload()}
+          nodeId={nodeId}
+          nodeHost={nodeHost}
+          nodePort={nodePort}
+          remoteWidth={remote.w}
+          remoteHeight={remote.h}
+          fullscreen={fullscreen}
+          onSendCombo={sendCombo}
+          onSendCtrlAltDel={() => sendCombo("Control+Alt+Delete")}
+          onSettings={() => setSettingsOpen(true)}
+          onPalette={() => setPaletteOpen(true)}
+          onFullscreen={toggleFullscreen}
+          onReconnect={handleReconnect}
+          onDisconnect={handleDisconnect}
         />
-      )}
-    </div>
+
+        <DesktopContextMenu
+          connected={status === "connected"}
+          onSendCombo={sendCombo}
+          onFullscreen={toggleFullscreen}
+          onSettings={() => setSettingsOpen(true)}
+          onPalette={() => setPaletteOpen(true)}
+          onReconnect={handleReconnect}
+          onDisconnect={handleDisconnect}
+        >
+          <div className={cn("relative flex-1 min-h-0 bg-black", scaleContainerClass(settings.scaleMode))}>
+            <div
+              ref={hostRef}
+              className={cn("absolute inset-0 flex", scaleHostClass(settings.scaleMode))}
+              tabIndex={0}
+            />
+            <DesktopLoadingOverlay
+              status={status}
+              errorMessage={errorInfo?.message}
+              errorCode={errorInfo?.code}
+              elapsedMs={Date.now() - startedAt}
+              nodeName={nodeName}
+              onRetry={handleReconnect}
+            />
+          </div>
+        </DesktopContextMenu>
+
+        <DesktopStatusBar
+          status={status}
+          remoteWidth={remote.w}
+          remoteHeight={remote.h}
+          pointerX={pointer.x}
+          pointerY={pointer.y}
+          stats={stats}
+          keyboardLayout={settings.keyboardLayout}
+        />
+
+        <DesktopSettingsSheet
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          settings={settings}
+          onChange={update}
+          onReset={reset}
+        />
+
+        <DesktopCommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          actions={{
+            onSendCombo: sendCombo,
+            onFullscreen: toggleFullscreen,
+            onSettings: () => setSettingsOpen(true),
+            onReconnect: handleReconnect,
+            onDisconnect: handleDisconnect,
+          }}
+        />
+
+        <PasteConfirmDialog
+          text={pasteConfirm}
+          onConfirm={confirmPaste}
+          onCancel={() => setPasteConfirm(null)}
+        />
+      </div>
+    </TooltipProvider>
   )
 }
 
-function phaseFromStatus(p: Phase): GuacPhase {
+function attachInputs(
+  host: HTMLDivElement,
+  canvas: HTMLCanvasElement,
+  client: FrameClient,
+  getSettings: () => ReturnType<typeof useDesktopSettings>["settings"],
+  setPointer: (p: { x: number; y: number }) => void,
+): () => void {
+  let pressedButtons = 0
+
+  function toRemote(e: { clientX: number; clientY: number }): { x: number; y: number } {
+    const rect = host.getBoundingClientRect()
+    const w = canvas.width || rect.width || 1
+    const h = canvas.height || rect.height || 1
+    const sx = rect.width > 0 ? w / rect.width : 1
+    const sy = rect.height > 0 ? h / rect.height : 1
+    return {
+      x: Math.max(0, Math.round((e.clientX - rect.left) * sx)),
+      y: Math.max(0, Math.round((e.clientY - rect.top) * sy)),
+    }
+  }
+
+  function buttonMask(button: number): number {
+    const swap = getSettings().swapMiddleButton
+    if (button === 0) return MOUSE_BUTTON_LEFT
+    if (button === 1) return swap ? MOUSE_BUTTON_RIGHT : MOUSE_BUTTON_MIDDLE
+    if (button === 2) return MOUSE_BUTTON_RIGHT
+    return 0
+  }
+
+  const onMove = (e: MouseEvent) => {
+    const { x, y } = toRemote(e)
+    setPointer({ x, y })
+    client.send({ mouse: { x, y, buttons: pressedButtons, wheel: 0 } })
+  }
+  const onDown = (e: MouseEvent) => {
+    pressedButtons |= buttonMask(e.button)
+    const { x, y } = toRemote(e)
+    client.send({ mouse: { x, y, buttons: pressedButtons, wheel: 0 } })
+    e.preventDefault()
+  }
+  const onUp = (e: MouseEvent) => {
+    pressedButtons &= ~buttonMask(e.button)
+    const { x, y } = toRemote(e)
+    client.send({ mouse: { x, y, buttons: pressedButtons, wheel: 0 } })
+  }
+  const onWheel = (e: WheelEvent) => {
+    const { x, y } = toRemote(e)
+    client.send({ mouse: { x, y, buttons: pressedButtons, wheel: e.deltaY > 0 ? -1 : 1 } })
+    e.preventDefault()
+  }
+  const onContext = (e: MouseEvent) => e.preventDefault()
+  const onKeyDown = (e: KeyboardEvent) => {
+    const ks = keysymForEvent(e, { activeElement: document.activeElement })
+    if (ks > 0) {
+      client.send({ key: { keysym: ks, pressed: true } } satisfies ClientMessage)
+      e.preventDefault()
+    }
+  }
+  const onKeyUp = (e: KeyboardEvent) => {
+    const ks = keysymForEvent(e, { activeElement: document.activeElement })
+    if (ks > 0) {
+      client.send({ key: { keysym: ks, pressed: false } } satisfies ClientMessage)
+      e.preventDefault()
+    }
+  }
+
+  host.addEventListener("mousemove", onMove)
+  host.addEventListener("mousedown", onDown)
+  host.addEventListener("mouseup", onUp)
+  host.addEventListener("wheel", onWheel, { passive: false })
+  host.addEventListener("contextmenu", onContext)
+  window.addEventListener("keydown", onKeyDown)
+  window.addEventListener("keyup", onKeyUp)
+
+  return () => {
+    host.removeEventListener("mousemove", onMove)
+    host.removeEventListener("mousedown", onDown)
+    host.removeEventListener("mouseup", onUp)
+    host.removeEventListener("wheel", onWheel)
+    host.removeEventListener("contextmenu", onContext)
+    window.removeEventListener("keydown", onKeyDown)
+    window.removeEventListener("keyup", onKeyUp)
+  }
+}
+
+function PasteConfirmDialog({
+  text,
+  onConfirm,
+  onCancel,
+}: {
+  text: string | null
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const lines = text ? text.split("\n").length : 0
+  const preview = text ? (text.length > 600 ? text.slice(0, 600) + "\n…" : text) : ""
+  return (
+    <Dialog open={!!text} onOpenChange={(v) => !v && onCancel()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>粘贴 {lines} 行内容到远端?</DialogTitle>
+          <DialogDescription>
+            多行粘贴会立刻送到远端剪贴板,可能被脚本立即执行,确认无误后再继续。
+          </DialogDescription>
+        </DialogHeader>
+        <pre className="bg-muted rounded-md p-2 text-xs font-mono whitespace-pre overflow-auto max-h-60 text-foreground">
+          {preview}
+        </pre>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>取消</Button>
+          <Button onClick={onConfirm}>确认粘贴</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function phaseToStatus(p: Phase): DesktopStatus {
   switch (p) {
     case "CONNECTING":   return "connecting"
     case "HANDSHAKE":    return "handshake"
     case "CONNECTED":    return "connected"
-    case "RECONNECTING": return "connecting"
-    case "CLOSED":       return "disconnected"
+    case "RECONNECTING": return "reconnecting"
+    case "CLOSED":       return "closed"
     case "ERROR":        return "error"
   }
+}
+
+function computeCursorCss(
+  cursor: CursorUpdate | null,
+  mode: "remote" | "css-only" | "hidden",
+): string {
+  if (mode === "hidden") return "none"
+  if (mode === "css-only") return "default"
+  if (!cursor) return "default"
+  if (cursor.hidden) return "none"
+  if (cursor.png && cursor.png.length > 0) {
+    const b64 =
+      typeof cursor.png === "string" ? cursor.png : btoaBytes(cursor.png as unknown as Uint8Array)
+    return bitmapCursorCss(b64, cursor.hotspot_x ?? 0, cursor.hotspot_y ?? 0)
+  }
+  if (cursor.system_kind) return x11CursorToCss(cursor.system_kind)
+  return "default"
+}
+
+function applySmoothScaling(canvas: HTMLCanvasElement, smooth: boolean) {
+  canvas.style.imageRendering = smooth ? "auto" : "pixelated"
+}
+
+function scaleContainerClass(mode: "fit" | "actual" | "center" | "stretch"): string {
+  switch (mode) {
+    case "fit":     return "overflow-hidden"
+    case "actual":  return "overflow-auto"
+    case "center":  return "overflow-auto"
+    case "stretch": return "overflow-hidden"
+  }
+}
+function scaleHostClass(mode: "fit" | "actual" | "center" | "stretch"): string {
+  switch (mode) {
+    case "fit":     return "items-center justify-center"
+    case "actual":  return "items-start justify-start"
+    case "center":  return "items-center justify-center"
+    case "stretch": return "items-stretch justify-stretch"
+  }
+}
+
+function btoaBytes(bytes: Uint8Array): string {
+  let bin = ""
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
+
+function encodeUtf16Le(text: string): Uint8Array {
+  // Server expects UTF-16LE (MS-RDPECLIP §2.2.5.2.1). Null-terminate the
+  // string the way RDP clipboard formats do.
+  const buf = new Uint8Array((text.length + 1) * 2)
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    buf[i * 2] = c & 0xff
+    buf[i * 2 + 1] = (c >> 8) & 0xff
+  }
+  return buf
 }

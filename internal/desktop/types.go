@@ -109,6 +109,15 @@ type CursorUpdate struct {
 	HotspotX uint32 `json:"hotspot_x"`
 	HotspotY uint32 `json:"hotspot_y"`
 	PNG      []byte `json:"png"`
+	// SystemKind names a generic X11/CSS cursor (default | pointer | text |
+	// wait | crosshair | move | not-allowed | grab | grabbing | …) that the
+	// browser should use INSTEAD of a bitmap. The worker sets this when the
+	// server sends SET_NULL / SET_DEFAULT / pointer-system instead of a
+	// bitmap PDU. When non-empty, PNG is ignored.
+	SystemKind string `json:"system_kind,omitempty"`
+	// Hidden tells the client to hide the cursor entirely (server requested
+	// pointer hiding, e.g. game / fullscreen mode).
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 type SessionStatus struct {
