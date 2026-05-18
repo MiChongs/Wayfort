@@ -163,6 +163,22 @@ func (c *Client) Start(ctx context.Context, p desktop.StartParams) error {
 		C.freerdp_free(instance)
 		return fmt.Errorf("settings: %w", err)
 	}
+	// Surface the actual security mode the worker will offer so
+	// "ERRCONNECT_CONNECT_TRANSPORT_FAILED" sessions are debuggable from
+	// the gateway log alone — the operator can immediately see whether
+	// the failure was negotiating NLA, TLS, or RDP layer.
+	nla, tls, rdpSec := c.params.RDP.SecurityFlags()
+	c.logger.Info("freerdp connect settings",
+		zap.String("host", p.Host),
+		zap.Int("port", p.Port),
+		zap.String("security", string(c.params.RDP.Security)),
+		zap.Bool("nla", nla),
+		zap.Bool("tls", tls),
+		zap.Bool("rdp_security", rdpSec),
+		zap.Bool("ignore_cert", c.params.RDP.IgnoreCert == nil || *c.params.RDP.IgnoreCert),
+		zap.String("domain", c.params.RDP.Domain),
+		zap.Uint32("width", c.width),
+		zap.Uint32("height", c.height))
 
 	// Spawn the event loop and the input pump.
 	runCtx, cancel := context.WithCancel(ctx)
@@ -255,7 +271,12 @@ func (c *Client) applySettings() error {
 
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AutoReconnectionEnabled, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_BitmapCacheEnabled, C.TRUE)
-	C.freerdp_settings_set_bool(s, C.FreeRDP_OffscreenSupportLevel, C.TRUE)
+	// FreeRDP 3.x typed OffscreenSupportLevel as UINT32 (a capability
+	// level: 0 = unsupported, 1 = supported). The old set_bool call here
+	// triggered "Invalid key index 2816 ... FREERDP_SETTINGS_TYPE_UINT32"
+	// at runtime and the setting silently no-op'd, which broke the
+	// MCS capability set the server sees during negotiation.
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_OffscreenSupportLevel, 1)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathInput, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathOutput, C.TRUE)
 
