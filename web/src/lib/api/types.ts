@@ -152,7 +152,8 @@ export interface AssetTag {
 
 // ----- Workspace v2 — firewall + docker management -----
 
-export type FirewallTool = "ufw" | "firewalld" | "iptables" | ""
+export type FirewallTool = "ufw" | "firewalld" | "nft" | "iptables" | ""
+export type FirewallFamily = "inet" | "inet6" | ""
 export interface FirewallStatus {
   tool: FirewallTool
   active: boolean
@@ -168,6 +169,8 @@ export interface FirewallRule {
   protocol?: string
   port?: string
   source?: string
+  chain?: string
+  family?: FirewallFamily
   raw: string
 }
 export interface FirewallRuleSpec {
@@ -176,6 +179,21 @@ export interface FirewallRuleSpec {
   protocol?: "tcp" | "udp"
   port: string
   source?: string
+}
+// Returned by GET /firewall/diagnose — surfaces every observation the
+// gateway made when probing the node, so operators can self-serve "why
+// doesn't this work" questions in the UI.
+export interface FirewallDiagnostics {
+  uid: number
+  is_root: boolean
+  sudo_available: boolean
+  sudo_nopasswd_tools?: string[]
+  tools_found?: string[]
+  selected_tool: FirewallTool
+  probe_raw: string
+  last_error?: string
+  elapsed_ms: number
+  sampled_at: string
 }
 
 export interface DockerStatus {

@@ -20,6 +20,7 @@ import type {
   DockerImage,
   DockerLogsResponse,
   DockerStatus,
+  FirewallDiagnostics,
   FirewallRule,
   FirewallRuleSpec,
   FirewallStatus,
@@ -139,6 +140,8 @@ export const firewallService = {
     api<FirewallStatus>("GET", `/nodes/${nodeId}/firewall/status`),
   listRules: (nodeId: number) =>
     api<{ rules: FirewallRule[] }>("GET", `/nodes/${nodeId}/firewall/rules`),
+  diagnose: (nodeId: number) =>
+    api<FirewallDiagnostics>("GET", `/nodes/${nodeId}/firewall/diagnose`),
   addRule: (nodeId: number, spec: FirewallRuleSpec) =>
     api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/rules`, { body: spec }),
   deleteRule: (nodeId: number, index: number) =>

@@ -21,14 +21,9 @@ import (
 // always synchronous; reads are deduplicated within CacheTTL.
 type Config struct {
 	Enabled    bool
-	CacheTTL   time.Duration // default 5s — firewall changes slowly
+	CacheTTL   time.Duration // default 5s
 	SSHTimeout time.Duration // default 10s
 }
-
-var (
-	ErrDisabled     = errors.New("firewall: disabled by config")
-	ErrUnauthorized = errors.New("firewall: not authorised on node")
-)
 
 // Manager fetches and mutates firewall state over SSH on managed nodes.
 type Manager struct {
@@ -67,7 +62,7 @@ func NewManager(cfg Config, deps Deps) *Manager {
 	if cfg.SSHTimeout <= 0 {
 		cfg.SSHTimeout = 10 * time.Second
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:    cfg,
 		logger: deps.Logger,
 		nodes:  deps.Nodes,
@@ -77,12 +72,21 @@ func NewManager(cfg Config, deps Deps) *Manager {
 		deps:   deps.SSH,
 		cache:  map[uint64]*cacheEntry{},
 	}
+	// Startup observability — the absence of this log on boot tells the
+	// operator immediately that the firewall subsystem isn't wired into
+	// their gateway binary. The plan calls for this specifically.
+	if m.logger != nil {
+		m.logger.Info("firewall subsystem ready",
+			zap.Bool("enabled", cfg.Enabled),
+			zap.Duration("cache_ttl", cfg.CacheTTL),
+			zap.Duration("ssh_timeout", cfg.SSHTimeout))
+	}
+	return m
 }
 
 func (m *Manager) Enabled() bool { return m.cfg.Enabled }
 
 // Status returns just the high-level state (tool/active/policy/count).
-// Internally it fetches the full snapshot — reused with cache.
 func (m *Manager) Status(ctx context.Context, userID, nodeID uint64) (*Status, error) {
 	snap, _, err := m.snapshot(ctx, userID, nodeID)
 	if err != nil {
@@ -121,29 +125,126 @@ func (m *Manager) snapshot(ctx context.Context, userID, nodeID uint64) (Status, 
 func (m *Manager) collect(ctx context.Context, nodeID uint64, l *nodeAndCred) (*cacheEntry, error) {
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
 	defer cancel()
-	// Step 1: detect tool. The keyed format survives leading/trailing
-	// blank lines and lets the parser look up by name.
-	probe, err := sshrun.Run(cctx, m.deps, l.node, l.cred,
-		`printf 'ufw=%s\nfirewalld=%s\niptables=%s\n' "$(command -v ufw 2>/dev/null)" "$(command -v firewall-cmd 2>/dev/null)" "$(command -v iptables 2>/dev/null)"`,
-		m.cfg.SSHTimeout)
+	// Step 1: detect tools (including nft + ip6tables).
+	probe, err := sshrun.Run(cctx, m.deps, l.node, l.cred, probeScript, m.cfg.SSHTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("probe firewall: %w", err)
+		return nil, classifySSHError(err, probe.Stderr, "probe firewall")
 	}
 	tool := detectTool(probe.Stdout)
+	m.debug("firewall probe",
+		zap.Uint64("node_id", nodeID),
+		zap.String("probe_raw", probe.Stdout),
+		zap.String("selected_tool", string(tool)))
 	if tool == ToolUnsupported {
 		return m.unsupportedEntry(nodeID), nil
 	}
-	// Step 2: list rules per tool.
-	listCmd, parser := commandFor(tool)
-	res, err := sshrun.Run(cctx, m.deps, l.node, l.cred, listCmd, m.cfg.SSHTimeout)
-	if err != nil && res.Stdout == "" {
-		return nil, fmt.Errorf("list firewall: %w (stderr: %s)", err, truncate(res.Stderr, 200))
+	// Step 2: collect rules. iptables fans out across 3 chains × 2 families;
+	// others are one or two SSH calls.
+	status, rules, err := m.listRules(cctx, l, tool)
+	if err != nil {
+		return nil, err
 	}
-	status, rules := parser(res.Stdout)
 	status.SampledAt = time.Now().UTC()
 	entry := &cacheEntry{at: status.SampledAt, status: status, rules: rules}
 	m.store(nodeID, entry)
 	return entry, nil
+}
+
+// probeScript probes every supported front-end binary at once. POSIX-safe
+// shell — runs on bash / sh / dash / busybox identically.
+const probeScript = `printf 'ufw=%s\nfirewalld=%s\nnft=%s\niptables=%s\nip6tables=%s\n' ` +
+	`"$(command -v ufw 2>/dev/null)" ` +
+	`"$(command -v firewall-cmd 2>/dev/null)" ` +
+	`"$(command -v nft 2>/dev/null)" ` +
+	`"$(command -v iptables 2>/dev/null)" ` +
+	`"$(command -v ip6tables 2>/dev/null)"`
+
+func (m *Manager) listRules(ctx context.Context, l *nodeAndCred, tool Tool) (Status, []Rule, error) {
+	switch tool {
+	case ToolUFW:
+		res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, "ufw status verbose 2>&1", m.cfg.SSHTimeout)
+		if err != nil && res.Stdout == "" {
+			return Status{}, nil, classifySSHError(err, res.Stderr, "list ufw")
+		}
+		if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+			return Status{}, nil, e
+		}
+		s, r := parseUFWStatus(res.Stdout)
+		return s, r, nil
+	case ToolFirewalld:
+		res, err := sshrun.Run(ctx, m.deps, l.node, l.cred,
+			"firewall-cmd --list-all 2>&1; firewall-cmd --state 2>&1", m.cfg.SSHTimeout)
+		if err != nil && res.Stdout == "" {
+			return Status{}, nil, classifySSHError(err, res.Stderr, "list firewalld")
+		}
+		if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+			return Status{}, nil, e
+		}
+		s, r := parseFirewalldList(res.Stdout)
+		return s, r, nil
+	case ToolNftables:
+		res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, "nft -j list ruleset 2>&1", m.cfg.SSHTimeout)
+		if err != nil && res.Stdout == "" {
+			return Status{}, nil, classifySSHError(err, res.Stderr, "list nft")
+		}
+		if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+			return Status{}, nil, e
+		}
+		s, r, perr := parseNftables(res.Stdout)
+		if perr != nil {
+			return Status{}, nil, fmt.Errorf("%w: %v", ErrParse, perr)
+		}
+		return s, r, nil
+	case ToolIPTables:
+		return m.listIPTables(ctx, l)
+	default:
+		return Status{}, nil, ErrNoTool
+	}
+}
+
+// listIPTables fans out to iptables + ip6tables × {INPUT, FORWARD, OUTPUT}.
+// We merge per-chain rules into one slice; Chain + Family on each Rule lets
+// the UI render proper groups. INPUT-v4's policy is the coarse "Status.Policy".
+func (m *Manager) listIPTables(ctx context.Context, l *nodeAndCred) (Status, []Rule, error) {
+	chains := []string{"INPUT", "FORWARD", "OUTPUT"}
+	binaries := []struct {
+		bin    string
+		family Family
+	}{
+		{"iptables", FamilyV4},
+		{"ip6tables", FamilyV6},
+	}
+	var merged []Rule
+	var status Status
+	status.Tool = ToolIPTables
+	status.Active = true
+	for _, b := range binaries {
+		for _, chain := range chains {
+			cmd := fmt.Sprintf("%s -L %s -n -v --line-numbers 2>&1", b.bin, chain)
+			res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, cmd, m.cfg.SSHTimeout)
+			if err != nil && res.Stdout == "" {
+				// ip6tables may legitimately not exist on this host — only
+				// fail the whole call if iptables itself failed.
+				if b.bin == "iptables" {
+					return Status{}, nil, classifySSHError(err, res.Stderr, "iptables -L "+chain)
+				}
+				continue
+			}
+			if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+				if b.bin == "iptables" {
+					return Status{}, nil, e
+				}
+				continue
+			}
+			s, r := parseIPTablesList(res.Stdout, chain, b.family)
+			if b.family == FamilyV4 && chain == "INPUT" && s.Policy != "" {
+				status.Policy = s.Policy
+			}
+			merged = append(merged, r...)
+		}
+	}
+	status.RuleCount = len(merged)
+	return status, merged, nil
 }
 
 func (m *Manager) unsupportedEntry(nodeID uint64) *cacheEntry {
@@ -153,7 +254,7 @@ func (m *Manager) unsupportedEntry(nodeID uint64) *cacheEntry {
 		status: Status{
 			Tool:      ToolUnsupported,
 			Active:    false,
-			Reason:    "no firewall front-end detected (ufw / firewalld / iptables); install one to manage rules",
+			Reason:    "no firewall front-end detected (ufw / firewalld / nft / iptables); install one to manage rules",
 			SampledAt: now,
 		},
 	}
@@ -161,17 +262,71 @@ func (m *Manager) unsupportedEntry(nodeID uint64) *cacheEntry {
 	return entry
 }
 
-func commandFor(tool Tool) (string, func(string) (Status, []Rule)) {
-	switch tool {
-	case ToolUFW:
-		return "ufw status verbose 2>/dev/null", parseUFWStatus
-	case ToolFirewalld:
-		return "firewall-cmd --list-all 2>/dev/null; firewall-cmd --state 2>/dev/null", parseFirewalldList
-	case ToolIPTables:
-		return "iptables -L INPUT -n -v --line-numbers 2>/dev/null", parseIPTablesList
-	default:
-		return ":", func(string) (Status, []Rule) { return Status{}, nil }
+// Diagnose runs a focused set of probes that surface every observation the
+// manager makes when it tries to read firewall state. It deliberately
+// doesn't write or escalate — it's the "why isn't this working" endpoint.
+func (m *Manager) Diagnose(ctx context.Context, userID, nodeID uint64) (*Diagnostics, error) {
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
 	}
+	started := time.Now()
+	d := &Diagnostics{SampledAt: started.UTC()}
+
+	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	defer cancel()
+
+	// uid probe — `id -u` is POSIX and works under every common shell.
+	if uidRes, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, "id -u 2>/dev/null", m.cfg.SSHTimeout); err == nil {
+		if uid, e := atoiSafe(strings.TrimSpace(uidRes.Stdout)); e == nil {
+			d.UID = uid
+			d.IsRoot = uid == 0
+		}
+	} else {
+		d.LastError = appendErr(d.LastError, fmt.Sprintf("id -u: %v", err))
+	}
+
+	// sudo availability — only check the binary exists. We do NOT auto-wrap
+	// firewall commands with sudo elsewhere; this is observation only.
+	if sudoRes, _ := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred,
+		"command -v sudo 2>/dev/null", m.cfg.SSHTimeout); strings.TrimSpace(sudoRes.Stdout) != "" {
+		d.SudoAvailable = true
+		// Pull the NOPASSWD allowlist for diagnostic display. `sudo -n -l`
+		// fails with no error if no entries exist, which is fine.
+		if listRes, _ := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred,
+			"sudo -n -l 2>/dev/null", m.cfg.SSHTimeout); listRes.Stdout != "" {
+			for _, line := range strings.Split(listRes.Stdout, "\n") {
+				low := strings.ToLower(line)
+				if !strings.Contains(low, "nopasswd") {
+					continue
+				}
+				for _, t := range []string{"ufw", "firewall-cmd", "nft", "iptables", "ip6tables"} {
+					if strings.Contains(low, t) {
+						d.SudoNopasswdTools = appendUnique(d.SudoNopasswdTools, t)
+					}
+				}
+			}
+		}
+	}
+
+	// Tool probe — same shape as the production path; surface raw for the UI.
+	probeRes, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, probeScript, m.cfg.SSHTimeout)
+	if err != nil {
+		d.LastError = appendErr(d.LastError, fmt.Sprintf("probe: %v", err))
+	}
+	d.ProbeRaw = probeRes.Stdout
+	for _, line := range strings.Split(probeRes.Stdout, "\n") {
+		line = strings.TrimSpace(line)
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || v == "" {
+			continue
+		}
+		d.ToolsFound = append(d.ToolsFound, k+"="+v)
+	}
+	d.SelectedTool = detectTool(probeRes.Stdout)
+
+	d.ElapsedMs = time.Since(started).Milliseconds()
+	return d, nil
 }
 
 func (m *Manager) cached(nodeID uint64) *cacheEntry {
@@ -195,8 +350,6 @@ func (m *Manager) invalidate(nodeID uint64) {
 	delete(m.cache, nodeID)
 }
 
-// AddRule executes the tool-specific add command and invalidates the cache.
-// Writes are always audited.
 func (m *Manager) AddRule(ctx context.Context, userID, nodeID uint64, claims AuditClaims, spec RuleSpec) error {
 	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
 	if err != nil {
@@ -207,7 +360,7 @@ func (m *Manager) AddRule(ctx context.Context, userID, nodeID uint64, claims Aud
 		return err
 	}
 	if status.Tool == ToolUnsupported {
-		return errors.New("no firewall tool available on this node")
+		return ErrNoTool
 	}
 	cmd, err := buildAddCommand(status.Tool, spec)
 	if err != nil {
@@ -215,17 +368,18 @@ func (m *Manager) AddRule(ctx context.Context, userID, nodeID uint64, claims Aud
 	}
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
 	defer cancel()
-	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd, m.cfg.SSHTimeout)
+	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd+" 2>&1", m.cfg.SSHTimeout)
 	if err != nil {
-		return fmt.Errorf("add rule: %w (stderr: %s)", err, truncate(res.Stderr, 200))
+		return classifySSHError(err, res.Stderr+res.Stdout, "add rule")
+	}
+	if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return e
 	}
 	m.invalidate(nodeID)
 	m.recordAudit(claims, nodeID, model.AuditFirewallChange, "add "+cmd)
 	return nil
 }
 
-// DeleteRule removes rule at the positional index. firewalld doesn't support
-// this — operator must specify by service/port; we error with a hint.
 func (m *Manager) DeleteRule(ctx context.Context, userID, nodeID uint64, claims AuditClaims, index int) error {
 	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
 	if err != nil {
@@ -241,17 +395,18 @@ func (m *Manager) DeleteRule(ctx context.Context, userID, nodeID uint64, claims 
 	}
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
 	defer cancel()
-	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd, m.cfg.SSHTimeout)
+	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd+" 2>&1", m.cfg.SSHTimeout)
 	if err != nil {
-		return fmt.Errorf("delete rule: %w (stderr: %s)", err, truncate(res.Stderr, 200))
+		return classifySSHError(err, res.Stderr+res.Stdout, "delete rule")
+	}
+	if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return e
 	}
 	m.invalidate(nodeID)
 	m.recordAudit(claims, nodeID, model.AuditFirewallChange, "delete "+cmd)
 	return nil
 }
 
-// SetEnabled flips the firewall on or off (ufw/firewalld only; iptables has
-// no concept of enable/disable — that's controlled by systemctl).
 func (m *Manager) SetEnabled(ctx context.Context, userID, nodeID uint64, claims AuditClaims, on bool) error {
 	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
 	if err != nil {
@@ -275,16 +430,21 @@ func (m *Manager) SetEnabled(ctx context.Context, userID, nodeID uint64, claims 
 		} else {
 			cmd = "systemctl stop firewalld"
 		}
+	case ToolNftables:
+		return errors.New("nftables has no enable/disable; manage the service (systemctl start/stop nftables) that loads its rules")
 	case ToolIPTables:
 		return errors.New("iptables has no enable/disable; manage the service that loads its rules")
 	default:
-		return errors.New("no firewall tool available")
+		return ErrNoTool
 	}
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
 	defer cancel()
-	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd, m.cfg.SSHTimeout)
+	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd+" 2>&1", m.cfg.SSHTimeout)
 	if err != nil {
-		return fmt.Errorf("set enabled: %w (stderr: %s)", err, truncate(res.Stderr, 200))
+		return classifySSHError(err, res.Stderr+res.Stdout, "set enabled")
+	}
+	if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return e
 	}
 	m.invalidate(nodeID)
 	action := "enable"
@@ -306,9 +466,84 @@ func buildAddCommand(tool Tool, spec RuleSpec) (string, error) {
 		return buildFirewalldAdd(spec), nil
 	case ToolIPTables:
 		return buildIPTablesAdd(spec), nil
+	case ToolNftables:
+		return buildNftablesAdd(spec), nil
 	default:
-		return "", errors.New("unsupported firewall tool")
+		return "", ErrNoTool
 	}
+}
+
+// ---- error classification ----------------------------------------------
+
+// classifySSHError maps a raw sshrun error onto one of the package sentinels
+// so handlers can pick the right HTTP status. The stderr text is preserved
+// in the wrapped error for operator diagnosis.
+func classifySSHError(err error, stderr, op string) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(stderr)
+	switch {
+	case strings.Contains(msg, "permission denied") || strings.Contains(msg, "need to be root") ||
+		strings.Contains(msg, "operation not permitted") || strings.Contains(msg, "you need root"):
+		return fmt.Errorf("%w: %s (%s)", ErrPermissionDenied, truncate(stderr, 200), op)
+	case strings.Contains(strings.ToLower(err.Error()), "unable to authenticate") ||
+		strings.Contains(strings.ToLower(err.Error()), "no route to host") ||
+		strings.Contains(strings.ToLower(err.Error()), "i/o timeout") ||
+		strings.Contains(strings.ToLower(err.Error()), "connection refused"):
+		return fmt.Errorf("%w: %v (%s)", ErrUnreachable, err, op)
+	default:
+		return fmt.Errorf("%s: %w (stderr: %s)", op, err, truncate(stderr, 200))
+	}
+}
+
+// classifyToolOutput inspects the command's stdout+stderr for canonical
+// permission-denied messages that the tool exited 0 on (some ufw versions
+// do exactly this). Returns nil when no flag found.
+func classifyToolOutput(out string) error {
+	low := strings.ToLower(out)
+	if strings.Contains(low, "you need to be root to run this script") ||
+		strings.Contains(low, "operation not permitted") {
+		return fmt.Errorf("%w: %s", ErrPermissionDenied, truncate(out, 200))
+	}
+	return nil
+}
+
+func atoiSafe(s string) (int, error) {
+	if s == "" {
+		return 0, errors.New("empty")
+	}
+	var n int
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, errors.New("not numeric")
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n, nil
+}
+
+func appendErr(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	return existing + "; " + add
+}
+
+func appendUnique(xs []string, x string) []string {
+	for _, v := range xs {
+		if v == x {
+			return xs
+		}
+	}
+	return append(xs, x)
+}
+
+func (m *Manager) debug(msg string, fields ...zap.Field) {
+	if m.logger == nil {
+		return
+	}
+	m.logger.Debug(msg, fields...)
 }
 
 // ---- helpers ----
@@ -345,8 +580,6 @@ func (m *Manager) gateAndLoad(ctx context.Context, userID, nodeID uint64) (*node
 	return &nodeAndCred{node: node, cred: cred}, nil
 }
 
-// AuditClaims carries the bits we need for audit row writes — keeps the
-// handler from needing to import internal/auth here.
 type AuditClaims struct {
 	UserID   uint64
 	Username string
