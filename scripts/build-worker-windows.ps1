@@ -69,6 +69,14 @@ $env:PATH = "$subenvBin;$Msys2Root\usr\bin;$env:PATH"
 $env:PKG_CONFIG_PATH = $pkgCfgDir
 $env:CGO_ENABLED = "1"
 $env:CC = "gcc"
+# MSYS2's go.exe is built with -trimpath and refuses to detect its own
+# GOROOT. Point it at the matching subenv's lib/go so the runtime + std
+# library load correctly. Without this we get
+# `go: cannot find GOROOT directory: 'go' binary is trimmed and GOROOT is not set`.
+$msysGoRoot = Join-Path $Msys2Root "$Subenv\lib\go"
+if (Test-Path $msysGoRoot) {
+    $env:GOROOT = $msysGoRoot
+}
 
 if (-not (Test-Path $InstallDir)) {
     Write-Host "[build-worker-windows] creating install dir $InstallDir"

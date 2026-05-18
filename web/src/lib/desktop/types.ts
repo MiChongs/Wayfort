@@ -49,6 +49,13 @@ export interface CursorUpdate {
   hotspot_x: number
   hotspot_y: number
   png: string // base64
+  // Optional X11 / FreeRDP system cursor name (default | pointer | text |
+  // wait | crosshair | …). Set by the worker when the server requests a
+  // built-in shape instead of a bitmap; client maps it via
+  // desktop-cursor-map.ts to a CSS cursor keyword.
+  system_kind?: string
+  // Hide the pointer entirely (server requested null cursor).
+  hidden?: boolean
 }
 
 export interface SessionStatus {
