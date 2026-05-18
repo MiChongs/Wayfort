@@ -1,75 +1,80 @@
 #!/usr/bin/env bash
 # install-devolutions-gateway-linux.sh
 #
-# Downloads the Devolutions Gateway release archive for the current
-# Linux distribution + architecture and extracts the binary into
-# $INSTALL_PREFIX. Designed to replace the libfreerdp-driven
-# `build-worker-linux.sh` chain: no compiler, no MSYS2, no cgo —
-# just a static binary distributed by Devolutions.
+# One-shot installer that fetches the latest Devolutions Gateway
+# release from GitHub and drops the binary into $INSTALL_PREFIX. The
+# upstream Linux release artefacts are plain ELF binaries (NOT
+# tarballs / packages), so this script just curl-downloads and
+# chmods — no extraction, no package manager.
 #
 # Environment overrides:
-#   DGW_VERSION       — pinned release (default: the version this script
-#                       was last validated against; bump in lockstep with
-#                       the rest of the repo when upgrading)
-#   INSTALL_PREFIX    — where the binary lands (default: /opt/jumpserver/
-#                       devolutions-gateway)
-#   DGW_MIRROR        — alternative base URL when github.com release
-#                       artefacts are slow from the deploy host (e.g.
-#                       an internal mirror)
+#   DGW_VERSION   pinned release version (default: latest from GitHub API)
+#   INSTALL_PREFIX  where the binary lands (default: /opt/jumpserver/
+#                   devolutions-gateway)
+#   DGW_MIRROR    alternative base URL when the github.com release CDN
+#                 is slow from the deploy host (e.g. an internal mirror).
+#                 The script appends `/v<version>/<asset>` to this URL.
 #
-# Exit codes: 0 OK, 1 toolchain/env problem, 2 download/extract problem.
+# Exit codes: 0 OK, 1 toolchain/env problem, 2 download problem.
 set -euo pipefail
 
-DGW_VERSION="${DGW_VERSION:-2025.3.5}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/jumpserver/devolutions-gateway}"
 DGW_MIRROR="${DGW_MIRROR:-https://github.com/Devolutions/devolutions-gateway/releases/download}"
+DGW_API="${DGW_API:-https://api.github.com/repos/Devolutions/devolutions-gateway/releases/latest}"
 
 log() { printf '[install-devolutions-gateway] %s\n' "$*" >&2; }
 die() { log "$*"; exit "${2:-2}"; }
 
+# Architecture detection. Upstream uses `arm64` (NOT `aarch64`) in the
+# release asset filename for both kernel-arch reporting conventions.
 case "$(uname -m)" in
   x86_64|amd64) arch="x86_64" ;;
-  aarch64|arm64) arch="aarch64" ;;
+  aarch64|arm64) arch="arm64" ;;
   *) die "unsupported architecture: $(uname -m)" 1 ;;
 esac
 
-for cmd in curl tar; do
+for cmd in curl; do
   command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required (apt install $cmd / dnf install $cmd)" 1
 done
+
+# Resolve the version: explicit override or latest-from-GitHub-API.
+if [ -z "${DGW_VERSION:-}" ]; then
+  log "querying GitHub for latest release tag"
+  tag=$(curl -fsSL "$DGW_API" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/')
+  if [ -z "$tag" ]; then
+    die "could not parse tag_name from $DGW_API (rate-limited? set DGW_VERSION=<x.y.z> to skip)"
+  fi
+  DGW_VERSION="$tag"
+fi
+log "installing Devolutions Gateway $DGW_VERSION ($arch) into $INSTALL_PREFIX"
 
 mkdir -p "$INSTALL_PREFIX"
 mkdir -p "$INSTALL_PREFIX/config"
 
-# Devolutions publishes a tarball per arch under the release tag. The
-# inside layout puts the binary at usr/bin/devolutions-gateway, which
-# we relocate to $INSTALL_PREFIX/devolutions-gateway for a single
-# self-contained directory the supervisor knows.
-asset="DevolutionsGateway_linux_${DGW_VERSION}_${arch}.tar.gz"
+# Asset filename is literal — no extension. Upstream ships the binary
+# directly, presumably because the project is a single static-ish
+# Rust executable.
+asset="DevolutionsGateway_Linux_${DGW_VERSION}_${arch}"
 url="${DGW_MIRROR}/v${DGW_VERSION}/${asset}"
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
+dest="$INSTALL_PREFIX/devolutions-gateway"
 
 log "downloading $url"
-if ! curl -fsSL "$url" -o "$tmpdir/dgw.tar.gz"; then
-  die "download failed (try mirror via DGW_MIRROR=, or verify DGW_VERSION=$DGW_VERSION exists upstream)"
-fi
-log "extracting"
-tar -xzf "$tmpdir/dgw.tar.gz" -C "$tmpdir"
-
-bin=""
-for candidate in \
-  "$tmpdir/usr/bin/devolutions-gateway" \
-  "$tmpdir/devolutions-gateway" \
-  "$tmpdir/DevolutionsGateway-${DGW_VERSION}/devolutions-gateway"; do
-  if [ -f "$candidate" ]; then
-    bin="$candidate"
-    break
-  fi
-done
-if [ -z "$bin" ]; then
-  die "devolutions-gateway binary not found in archive (layout drift; update this script)"
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+if ! curl -fsSL "$url" -o "$tmp"; then
+  die "download failed (check version + arch exist upstream, or set DGW_MIRROR=<internal>)"
 fi
 
-install -m 0755 "$bin" "$INSTALL_PREFIX/devolutions-gateway"
-log "installed: $INSTALL_PREFIX/devolutions-gateway"
-"$INSTALL_PREFIX/devolutions-gateway" --version || true
+# Sanity check the download is actually an executable ELF and not an
+# HTML error page returned by a mid-flight redirect. `file` is part
+# of base on every distro we support.
+if command -v file >/dev/null 2>&1; then
+  case "$(file -b "$tmp")" in
+    ELF*) : ;;
+    *) die "downloaded payload is not ELF — upstream layout may have changed, please update this script" ;;
+  esac
+fi
+
+install -m 0755 "$tmp" "$dest"
+log "installed: $dest"
+"$dest" --version || true
