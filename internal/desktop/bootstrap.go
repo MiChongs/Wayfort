@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -23,39 +24,16 @@ import (
 // Entry point: Manager.EnsureWorker (called from cmd/jumpserver/main.go
 // in a background goroutine so HTTP comes up immediately).
 
-// candidateWorkerPaths returns the list of locations checked in order
-// before invoking the bootstrap pipeline. The first executable file wins
-// and gets recorded in Manager.cfg.WorkerPath.
+// candidateWorkerPaths returns the existence-check sweep before invoking
+// the bootstrap pipeline. Plan 19 moved the body to bootstrap_paths.go
+// so it can branch on runtime.GOOS (Windows uses .exe, macOS uses brew
+// prefix, Linux uses /usr/local/bin).
 func (m *Manager) candidateWorkerPaths() []string {
-	paths := []string{}
-	if m.cfg.WorkerPath != "" {
-		paths = append(paths, m.cfg.WorkerPath)
-	}
-	paths = append(paths,
-		"/usr/local/bin/freerdp-worker",
-		"/usr/bin/freerdp-worker",
-	)
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".local/bin/freerdp-worker"))
-	}
-	// Same directory as the gateway binary (useful for chroot / portable
-	// deploys).
-	if exe, err := os.Executable(); err == nil {
-		paths = append(paths, filepath.Join(filepath.Dir(exe), "freerdp-worker"))
-	}
-	return paths
+	return candidateWorkerPaths(m.cfg.WorkerPath)
 }
 
-func isExecutable(path string) bool {
-	if path == "" {
-		return false
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	return info.Mode().Perm()&0o111 != 0
-}
+// isExecutable is now defined in bootstrap_paths.go to give Windows the
+// `.exe` suffix check instead of Unix mode bits.
 
 // EnsureWorker drives the entire startup self-check. Returns nil even
 // when the bootstrap fails — the gateway continues to run and individual
@@ -116,10 +94,10 @@ func (m *Manager) runBootstrap(ctx context.Context) error {
 	//    are already present, continue).
 	if len(plan.Cmds) > 0 {
 		m.logger.Info("installing system packages", zap.String("hint", plan.HumanInstall))
-		for _, argv := range plan.Cmds {
-			if out, err := runCmd(ctx, argv, true); err != nil {
+		for _, c := range plan.Cmds {
+			if out, err := runInstallCmd(ctx, c); err != nil {
 				m.logger.Warn("package manager invocation failed",
-					zap.Strings("cmd", argv),
+					zap.Strings("cmd", c.Argv),
 					zap.String("output", truncate(string(out), 400)),
 					zap.Error(err))
 				// Don't abort yet — maybe deps are already there.
@@ -143,8 +121,8 @@ func (m *Manager) runBootstrap(ctx context.Context) error {
 	}
 	m.logger.Info("extracted embedded worker source", zap.String("dir", srcDir))
 
-	// 5. Build the binary.
-	tmpBin := filepath.Join(srcDir, "freerdp-worker")
+	// 5. Build the binary. Output name is platform-aware (.exe on Windows).
+	tmpBin := filepath.Join(srcDir, workerBaseName())
 	if err := buildWorker(ctx, srcDir, tmpBin, m.logger); err != nil {
 		return fmt.Errorf("build: %w", err)
 	}
@@ -279,21 +257,33 @@ func (m *Manager) extractEmbeddedSource() (string, error) {
 }
 
 // buildWorker shells out to `go build -tags freerdp -mod=vendor` inside
-// the extracted source dir. The mod=vendor flag means no network access
-// is needed at runtime — all deps were vendored when sync-workersrc ran.
+// the extracted source dir. Platform-aware env (PKG_CONFIG_PATH on
+// macOS, PATH+CC for MinGW on Windows) is layered on top via buildEnv().
+// The mod=vendor flag means no network access is needed at runtime —
+// all deps were vendored when sync-workersrc ran.
 func buildWorker(ctx context.Context, srcDir, outBin string, logger *zap.Logger) error {
 	args := []string{"build", "-tags", "freerdp", "-mod=vendor",
 		"-trimpath", "-o", outBin, "./cmd/freerdp-worker"}
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = srcDir
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
-	logger.Info("compiling freerdp-worker", zap.Strings("argv", append([]string{"go"}, args...)))
+	env := append(os.Environ(), "CGO_ENABLED=1")
+	if extra := buildEnv(); len(extra) > 0 {
+		env = append(env, extra...)
+	}
+	cmd.Env = env
+	logger.Info("compiling freerdp-worker",
+		zap.Strings("argv", append([]string{"go"}, args...)),
+		zap.Strings("extra_env", buildEnv()))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("go build: %w\n%s", err, string(out))
 	}
-	if err := os.Chmod(outBin, 0o755); err != nil {
-		return fmt.Errorf("chmod: %w", err)
+	// chmod is a no-op on Windows (no execute bit). On Unix we make sure
+	// the binary is +x even if the umask was restrictive.
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(outBin, 0o755); err != nil {
+			return fmt.Errorf("chmod: %w", err)
+		}
 	}
 	if info, err := os.Stat(outBin); err == nil {
 		logger.Info("compile succeeded", zap.Int64("size_bytes", info.Size()))
@@ -302,35 +292,35 @@ func buildWorker(ctx context.Context, srcDir, outBin string, logger *zap.Logger)
 }
 
 // installBinary moves the freshly-built worker into a stable path. Tries
-// the configured InstallPrefix first; falls back through a path table
-// until something writeable is found. Atomic via rename within the same
-// filesystem; if cross-FS, falls back to copy + remove.
+// the configured InstallPrefix first; falls back through a platform-
+// specific path table until something writeable is found. Atomic via
+// rename within the same filesystem; if cross-FS, falls back to copy +
+// remove. On Windows we additionally handle in-use locks by renaming
+// the old binary to a .old sidecar before placing the new one.
 func (m *Manager) installBinary(srcBin string) (string, error) {
-	candidates := []string{}
-	if m.cfg.InstallPrefix != "" {
-		candidates = append(candidates, m.cfg.InstallPrefix)
-	}
-	candidates = append(candidates, "/usr/local/bin/freerdp-worker")
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".local/bin/freerdp-worker"))
-	}
-	if exe, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(exe), "freerdp-worker"))
-	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "freerdp-worker"))
-
-	for _, dst := range candidates {
+	for _, dst := range installCandidates(m.cfg.InstallPrefix) {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			continue
 		}
+		// Windows-specific: if the destination exists and is in use,
+		// rename it to .old first so the new binary takes its place.
+		if runtime.GOOS == "windows" {
+			if _, statErr := os.Stat(dst); statErr == nil {
+				_ = os.Rename(dst, dst+".old")
+			}
+		}
 		// Atomic rename — same FS only. If that fails, copy + remove.
 		if err := os.Rename(srcBin, dst); err == nil {
-			_ = os.Chmod(dst, 0o755)
+			if runtime.GOOS != "windows" {
+				_ = os.Chmod(dst, 0o755)
+			}
 			m.logger.Info("installed freerdp-worker", zap.String("path", dst))
 			return dst, nil
 		}
 		if err := copyFile(srcBin, dst); err == nil {
-			_ = os.Chmod(dst, 0o755)
+			if runtime.GOOS != "windows" {
+				_ = os.Chmod(dst, 0o755)
+			}
 			_ = os.Remove(srcBin)
 			m.logger.Info("installed freerdp-worker (via copy)", zap.String("path", dst))
 			return dst, nil

@@ -151,19 +151,32 @@ desktop:
   worker_path: "/usr/local/bin/freerdp-worker"
   worker_idle_timeout: 5m
   max_concurrent_sessions: 64
-  # Plan 18 — startup self-check. If the gateway can't find a worker
-  # binary at worker_path (or the fallback table /usr/local/bin/, ~/.local/
-  # bin/, gateway-bin-dir/), and auto_install is true, it will:
-  #   1. Detect distro (apt / dnf / apk / brew supported)
-  #   2. Install libfreerdp3-dev + pkg-config + Go + build tools
-  #   3. Extract the embedded worker source (//go:embed) to /tmp/...
+  # Plan 18 / 19 — startup self-check. If the gateway can't find a worker
+  # binary at worker_path (or the platform fallback table), and
+  # auto_install is true, it will:
+  #   1. Detect platform (Linux distro / macOS / Windows)
+  #   2. Install libfreerdp 3.x + pkg-config + Go ≥1.22 via the host's
+  #      package manager:
+  #        Ubuntu 24.04 / Debian 13+ : apt-get install -y freerdp3-dev …
+  #        Fedora / RHEL 9+         : dnf install freerdp-devel …
+  #        Alpine                   : apk add freerdp-dev …
+  #        macOS (Intel + Silicon)  : brew install freerdp pkg-config go
+  #        Windows (MSYS2 present)  : pacman -S mingw-w64-x86_64-freerdp …
+  #        Windows (vcpkg present)  : vcpkg install freerdp[client]:x64-windows
+  #   3. Extract the embedded worker source (//go:embed) to a temp dir
   #   4. go build -tags freerdp -mod=vendor → produces a fresh worker
-  #   5. Install to install_prefix (or fallback path)
+  #   5. Install to install_prefix (leave empty to pick the platform default)
+  #
   # The bootstrap runs in a background goroutine; the HTTP listener comes
-  # up immediately and any session-start requests during the bootstrap
-  # return 503 with a clear "bootstrapping" message.
+  # up immediately. Session-start requests during the bootstrap return
+  # 503 "worker bootstrapping" until completion (~30-90s, mostly compile).
   auto_install: true
-  install_prefix: "/usr/local/bin/freerdp-worker"
+  # install_prefix defaults per platform when left empty:
+  #   Linux           — /usr/local/bin/freerdp-worker
+  #   macOS Apple Si  — /opt/homebrew/bin/freerdp-worker
+  #   macOS Intel     — /usr/local/bin/freerdp-worker
+  #   Windows         — %ProgramFiles%\JumpServer\freerdp-worker.exe
+  install_prefix: ""
 
 protocols:
   guacamole:

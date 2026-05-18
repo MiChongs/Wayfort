@@ -24,13 +24,14 @@ sync-workersrc:
 	./scripts/sync-workersrc.sh
 
 verify-workersrc: sync-workersrc
-	@if ! git diff --quiet --exit-code internal/desktop/_workersrc; then \
+	@# SOURCE_SHA always changes (it stamps current HEAD); exclude from drift check.
+	@if ! git diff --quiet --exit-code -- internal/desktop/_workersrc ':(exclude)internal/desktop/_workersrc/SOURCE_SHA'; then \
 	  echo "ERROR: internal/desktop/_workersrc is out of sync with cmd/freerdp-worker."; \
 	  echo "Run 'make sync-workersrc' and commit the result."; \
-	  git diff --stat internal/desktop/_workersrc; \
+	  git diff --stat -- internal/desktop/_workersrc ':(exclude)internal/desktop/_workersrc/SOURCE_SHA'; \
 	  exit 1; \
 	fi
-	@echo "internal/desktop/_workersrc is in sync."
+	@echo "internal/desktop/_workersrc is in sync (SOURCE_SHA drift ignored)."
 
 test:
 	go test ./...

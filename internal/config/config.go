@@ -338,7 +338,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("desktop.max_concurrent_sessions", 64)
 	// Plan 18 — auto-install on missing worker.
 	v.SetDefault("desktop.auto_install", true)
-	v.SetDefault("desktop.install_prefix", "/usr/local/bin/freerdp-worker")
+	// Plan 19 — leave install_prefix empty so the bootstrap picks the
+	// platform default (brew prefix on macOS, ProgramFiles on Windows,
+	// /usr/local/bin on Linux). Operators can override explicitly.
+	v.SetDefault("desktop.install_prefix", "")
 
 	v.SetDefault("protocols.guacamole.enabled", false)
 	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")

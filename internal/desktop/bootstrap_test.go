@@ -3,6 +3,8 @@ package desktop
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -87,7 +89,9 @@ func TestAtLeastGo(t *testing.T) {
 }
 
 // TestCandidatePaths confirms the path table includes the configured
-// WorkerPath and the standard fallbacks.
+// WorkerPath plus the right OS-default fallbacks for the host we're on.
+// On Linux that's /usr/local/bin/freerdp-worker; on macOS it's the brew
+// prefix's bin; on Windows it's Program Files\JumpServer.
 func TestCandidatePaths(t *testing.T) {
 	mgr := NewManager(config.DesktopConfig{WorkerPath: "/custom/wp"}, Deps{Logger: zap.NewNop()})
 	paths := mgr.candidateWorkerPaths()
@@ -98,7 +102,79 @@ func TestCandidatePaths(t *testing.T) {
 		t.Errorf("first candidate should be configured WorkerPath; got %s", paths[0])
 	}
 	joined := strings.Join(paths, "\n")
-	if !strings.Contains(joined, "/usr/local/bin/freerdp-worker") {
-		t.Errorf("missing /usr/local/bin fallback in: %s", joined)
+	switch runtime.GOOS {
+	case "linux", "freebsd":
+		if !strings.Contains(joined, "/usr/local/bin/freerdp-worker") {
+			t.Errorf("missing /usr/local/bin fallback in: %s", joined)
+		}
+	case "darwin":
+		// Either /opt/homebrew/bin or /usr/local/bin depending on arch +
+		// brew --prefix output; at minimum one of them must appear.
+		if !strings.Contains(joined, "/bin/freerdp-worker") {
+			t.Errorf("missing macOS brew bin fallback in: %s", joined)
+		}
+	case "windows":
+		if !strings.Contains(strings.ToLower(joined), "freerdp-worker.exe") {
+			t.Errorf("Windows candidates should end in .exe, got: %s", joined)
+		}
+	}
+}
+
+// TestPlanInstall_Darwin_BrewMissing simulates brew not on PATH and
+// verifies we surface a useful HumanInstall blurb.
+func TestPlanInstall_Darwin_BrewMissing(t *testing.T) {
+	// Force a PATH that won't contain brew so LookPath fails.
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", filepath.Join(t.TempDir(), "empty-path"))
+	defer os.Setenv("PATH", origPath)
+	plan := planInstallDarwin(osInfo{ID: distroDarwin, PrettyName: "macOS 14"})
+	if plan.Reason == "" {
+		t.Error("expected Reason explaining missing brew")
+	}
+	if !strings.Contains(plan.HumanInstall, "brew") {
+		t.Errorf("HumanInstall should mention brew: %s", plan.HumanInstall)
+	}
+	if len(plan.Cmds) != 0 {
+		t.Errorf("expected empty Cmds when brew missing, got %d", len(plan.Cmds))
+	}
+}
+
+// TestPlanInstall_Windows_NoToolkit simulates a Windows box without
+// MSYS2 or vcpkg. We don't actually run on Windows in the sandbox; we
+// just verify planInstallWindows yields a Reason + HumanInstall (driven
+// by detectWindowsToolkit returning "none" because neither pacman.exe
+// nor vcpkg.exe is on the Linux host).
+func TestPlanInstall_Windows_NoToolkit(t *testing.T) {
+	plan := planInstallWindows(osInfo{ID: distroWindows, PrettyName: "Windows 10"})
+	if plan.Reason == "" {
+		t.Error("expected Reason when no toolkit detected")
+	}
+	if !strings.Contains(plan.HumanInstall, "MSYS2") {
+		t.Errorf("HumanInstall should mention MSYS2: %s", plan.HumanInstall)
+	}
+}
+
+// TestInstallCandidates_Windows ensures Windows fallbacks include .exe
+// and ProgramFiles even when we're running on Linux (the function uses
+// runtime.GOOS — so we test by directly calling osDefaultWorkerPaths.
+// On Linux this test exercises the Linux branch).
+func TestInstallCandidates_HostOS(t *testing.T) {
+	got := installCandidates("/configured/path")
+	if got[0] != "/configured/path" {
+		t.Errorf("InstallPrefix should be first: %v", got)
+	}
+	if len(got) < 3 {
+		t.Errorf("expected ≥3 candidates, got %d", len(got))
+	}
+}
+
+// TestBuildEnv_Linux: on a Linux sandbox buildEnv() should return nil
+// because /usr/lib/pkgconfig is already on the default search path.
+func TestBuildEnv_LinuxNoExtras(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux-only test")
+	}
+	if got := buildEnv(); len(got) != 0 {
+		t.Errorf("expected empty buildEnv on Linux, got %v", got)
 	}
 }
