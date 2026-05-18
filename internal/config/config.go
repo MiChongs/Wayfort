@@ -402,7 +402,13 @@ func setDefaults(v *viper.Viper) {
 	// scripts/build-worker-*.{sh,ps1} (see scripts/README.md). The
 	// gateway only searches standard install paths at startup.
 	v.SetDefault("desktop.enabled", true)
-	v.SetDefault("desktop.default_backend", "freerdp")
+	// Plan 29 — IronRDP (Rust → Wasm) is the canonical RDP path. The
+	// legacy "freerdp" worker subprocess + "dummy" in-process renderer
+	// remain selectable via per-session `backend` overrides or by
+	// flipping this default, but new deploys get the modern stack out
+	// of the box (RDP 10.x compatibility, no cgo, no MSYS2 toolchain
+	// requirement, ~3000 LOC fewer code paths exercised at runtime).
+	v.SetDefault("desktop.default_backend", "ironrdp")
 	v.SetDefault("desktop.worker_path", "")
 	v.SetDefault("desktop.worker_idle_timeout", 5*time.Minute)
 	v.SetDefault("desktop.max_concurrent_sessions", 64)
@@ -417,7 +423,12 @@ func setDefaults(v *viper.Viper) {
 	// Defaults are tuned for a single-host deploy where the gateway
 	// listens on loopback and our reverse proxy forwards /jet/* to it
 	// (or the browser hits it directly if no proxy is in front).
-	v.SetDefault("desktop.devolutions_gateway.enabled", false)
+	// Plan 29 — ironrdp is now the default backend, so the supervisor
+	// is on by default too. Operators who haven't migrated and want to
+	// stay on the legacy worker stack should explicitly set
+	// `desktop.default_backend: freerdp` AND
+	// `desktop.devolutions_gateway.enabled: false`.
+	v.SetDefault("desktop.devolutions_gateway.enabled", true)
 	v.SetDefault("desktop.devolutions_gateway.auto_install", true)
 	v.SetDefault("desktop.devolutions_gateway.auto_start", true)
 	v.SetDefault("desktop.devolutions_gateway.listen_addr", "http://127.0.0.1:7171")
