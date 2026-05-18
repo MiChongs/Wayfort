@@ -89,6 +89,13 @@ type Client struct {
 	// Pointer state: the last cursor BGRA hash so we can dedup repeats.
 	lastCursorHash uint64
 
+	// One-shot flag: true after the first BitmapUpdate has been forwarded.
+	// Used by goOnBitmapUpdate to log a single INFO line confirming
+	// "frames are flowing" — without it the gateway log can't distinguish
+	// "connect succeeded but server sent no frames" from "frames flowed
+	// then browser closed unexpectedly".
+	firstBitmapLogged atomic.Bool
+
 	// Input state.
 	mu              sync.Mutex
 	pendingClipText []byte

@@ -96,6 +96,20 @@ export class FrameClient {
   }
 
   close(): void {
+    // Diagnostic: the call stack here paired with DesktopDisplay's
+    // cleanup-firing log tells us whether the WS close came from a React
+    // effect teardown (component unmount or dep change), from the
+    // toolbar's manual "断开" button, or from inside FrameClient itself.
+    // Pasted from the browser console alongside the gateway log it
+    // pinpoints why the worker is getting killed shortly after a
+    // successful connect.
+    console.warn("[FrameClient] close() called", {
+      sessionId: this.opts.sessionId,
+      wsReadyState: this.ws?.readyState,
+      bytesIn: this._bytesIn,
+      bytesOut: this._bytesOut,
+      stack: new Error().stack,
+    })
     this.closed = true
     this.cleanup()
     if (this.ws) {
