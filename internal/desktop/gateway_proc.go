@@ -56,8 +56,9 @@ type DevolutionsGatewayRuntime struct {
 	BinaryPath    string        // absolute path to devolutions-gateway[.exe]
 	ConfigPath    string        // where we write the gateway's JSON config
 	IDFile        string        // sidecar holding the gateway's persistent Id
-	ListenURL     string        // e.g. http://127.0.0.1:7171
-	AdvertisedURL string        // e.g. ws://localhost:7171/jet/rdp (passed to browser)
+	ListenURL     string        // e.g. http://127.0.0.1:7171 — what the gateway binds
+	ExternalURL   string        // e.g. https://jumpserver.example.com — gateway's public face (empty → same as ListenURL; required field in the gateway's own JSON)
+	AdvertisedURL string        // e.g. ws://localhost:7171/jet/rdp — WebSocket URL handed to the browser
 	HealthTimeout time.Duration // how long to wait for /jet/health after spawn
 	Verbosity     string        // gateway log verbosity (warn/info/debug)
 	AutoStart     bool          // false = manage config but operator runs the binary
@@ -108,6 +109,7 @@ func (s *GatewaySupervisor) Ensure(ctx context.Context) error {
 		ConfigPath:    s.cfg.ConfigPath,
 		PublicKeyPath: s.signer.PublicKeyPath(),
 		ListenURL:     s.cfg.ListenURL,
+		ExternalURL:   s.cfg.ExternalURL,
 		Hostname:      "jumpserver-anonymous",
 		IDFile:        s.cfg.IDFile,
 		Verbosity:     s.cfg.Verbosity,

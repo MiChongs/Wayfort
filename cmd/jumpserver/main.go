@@ -668,6 +668,7 @@ func buildDesktopIronRDP(cfg config.DevolutionsGatewayConfig, logger *zap.Logger
 		ConfigPath:    configPath,
 		IDFile:        idFile,
 		ListenURL:     cfg.ListenAddr,
+		ExternalURL:   cfg.ExternalURL,
 		AdvertisedURL: cfg.AdvertisedURL,
 		HealthTimeout: cfg.HealthTimeout,
 		Verbosity:     cfg.Verbosity,
