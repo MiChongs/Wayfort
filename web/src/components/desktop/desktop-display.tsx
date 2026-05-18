@@ -59,6 +59,33 @@ export interface DesktopDisplayProps {
 
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
 
+// Module-level cache of live RDP sessions keyed by (nodeId, backend,
+// bumpKey). Lives outside the React component so it survives Strict-Mode
+// dev-only unmount-remount cycles (React 19 / Next 16 with
+// `reactStrictMode: true` double-invokes effects to surface bugs — see
+// console stack containing `doubleInvokeEffectsOnFiber`). Without this
+// cache, every strict-mode mount tears down the WS + worker subprocess
+// before the connect even completes, leaking orphan workers on the
+// gateway and showing the user a "画面出现一下就掉" symptom.
+//
+// On unmount, cleanup schedules teardown via `teardownTimer` after
+// TEARDOWN_GRACE_MS. If the effect re-mounts within that window (which
+// is exactly what Strict-Mode does), the new mount finds the entry,
+// cancels the timer, and reattaches all the live refs — no new POST
+// /start, no new WS, the canvas pops back in.
+type LiveDesktopSession = {
+  sessionId: string
+  client: FrameClient
+  renderer: CanvasRendererHandle
+  detachInputs: (() => void) | null
+  teardownTimer: number | null
+  remoteWidth: number
+  remoteHeight: number
+  lastStatus: DesktopStatus
+}
+const liveDesktopSessions = new Map<string, LiveDesktopSession>()
+const TEARDOWN_GRACE_MS = 200
+
 export function DesktopDisplay({
   nodeId,
   nodeName,
@@ -128,9 +155,60 @@ export function DesktopDisplay({
 
   // Main connect lifecycle. Re-runs when nodeId / backend / bumpKey change;
   // bumpKey is the manual "重新连接" trigger.
+  //
+  // Strict-mode survival: if we just unmounted-then-remounted within
+  // TEARDOWN_GRACE_MS (i.e. React 19 dev double-invoke fired), the
+  // live session is still alive in `liveDesktopSessions`. We cancel its
+  // pending teardown timer, re-attach all refs (sessionId, client,
+  // renderer, detachInputs), re-append the canvas to the new hostRef,
+  // and skip the connect flow. The user sees zero perceptible break;
+  // the gateway sees zero extra POST /start (no orphan workers).
   React.useEffect(() => {
+    const cacheKey = `${nodeId}:${backend}:${bumpKey}`
     let cancelled = false
     let reconnectTimer: number | null = null
+
+    const cached = liveDesktopSessions.get(cacheKey)
+    if (cached && cached.teardownTimer != null) {
+      console.info("[DesktopDisplay] strict-mode remount detected — reusing live session", {
+        cacheKey,
+        sessionId: cached.sessionId,
+        status: cached.lastStatus,
+      })
+      window.clearTimeout(cached.teardownTimer)
+      cached.teardownTimer = null
+
+      sessionIdRef.current = cached.sessionId
+      clientRef.current = cached.client
+      rendererRef.current = cached.renderer
+      detachInputsRef.current = cached.detachInputs
+      setRemote({ w: cached.remoteWidth, h: cached.remoteHeight })
+      setStatus(cached.lastStatus)
+      setErrorInfo(undefined)
+
+      // Re-append the (still-mounted-in-DOM-but-detached-now) canvas
+      // node to the freshly-mounted hostRef div.
+      const host = hostRef.current
+      if (host && cached.renderer.canvas.parentElement !== host) {
+        host.innerHTML = ""
+        host.appendChild(cached.renderer.canvas)
+        applySmoothScaling(cached.renderer.canvas, settingsRef.current.smoothScaling)
+      }
+
+      return () => {
+        const live = liveDesktopSessions.get(cacheKey)
+        if (!live) return
+        if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
+        live.teardownTimer = window.setTimeout(() => {
+          liveDesktopSessions.delete(cacheKey)
+          live.detachInputs?.()
+          live.client.close()
+          live.renderer.destroy()
+          desktopControl.endSession(live.sessionId).catch(() => {})
+        }, TEARDOWN_GRACE_MS)
+      }
+    }
+
     setStatus("loading-script")
     setErrorInfo(undefined)
     setStartedAt(Date.now())
@@ -166,7 +244,16 @@ export function DesktopDisplay({
         quality: "auto",
         backend,
       })
-      if (cancelled) return
+      if (cancelled) {
+        // Strict-mode (or any) unmount fired while POST /start was
+        // in flight. The gateway already created the session + spawned
+        // a worker subprocess — kill it now or it leaks until the
+        // gateway times the session out. Without this, every
+        // dev-mode mount in StrictMode permanently orphans one
+        // freerdp-worker process.
+        desktopControl.endSession(start.session_id).catch(() => {})
+        return
+      }
       sessionIdRef.current = start.session_id
 
       const remoteW = start.remote_width || settingsRef.current.preferredWidth
@@ -208,6 +295,11 @@ export function DesktopDisplay({
         onStatus: (s: SessionStatus) => {
           const next = phaseToStatus(s.phase)
           setStatus(next)
+          // Keep the LiveCache's last-known phase in sync so a future
+          // strict-mode remount can restore the right loader/connected
+          // state without flashing back to "loading-script".
+          const live = liveDesktopSessions.get(cacheKey)
+          if (live) live.lastStatus = next
           if (next === "connected") {
             reconnectAttemptRef.current = 0
             setErrorInfo(undefined)
@@ -285,6 +377,19 @@ export function DesktopDisplay({
         host.removeEventListener("paste", onPaste)
         detach?.()
       }
+
+      // Publish to the LiveCache. From this point on, an unmount
+      // schedules a deferred teardown that a fast remount can cancel.
+      liveDesktopSessions.set(cacheKey, {
+        sessionId: start.session_id,
+        client,
+        renderer,
+        detachInputs: detachInputsRef.current,
+        teardownTimer: null,
+        remoteWidth: remoteW,
+        remoteHeight: remoteH,
+        lastStatus: "loading-script",
+      })
     }
 
     connect().catch((e) => {
@@ -294,26 +399,30 @@ export function DesktopDisplay({
     })
 
     return () => {
-      // Diagnostic: capture who triggered the cleanup. After PR #22-#24
-      // landed the RDP connection itself works, but the browser sometimes
-      // closes the WS ~1.5s after PhaseConnected — that means the React
-      // effect cleanup fired unexpectedly (component unmount or dep
-      // change), tearing down the worker. The deps (nodeId/backend/
-      // bumpKey) shouldn't change unless the user clicks reconnect, so
-      // the most likely cause is an external unmount (workspace store
-      // tabs array changed, hot reload, persist rehydration, etc).
-      // Capturing the JS call stack tells us exactly which component
-      // tree teardown triggered this cleanup.
-      console.warn("[DesktopDisplay] effect cleanup firing", {
-        sessionId: sessionIdRef.current,
-        nodeId,
-        backend,
-        bumpKey,
-        status,
-        stack: new Error().stack,
-      })
       cancelled = true
       if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
+
+      const live = liveDesktopSessions.get(cacheKey)
+      if (live) {
+        // Connect completed and the session is in the cache. Schedule a
+        // deferred teardown — a remount within TEARDOWN_GRACE_MS (the
+        // strict-mode case) will reach in, cancel the timer, and
+        // reattach without paying for a fresh POST /start.
+        if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
+        live.teardownTimer = window.setTimeout(() => {
+          liveDesktopSessions.delete(cacheKey)
+          live.detachInputs?.()
+          live.client.close()
+          live.renderer.destroy()
+          desktopControl.endSession(live.sessionId).catch(() => {})
+        }, TEARDOWN_GRACE_MS)
+        return
+      }
+
+      // Connect was still in flight (or failed). Do an immediate
+      // cleanup of whatever was started — the in-flight POST will hit
+      // the `if (cancelled)` orphan-killer above and self-clean on
+      // arrival.
       detachInputsRef.current?.()
       detachInputsRef.current = null
       clientRef.current?.close()
@@ -327,14 +436,11 @@ export function DesktopDisplay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, backend, bumpKey])
 
-  // Hard reset on `Disconnect`: also drop the renderer so the next
-  // connect rebuilds from scratch (e.g. resolution settings changed).
-  React.useEffect(() => {
-    return () => {
-      rendererRef.current?.destroy()
-      rendererRef.current = null
-    }
-  }, [])
+  // Renderer disposal is owned by the LiveCache deferred-teardown path
+  // in the connect effect above. A separate empty-deps effect that
+  // destroyed the renderer on every unmount would fire on every
+  // strict-mode unmount-remount cycle, racing the LiveCache restore and
+  // handing it a destroyed handle.
 
   function forwardClipboardText(text: string) {
     const client = clientRef.current
