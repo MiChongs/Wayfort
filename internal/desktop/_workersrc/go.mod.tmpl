@@ -1,0 +1,10 @@
+// Plan 18 — embed-only module that lives inside internal/desktop/_workersrc.
+// Built at runtime by the bootstrapper to produce the freerdp-worker
+// binary when the gateway can't find a pre-existing one.
+module jumpserver-worker-embed
+
+go 1.22
+
+require go.uber.org/zap v1.27.0
+
+require go.uber.org/multierr v1.10.0 // indirect

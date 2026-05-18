@@ -50,6 +50,16 @@ type DesktopConfig struct {
 	WorkerPath            string        `mapstructure:"worker_path"`
 	WorkerIdleTimeout     time.Duration `mapstructure:"worker_idle_timeout"`
 	MaxConcurrentSessions int           `mapstructure:"max_concurrent_sessions"`
+	// Plan 18 — startup self-check that lazily installs libfreerdp +
+	// builds the worker binary if it can't find one at WorkerPath / the
+	// fallback path table. Default true so a fresh deploy "just works"
+	// on supported distros. Operators can opt out.
+	AutoInstall bool `mapstructure:"auto_install"`
+	// InstallPrefix is where the freshly-built worker gets dropped.
+	// Defaults to /usr/local/bin/freerdp-worker. ~/.local/bin and the
+	// gateway binary's own directory are tried as fallbacks if this is
+	// not writeable.
+	InstallPrefix string `mapstructure:"install_prefix"`
 }
 
 type AIConfig struct {
@@ -322,10 +332,13 @@ func setDefaults(v *viper.Viper) {
 
 	// Plan 17 — new RDP backend, opt-in until M2 (libfreerdp wired).
 	v.SetDefault("desktop.enabled", true)
-	v.SetDefault("desktop.default_backend", "dummy")
+	v.SetDefault("desktop.default_backend", "freerdp")
 	v.SetDefault("desktop.worker_path", "")
 	v.SetDefault("desktop.worker_idle_timeout", 5*time.Minute)
 	v.SetDefault("desktop.max_concurrent_sessions", 64)
+	// Plan 18 — auto-install on missing worker.
+	v.SetDefault("desktop.auto_install", true)
+	v.SetDefault("desktop.install_prefix", "/usr/local/bin/freerdp-worker")
 
 	v.SetDefault("protocols.guacamole.enabled", false)
 	v.SetDefault("protocols.guacamole.guacd_addr", "127.0.0.1:4822")

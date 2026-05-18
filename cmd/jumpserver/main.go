@@ -307,12 +307,14 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 
 	// Plan 17 — wire the new desktop subsystem (FreeRDP worker abstraction
-	// + browser viewer). In M1 the default backend is "dummy" so this runs
-	// out-of-the-box on machines without libfreerdp; M2 swaps in the real
-	// FreeRDP worker by setting `desktop.default_backend: freerdp` +
-	// `desktop.worker_path: /usr/local/bin/freerdp-worker`.
+	// + browser viewer). The default backend is "freerdp"; Plan 18 added
+	// the startup self-check that installs deps + builds the worker if it
+	// can't find one. The bootstrap runs in a background goroutine so the
+	// HTTP listener comes up immediately; session starts before bootstrap
+	// completes return a clean 503.
+	var desktopMgr *desktop.Manager
 	if cfg.Desktop.Enabled {
-		desktopMgr := desktop.NewManager(cfg.Desktop, desktop.Deps{
+		desktopMgr = desktop.NewManager(cfg.Desktop, desktop.Deps{
 			Logger:   logger,
 			Nodes:    nodeRepo,
 			Creds:    credRepo,
@@ -367,6 +369,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		g.Go(func() error { return aiSet.Janitor(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
+	// Plan 18 — async desktop worker bootstrap. Returns nil on failure so
+	// the gateway keeps running; per-session error surfaces via 503.
+	if desktopMgr != nil {
+		g.Go(func() error { return desktopMgr.EnsureWorker(gctx) })
+	}
 
 	logger.Info("jumpserver started", zap.String("addr", cfg.Server.Addr))
 	printBootstrapBanner(bootstrap, cfg.Server.Addr)

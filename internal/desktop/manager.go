@@ -32,10 +32,13 @@ type Manager struct {
 	audit    *audit.Writer
 	sessions *repo.SessionRepo
 
-	mu       sync.Mutex
-	live     map[string]*Session // sessionID → Session
-	maxLive  int
-	created  atomic.Int64
+	mu      sync.Mutex
+	live    map[string]*Session // sessionID → Session
+	maxLive int
+	created atomic.Int64
+	// Plan 18 — true once EnsureWorker has either found or built the
+	// worker binary. Sessions started before this flips get a 503.
+	workerReady atomic.Bool
 }
 
 // PasswordOpener is the subset of pkgcrypto.Sealer we need (decrypt one blob).
@@ -81,6 +84,15 @@ func (m *Manager) Enabled() bool { return m.cfg.Enabled }
 func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientIP string, req StartSessionRequest) (*StartSessionResponse, error) {
 	if !m.cfg.Enabled {
 		return nil, errors.New("desktop subsystem disabled")
+	}
+	// Plan 18 — gate the freerdp backend on workerReady. The dummy
+	// in-process backend is always available.
+	backend := req.Backend
+	if backend == "" {
+		backend = m.cfg.DefaultBackend
+	}
+	if backend == "freerdp" && !m.workerReady.Load() {
+		return nil, errors.New("desktop worker bootstrapping (libfreerdp + go build); retry in 30-90s")
 	}
 	m.mu.Lock()
 	if len(m.live) >= m.maxLive {
