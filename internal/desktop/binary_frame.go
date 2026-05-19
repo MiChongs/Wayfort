@@ -37,9 +37,22 @@ const (
 	BinaryEncodingRFX BinaryFrameEncoding = 6
 )
 
+// BinaryFrameFlags is the bit-packed flag byte at offset 2 of the
+// binary header. Reserved bytes 3-7 stay zero for future use.
+type BinaryFrameFlags uint8
+
+const (
+	// BinaryFrameFlagKeyframe marks a codec-encoded frame as a decode
+	// entry point (e.g. an H.264 IDR slice with attached SPS/PPS).
+	// Browser-side VideoDecoder uses this to construct an
+	// EncodedVideoChunk of type "key" vs "delta".
+	BinaryFrameFlagKeyframe BinaryFrameFlags = 1 << 0
+)
+
 type BinaryFrameHeader struct {
 	Kind     BinaryFrameKind
 	Encoding BinaryFrameEncoding
+	Flags    BinaryFrameFlags
 	X        uint32
 	Y        uint32
 	Width    uint32
@@ -53,6 +66,8 @@ func EncodeBinaryFrameHeader(h BinaryFrameHeader, dst []byte) error {
 	}
 	dst[0] = byte(h.Kind)
 	dst[1] = byte(h.Encoding)
+	dst[2] = byte(h.Flags)
+	// dst[3..7] reserved for future fields.
 	binary.BigEndian.PutUint32(dst[8:12], h.X)
 	binary.BigEndian.PutUint32(dst[12:16], h.Y)
 	binary.BigEndian.PutUint32(dst[16:20], h.Width)
@@ -68,6 +83,7 @@ func DecodeBinaryFrameHeader(src []byte) (BinaryFrameHeader, error) {
 	return BinaryFrameHeader{
 		Kind:     BinaryFrameKind(src[0]),
 		Encoding: BinaryFrameEncoding(src[1]),
+		Flags:    BinaryFrameFlags(src[2]),
 		X:        binary.BigEndian.Uint32(src[8:12]),
 		Y:        binary.BigEndian.Uint32(src[12:16]),
 		Width:    binary.BigEndian.Uint32(src[16:20]),
@@ -97,9 +113,14 @@ func EncodeServerMessageBinaryPayload(msg ServerMessage) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("unsupported frame encoding %q", msg.Frame.Encoding)
 		}
+		var flags BinaryFrameFlags
+		if msg.Frame.Keyframe {
+			flags |= BinaryFrameFlagKeyframe
+		}
 		return encodeBinaryPayload(BinaryFrameHeader{
 			Kind:     BinaryFrameRect,
 			Encoding: enc,
+			Flags:    flags,
 			X:        msg.Frame.X,
 			Y:        msg.Frame.Y,
 			Width:    msg.Frame.Width,
@@ -164,6 +185,7 @@ func DecodeServerMessageBinaryPayload(body []byte) (ServerMessage, bool, error) 
 			Width:    header.Width,
 			Height:   header.Height,
 			Encoding: enc,
+			Keyframe: header.Flags&BinaryFrameFlagKeyframe != 0,
 			Payload:  payload,
 		}}, true, nil
 	case BinaryFrameCursor:
@@ -206,9 +228,14 @@ func encodeFrameBatchPayload(frames []FrameRect) ([]byte, error) {
 		if !ok {
 			return nil, fmt.Errorf("unsupported frame encoding %q", frame.Encoding)
 		}
+		var flags BinaryFrameFlags
+		if frame.Keyframe {
+			flags |= BinaryFrameFlagKeyframe
+		}
 		if err := EncodeBinaryFrameHeader(BinaryFrameHeader{
 			Kind:     BinaryFrameRect,
 			Encoding: enc,
+			Flags:    flags,
 			X:        frame.X,
 			Y:        frame.Y,
 			Width:    frame.Width,
@@ -257,6 +284,7 @@ func decodeFrameBatchPayload(payload []byte) ([]FrameRect, error) {
 			Width:    header.Width,
 			Height:   header.Height,
 			Encoding: enc,
+			Keyframe: header.Flags&BinaryFrameFlagKeyframe != 0,
 			Payload:  payload[off:end],
 		})
 		off = end

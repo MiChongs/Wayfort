@@ -281,15 +281,91 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 		enc = desktop.EncodingRawBGRA
 	}
 	buf := C.GoBytes(unsafe.Pointer(cmd.data), C.int(cmd.length))
+	keyframe := false
+	if enc == desktop.EncodingH264 {
+		// Strip the [MS-RDPEGFX 2.2.4.4.1] AVC420EncodedBitmapStream
+		// wrapper to get the raw NAL bitstream, then scan the first few
+		// NAL units for the H.264 unit-type byte. Browser
+		// VideoDecoder needs `EncodedVideoChunk { type: "key" }` for
+		// the entry point (SPS/PPS+IDR) and `"delta"` for the rest —
+		// without that bit, the decoder stalls on the first frame
+		// because it doesn't know whether to wait or start.
+		if nal, ok := stripAvc420Wrapper(buf); ok {
+			buf = nal
+			keyframe = nalStreamHasKeyframe(nal)
+		}
+	}
 	c.emit(desktop.ServerMessage{Frame: &desktop.FrameRect{
 		X:        uint32(cmd.left),
 		Y:        uint32(cmd.top),
 		Width:    uint32(cmd.right - cmd.left),
 		Height:   uint32(cmd.bottom - cmd.top),
 		Encoding: enc,
+		Keyframe: keyframe,
 		Payload:  buf,
 	}})
 	return 0
+}
+
+// stripAvc420Wrapper peels off the [MS-RDPEGFX 2.2.4.4.1]
+// AVC420EncodedBitmapStream header so the worker can forward the raw
+// H.264 NAL bitstream to the browser. The header layout is:
+//
+//	numRegionRects:   UINT32 little-endian
+//	regionRects:      numRegionRects * 8 bytes (RDPGFX_RECT16: l,t,r,b each U16)
+//	quantQualityVals: numRegionRects * 2 bytes (QP+flags + qualityVal)
+//	avc420 stream:    variable
+//
+// Returns (nil, false) if the buffer is too short or the rect count is
+// implausible (>4096 keeps DOS at bay; real desktops have <16 dirty
+// regions per frame). The boolean tells the caller the wrapper was
+// not detected — the caller then keeps the original buf intact for
+// the browser-side decoder to surface a precise error.
+func stripAvc420Wrapper(buf []byte) ([]byte, bool) {
+	if len(buf) < 4 {
+		return nil, false
+	}
+	regionCount := uint32(buf[0]) | uint32(buf[1])<<8 | uint32(buf[2])<<16 | uint32(buf[3])<<24
+	if regionCount > 4096 {
+		return nil, false
+	}
+	headerLen := 4 + int(regionCount)*(8+2)
+	if len(buf) < headerLen {
+		return nil, false
+	}
+	return buf[headerLen:], true
+}
+
+// nalStreamHasKeyframe scans the first ~64 bytes of an Annex-B H.264
+// stream for an SPS (type 7), PPS (type 8), or IDR slice (type 5).
+// Any of those makes the chunk a decode entry point. We only look at
+// the head of the stream because keyframe NALs are always at the
+// front; scanning the whole payload would burn CPU for no benefit.
+func nalStreamHasKeyframe(nal []byte) bool {
+	scanLen := len(nal)
+	if scanLen > 64 {
+		scanLen = 64
+	}
+	for i := 0; i+3 < scanLen; i++ {
+		// Annex-B start codes: 00 00 00 01 (4-byte) or 00 00 01 (3-byte).
+		var nalByte byte
+		switch {
+		case nal[i] == 0 && nal[i+1] == 0 && nal[i+2] == 0 && nal[i+3] == 1:
+			if i+4 >= scanLen {
+				return false
+			}
+			nalByte = nal[i+4]
+		case nal[i] == 0 && nal[i+1] == 0 && nal[i+2] == 1:
+			nalByte = nal[i+3]
+		default:
+			continue
+		}
+		switch nalByte & 0x1F {
+		case 5, 7, 8: // IDR slice / SPS / PPS — any of them is a key.
+			return true
+		}
+	}
+	return false
 }
 
 //export goRdpgfxCreateSurface

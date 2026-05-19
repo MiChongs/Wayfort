@@ -75,6 +75,12 @@ export interface FrameRect {
   width: number
   height: number
   encoding: Encoding
+  // keyframe is meaningful only on codec-encoded encodings (h264 /
+  // rfx). The browser-side VideoDecoder needs an EncodedVideoChunk
+  // typed "key" for a decode entry point and "delta" otherwise; this
+  // flag carries the worker's classification. Independently
+  // decodable encodings (raw_bgra, jpeg, png, zlib_bgra) ignore it.
+  keyframe?: boolean
   // base64-encoded bytes in JSON wire; switch to Uint8Array when the proto
   // wire format takes over in M1.5.
   payload: string
