@@ -16,6 +16,7 @@ extern rdpInput* wContextInput(rdpContext* ctx);
 extern BOOL wSendUnicode(rdpInput* input, BOOL down, UINT32 codepoint);
 extern BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended);
 extern BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
+extern BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom);
 */
 import "C"
 
