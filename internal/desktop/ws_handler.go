@@ -19,9 +19,10 @@ import (
 // WSHandler upgrades /api/v1/ws/v2/desktop/:session_id to a WebSocket and
 // pipes ServerMessage / ClientMessage frames between browser and worker.
 //
-// Wire format on the WS hop: one JSON message per WS binary frame. The
-// stdio leg (gateway ↔ worker) uses 4-byte length prefixes; the WS leg
-// doesn't need to because WebSocket already provides message boundaries.
+// Wire format on the WS hop:
+//   - desktop.v1: one JSON message per WS binary frame.
+//   - desktop.v2: binary header + payload for frame/cursor payloads, and a
+//     binary JSON envelope for status / clipboard / bell.
 type WSHandler struct {
 	Manager *Manager
 	Logger  *zap.Logger
@@ -54,11 +55,12 @@ func (h *WSHandler) Handle(c *gin.Context) {
 	// Reuse webssh's AcceptWS for consistent CORS / subprotocol policy.
 	// We use a dedicated subprotocol id so future client-side libs can
 	// guard against accidentally connecting to the wrong endpoint.
-	conn, err := webssh.AcceptWS(c, "desktop.v1")
+	conn, err := webssh.AcceptWS(c, "desktop.v2", "desktop.v1")
 	if err != nil {
 		h.Logger.Warn("desktop ws upgrade failed", zap.Error(err))
 		return
 	}
+	useBinaryV2 := conn.Subprotocol() == "desktop.v2"
 	// 16 MB read limit gives clipboard / large input payloads room.
 	conn.SetReadLimit(16 * 1024 * 1024)
 
@@ -93,17 +95,33 @@ func (h *WSHandler) Handle(c *gin.Context) {
 		}
 	})
 
-	// worker → browser: drain worker.Recv() onto WS as JSON binary frames.
+	// worker → browser: drain worker.Recv() onto WS.
 	g.Go(func() error {
+		workerRecv := sess.Worker.Recv()
+		pending := make([]ServerMessage, 0, 4)
 		for {
+			var msg ServerMessage
+			if len(pending) > 0 {
+				msg = pending[0]
+				copy(pending, pending[1:])
+				pending = pending[:len(pending)-1]
+			} else {
+				select {
+				case <-gctx.Done():
+					return nil
+				case next, ok := <-workerRecv:
+					if !ok {
+						return nil
+					}
+					msg = next
+				}
+			}
+			msg = coalesceFrameMessages(msg, workerRecv, &pending)
 			select {
 			case <-gctx.Done():
 				return nil
-			case msg, ok := <-sess.Worker.Recv():
-				if !ok {
-					return nil
-				}
-				body, err := json.Marshal(msg)
+			default:
+				body, err := encodeServerMessageForWS(msg, useBinaryV2)
 				if err != nil {
 					h.Logger.Warn("desktop server msg encode", zap.Error(err))
 					continue
@@ -153,4 +171,53 @@ func (h *WSHandler) Handle(c *gin.Context) {
 		return
 	}
 	_ = conn.Close(websocket.StatusNormalClosure, "bye")
+}
+
+func coalesceFrameMessages(first ServerMessage, recv <-chan ServerMessage, pending *[]ServerMessage) ServerMessage {
+	frames, ok := messageFrames(first)
+	if !ok {
+		return first
+	}
+	const maxFrameBatch = 32
+	for len(frames) < maxFrameBatch {
+		select {
+		case next, ok := <-recv:
+			if !ok {
+				return messageFromFrames(frames)
+			}
+			nextFrames, ok := messageFrames(next)
+			if !ok {
+				*pending = append(*pending, next)
+				return messageFromFrames(frames)
+			}
+			frames = append(frames, nextFrames...)
+		default:
+			return messageFromFrames(frames)
+		}
+	}
+	return messageFromFrames(frames)
+}
+
+func messageFrames(msg ServerMessage) ([]FrameRect, bool) {
+	if msg.Frame != nil {
+		return []FrameRect{*msg.Frame}, true
+	}
+	if msg.FrameBatch != nil && len(msg.FrameBatch.Frames) > 0 {
+		return msg.FrameBatch.Frames, true
+	}
+	return nil, false
+}
+
+func messageFromFrames(frames []FrameRect) ServerMessage {
+	if len(frames) == 1 {
+		return ServerMessage{Frame: &frames[0]}
+	}
+	return ServerMessage{FrameBatch: &FrameBatch{Frames: frames}}
+}
+
+func encodeServerMessageForWS(msg ServerMessage, binaryV2 bool) ([]byte, error) {
+	if !binaryV2 {
+		return json.Marshal(msg)
+	}
+	return EncodeServerMessageBinaryPayload(msg)
 }

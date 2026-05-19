@@ -22,12 +22,7 @@ export type WorkspaceTab = {
   id: string
   nodeId: number
   protocol: Protocol
-  // Only meaningful when protocol === "rdp_next". Picks which renderer
-  // DesktopDisplay mounts: "freerdp" (libfreerdp worker — the default
-  // since server's `desktop.default_backend` is freerdp), "dummy" (test
-  // pattern, no remote host), or "ironrdp" (Wasm via Devolutions Gateway
-  // — requires `desktop.devolutions_gateway.enabled = true` on the
-  // server). Undefined = use the DesktopDisplay default (freerdp).
+  // Only used by rdp_next. Chooses the implementation behind DesktopDisplay.
   rdpBackend?: DesktopBackend
   title: string
   // Persisted snapshot of host/port so tab strip and recent list can render
@@ -53,7 +48,6 @@ export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" 
 type OpenInput = {
   nodeId: number
   protocol: Protocol
-  // rdp_next only — see WorkspaceTab.rdpBackend doc.
   rdpBackend?: DesktopBackend
   title: string
   host?: string

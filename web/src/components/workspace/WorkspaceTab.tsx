@@ -5,7 +5,7 @@ import { motion, useReducedMotion } from "motion/react"
 import { Loader2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { WorkspaceTab as WorkspaceTabModel } from "./useWorkspaceStore"
-import { metaOf } from "./protocolMeta"
+import { metaOf, rdpBackendShortLabel } from "./protocolMeta"
 
 type Props = {
   tab: WorkspaceTabModel
@@ -58,6 +58,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
   ref,
 ) {
   const meta = metaOf(tab.protocol)
+  const rdpBackendLabel = tab.protocol === "rdp_next" ? rdpBackendShortLabel(tab.rdpBackend) : null
   const Icon = meta.icon
   const reduced = useReducedMotion()
   const [draft, setDraft] = React.useState(tab.title)
@@ -92,7 +93,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
-      title={`${tab.title}${tab.host ? ` (${tab.host}${tab.port ? ":" + tab.port : ""})` : ""} · ${STATUS_LABEL[tab.status]}`}
+      title={`${tab.title}${tab.host ? ` (${tab.host}${tab.port ? ":" + tab.port : ""})` : ""}${rdpBackendLabel ? ` · ${rdpBackendLabel}` : ""} · ${STATUS_LABEL[tab.status]}`}
       className="contents"
       {...rest}
     >
@@ -182,6 +183,11 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
         ) : (
           <span className="flex-1 min-w-0 truncate flex items-center gap-1">
             <span className="truncate">{tab.title}</span>
+            {rdpBackendLabel && (
+              <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] leading-none text-muted-foreground">
+                {rdpBackendLabel}
+              </span>
+            )}
             {tab.status === "connecting" && (
               <Loader2 className="w-3 h-3 animate-spin text-amber-500 shrink-0" aria-hidden />
             )}

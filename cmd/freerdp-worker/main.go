@@ -2,15 +2,17 @@
 // desktop session.
 //
 // M1 (this commit): wraps internal/desktop.DummyWorker so the full
-//   gateway → worker → gateway → browser pipeline can be exercised
-//   without libfreerdp present on the build machine. The wire protocol
-//   (4-byte length-prefixed JSON frames over stdin/stdout) matches what
-//   M2 will speak with the real FreeRDP-linked implementation, so the
-//   gateway code does not change in M2.
+//
+//	gateway → worker → gateway → browser pipeline can be exercised
+//	without libfreerdp present on the build machine. The wire protocol
+//	(4-byte length-prefixed JSON frames over stdin/stdout) matches what
+//	M2 will speak with the real FreeRDP-linked implementation, so the
+//	gateway code does not change in M2.
 //
 // M2: replace the body of `run()` with a CGo-driven libfreerdp 3.x client
-//   that produces real surface updates instead of a moving test pattern.
-//   The function signature and frame protocol stay the same.
+//
+//	that produces real surface updates instead of a moving test pattern.
+//	The function signature and frame protocol stay the same.
 package main
 
 import (
@@ -72,7 +74,7 @@ func run(logger *zap.Logger) error {
 		return fmt.Errorf("read start frame: %w", err)
 	}
 	var startMsg struct {
-		Type string               `json:"type"`
+		Type string              `json:"type"`
 		P    desktop.StartParams `json:"p"`
 	}
 	if err := json.Unmarshal(startFrame, &startMsg); err != nil {
@@ -80,6 +82,15 @@ func run(logger *zap.Logger) error {
 	}
 	if startMsg.Type != "start" {
 		return errors.New("first frame must be type=start")
+	}
+
+	// Keep stdout reserved for length-prefixed worker frames. WinPR's console
+	// appender defaults may write non-error logs to stdout, which corrupts the
+	// gateway protocol (the gateway then reads "[14:" as a 4-byte frame length).
+	if rdp.ConfigureWLogToStderr() {
+		logger.Info("libfreerdp WLog output forced to stderr")
+	} else {
+		logger.Warn("libfreerdp WLog stderr configuration failed")
 	}
 
 	// Force libfreerdp's WLog root to honour WLOG_LEVEL before any
@@ -104,7 +115,9 @@ func run(logger *zap.Logger) error {
 	// gateway-side in-process alternative for hosts without libfreerdp —
 	// see internal/desktop/manager.go pickWorker().
 	worker := rdp.NewClient(logger)
-	if err := worker.Start(ctx, startMsg.P); err != nil {
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	if err := worker.Start(workerCtx, startMsg.P); err != nil {
 		return fmt.Errorf("worker start: %w", err)
 	}
 
@@ -120,28 +133,33 @@ func run(logger *zap.Logger) error {
 				if !errors.Is(err, io.EOF) {
 					logger.Warn("stdin read", zap.Error(err))
 				}
+				workerCancel()
 				return
 			}
 			var env struct {
-				Type string                  `json:"type"`
-				Msg  desktop.ClientMessage   `json:"msg"`
+				Type string                `json:"type"`
+				Msg  desktop.ClientMessage `json:"msg"`
 			}
 			if err := json.Unmarshal(body, &env); err != nil {
 				logger.Warn("decode client frame", zap.Error(err))
 				continue
 			}
-			if env.Type == "client" {
+			switch env.Type {
+			case "client":
 				_ = worker.Send(env.Msg)
+			case "close":
+				workerCancel()
+				return
 			}
 		}
 	}()
 
-	// worker → stdout. Wraps each ServerMessage as a length-prefixed JSON
-	// frame. The gateway side reads them with `internal/desktop.readFrame`.
+	// worker → stdout. Hot frame/cursor payloads use the binary desktop header
+	// so large pixel buffers avoid JSON/base64 before the gateway forwards them.
 	go func() {
 		defer wg.Done()
 		for msg := range worker.Recv() {
-			body, err := json.Marshal(msg)
+			body, err := desktop.EncodeServerMessageBinaryPayload(msg)
 			if err != nil {
 				logger.Warn("encode server message", zap.Error(err))
 				continue
@@ -152,9 +170,10 @@ func run(logger *zap.Logger) error {
 		}
 	}()
 
-	// Termination: when ctx is cancelled (SIGTERM / parent died) we close
-	// the worker which lets the stdout pump exit.
-	<-ctx.Done()
+	// Termination: when ctx is cancelled (SIGTERM / parent died), stdin is
+	// closed, or the parent sends an explicit close envelope, close the worker
+	// so the stdout pump can exit.
+	<-workerCtx.Done()
 	_ = worker.Close()
 	// Bounded wait so a stuck worker doesn't keep us alive.
 	doneCh := make(chan struct{})

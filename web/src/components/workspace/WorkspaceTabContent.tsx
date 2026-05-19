@@ -65,10 +65,8 @@ function TabBody({ tab }: { tab: TabModel }) {
   }, [open, tab.host, tab.nodeId, tab.port, tab.title])
 
   // DesktopDisplay (rdp_next) drives the same Tab status pipeline as
-  // WebSSH. The DesktopStatus enum is finer-grained than TabStatus, so
-  // we collapse the connection-in-progress states down to "connecting"
-  // and the terminal states to "closed"/"error" — the inner viewer
-  // shows the precise phase in its own loading overlay.
+  // WebSSH. DesktopStatus is finer-grained than TabStatus, so collapse:
+  //   connected/error/closed → same value; everything else → connecting.
   const onDesktopStatusChange = React.useCallback(
     (s: "loading-script" | "connecting" | "handshake" | "connected" | "reconnecting" | "closed" | "error") => {
       if (s === "connected") setStatus(tab.id, "connected")
@@ -79,9 +77,8 @@ function TabBody({ tab }: { tab: TabModel }) {
     [setStatus, tab.id],
   )
 
-  // RTT badge. `null` means the renderer can't measure latency for this
-  // session (e.g. IronRDP Wasm path) — the badge renders a dash. Wiping
-  // happens when the renderer reports null on disconnect.
+  // RTT badge. `null` means the renderer can't measure latency on this
+  // session (e.g. IronRDP Wasm path) — the badge renders a dash.
   const onDesktopLatency = React.useCallback(
     (ms: number | null) => {
       setLatency(tab.id, ms)
@@ -89,11 +86,10 @@ function TabBody({ tab }: { tab: TabModel }) {
     [setLatency, tab.id],
   )
 
-  // Non-WS protocols that *do* push status (rdp_next via DesktopDisplay)
-  // are driven by their own callbacks below — don't pre-set them here
-  // or we race the callback. Protocols without callbacks (rdp/vnc on
-  // the legacy Guacamole path; sftp; tcp_forward) still need this
-  // bootstrap so the tab dot doesn't stick at "fresh".
+  // Non-WS protocols without a callback channel still need a bootstrap
+  // status. rdp / vnc (Plan 15 Guacamole path) lack onStatusChange; sftp /
+  // tcp_forward have no phase. rdp_next is driven by onDesktopStatusChange
+  // below, so we skip it here to avoid racing the callback.
   React.useEffect(() => {
     if (tab.protocol === "sftp" || tab.protocol === "tcp_forward") {
       setStatus(tab.id, "connected")

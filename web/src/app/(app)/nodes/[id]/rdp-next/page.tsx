@@ -1,9 +1,11 @@
 "use client"
 
 import { use } from "react"
+import { useSearchParams } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
 import { DesktopDisplay } from "@/components/desktop/desktop-display"
 import { nodeService } from "@/lib/api/services"
+import type { DesktopBackend } from "@/lib/desktop/types"
 
 // Plan 17 — new RDP frontend (Beta). Uses the DesktopWorker subprocess
 // abstraction instead of guacd. M1 ships with the in-process "dummy"
@@ -15,7 +17,9 @@ import { nodeService } from "@/lib/api/services"
 // feature parity; we go through Plan 19 to retire it.
 export default function NodeRDPNextPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+  const searchParams = useSearchParams()
   const nodeId = Number(id)
+  const backend = parseBackend(searchParams.get("backend"))
   const node = useQuery({
     queryKey: ["node", nodeId],
     queryFn: () => nodeService.get(nodeId),
@@ -28,6 +32,7 @@ export default function NodeRDPNextPage({ params }: { params: Promise<{ id: stri
         nodeHost={node.data?.host}
         nodePort={node.data?.port}
         backHref={`/nodes/${nodeId}`}
+        backend={backend}
         // Default to freerdp now that M2 + Plan 18 ship the real worker.
         // If the gateway can't reach a built worker the start call returns
         // 502 with a clear error; the user can manually try ?backend=dummy
@@ -35,4 +40,9 @@ export default function NodeRDPNextPage({ params }: { params: Promise<{ id: stri
       />
     </div>
   )
+}
+
+function parseBackend(value: string | null): DesktopBackend {
+  if (value === "ironrdp" || value === "dummy") return value
+  return "freerdp"
 }

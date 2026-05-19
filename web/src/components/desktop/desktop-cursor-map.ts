@@ -6,6 +6,7 @@
 // because the worker may forward them as-is from SET_DEFAULT / SET_NULL
 // PDU translation. ~95% of X11 shapes have a direct CSS equivalent;
 // everything else falls back to "default".
+import { base64ToBytes } from "@/lib/desktop/types"
 
 const MAP: Record<string, string> = {
   // FreeRDP system cursors (Plan 17 M2 emits these)
@@ -80,5 +81,38 @@ export function x11CursorToCss(name: string | undefined | null): string {
 // (data: URL with hotspot). Includes a "default" fallback per CSS spec
 // so browsers that reject the URL still show a usable pointer.
 export function bitmapCursorCss(pngBase64: string, hotspotX: number, hotspotY: number): string {
-  return `url(data:image/png;base64,${pngBase64}) ${hotspotX} ${hotspotY}, default`
+  return cursorDataUrlCss(`data:image/png;base64,${pngBase64}`, hotspotX, hotspotY)
+}
+
+export function rawBgraCursorCss(
+  rawBase64: string,
+  width: number,
+  height: number,
+  hotspotX: number,
+  hotspotY: number,
+): string {
+  if (typeof document === "undefined" || width <= 0 || height <= 0) return "default"
+  const bytes = base64ToBytes(rawBase64)
+  if (bytes.length < width * height * 4) return "default"
+
+  const canvas = document.createElement("canvas")
+  canvas.width = width
+  canvas.height = height
+  const ctx = canvas.getContext("2d")
+  if (!ctx) return "default"
+
+  const image = ctx.createImageData(width, height)
+  const dst = image.data
+  for (let i = 0; i < width * height * 4; i += 4) {
+    dst[i] = bytes[i + 2]
+    dst[i + 1] = bytes[i + 1]
+    dst[i + 2] = bytes[i]
+    dst[i + 3] = bytes[i + 3]
+  }
+  ctx.putImageData(image, 0, 0)
+  return cursorDataUrlCss(canvas.toDataURL("image/png"), hotspotX, hotspotY)
+}
+
+function cursorDataUrlCss(dataUrl: string, hotspotX: number, hotspotY: number): string {
+  return `url(${dataUrl}) ${hotspotX} ${hotspotY}, default`
 }

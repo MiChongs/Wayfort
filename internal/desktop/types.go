@@ -57,12 +57,12 @@ type StartSessionResponse struct {
 	// presents to the Devolutions Gateway as a pre-auth ticket. These
 	// fields are zero for freerdp/dummy responses; the browser MUST
 	// ignore them unless Backend == "ironrdp".
-	GatewayURL   string `json:"gateway_url,omitempty"`
-	Token        string `json:"token,omitempty"`
-	Destination  string `json:"destination,omitempty"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	Domain       string `json:"domain,omitempty"`
+	GatewayURL  string `json:"gateway_url,omitempty"`
+	Token       string `json:"token,omitempty"`
+	Destination string `json:"destination,omitempty"`
+	Username    string `json:"username,omitempty"`
+	Password    string `json:"password,omitempty"`
+	Domain      string `json:"domain,omitempty"`
 }
 
 type ResizeRequest struct {
@@ -84,9 +84,28 @@ type GetStatusResponse struct {
 type Encoding string
 
 const (
-	EncodingRawBGRA Encoding = "raw_bgra"
-	EncodingJPEG    Encoding = "jpeg"
-	EncodingPNG     Encoding = "png"
+	EncodingRawBGRA  Encoding = "raw_bgra"
+	EncodingJPEG     Encoding = "jpeg"
+	EncodingPNG      Encoding = "png"
+	EncodingZlibBGRA Encoding = "zlib_bgra"
+	// EncodingH264 / EncodingRFX carry RDPGFX SURFACE_COMMAND payloads
+	// forwarded by libfreerdp untouched. They are AVC420 (H.264
+	// Constrained Baseline, single YUV4:2:0 stream — AVC444 is
+	// deliberately disabled in client.go so the browser side can decode
+	// with WebCodecs.VideoDecoder which only accepts a single stream)
+	// and RemoteFX progressive codec respectively. The browser side
+	// uses these strings to dispatch to the right decoder; servers
+	// without GFX negotiate down to raw_bgra so this is additive.
+	EncodingH264 Encoding = "h264"
+	EncodingRFX  Encoding = "rfx"
+)
+
+type CursorEncoding string
+
+const (
+	CursorEncodingRawBGRA CursorEncoding = "raw_bgra"
+	CursorEncodingPNG     CursorEncoding = "png"
+	CursorEncodingSystem  CursorEncoding = "system"
 )
 
 type Phase string
@@ -103,11 +122,16 @@ const (
 // ServerMessage is the union sent from worker → gateway → browser. Each
 // instance carries exactly one populated field; the others are nil.
 type ServerMessage struct {
-	Frame     *FrameRect     `json:"frame,omitempty"`
-	Cursor    *CursorUpdate  `json:"cursor,omitempty"`
-	Status    *SessionStatus `json:"status,omitempty"`
-	Bell      *struct{}      `json:"bell,omitempty"`
-	Clipboard *ClipboardData `json:"clipboard,omitempty"`
+	Frame      *FrameRect     `json:"frame,omitempty"`
+	FrameBatch *FrameBatch    `json:"frame_batch,omitempty"`
+	Cursor     *CursorUpdate  `json:"cursor,omitempty"`
+	Status     *SessionStatus `json:"status,omitempty"`
+	Bell       *struct{}      `json:"bell,omitempty"`
+	Clipboard  *ClipboardData `json:"clipboard,omitempty"`
+}
+
+type FrameBatch struct {
+	Frames []FrameRect `json:"frames"`
 }
 
 type FrameRect struct {
@@ -123,14 +147,16 @@ type FrameRect struct {
 }
 
 type CursorUpdate struct {
-	HotspotX uint32 `json:"hotspot_x"`
-	HotspotY uint32 `json:"hotspot_y"`
-	PNG      []byte `json:"png"`
+	HotspotX uint32         `json:"hotspot_x"`
+	HotspotY uint32         `json:"hotspot_y"`
+	Width    uint32         `json:"width,omitempty"`
+	Height   uint32         `json:"height,omitempty"`
+	Encoding CursorEncoding `json:"encoding"`
+	Payload  []byte         `json:"payload,omitempty"`
 	// SystemKind names a generic X11/CSS cursor (default | pointer | text |
 	// wait | crosshair | move | not-allowed | grab | grabbing | …) that the
 	// browser should use INSTEAD of a bitmap. The worker sets this when the
-	// server sends SET_NULL / SET_DEFAULT / pointer-system instead of a
-	// bitmap PDU. When non-empty, PNG is ignored.
+	// server sends SET_DEFAULT / pointer-system instead of a bitmap PDU.
 	SystemKind string `json:"system_kind,omitempty"`
 	// Hidden tells the client to hide the cursor entirely (server requested
 	// pointer hiding, e.g. game / fullscreen mode).
@@ -155,6 +181,21 @@ type ClientMessage struct {
 	HB        *Heartbeat     `json:"hb,omitempty"`
 	Clipboard *ClipboardData `json:"clipboard,omitempty"`
 	Resize    *ResizeHint    `json:"resize,omitempty"`
+	// Caps is sent once by the browser right after WS open and carries
+	// the decoder capabilities the gateway / worker need before
+	// negotiating RDPGFX upstream. Currently consumed by ws_handler.go
+	// (logging only) — the gate that would refuse to enable H.264 on
+	// browsers without VideoDecoder is wired but not yet enforcing
+	// dynamic opt override; defer to follow-up.
+	Caps *ClientCaps `json:"caps,omitempty"`
+}
+
+// ClientCaps mirrors the TypeScript ClientCaps shape (web/src/lib/
+// desktop/types.ts) so JSON unmarshalling is a memcpy.
+type ClientCaps struct {
+	H264         bool `json:"h264"`
+	RFX          bool `json:"rfx"`
+	ImageDecoder bool `json:"imageDecoder"`
 }
 
 type InputKey struct {

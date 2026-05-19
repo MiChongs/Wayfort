@@ -4,12 +4,13 @@
 //
 //   { type: "init",   canvas: OffscreenCanvas, width: 1280, height: 720 }
 //   { type: "server", msg: ServerMessage }       — FrameRect or CursorUpdate
+//   { type: "frame-bytes", frame, payload }      — desktop.v2 binary frame
 //   { type: "resize", width: number, height: number }
 //   { type: "close" }
 //
 // Posts back to main thread:
 //
-//   { type: "cursor", x: number, y: number, png: string }   — for DOM cursor
+//   { type: "cursor", cursor: CursorUpdate }   — for DOM cursor
 //   { type: "ready" }
 //
 // Decoding the test pattern (raw BGRA) is putImageData after swapping
@@ -19,6 +20,7 @@
 
 /// <reference lib="webworker" />
 import { decode as decodePng } from "fast-png"
+import { decompressSync } from "fflate"
 import { decode as decodeJpeg } from "jpeg-js"
 import { base64ToBytes, type FrameRect, type ServerMessage } from "./types"
 
@@ -29,72 +31,13 @@ let g2d: OffscreenCanvasRenderingContext2D | null = null
 let canvasW = 0
 let canvasH = 0
 
-// Block B — performance instrumentation. Sums and counters reset every
-// time we emit, so the main thread receives moving averages over the
-// last `METRICS_INTERVAL_MS` window. `droppedFrames` is monotonic
-// because the perf panel charts cumulative drops over time.
-const METRICS_INTERVAL_MS = 1000
-let decodeAccumMs = 0
-let paintAccumMs = 0
-let framesPainted = 0
-let droppedFrames = 0
-let metricsLastEmit = 0
-
-function maybeEmitMetrics(now: number) {
-  if (now - metricsLastEmit < METRICS_INTERVAL_MS) return
-  // Only emit if we actually did work — keeps the panel quiet for
-  // idle sessions instead of spamming zero rows.
-  if (framesPainted === 0 && droppedFrames === 0) {
-    metricsLastEmit = now
-    return
-  }
-  ctx.postMessage({
-    type: "metrics",
-    avgDecodeMs: framesPainted > 0 ? decodeAccumMs / framesPainted : 0,
-    avgPaintMs: framesPainted > 0 ? paintAccumMs / framesPainted : 0,
-    framesPainted,
-    droppedFrames,
-  })
-  decodeAccumMs = 0
-  paintAccumMs = 0
-  framesPainted = 0
-  metricsLastEmit = now
-}
-
-// Stale-frame coalescer. The server can deliver bursts (multiple frame
-// rects from one batch) faster than the GPU can present them. Without
-// coalescing, slow paths queue up and the worker spends most of its
-// time decoding frames the user will never see. We keep one queued
-// frame per region key (currently a single global slot since the
-// dummy backend sends full-canvas frames); newer arrivals replace
-// older ones and bump the dropped counter.
-let pendingFrame: FrameRect | null = null
-let coalesceRaf = 0
-function schedulePaint() {
-  if (coalesceRaf !== 0) return
-  // requestAnimationFrame inside a worker is supported in modern
-  // browsers (Chrome 79+, Edge 79+, Safari 16.4+, Firefox 100+).
-  // Falling back to setTimeout(0) is fine where rAF is missing — it
-  // just loses the visibility-pause behaviour.
-  const raf =
-    typeof self.requestAnimationFrame === "function"
-      ? self.requestAnimationFrame
-      : (cb: FrameRequestCallback) =>
-          self.setTimeout(() => cb(performance.now()), 0) as unknown as number
-  coalesceRaf = raf((ts) => {
-    coalesceRaf = 0
-    const next = pendingFrame
-    pendingFrame = null
-    if (!next) return
-    void paintFrame(next)
-    maybeEmitMetrics(ts)
-  })
-}
+type FrameRectMeta = Omit<FrameRect, "payload">
 
 ctx.addEventListener("message", async (ev: MessageEvent) => {
   const data = ev.data as
     | { type: "init"; canvas: OffscreenCanvas; width: number; height: number }
     | { type: "server"; msg: ServerMessage }
+    | { type: "frame-bytes"; frame: FrameRectMeta; payload: Uint8Array }
     | { type: "resize"; width: number; height: number }
     | { type: "close" }
   switch (data.type) {
@@ -121,24 +64,19 @@ ctx.addEventListener("message", async (ev: MessageEvent) => {
     }
     case "server": {
       if (data.msg.frame) {
-        // Coalesce — if a previous frame is still pending, this one
-        // displaces it. The displaced frame was never painted so it
-        // counts as dropped. schedulePaint() drives the paint via the
-        // worker's rAF so we naturally pace with the display refresh.
-        if (pendingFrame) droppedFrames++
-        pendingFrame = data.msg.frame
-        schedulePaint()
+        await paintFrame(data.msg.frame)
       } else if (data.msg.cursor) {
-        // Forward to main thread which sets the DOM cursor (PNG-data URL
-        // applied to the <canvas>'s `cursor` style). Worker can't do that
-        // — DOM access requires main thread.
+        // Forward to main thread which sets the DOM cursor. Worker can't do
+        // that — DOM access requires main thread.
         ctx.postMessage({
           type: "cursor",
-          x: data.msg.cursor.hotspot_x,
-          y: data.msg.cursor.hotspot_y,
-          png: data.msg.cursor.png,
+          cursor: data.msg.cursor,
         })
       }
+      return
+    }
+    case "frame-bytes": {
+      await paintFrameBytes(data.frame, data.payload)
       return
     }
     case "close": {
@@ -149,6 +87,10 @@ ctx.addEventListener("message", async (ev: MessageEvent) => {
 })
 
 async function paintFrame(f: FrameRect): Promise<void> {
+  await paintFrameBytes(f, base64ToBytes(f.payload))
+}
+
+async function paintFrameBytes(f: FrameRectMeta, bytes: Uint8Array): Promise<void> {
   if (!g2d || !canvas) return
   // Auto-grow canvas to match remote dimensions (worker dummy may resize).
   const neededW = Math.max(canvasW, f.x + f.width)
@@ -161,31 +103,41 @@ async function paintFrame(f: FrameRect): Promise<void> {
     // Notify main thread so it can reflow the wrapper.
     ctx.postMessage({ type: "resized", width: neededW, height: neededH })
   }
-  // Two timers: `decodeStart`→`paintStart` measures bytes→ImageBitmap
-  // (or ImageData) decoding cost; `paintStart`→end measures the actual
-  // draw call onto the GPU-backed OffscreenCanvas. Recorded into the
-  // accumulators picked up by `maybeEmitMetrics`.
-  const decodeStart = performance.now()
-  const bytes = base64ToBytes(f.payload)
   switch (f.encoding) {
-    case "raw_bgra": {
+    case "raw_bgra":
+    case "zlib_bgra": {
+      let bgra: Uint8Array
+      try {
+        bgra = f.encoding === "zlib_bgra" ? inflateBgraPayload(bytes, f.width, f.height) : bytes
+      } catch (error) {
+        ctx.postMessage({
+          type: "error",
+          message: `frame decode failed: ${String(error)}`,
+        })
+        return
+      }
+      const expected = f.width * f.height * 4
+      if (bgra.length < expected) {
+        ctx.postMessage({
+          type: "error",
+          message: `${f.encoding} payload too small: got ${bgra.length}, need ${expected}`,
+        })
+        return
+      }
       const id = g2d.createImageData(f.width, f.height)
       // BGRA → RGBA in place. We could pre-allocate this buffer in M1.5;
       // for a 640×360 test pattern it's only 900KB / frame so the GC
       // pressure is tolerable.
       const dst = id.data
-      for (let i = 0; i < bytes.length; i += 4) {
-        dst[i] = bytes[i + 2]
-        dst[i + 1] = bytes[i + 1]
-        dst[i + 2] = bytes[i]
-        dst[i + 3] = bytes[i + 3]
+      for (let i = 0; i < expected; i += 4) {
+        dst[i] = bgra[i + 2]
+        dst[i + 1] = bgra[i + 1]
+        dst[i + 2] = bgra[i]
+        // FreeRDP desktop pixels are BGRX; treating X as alpha causes black or
+        // transparent artifacts on some servers.
+        dst[i + 3] = 255
       }
-      const paintStart = performance.now()
       g2d.putImageData(id, f.x, f.y)
-      const end = performance.now()
-      decodeAccumMs += paintStart - decodeStart
-      paintAccumMs += end - paintStart
-      framesPainted++
       return
     }
     case "jpeg":
@@ -195,22 +147,12 @@ async function paintFrame(f: FrameRect): Promise<void> {
       })
       try {
         const bmp = await createImageBitmap(blob)
-        const paintStart = performance.now()
         g2d.drawImage(bmp, f.x, f.y, f.width, f.height)
-        const end = performance.now()
         bmp.close()
-        decodeAccumMs += paintStart - decodeStart
-        paintAccumMs += end - paintStart
-        framesPainted++
       } catch {
         try {
           const image = decodeFrameBytes(bytes, f.encoding)
-          const paintStart = performance.now()
           g2d.putImageData(image, f.x, f.y)
-          const end = performance.now()
-          decodeAccumMs += paintStart - decodeStart
-          paintAccumMs += end - paintStart
-          framesPainted++
         } catch (error) {
           ctx.postMessage({
             type: "error",
@@ -221,6 +163,15 @@ async function paintFrame(f: FrameRect): Promise<void> {
       return
     }
   }
+}
+
+function inflateBgraPayload(bytes: Uint8Array, width: number, height: number) {
+  const out = decompressSync(bytes)
+  const expected = width * height * 4
+  if (out.length < expected) {
+    throw new Error(`zlib BGRA payload too small after inflate: got ${out.length}, need ${expected}`)
+  }
+  return out
 }
 
 function decodeFrameBytes(bytes: Uint8Array, encoding: "jpeg" | "png"): ImageData {

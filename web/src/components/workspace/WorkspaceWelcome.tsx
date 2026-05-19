@@ -7,8 +7,8 @@ import { ArrowRight, Clock, Keyboard, LayoutGrid, MousePointer2, Plus, Star } fr
 import { Button } from "@/components/ui/button"
 import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
-import { metaOf, protocolsForNode } from "./protocolMeta"
-import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
+import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "./protocolMeta"
+import { useWorkspaceStore } from "./useWorkspaceStore"
 
 type Props = {
   onNewTab: () => void
@@ -35,10 +35,11 @@ export function WorkspaceWelcome({ onNewTab }: Props) {
     .filter((n): n is Node => !!n)
     .slice(0, 6)
 
-  const openWith = (n: Node, p: Protocol) =>
+  const openWith = (n: Node, choice: ProtocolChoice) =>
     open({
       nodeId: n.id,
-      protocol: p,
+      protocol: choice.protocol,
+      rdpBackend: choice.rdpBackend,
       title: n.name,
       host: n.host,
       port: n.port,
@@ -135,15 +136,15 @@ function Section({
   )
 }
 
-function NodeQuickCard({ node, onOpen }: { node: Node; onOpen: (n: Node, p: Protocol) => void }) {
-  const protos = protocolsForNode(node.protocol)
-  const primary = protos[0]
-  const meta = metaOf(primary)
+function NodeQuickCard({ node, onOpen }: { node: Node; onOpen: (n: Node, choice: ProtocolChoice) => void }) {
+  const choices = protocolChoicesForNode(node.protocol)
+  const primary = choices[0]
+  const meta = metaOf(primary?.protocol ?? "tcp_forward")
   const Icon = meta.icon
   return (
     <button
       type="button"
-      onClick={() => onOpen(node, primary)}
+      onClick={() => primary && onOpen(node, primary)}
       className="text-left rounded-lg border bg-card p-3 hover:bg-accent/40 transition-colors group"
     >
       <div className="flex items-center gap-2">
@@ -155,15 +156,15 @@ function NodeQuickCard({ node, onOpen }: { node: Node; onOpen: (n: Node, p: Prot
         {node.host}:{node.port}
       </div>
       <div className="mt-2 flex gap-1 flex-wrap">
-        {protos.map((p) => {
-          const m = metaOf(p)
+        {choices.map((choice) => {
+          const m = metaOf(choice.protocol)
           return (
             <span
-              key={p}
+              key={choice.value}
               className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground"
-              title={m.label}
+              title={choice.description ?? choice.label}
             >
-              {m.label}
+              {choice.label}
             </span>
           )
         })}

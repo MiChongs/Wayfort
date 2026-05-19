@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Group, Panel, Separator } from "react-resizable-panels"
 import type { Node } from "@/lib/api/types"
+import type { DesktopBackend } from "@/lib/desktop/types"
 import { AssetTree } from "./AssetTree"
 import { NewTabLauncher } from "./NewTabLauncher"
 import { WorkspaceMenubar } from "./WorkspaceMenubar"
@@ -21,10 +22,11 @@ export function WorkspaceShell() {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
 
   const openTabFromTree = React.useCallback(
-    (node: Node, protocol: Protocol) => {
+    (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => {
       open({
         nodeId: node.id,
         protocol,
+        rdpBackend,
         title: node.name,
         host: node.host,
         port: node.port,

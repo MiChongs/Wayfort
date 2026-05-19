@@ -1,11 +1,11 @@
 "use client"
 
 // DesktopDisplay v2 — top-level React component for the workspace-v2
-// `rdp_next` protocol. Mounts an OffscreenCanvas renderer, opens the WS
-// data channel via FrameClient, attaches keyboard/mouse handlers, and
-// coordinates a shadcn-styled toolbar + status bar + settings drawer +
-// command palette + context menu. Mirrors the WebSSHTerminal v2 layout
-// for a consistent workspace experience across protocols.
+// `rdp_next` protocol. Mounts a canvas renderer, opens the WS data channel
+// via FrameClient, attaches keyboard/mouse handlers, and coordinates a
+// shadcn-styled toolbar + status bar + settings drawer + command palette +
+// context menu. Mirrors the WebSSHTerminal v2 layout for a consistent
+// workspace experience across protocols.
 
 import * as React from "react"
 import { useReducedMotion } from "motion/react"
@@ -38,14 +38,14 @@ import {
 } from "@/lib/desktop/types"
 import { cn } from "@/lib/utils"
 import { DesktopCommandPalette } from "./desktop-command-palette"
-import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopContextMenu } from "./desktop-context-menu"
 import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
+import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
 import { DesktopStatusBar } from "./desktop-status-bar"
 import { DesktopToolbar } from "./desktop-toolbar"
 import { IronRdpDesktopShell } from "./desktop-display-iron"
-import { bitmapCursorCss, x11CursorToCss } from "./desktop-cursor-map"
+import { bitmapCursorCss, rawBgraCursorCss, x11CursorToCss } from "./desktop-cursor-map"
 import { expandCombo, keysymForEvent } from "./desktop-key-map"
 import { useDesktopSettings } from "./use-desktop-settings"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
@@ -58,21 +58,16 @@ export interface DesktopDisplayProps {
   backHref?: string
   /**
    * Picks the renderer.
+   *   - "freerdp"  → libfreerdp worker subprocess + in-house frame protocol.
+   *                  Default — matches the server's `desktop.default_backend`.
    *   - "ironrdp"  → Plan 29 path: IronRDP Wasm + Devolutions Gateway.
-   *   - "freerdp"  → legacy worker subprocess + in-house frame protocol.
-   *   - "dummy"    → in-process test pattern (CI-only).
-   * Defaults to "ironrdp" so the new workspace tab type picks it up; the
-   * legacy branch stays available for ops who haven't enabled the
-   * Devolutions Gateway yet (it'll be removed in PR-C once the
-   * production migration is done).
+   *                  Requires `desktop.devolutions_gateway.enabled = true`.
+   *   - "dummy"    → in-process test pattern (CI / smoke).
+   * Caller (workspace tab launcher) picks one explicitly via the backend
+   * selector; URL-mounted /rdp-next pages fall through to this default.
    */
   backend?: "freerdp" | "dummy" | "ironrdp"
-  /**
-   * Lifecycle observers used by the workspace tab + status bar to mirror
-   * session state in real time. All optional — the renderer works fine
-   * without them. The dispatcher forwards each one to whichever shell
-   * (IronRDP vs legacy) it picks.
-   */
+  /** Workspace tab + perf panel observers. All optional. */
   onStatusChange?: (status: DesktopStatus) => void
   onStatsChange?: (stats: SessionStats) => void
   onLatencyChange?: (ms: number | null) => void
@@ -80,44 +75,15 @@ export interface DesktopDisplayProps {
 
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
 
-// Module-level cache of live RDP sessions keyed by (nodeId, backend,
-// bumpKey). Lives outside the React component so it survives Strict-Mode
-// dev-only unmount-remount cycles (React 19 / Next 16 with
-// `reactStrictMode: true` double-invokes effects to surface bugs — see
-// console stack containing `doubleInvokeEffectsOnFiber`). Without this
-// cache, every strict-mode mount tears down the WS + worker subprocess
-// before the connect even completes, leaking orphan workers on the
-// gateway and showing the user a "画面出现一下就掉" symptom.
-//
-// On unmount, cleanup schedules teardown via `teardownTimer` after
-// TEARDOWN_GRACE_MS. If the effect re-mounts within that window (which
-// is exactly what Strict-Mode does), the new mount finds the entry,
-// cancels the timer, and reattaches all the live refs — no new POST
-// /start, no new WS, the canvas pops back in.
-type LiveDesktopSession = {
-  sessionId: string
-  client: FrameClient
-  renderer: CanvasRendererHandle
-  detachInputs: (() => void) | null
-  teardownTimer: number | null
-  remoteWidth: number
-  remoteHeight: number
-  lastStatus: DesktopStatus
-}
-const liveDesktopSessions = new Map<string, LiveDesktopSession>()
-const TEARDOWN_GRACE_MS = 5000
-
 // Plan 29 PR-B — top-level dispatcher. Routes to the IronRDP shell
 // (Wasm + Devolutions Gateway) or the legacy worker-subprocess shell
 // based on the `backend` prop. Picking the renderer at this layer
 // keeps each path's hook order stable (no conditional hooks).
 export function DesktopDisplay(props: DesktopDisplayProps): React.ReactElement {
-  // Default mirrors the server config's `desktop.default_backend` (which
-  // defaults to "freerdp" in configs/config.example.yaml + the Go
-  // viper defaults). Using "freerdp" here means a fresh checkout
-  // without Devolutions Gateway enabled doesn't immediately hit the
-  // "ironrdp backend not configured" rejection from the gateway.
-  // Callers (workspace tab, /rdp-next route) override this per-session.
+  // Default mirrors the server's `desktop.default_backend` (freerdp).
+  // Using ironrdp by default triggers the "ironrdp backend not
+  // configured" rejection on a fresh server without Devolutions
+  // Gateway enabled, even though the gateway is fully optional.
   const backend = props.backend ?? "freerdp"
   if (backend === "ironrdp") {
     return (
@@ -154,6 +120,7 @@ function LegacyDesktopDisplay({
   const clientRef = React.useRef<FrameClient | null>(null)
   const sessionIdRef = React.useRef<string>("")
   const reconnectAttemptRef = React.useRef(0)
+  const sessionEpochRef = React.useRef(0)
   const detachInputsRef = React.useRef<(() => void) | null>(null)
   const lastCursorRef = React.useRef<CursorUpdate | null>(null)
 
@@ -165,20 +132,6 @@ function LegacyDesktopDisplay({
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [perfOpen, setPerfOpen] = React.useState(false)
-
-  // Keyboard shortcut: Ctrl+Shift+P toggles the perf panel. Capture-
-  // phase so it wins against the canvas's keyboard hooks (which
-  // forward keystrokes to the remote desktop).
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault()
-        setPerfOpen((v) => !v)
-      }
-    }
-    window.addEventListener("keydown", onKey, { capture: true })
-    return () => window.removeEventListener("keydown", onKey, { capture: true })
-  }, [])
   const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
   const [pointer, setPointer] = React.useState({ x: 0, y: 0 })
   const [stats, setStats] = React.useState<SessionStats>({
@@ -211,9 +164,10 @@ function LegacyDesktopDisplay({
     return () => document.removeEventListener("fullscreenchange", onChange)
   }, [])
 
-  // Bridge local lifecycle state out to the parent (workspace tab, perf
-  // panel, etc.) via the optional callback props. Same pattern as
-  // IronRdpDesktopShell so both renderers feed the same outer state.
+  // Bridge local state to the workspace tab + perf panel via optional
+  // callback props. Each effect fires only when its watched value
+  // actually changes so parents can `setState` inside the callback
+  // without thrashing.
   React.useEffect(() => {
     onStatusChange?.(status)
   }, [status, onStatusChange])
@@ -223,6 +177,20 @@ function LegacyDesktopDisplay({
   React.useEffect(() => {
     onLatencyChange?.(stats.latencyMs)
   }, [stats.latencyMs, onLatencyChange])
+
+  // Ctrl+Shift+P toggles the perf panel. Capture-phase so it wins
+  // against the canvas's keyboard hook (which forwards everything
+  // else to the remote desktop).
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault()
+        setPerfOpen((v) => !v)
+      }
+    }
+    window.addEventListener("keydown", onKey, { capture: true })
+    return () => window.removeEventListener("keydown", onKey, { capture: true })
+  }, [])
 
   // Apply the current cursor whenever cursorMode flips. The renderer
   // doesn't track this — we cache the last cursor server-side update in
@@ -234,71 +202,83 @@ function LegacyDesktopDisplay({
   }, [settings.cursorMode])
 
   // Main connect lifecycle. Re-runs when nodeId / backend / bumpKey change;
-  // bumpKey is the manual "重新连接" trigger.
-  //
-  // Strict-mode survival: if we just unmounted-then-remounted within
-  // TEARDOWN_GRACE_MS (i.e. React 19 dev double-invoke fired), the
-  // live session is still alive in `liveDesktopSessions`. We cancel its
-  // pending teardown timer, re-attach all refs (sessionId, client,
-  // renderer, detachInputs), re-append the canvas to the new hostRef,
-  // and skip the connect flow. The user sees zero perceptible break;
-  // the gateway sees zero extra POST /start (no orphan workers).
+  // bumpKey is the manual "重新连接" trigger. The legacy FreeRDP path is kept
+  // deliberately linear: one canvas renderer, one FrameClient, one session id.
+  // React cleanup closes those concrete resources immediately; if cleanup wins
+  // a race with POST /start, the returned session is explicitly deleted below.
   React.useEffect(() => {
-    const cacheKey = `${nodeId}:${backend}:${bumpKey}`
+    const epoch = ++sessionEpochRef.current
     let cancelled = false
     let reconnectTimer: number | null = null
-
-    const cached = liveDesktopSessions.get(cacheKey)
-    if (cached) {
-      console.info("[DesktopDisplay] strict-mode remount detected — reusing live session", {
-        cacheKey,
-        sessionId: cached.sessionId,
-        status: cached.lastStatus,
-      })
-      if (cached.teardownTimer != null) {
-        window.clearTimeout(cached.teardownTimer)
-        cached.teardownTimer = null
-      }
-
-      sessionIdRef.current = cached.sessionId
-      clientRef.current = cached.client
-      rendererRef.current = cached.renderer
-      detachInputsRef.current = cached.detachInputs
-      setRemote({ w: cached.remoteWidth, h: cached.remoteHeight })
-      setStatus(cached.lastStatus)
-      setErrorInfo(undefined)
-
-      // Re-append the (still-mounted-in-DOM-but-detached-now) canvas
-      // node to the freshly-mounted hostRef div.
-      const host = hostRef.current
-      if (host && cached.renderer.canvas.parentElement !== host) {
-        host.innerHTML = ""
-        host.appendChild(cached.renderer.canvas)
-        applySmoothScaling(cached.renderer.canvas, settingsRef.current.smoothScaling)
-      }
-
-      return () => {
-        const live = liveDesktopSessions.get(cacheKey)
-        if (!live) return
-        if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
-        live.teardownTimer = window.setTimeout(() => {
-          if (liveDesktopSessions.get(cacheKey) !== live) return
-          liveDesktopSessions.delete(cacheKey)
-          live.detachInputs?.()
-          live.client.close()
-          live.renderer.destroy()
-          desktopControl.endSession(live.sessionId).catch(() => {})
-        }, TEARDOWN_GRACE_MS)
-      }
-    }
+    let detachRendererResize: (() => void) | null = null
+    let detachRendererCursor: (() => void) | null = null
+    let detachRendererError: (() => void) | null = null
+    let detachRendererMetrics: (() => void) | null = null
 
     setStatus("loading-script")
     setErrorInfo(undefined)
     setStartedAt(Date.now())
+    reconnectAttemptRef.current = 0
+
+    const renderer = createRenderer(
+      settingsRef.current.preferredWidth,
+      settingsRef.current.preferredHeight,
+    )
+    rendererRef.current = renderer
+    const initialHost = hostRef.current
+    if (initialHost) {
+      initialHost.innerHTML = ""
+      initialHost.appendChild(renderer.canvas)
+      applySmoothScaling(renderer.canvas, settingsRef.current.smoothScaling)
+    }
+
+    detachRendererResize = renderer.onResize((w, h) => {
+      if (!cancelled) setRemote({ w, h })
+    })
+    detachRendererCursor = renderer.onCursor((cursor) => {
+      lastCursorRef.current = cursor
+      renderer.canvas.style.cursor = computeCursorCss(
+        lastCursorRef.current,
+        settingsRef.current.cursorMode,
+      )
+    })
+    detachRendererError = renderer.onError((message) => {
+      if (!cancelled) console.warn("[DesktopDisplay] renderer", message)
+    })
+    // 1 Hz performance snapshot. `framesPainted` collapses to FPS
+    // since the renderer's window is exactly 1 s; `droppedFrames` is
+    // monotonic so the panel charts cumulative drop count.
+    detachRendererMetrics = renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames }) => {
+      if (cancelled) return
+      setStats((prev) => ({
+        ...prev,
+        fps: framesPainted,
+        avgDecodeMs,
+        avgPaintMs,
+        droppedFrames,
+      }))
+    })
+
+    function closeCurrentSession(endRemote: boolean) {
+      detachInputsRef.current?.()
+      detachInputsRef.current = null
+      clientRef.current?.close()
+      clientRef.current = null
+      const sid = sessionIdRef.current
+      sessionIdRef.current = ""
+      if (endRemote && sid) {
+        desktopControl.endSession(sid).catch(() => {})
+      }
+    }
+
+    function isCurrentSession() {
+      return !cancelled && sessionEpochRef.current === epoch
+    }
 
     function scheduleReconnect() {
-      if (cancelled) return
+      if (!isCurrentSession()) return
       if (!settingsRef.current.reconnectOnDrop) return
+      if (reconnectTimer != null) return
       const attempt = reconnectAttemptRef.current
       if (attempt >= RECONNECT_BACKOFFS_MS.length) {
         setStatus("error")
@@ -309,9 +289,10 @@ function LegacyDesktopDisplay({
       reconnectAttemptRef.current = attempt + 1
       setStatus("reconnecting")
       reconnectTimer = window.setTimeout(() => {
-        if (cancelled) return
+        reconnectTimer = null
+        if (!isCurrentSession()) return
         connect().catch((e) => {
-          if (cancelled) return
+          if (!isCurrentSession()) return
           setStatus("error")
           setErrorInfo({ message: (e as Error).message })
         })
@@ -319,6 +300,8 @@ function LegacyDesktopDisplay({
     }
 
     async function connect() {
+      if (!isCurrentSession()) return
+      closeCurrentSession(true)
       const start = await desktopControl.startSession({
         node_id: nodeId,
         width: settingsRef.current.preferredWidth,
@@ -327,13 +310,7 @@ function LegacyDesktopDisplay({
         quality: "auto",
         backend,
       })
-      if (cancelled) {
-        // Strict-mode (or any) unmount fired while POST /start was
-        // in flight. The gateway already created the session + spawned
-        // a worker subprocess — kill it now or it leaks until the
-        // gateway times the session out. Without this, every
-        // dev-mode mount in StrictMode permanently orphans one
-        // freerdp-worker process.
+      if (!isCurrentSession()) {
         desktopControl.endSession(start.session_id).catch(() => {})
         return
       }
@@ -342,65 +319,26 @@ function LegacyDesktopDisplay({
       const remoteW = start.remote_width || settingsRef.current.preferredWidth
       const remoteH = start.remote_height || settingsRef.current.preferredHeight
       setRemote({ w: remoteW, h: remoteH })
+      renderer.resize(remoteW, remoteH)
 
-      // Only build a fresh renderer on first connect. Reconnect attempts
-      // re-use the existing canvas so the user doesn't see a black flash.
-      if (!rendererRef.current) {
-        const renderer = createRenderer(remoteW, remoteH)
-        rendererRef.current = renderer
-        const host = hostRef.current
-        if (!host) return
+      const host = hostRef.current
+      if (!host) return
+      if (renderer.canvas.parentElement !== host) {
         host.innerHTML = ""
         host.appendChild(renderer.canvas)
         applySmoothScaling(renderer.canvas, settingsRef.current.smoothScaling)
-        renderer.onResize((w, h) => {
-          renderer.canvas.width = w
-          renderer.canvas.height = h
-          setRemote({ w, h })
-        })
-        renderer.onCursor(({ x, y, png }) => {
-          // The legacy renderer emits a CursorUpdate-shaped event. Reconstruct
-          // the full record so the mode-toggle effect can re-apply later.
-          lastCursorRef.current = { hotspot_x: x, hotspot_y: y, png } as unknown as CursorUpdate
-          renderer.canvas.style.cursor = computeCursorCss(
-            lastCursorRef.current,
-            settingsRef.current.cursorMode,
-          )
-        })
-        renderer.onError((message) => {
-          console.warn("[DesktopDisplay] render worker", message)
-        })
-        // 1Hz performance snapshot from the OffscreenCanvas worker.
-        // `framesPainted` is the count over the last window, which
-        // collapses directly to FPS since the window is exactly 1 s.
-        // `droppedFrames` is monotonic, so the perf panel charts the
-        // cumulative count and derives a per-second drop rate by
-        // diffing samples.
-        renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames }) => {
-          setStats((prev) => ({
-            ...prev,
-            fps: framesPainted,
-            avgDecodeMs,
-            avgPaintMs,
-            droppedFrames,
-          }))
-        })
       }
-      const renderer = rendererRef.current
-      const host = hostRef.current
-      if (!host) return
 
       const client = new FrameClient({
         sessionId: start.session_id,
-        renderWorker: renderer.worker,
+        onFrame: (frame) => renderer.paintFrame(frame),
+        onFrameBytes: (frame, payload) => renderer.paintFrameBytes(frame, payload),
+        onFrameBatch: (frames) => renderer.paintFrameBatchBytes(frames),
+        onCursor: (cursor) => renderer.emitCursor(cursor),
         onStatus: (s: SessionStatus) => {
+          if (!isCurrentSession()) return
           const next = phaseToStatus(s.phase)
           setStatus(next)
-          // Keep the LiveCache's last-known phase in sync so a future
-          // strict-mode remount can restore the right loader/connected
-          // state without flashing back to "loading-script".
-          const live = liveDesktopSessions.get(cacheKey)
-          if (live) live.lastStatus = next
           if (next === "connected") {
             reconnectAttemptRef.current = 0
             setErrorInfo(undefined)
@@ -409,16 +347,12 @@ function LegacyDesktopDisplay({
             setErrorInfo({ message: s.message || "未知错误", code: s.code })
             toast.error(s.message || "桌面会话错误")
           }
-          if (next === "closed" && !cancelled) {
-            if (settingsRef.current.reconnectOnDrop && reconnectAttemptRef.current === 0) {
-              // First close → try one immediate reconnect with the same
-              // session metadata.
-              scheduleReconnect()
-            }
+          if (next === "closed") {
+            scheduleReconnect()
           }
         },
         onError: (msg) => {
-          if (cancelled) return
+          if (!isCurrentSession()) return
           if (settingsRef.current.reconnectOnDrop) {
             scheduleReconnect()
             return
@@ -427,11 +361,22 @@ function LegacyDesktopDisplay({
           setErrorInfo({ message: msg })
         },
         onStats: (s) => {
+          if (!isCurrentSession()) return
           setStats((prev) => ({ ...prev, bytesIn: s.bytesIn, bytesOut: s.bytesOut }))
         },
         onClipboard: (data) => {
+          if (!isCurrentSession()) return
           if (settingsRef.current.clipboardDirection === "off" ||
               settingsRef.current.clipboardDirection === "out-only") {
+            return
+          }
+          if (data.mime === "text/plain" || data.mime === "text/plain;charset=utf-8") {
+            try {
+              const text = new TextDecoder("utf-8").decode(base64ToBytes(data.payload))
+              navigator.clipboard?.writeText(text).catch(() => {})
+            } catch {
+              /* */
+            }
             return
           }
           if (data.mime.startsWith("text/plain;charset=utf-16le")) {
@@ -478,23 +423,10 @@ function LegacyDesktopDisplay({
         host.removeEventListener("paste", onPaste)
         detach?.()
       }
-
-      // Publish to the LiveCache. From this point on, an unmount
-      // schedules a deferred teardown that a fast remount can cancel.
-      liveDesktopSessions.set(cacheKey, {
-        sessionId: start.session_id,
-        client,
-        renderer,
-        detachInputs: detachInputsRef.current,
-        teardownTimer: null,
-        remoteWidth: remoteW,
-        remoteHeight: remoteH,
-        lastStatus: "loading-script",
-      })
     }
 
     connect().catch((e) => {
-      if (cancelled) return
+      if (!isCurrentSession()) return
       setStatus("error")
       setErrorInfo({ message: (e as Error).message || "无法建立桌面会话" })
     })
@@ -502,47 +434,17 @@ function LegacyDesktopDisplay({
     return () => {
       cancelled = true
       if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
-
-      const live = liveDesktopSessions.get(cacheKey)
-      if (live) {
-        // Connect completed and the session is in the cache. Schedule a
-        // deferred teardown — a remount within TEARDOWN_GRACE_MS (the
-        // strict-mode case) will reach in, cancel the timer, and
-        // reattach without paying for a fresh POST /start.
-        if (live.teardownTimer != null) window.clearTimeout(live.teardownTimer)
-        live.teardownTimer = window.setTimeout(() => {
-          if (liveDesktopSessions.get(cacheKey) !== live) return
-          liveDesktopSessions.delete(cacheKey)
-          live.detachInputs?.()
-          live.client.close()
-          live.renderer.destroy()
-          desktopControl.endSession(live.sessionId).catch(() => {})
-        }, TEARDOWN_GRACE_MS)
-        return
-      }
-
-      // Connect was still in flight (or failed). Do an immediate
-      // cleanup of whatever was started — the in-flight POST will hit
-      // the `if (cancelled)` orphan-killer above and self-clean on
-      // arrival.
-      detachInputsRef.current?.()
-      detachInputsRef.current = null
-      clientRef.current?.close()
-      clientRef.current = null
-      if (sessionIdRef.current) {
-        desktopControl.endSession(sessionIdRef.current).catch(() => {})
-        sessionIdRef.current = ""
-      }
+      detachRendererResize?.()
+      detachRendererCursor?.()
+      detachRendererError?.()
+      detachRendererMetrics?.()
+      closeCurrentSession(true)
+      renderer.destroy()
+      rendererRef.current = null
       reconnectAttemptRef.current = 0
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, backend, bumpKey])
-
-  // Renderer disposal is owned by the LiveCache deferred-teardown path
-  // in the connect effect above. A separate empty-deps effect that
-  // destroyed the renderer on every unmount would fire on every
-  // strict-mode unmount-remount cycle, racing the LiveCache restore and
-  // handing it a destroyed handle.
 
   function forwardClipboardText(text: string) {
     const client = clientRef.current
@@ -586,17 +488,18 @@ function LegacyDesktopDisplay({
     setBumpKey((v) => v + 1)
   }
   function handleDisconnect() {
-    const cacheKey = `${nodeId}:${backend}:${bumpKey}`
-    const live = liveDesktopSessions.get(cacheKey)
-    if (live?.teardownTimer != null) window.clearTimeout(live.teardownTimer)
-    if (live) liveDesktopSessions.delete(cacheKey)
-    live?.detachInputs?.()
-    live?.renderer.destroy()
+    sessionEpochRef.current += 1
+    detachInputsRef.current?.()
+    detachInputsRef.current = null
     clientRef.current?.close()
+    clientRef.current = null
     if (sessionIdRef.current) {
       desktopControl.endSession(sessionIdRef.current).catch(() => {})
       sessionIdRef.current = ""
     }
+    rendererRef.current?.destroy()
+    rendererRef.current = null
+    setStatus("closed")
   }
 
   // Escape hatch: close the failing rdp_next session and open the same
@@ -895,12 +798,19 @@ function computeCursorCss(
   if (mode === "css-only") return "default"
   if (!cursor) return "default"
   if (cursor.hidden) return "none"
-  if (cursor.png && cursor.png.length > 0) {
-    const b64 =
-      typeof cursor.png === "string" ? cursor.png : btoaBytes(cursor.png as unknown as Uint8Array)
-    return bitmapCursorCss(b64, cursor.hotspot_x ?? 0, cursor.hotspot_y ?? 0)
+  if (cursor.encoding === "system") return x11CursorToCss(cursor.system_kind)
+  if (cursor.encoding === "png" && cursor.payload) {
+    return bitmapCursorCss(cursor.payload, cursor.hotspot_x ?? 0, cursor.hotspot_y ?? 0)
   }
-  if (cursor.system_kind) return x11CursorToCss(cursor.system_kind)
+  if (cursor.encoding === "raw_bgra" && cursor.payload && cursor.width && cursor.height) {
+    return rawBgraCursorCss(
+      cursor.payload,
+      cursor.width,
+      cursor.height,
+      cursor.hotspot_x ?? 0,
+      cursor.hotspot_y ?? 0,
+    )
+  }
   return "default"
 }
 

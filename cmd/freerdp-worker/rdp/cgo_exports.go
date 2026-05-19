@@ -12,12 +12,14 @@ package rdp
 #include <freerdp/freerdp.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/codec/color.h>
+#include <freerdp/update.h>
 #include <freerdp/channels/cliprdr.h>
 #include <freerdp/channels/rdpsnd.h>
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/rdpsnd.h>
 #include <freerdp/client/rdpgfx.h>
+#include <freerdp/session.h>
 
 extern rdpSettings* wContextSettings(rdpContext* ctx);
 extern rdpUpdate*   wContextUpdate(rdpContext* ctx);
@@ -86,43 +88,105 @@ func goPostDisconnect(instance *C.freerdp) {
 	C.gdi_free(instance)
 }
 
-//export goAuthenticate
-func goAuthenticate(instance *C.freerdp, username, password, domain **C.char) C.BOOL {
-	// Settings already hold the credentials — libfreerdp will only call
-	// this if it wants us to override (e.g. NLA negotiation prompt).
-	// Returning FALSE forces a connection failure rather than prompting.
-	return C.TRUE
-}
-
 //export goAuthenticateEx
 func goAuthenticateEx(instance *C.freerdp, username, password, domain **C.char, reason C.rdp_auth_reason) C.BOOL {
-	// Same as goAuthenticate, but FreeRDP 3.25+ prefers AuthenticateEx.
-	// Credentials are already staged in rdpSettings.
+	// Credentials are already staged in rdpSettings. Returning TRUE tells
+	// FreeRDP to continue without opening an interactive prompt.
 	return C.TRUE
 }
 
-//export goVerifyCertificate
-func goVerifyCertificate(instance *C.freerdp, host *C.char, port C.UINT16,
-	commonName, subject, issuer, fingerprint *C.char, flags C.DWORD) C.DWORD {
+//export goVerifyX509Certificate
+func goVerifyX509Certificate(instance *C.freerdp, data *C.BYTE, length C.size_t,
+	hostname *C.char, port C.UINT16, flags C.DWORD) C.int {
+	ignoreCert := true
 	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
-		c.logger.Info("phase: tls handshake complete, validating server cert",
-			zap.String("host", C.GoString(host)),
+		if c.params.RDP.IgnoreCert != nil {
+			ignoreCert = *c.params.RDP.IgnoreCert
+		}
+		c.logger.Info("phase: tls handshake complete, validating x509 server certificate",
+			zap.String("host", C.GoString(hostname)),
 			zap.Uint16("port", uint16(port)),
-			zap.String("common_name", C.GoString(commonName)))
+			zap.Uint64("certificate_chain_bytes", uint64(length)),
+			zap.Bool("ignore_cert", ignoreCert))
 	}
-	// 2 == accept permanently (matches FreeRDP's CERT_ACCEPT_PERMANENTLY).
-	// Mirrors the IgnoreCertificate=TRUE setting we already turned on.
-	return 2
+	return C.int(certificateVerifyDecision(ignoreCert))
 }
 
 //export goLogonErrorInfo
 func goLogonErrorInfo(instance *C.freerdp, data C.UINT32, typ C.UINT32) C.int {
 	if c := registry.get(unsafe.Pointer(instance.context)); c != nil {
+		c.recordLogonError(uint32(data), uint32(typ))
+		dataText := ""
+		if s := C.freerdp_get_logon_error_info_data(data); s != nil {
+			dataText = C.GoString(s)
+		}
+		typeText := ""
+		if s := C.freerdp_get_logon_error_info_type(typ); s != nil {
+			typeText = C.GoString(s)
+		}
 		c.logger.Warn("freerdp logon error info",
 			zap.Uint32("data", uint32(data)),
-			zap.Uint32("type", uint32(typ)))
+			zap.String("data_text", dataText),
+			zap.Uint32("type", uint32(typ)),
+			zap.String("type_text", typeText))
 	}
 	return 1
+}
+
+//export goOnSaveSessionInfo
+func goOnSaveSessionInfo(ctx *C.rdpContext, typ C.UINT32, data unsafe.Pointer) C.BOOL {
+	c := registry.get(unsafe.Pointer(ctx))
+	if c == nil {
+		return C.FALSE
+	}
+	count := c.saveSessionInfos.Add(1)
+	typeID := uint32(typ)
+	fields := []zap.Field{
+		zap.Uint32("type", typeID),
+		zap.String("type_text", sessionInfoTypeText(typeID)),
+		zap.Uint64("count", count),
+		zap.Bool("has_data", data != nil),
+	}
+	switch typ {
+	case C.INFO_TYPE_LOGON:
+		if data != nil {
+			info := (*C.logon_info)(data)
+			c.logonSuccessSeen.Store(true)
+			fields = append(fields,
+				zap.Uint32("session_id", uint32(info.sessionId)),
+				zap.Bool("username_present", goCString(info.username) != ""),
+				zap.String("domain", goCString(info.domain)))
+		}
+	case C.INFO_TYPE_LOGON_LONG, C.INFO_TYPE_LOGON_PLAIN_NOTIFY:
+		c.logonSuccessSeen.Store(true)
+	case C.INFO_TYPE_LOGON_EXTENDED_INF:
+		if data != nil {
+			info := (*C.logon_info_ex)(data)
+			fields = append(fields,
+				zap.Bool("have_cookie", goBool(info.haveCookie)),
+				zap.Uint32("logon_id", uint32(info.LogonId)),
+				zap.Bool("have_error_info", goBool(info.haveErrorInfo)))
+			if goBool(info.haveErrorInfo) {
+				dataID := uint32(info.ErrorNotificationData)
+				typeID := uint32(info.ErrorNotificationType)
+				c.recordLogonError(dataID, typeID)
+				fields = append(fields,
+					zap.Uint32("error_data", dataID),
+					zap.String("error_data_text", logonErrorDataText(dataID)),
+					zap.Uint32("error_type", typeID),
+					zap.String("error_type_text", logonErrorTypeText(typeID)))
+			}
+		}
+	}
+	c.logger.Info("freerdp save session info", fields...)
+	return C.TRUE
+}
+
+func goCString(s *C.char) string {
+	if s == nil {
+		return ""
+	}
+	return C.GoString(s)
 }
 
 //export goAfterLoadChannels
@@ -186,6 +250,33 @@ func goOnChannelDisconnected(ctx *C.rdpContext, name *C.char, iface unsafe.Point
 
 // ----- bitmap surface updates -----
 
+//export goOnBeginPaint
+func goOnBeginPaint(ctx *C.rdpContext) C.BOOL {
+	if c := registry.get(unsafe.Pointer(ctx)); c != nil {
+		c.beginPaints.Add(1)
+	}
+	hwnd := gdiHwnd(ctx)
+	if hwnd == nil {
+		return C.TRUE
+	}
+	if hwnd.invalid != nil {
+		hwnd.invalid.null = C.TRUE
+	}
+	hwnd.ninvalid = 0
+	return C.TRUE
+}
+
+//export goOnEndPaint
+func goOnEndPaint(ctx *C.rdpContext) C.BOOL {
+	c := registry.get(unsafe.Pointer(ctx))
+	if c == nil {
+		return C.FALSE
+	}
+	c.endPaints.Add(1)
+	flushGDIInvalidRegions(c, ctx, nil)
+	return C.TRUE
+}
+
 //export goOnBitmapUpdate
 func goOnBitmapUpdate(ctx *C.rdpContext, bitmap *C.BITMAP_UPDATE) C.BOOL {
 	c := registry.get(unsafe.Pointer(ctx))
@@ -195,66 +286,220 @@ func goOnBitmapUpdate(ctx *C.rdpContext, bitmap *C.BITMAP_UPDATE) C.BOOL {
 	if bitmap == nil || bitmap.number == 0 {
 		return C.TRUE
 	}
-	// One-shot log so the gateway log proves "the server sent at least one
-	// frame and our worker decoded it" — distinguishes a happy-path-but-
-	// browser-closed-early failure from a connect-but-no-frames hang.
-	if !c.firstBitmapLogged.Swap(true) {
+	bitmapCount := uint64(bitmap.number)
+	if c.bitmapUpdates.Add(bitmapCount) == bitmapCount {
 		c.logger.Info("phase: first bitmap update from server",
 			zap.Uint32("rectangle_count", uint32(bitmap.number)))
 	}
-	if ctx.gdi == nil || ctx.gdi.primary_buffer == nil || ctx.gdi.bitmap_stride == 0 {
-		c.logger.Warn("bitmap update arrived before GDI primary surface was ready")
-		return C.TRUE
-	}
-	stride := uint32(ctx.gdi.bitmap_stride)
-	surfaceW := uint32(ctx.gdi.width)
-	surfaceH := uint32(ctx.gdi.height)
-
 	// wBitmapUpdate in cgo_wrappers.go has already let FreeRDP's GDI decode
-	// and composite the update. Copy the touched rectangle from the decoded
-	// BGRA primary surface instead of forwarding compressed bitmapDataStream.
-	n := uint32(bitmap.number)
-	rects := unsafe.Slice((*C.BITMAP_DATA)(unsafe.Pointer(bitmap.rectangles)), n)
-	for i := uint32(0); i < n; i++ {
-		r := &rects[i]
-		x := uint32(r.destLeft)
-		y := uint32(r.destTop)
-		w := uint32(r.width)
-		h := uint32(r.height)
-		if r.destRight >= r.destLeft && r.destBottom >= r.destTop {
-			w = uint32(r.destRight-r.destLeft) + 1
-			h = uint32(r.destBottom-r.destTop) + 1
-		}
-		if x >= surfaceW || y >= surfaceH || w == 0 || h == 0 {
-			continue
-		}
-		if x+w > surfaceW {
-			w = surfaceW - x
-		}
-		if y+h > surfaceH {
-			h = surfaceH - y
-		}
-		rowBytes := w * 4
-		if rowBytes == 0 || (x*4)+rowBytes > stride {
-			continue
-		}
-		buf := make([]byte, 0, rowBytes*h)
-		base := unsafe.Pointer(ctx.gdi.primary_buffer)
-		for row := uint32(0); row < h; row++ {
-			offset := uintptr((y+row)*stride + x*4)
-			src := unsafe.Slice((*byte)(unsafe.Add(base, offset)), rowBytes)
-			buf = append(buf, src...)
-		}
-		c.emit(desktop.ServerMessage{Frame: &desktop.FrameRect{
-			X:        x,
-			Y:        y,
-			Width:    w,
-			Height:   h,
-			Encoding: desktop.EncodingRawBGRA,
-			Payload:  buf,
-		}})
-	}
+	// and invalidate the touched region. goOnEndPaint emits the final decoded
+	// rectangles for bitmap, surface, and primary-order updates from one path.
 	return C.TRUE
+}
+
+//export goOnSurfaceBits
+func goOnSurfaceBits(ctx *C.rdpContext, cmd *C.SURFACE_BITS_COMMAND) C.BOOL {
+	c := registry.get(unsafe.Pointer(ctx))
+	if c == nil {
+		return C.FALSE
+	}
+	count := c.surfaceBits.Add(1)
+	var fallback *gdiRect
+	if cmd != nil {
+		x := int32(cmd.destLeft)
+		y := int32(cmd.destTop)
+		w := int32(cmd.destRight) - x
+		h := int32(cmd.destBottom) - y
+		if w > 0 && h > 0 {
+			fallback = &gdiRect{x: x, y: y, w: w, h: h}
+		}
+		if count == 1 {
+			c.logger.Info("phase: first surface bits update from server",
+				zap.Uint32("x", uint32(cmd.destLeft)),
+				zap.Uint32("y", uint32(cmd.destTop)),
+				zap.Uint32("right", uint32(cmd.destRight)),
+				zap.Uint32("bottom", uint32(cmd.destBottom)),
+				zap.Uint32("codec_id", uint32(cmd.bmp.codecID)),
+				zap.Uint32("bpp", uint32(cmd.bmp.bpp)),
+				zap.Uint32("width", uint32(cmd.bmp.width)),
+				zap.Uint32("height", uint32(cmd.bmp.height)),
+				zap.Uint32("bytes", uint32(cmd.bmp.bitmapDataLength)))
+		}
+	}
+	flushGDIInvalidRegions(c, ctx, fallback)
+	return C.TRUE
+}
+
+type gdiRect struct {
+	x int32
+	y int32
+	w int32
+	h int32
+}
+
+func flushGDIInvalidRegions(c *Client, ctx *C.rdpContext, fallback *gdiRect) {
+	if ctx == nil || ctx.gdi == nil || ctx.gdi.suppressOutput != C.FALSE {
+		return
+	}
+	hwnd := gdiHwnd(ctx)
+	if hwnd == nil {
+		return
+	}
+
+	emitted := false
+	if hwnd.ninvalid > 0 && hwnd.cinvalid != nil {
+		regions := unsafe.Slice(hwnd.cinvalid, int(hwnd.ninvalid))
+		c.paintRegions.Add(uint64(len(regions)))
+		first := true
+		var minX, minY, maxX, maxY int32
+		for i := range regions {
+			rx, ry := int32(regions[i].x), int32(regions[i].y)
+			rw, rh := int32(regions[i].w), int32(regions[i].h)
+			if rw <= 0 || rh <= 0 {
+				continue
+			}
+			right := rx + rw
+			bottom := ry + rh
+			if first {
+				minX, minY, maxX, maxY = rx, ry, right, bottom
+				first = false
+				continue
+			}
+			if rx < minX {
+				minX = rx
+			}
+			if ry < minY {
+				minY = ry
+			}
+			if right > maxX {
+				maxX = right
+			}
+			if bottom > maxY {
+				maxY = bottom
+			}
+		}
+		if !first && maxX > minX && maxY > minY {
+			emitGDIRegion(c, ctx, C.INT32(minX), C.INT32(minY), C.INT32(maxX-minX), C.INT32(maxY-minY))
+			emitted = true
+		}
+	} else if hwnd.invalid != nil && hwnd.invalid.null == C.FALSE {
+		r := hwnd.invalid
+		c.paintRegions.Add(1)
+		emitGDIRegion(c, ctx, r.x, r.y, r.w, r.h)
+		emitted = true
+	} else if fallback != nil {
+		c.paintRegions.Add(1)
+		emitGDIRegion(c, ctx, C.INT32(fallback.x), C.INT32(fallback.y), C.INT32(fallback.w), C.INT32(fallback.h))
+		emitted = true
+	}
+
+	if !emitted {
+		c.emptyPaints.Add(1)
+	}
+	if hwnd.invalid != nil {
+		hwnd.invalid.null = C.TRUE
+	}
+	hwnd.ninvalid = 0
+}
+
+func gdiHwnd(ctx *C.rdpContext) *C.GDI_WND {
+	if ctx == nil || ctx.gdi == nil || ctx.gdi.primary_buffer == nil {
+		return nil
+	}
+	if ctx.gdi.primary == nil || ctx.gdi.primary.hdc == nil {
+		return nil
+	}
+	return ctx.gdi.primary.hdc.hwnd
+}
+
+func emitGDIRegion(c *Client, ctx *C.rdpContext, x, y, w, h C.INT32) {
+	if ctx == nil || ctx.gdi == nil || ctx.gdi.primary_buffer == nil {
+		return
+	}
+	stride := uint32(ctx.gdi.stride)
+	if stride == 0 {
+		stride = uint32(ctx.gdi.bitmap_stride)
+	}
+	surfaceW := int32(ctx.gdi.width)
+	surfaceH := int32(ctx.gdi.height)
+	rx, ry, rw, rh := int32(x), int32(y), int32(w), int32(h)
+	if stride == 0 || surfaceW <= 0 || surfaceH <= 0 || rw <= 0 || rh <= 0 {
+		return
+	}
+	if rx < 0 {
+		rw += rx
+		rx = 0
+	}
+	if ry < 0 {
+		rh += ry
+		ry = 0
+	}
+	if rx >= surfaceW || ry >= surfaceH || rw <= 0 || rh <= 0 {
+		return
+	}
+	if rx+rw > surfaceW {
+		rw = surfaceW - rx
+	}
+	if ry+rh > surfaceH {
+		rh = surfaceH - ry
+	}
+
+	ux, uy := uint32(rx), uint32(ry)
+	uw, uh := uint32(rw), uint32(rh)
+	rowBytes := uw * 4
+	if rowBytes == 0 || (ux*4)+rowBytes > stride {
+		return
+	}
+	buf := make([]byte, 0, rowBytes*uh)
+	base := unsafe.Pointer(ctx.gdi.primary_buffer)
+	for row := uint32(0); row < uh; row++ {
+		offset := uintptr((uy+row)*stride + ux*4)
+		src := unsafe.Slice((*byte)(unsafe.Add(base, offset)), rowBytes)
+		buf = append(buf, src...)
+	}
+	c.submitFrame(ux, uy, uw, uh, buf)
+}
+
+func (c *Client) emitPendingFrameResync(reason string) {
+	if !c.frameResyncPending.Load() || c.context == nil {
+		return
+	}
+	if cap(c.out) > 0 && len(c.out)*2 >= cap(c.out) {
+		return
+	}
+	if !c.frameResyncPending.CompareAndSwap(true, false) {
+		return
+	}
+	if !c.emitFullGDIFrame(reason) {
+		c.frameResyncPending.Store(true)
+	}
+}
+
+func (c *Client) emitFullGDIFrame(reason string) bool {
+	if c.context == nil {
+		return false
+	}
+	ctx := (*C.rdpContext)(c.context)
+	if ctx == nil || ctx.gdi == nil || ctx.gdi.primary_buffer == nil || ctx.gdi.suppressOutput != C.FALSE {
+		return false
+	}
+	w := int32(ctx.gdi.width)
+	h := int32(ctx.gdi.height)
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	count := c.frameResyncs.Add(1)
+	if count == 1 || count%10 == 0 {
+		c.logger.Info("desktop frame resync emitting full frame",
+			zap.String("reason", reason),
+			zap.Uint64("resync_count", count),
+			zap.Int32("width", w),
+			zap.Int32("height", h),
+			zap.Int("queue_len", len(c.out)),
+			zap.Int("queue_cap", cap(c.out)))
+	}
+	emitGDIRegion(c, ctx, 0, 0, C.INT32(w), C.INT32(h))
+	return true
 }
 
 //export goOnDesktopResize
@@ -266,6 +511,11 @@ func goOnDesktopResize(ctx *C.rdpContext) C.BOOL {
 	s := C.wContextSettings(ctx)
 	c.width = uint32(C.freerdp_settings_get_uint32(s, C.FreeRDP_DesktopWidth))
 	c.height = uint32(C.freerdp_settings_get_uint32(s, C.FreeRDP_DesktopHeight))
+	c.desktopResizes.Add(1)
+	c.logger.Info("freerdp desktop resized",
+		zap.Uint32("width", c.width),
+		zap.Uint32("height", c.height),
+		zap.Uint64("resize_count", c.desktopResizes.Load()))
 	// Re-init GDI for the new size.
 	if instance := (*C.freerdp)(c.instance); instance != nil {
 		C.gdi_resize(instance.context.gdi, C.UINT32(c.width), C.UINT32(c.height))
@@ -296,10 +546,8 @@ func goOnPointerSet(ctx *C.rdpContext, pointer *C.rdpPointer) C.BOOL {
 	if w == 0 || h == 0 || pointer.xorMaskData == nil {
 		return C.TRUE
 	}
-	// 32-bit BGRA cursor. We forward the raw bitmap as PNG-less BGRA in
-	// the CursorUpdate.PNG field (browser decodes accordingly). M2.x can
-	// switch to actual PNG encoding via Go's image/png if we observe
-	// payload-size pressure.
+	// 32-bit BGRA cursor. Keep the wire encoding explicit so the browser
+	// does not attempt to treat raw pixels as PNG data.
 	stride := uint32(pointer.lengthXorMask) / max32(h, 1)
 	_ = stride
 	xor := C.GoBytes(unsafe.Pointer(pointer.xorMaskData), C.int(pointer.lengthXorMask))
@@ -311,18 +559,35 @@ func goOnPointerSet(ctx *C.rdpContext, pointer *C.rdpPointer) C.BOOL {
 	c.emit(desktop.ServerMessage{Cursor: &desktop.CursorUpdate{
 		HotspotX: uint32(pointer.xPos),
 		HotspotY: uint32(pointer.yPos),
-		// PNG field is overloaded here for the raw BGRA payload; the
-		// browser side checks the length / mime and treats accordingly.
-		PNG: xor,
+		Width:    w,
+		Height:   h,
+		Encoding: desktop.CursorEncodingRawBGRA,
+		Payload:  xor,
 	}})
 	return C.TRUE
 }
 
 //export goOnPointerSetNull
-func goOnPointerSetNull(ctx *C.rdpContext) C.BOOL { return C.TRUE }
+func goOnPointerSetNull(ctx *C.rdpContext) C.BOOL {
+	if c := registry.get(unsafe.Pointer(ctx)); c != nil {
+		c.emit(desktop.ServerMessage{Cursor: &desktop.CursorUpdate{
+			Encoding: desktop.CursorEncodingSystem,
+			Hidden:   true,
+		}})
+	}
+	return C.TRUE
+}
 
 //export goOnPointerSetDefault
-func goOnPointerSetDefault(ctx *C.rdpContext) C.BOOL { return C.TRUE }
+func goOnPointerSetDefault(ctx *C.rdpContext) C.BOOL {
+	if c := registry.get(unsafe.Pointer(ctx)); c != nil {
+		c.emit(desktop.ServerMessage{Cursor: &desktop.CursorUpdate{
+			Encoding:   desktop.CursorEncodingSystem,
+			SystemKind: "default",
+		}})
+	}
+	return C.TRUE
+}
 
 // ----- helpers -----
 

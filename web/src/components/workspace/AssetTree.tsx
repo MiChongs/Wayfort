@@ -6,6 +6,7 @@ import { Loader2, RefreshCcw, Search, X } from "lucide-react"
 import { toast } from "sonner"
 import { assetGroupService, meService, tagService } from "@/lib/api/services"
 import type { AssetGroup, Node } from "@/lib/api/types"
+import type { DesktopBackend } from "@/lib/desktop/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
@@ -15,7 +16,7 @@ import { metaOf } from "./protocolMeta"
 import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
 
 type Props = {
-  onOpenTab: (node: Node, protocol: Protocol) => void
+  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
 }
 
 export function AssetTree({ onOpenTab }: Props) {

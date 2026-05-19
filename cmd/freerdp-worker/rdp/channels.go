@@ -29,10 +29,13 @@ package rdp
 // All helpers live in cgo_wrappers.go; re-declare as extern here.
 extern void wInstallCliprdr(CliprdrClientContext* ctx);
 extern void wInstallRdpgfx(RdpgfxClientContext* ctx);
+extern UINT wSendCliprdrCapabilities(CliprdrClientContext* ctx);
 extern UINT wSendCliprdrFormatList(CliprdrClientContext* ctx,
                                     const CLIPRDR_FORMAT* formats, UINT32 numFormats);
+extern UINT wSendCliprdrFormatListResponse(CliprdrClientContext* ctx, UINT16 msgFlags);
 extern UINT wSendCliprdrFormatDataResponse(CliprdrClientContext* ctx,
                                             const BYTE* data, UINT32 size);
+extern UINT wSendCliprdrFormatDataRequest(CliprdrClientContext* ctx, UINT32 formatId);
 */
 import "C"
 
@@ -40,6 +43,7 @@ import (
 	"unsafe"
 
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"go.uber.org/zap"
 )
 
 // ----- CLIPRDR -----
@@ -47,35 +51,103 @@ import (
 func (c *Client) attachClipboard(iface unsafe.Pointer) {
 	ctx := (*C.CliprdrClientContext)(iface)
 	ctx.custom = c.context
+	c.cliprdrCapsSent.Store(false)
+	c.cliprdrFormatListSent.Store(false)
+	c.logger.Info("cliprdr callbacks attached")
 	C.wInstallCliprdr(ctx)
 }
 
 //export goCliprdrMonitorReady
 func goCliprdrMonitorReady(ctx *C.CliprdrClientContext, mr *C.CLIPRDR_MONITOR_READY) C.UINT {
-	// Server is ready to handshake — we should send our capabilities and
-	// format list. M2 keeps both minimal: declare CB_CAPS_VERSION_2 and an
-	// empty format list (browser owns the clipboard initially).
-	return 0
+	if ctx == nil {
+		return 0
+	}
+	// Complete the MS-RDPECLIP startup handshake. Without this pair some
+	// Windows builds wait for client caps/format-list and then close the RDP
+	// transport, which surfaces upstream as BIO_read retries exceeded.
+	c := lookupByCustom(ctx.custom)
+	if c != nil {
+		c.logger.Info("cliprdr monitor ready",
+			zap.Bool("caps_sent", c.cliprdrCapsSent.Load()),
+			zap.Bool("format_list_sent", c.cliprdrFormatListSent.Load()))
+	}
+	if rc := sendCliprdrCapabilitiesOnce(ctx); rc != 0 {
+		if c != nil {
+			c.logger.Warn("cliprdr client capabilities send failed", zap.Uint32("rc", uint32(rc)))
+		}
+		return rc
+	}
+	if c != nil && c.cliprdrFormatListSent.Swap(true) {
+		return 0
+	}
+	rc := C.wSendCliprdrFormatList(ctx, (*C.CLIPRDR_FORMAT)(nil), 0)
+	if c != nil {
+		c.logger.Info("cliprdr initial client format list sent", zap.Uint32("rc", uint32(rc)))
+	}
+	return rc
 }
 
 //export goCliprdrServerCapabilities
 func goCliprdrServerCapabilities(ctx *C.CliprdrClientContext, caps *C.CLIPRDR_CAPABILITIES) C.UINT {
-	return 0
+	if ctx == nil {
+		return 0
+	}
+	if c := lookupByCustom(ctx.custom); c != nil {
+		c.logger.Info("cliprdr server capabilities received")
+	}
+	return sendCliprdrCapabilitiesOnce(ctx)
+}
+
+func sendCliprdrCapabilitiesOnce(ctx *C.CliprdrClientContext) C.UINT {
+	if ctx == nil {
+		return 0
+	}
+	c := lookupByCustom(ctx.custom)
+	if c != nil && c.cliprdrCapsSent.Swap(true) {
+		return 0
+	}
+	rc := C.wSendCliprdrCapabilities(ctx)
+	if c != nil {
+		c.logger.Info("cliprdr client capabilities sent", zap.Uint32("rc", uint32(rc)))
+	}
+	return rc
 }
 
 //export goCliprdrServerFormatList
 func goCliprdrServerFormatList(ctx *C.CliprdrClientContext, fl *C.CLIPRDR_FORMAT_LIST) C.UINT {
-	c := lookupByCustom(ctx.custom)
-	if c == nil {
+	if ctx == nil {
 		return 0
 	}
-	// The server is offering format(s). Emit a Clipboard message so the
-	// browser knows new data is available; the browser then requests via
-	// the gateway → client.attachClipboardRequest(formatId).
-	c.emit(desktop.ServerMessage{Clipboard: &desktop.ClipboardData{
-		MIME:    "text/x-cliprdr-format-list",
-		Payload: nil, // sentinel: client should call back with FormatDataRequest
-	}})
+	c := lookupByCustom(ctx.custom)
+	if c == nil || fl == nil {
+		return 0
+	}
+	hasUnicodeText := false
+	if fl.formats != nil {
+		formats := unsafe.Slice(fl.formats, int(fl.numFormats))
+		for _, f := range formats {
+			if f.formatId == C.CF_UNICODETEXT {
+				hasUnicodeText = true
+				break
+			}
+		}
+	}
+	c.logger.Info("cliprdr server format list received",
+		zap.Uint32("num_formats", uint32(fl.numFormats)),
+		zap.Bool("has_unicode_text", hasUnicodeText))
+	C.wSendCliprdrFormatListResponse(ctx, C.CB_RESPONSE_OK)
+	if fl.formats == nil {
+		return 0
+	}
+	formats := unsafe.Slice(fl.formats, int(fl.numFormats))
+	for _, f := range formats {
+		if f.formatId == C.CF_UNICODETEXT {
+			c.logger.Info("cliprdr requesting server unicode text")
+			C.wSendCliprdrFormatDataRequest(ctx, C.CF_UNICODETEXT)
+			return 0
+		}
+	}
+	c.logger.Debug("cliprdr server format list did not include CF_UNICODETEXT")
 	return 0
 }
 
@@ -89,10 +161,18 @@ func goCliprdrServerFormatDataRequest(ctx *C.CliprdrClientContext, r *C.CLIPRDR_
 	// Server is asking the browser for clipboard data. We respond with
 	// the latest text the browser pushed. If nothing is staged we reply
 	// with empty bytes (still completes the handshake).
+	if ctx == nil {
+		return 0
+	}
 	c := lookupByCustom(ctx.custom)
 	if c == nil {
 		return 0
 	}
+	formatID := uint32(0)
+	if r != nil {
+		formatID = uint32(r.requestedFormatId)
+	}
+	c.logger.Info("cliprdr server format data request received", zap.Uint32("format_id", formatID))
 	c.mu.Lock()
 	body := append([]byte(nil), c.pendingClipText...)
 	c.mu.Unlock()
@@ -110,14 +190,14 @@ func goCliprdrServerFormatDataRequest(ctx *C.CliprdrClientContext, r *C.CLIPRDR_
 //export goCliprdrServerFormatDataResponse
 func goCliprdrServerFormatDataResponse(ctx *C.CliprdrClientContext, r *C.CLIPRDR_FORMAT_DATA_RESPONSE) C.UINT {
 	c := lookupByCustom(ctx.custom)
-	if c == nil {
+	if c == nil || r == nil {
 		return 0
 	}
 	if r.common.msgFlags&C.CB_RESPONSE_FAIL != 0 {
 		return 0
 	}
 	n := uint32(r.common.dataLen)
-	if n == 0 {
+	if n == 0 || r.requestedFormatData == nil {
 		return 0
 	}
 	body := C.GoBytes(unsafe.Pointer(r.requestedFormatData), C.int(n))
@@ -135,6 +215,19 @@ func goCliprdrServerFormatDataResponse(ctx *C.CliprdrClientContext, r *C.CLIPRDR
 func (c *Client) pushClipboardText(text string) {
 	c.mu.Lock()
 	c.pendingClipText = utf16leEncode(text)
+	c.mu.Unlock()
+	if c.cliprdr == nil {
+		return
+	}
+	cctx := (*C.CliprdrClientContext)(c.cliprdr)
+	var fmt C.CLIPRDR_FORMAT
+	fmt.formatId = C.CF_UNICODETEXT
+	C.wSendCliprdrFormatList(cctx, &fmt, 1)
+}
+
+func (c *Client) pushClipboardUTF16LE(body []byte) {
+	c.mu.Lock()
+	c.pendingClipText = ensureUTF16LENULTerminated(body)
 	c.mu.Unlock()
 	if c.cliprdr == nil {
 		return
@@ -172,16 +265,18 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 		return 0
 	}
 	// Forward the raw codec payload to the browser. Codec id mapping:
-	//   RDPGFX_CODECID_AVC420 / AVC444   → ENC_JPEG (placeholder; browser
-	//      decodes via WebCodecs.VideoDecoder)
-	//   RDPGFX_CODECID_PLANAR / UNCOMPRESSED → ENC_RAW_BGRA
-	//   RDPGFX_CODECID_CAVIDEO / CAPROGRESSIVE (RemoteFX) → ENC_PNG (placeholder)
+	//   RDPGFX_CODECID_AVC420 / AVC444   → EncodingH264 (browser decodes
+	//      via WebCodecs.VideoDecoder; AVC444 should never arrive
+	//      because client.go disables FreeRDP_GfxAVC444 so the single-
+	//      stream decoder can consume what we forward)
+	//   RDPGFX_CODECID_PLANAR / UNCOMPRESSED → EncodingRawBGRA
+	//   RDPGFX_CODECID_CAVIDEO / CAPROGRESSIVE (RemoteFX) → EncodingRFX
 	enc := desktop.EncodingRawBGRA
 	switch cmd.codecId {
 	case C.RDPGFX_CODECID_AVC420, C.RDPGFX_CODECID_AVC444:
-		enc = "h264"
+		enc = desktop.EncodingH264
 	case C.RDPGFX_CODECID_CAVIDEO, C.RDPGFX_CODECID_CAPROGRESSIVE:
-		enc = "rfx"
+		enc = desktop.EncodingRFX
 	case C.RDPGFX_CODECID_PLANAR, C.RDPGFX_CODECID_UNCOMPRESSED:
 		enc = desktop.EncodingRawBGRA
 	}
@@ -253,4 +348,12 @@ func utf16leEncode(s string) []byte {
 	}
 	buf = append(buf, 0x00, 0x00)
 	return buf
+}
+
+func ensureUTF16LENULTerminated(body []byte) []byte {
+	out := append([]byte(nil), body...)
+	if len(out) < 2 || out[len(out)-1] != 0 || out[len(out)-2] != 0 {
+		out = append(out, 0, 0)
+	}
+	return out
 }
