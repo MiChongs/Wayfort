@@ -5,7 +5,7 @@
 // hid decoder failures behind worker messages. This renderer keeps ownership
 // in the component tree and exposes explicit frame-paint methods used by
 // FrameClient's wire decoder.
-import { base64ToBytes, type CursorUpdate, type FrameRect } from "./types"
+import { base64ToBytes, type CursorUpdate, type Encoding, type FrameRect } from "./types"
 
 export type FrameRectMeta = Omit<FrameRect, "payload">
 
@@ -14,10 +14,16 @@ export interface FrameBytes {
   payload: Uint8Array
 }
 
+// Mirror of decode.worker.ts DecoderPath. Kept local because workers
+// are bundled with separate type roots and a re-export would force
+// the worker module into the main thread's dependency graph.
+export type DecoderPath = "videodecoder" | "imagedecoder" | "imagebitmap" | "js"
+
 interface DecodedFrame {
   frame: FrameRectMeta
   bitmap?: ImageBitmap
   imageData?: ImageData
+  decoderPath?: DecoderPath
 }
 
 type DecodeWorkerMessage =
@@ -41,11 +47,18 @@ const METRICS_INTERVAL_MS = 1000
 // panel. `framesPainted` resets every window so it converts directly
 // to FPS; `droppedFrames` is monotonic so the panel can chart the
 // cumulative drop curve and derive a per-second rate by diffing.
+//
+// `codec` and `decoderPath` are the most-used values across the
+// window — when traffic mixes encodings the dominant one wins. Both
+// are `null` until at least one frame paints in the window so the
+// UI can show "—" instead of a stale value at session start.
 export interface RenderMetrics {
   avgDecodeMs: number
   avgPaintMs: number
   framesPainted: number
   droppedFrames: number
+  codec: Encoding | null
+  decoderPath: DecoderPath | null
 }
 
 export interface CanvasRendererHandle {
@@ -111,19 +124,37 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   let paintAccumMs = 0
   let framesPaintedWindow = 0
   let droppedFramesTotal = 0
+  // Vote counters for the 1 s window. Most-common wins on emit.
+  // Map<value, count> for codec + decoderPath keep the math trivial
+  // and avoid a separate sample buffer.
+  const codecCounts = new Map<Encoding, number>()
+  const decoderPathCounts = new Map<DecoderPath, number>()
+  // Sticky last-known values — used when the window has zero frames
+  // (idle desktop) so the panel keeps showing the last codec the
+  // session was on instead of flickering to "—".
+  let lastCodec: Encoding | null = null
+  let lastDecoderPath: DecoderPath | null = null
   const metricsTimer = window.setInterval(() => {
     if (destroyed) return
     if (framesPaintedWindow === 0 && droppedFramesTotal === 0) return
+    const dominantCodec = mostCommon(codecCounts) ?? lastCodec
+    const dominantPath = mostCommon(decoderPathCounts) ?? lastDecoderPath
+    if (dominantCodec) lastCodec = dominantCodec
+    if (dominantPath) lastDecoderPath = dominantPath
     const snapshot: RenderMetrics = {
       avgDecodeMs: framesPaintedWindow > 0 ? decodeAccumMs / framesPaintedWindow : 0,
       avgPaintMs: framesPaintedWindow > 0 ? paintAccumMs / framesPaintedWindow : 0,
       framesPainted: framesPaintedWindow,
       droppedFrames: droppedFramesTotal,
+      codec: dominantCodec,
+      decoderPath: dominantPath,
     }
     for (const cb of metricsCbs) cb(snapshot)
     decodeAccumMs = 0
     paintAccumMs = 0
     framesPaintedWindow = 0
+    codecCounts.clear()
+    decoderPathCounts.clear()
   }, METRICS_INTERVAL_MS)
 
   function emitResize(width: number, height: number) {
@@ -234,6 +265,17 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
             decodeAccumMs += paintStart - decodeStart
             paintAccumMs += paintEnd - paintStart
             framesPaintedWindow += decodedCount
+            for (const item of decoded) {
+              if (!item) continue
+              const enc = item.frame.encoding
+              codecCounts.set(enc, (codecCounts.get(enc) ?? 0) + 1)
+              if (item.decoderPath) {
+                decoderPathCounts.set(
+                  item.decoderPath,
+                  (decoderPathCounts.get(item.decoderPath) ?? 0) + 1,
+                )
+              }
+            }
           }
         })
         .catch((error) => {
@@ -337,6 +379,22 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
 // `paintDecodedBatch` used to be a standalone helper; it's now inlined in
 // `schedulePaintFlush` so decode/paint timing closes over the metrics
 // accumulators without an extra closure-capture parameter set.
+
+// mostCommon picks the highest-count key from a Map (which is also
+// insertion-order, so ties go to the encoding/path seen first this
+// window). Returns null on an empty map so callers can decide to keep
+// a sticky previous value.
+function mostCommon<K>(counts: Map<K, number>): K | null {
+  let bestKey: K | null = null
+  let bestCount = 0
+  for (const [key, count] of counts) {
+    if (count > bestCount) {
+      bestCount = count
+      bestKey = key
+    }
+  }
+  return bestKey
+}
 
 function isSafeFrame(frame: FrameRectMeta) {
   if (!Number.isFinite(frame.x) || !Number.isFinite(frame.y)) return false

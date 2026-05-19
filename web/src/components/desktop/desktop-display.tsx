@@ -250,7 +250,7 @@ function LegacyDesktopDisplay({
     // 1 Hz performance snapshot. `framesPainted` collapses to FPS
     // since the renderer's window is exactly 1 s; `droppedFrames` is
     // monotonic so the panel charts cumulative drop count.
-    detachRendererMetrics = renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames }) => {
+    detachRendererMetrics = renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames, codec, decoderPath }) => {
       if (cancelled) return
       setStats((prev) => ({
         ...prev,
@@ -258,6 +258,8 @@ function LegacyDesktopDisplay({
         avgDecodeMs,
         avgPaintMs,
         droppedFrames,
+        codec,
+        decoderPath,
       }))
     })
     // VideoDecoder error → ask gateway to send a full-screen RDP
