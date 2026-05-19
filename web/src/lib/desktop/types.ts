@@ -30,6 +30,12 @@ export interface StartSessionRequest {
   keyboard?: string
   quality?: Quality
   backend?: DesktopBackend
+  // Browser decoder capabilities. The manager uses this to disable
+  // GFX/H.264 negotiation up front for browsers that lack
+  // WebCodecs.VideoDecoder, so a misnegotiated codec never reaches a
+  // client that can't render it. Populate via
+  // `collectClientCapabilities()` from lib/desktop/capabilities.ts.
+  client_caps?: ClientCaps
 }
 
 /**
@@ -145,6 +151,15 @@ export interface ClientCaps {
   imageDecoder: boolean
 }
 
+/** Region the client wants the server to redraw immediately. All-zero
+ *  dimensions mean "the entire desktop". */
+export interface RefreshRect {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+}
+
 export interface ClientMessage {
   key?: InputKey
   mouse?: InputMouse
@@ -152,6 +167,7 @@ export interface ClientMessage {
   clipboard?: ClipboardData
   resize?: ResizeHint
   caps?: ClientCaps
+  refresh?: RefreshRect
 }
 
 // ----- Bit layouts (kept in lockstep with renderer.worker.ts + worker_dummy.go) -----
