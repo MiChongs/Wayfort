@@ -4,7 +4,13 @@
 // match the proto so the type swap is invisible to consumers.
 
 export type Quality = "auto" | "high" | "medium" | "low"
-export type Encoding = "raw_bgra" | "jpeg" | "png"
+// h264 = RDPGFX AVC420 single-stream YUV4:2:0, decoded by
+// WebCodecs.VideoDecoder when supported (probe via capabilities.ts).
+// rfx = RemoteFX progressive codec — wire-tagged today but no browser
+// decoder yet; servers that only emit rfx will get it forwarded and the
+// client will fall through to "unsupported" handling.
+export type Encoding = "raw_bgra" | "zlib_bgra" | "jpeg" | "png" | "h264" | "rfx"
+export type CursorEncoding = "raw_bgra" | "png" | "system"
 
 export type Phase =
   | "CONNECTING"
@@ -74,10 +80,17 @@ export interface FrameRect {
   payload: string
 }
 
+export interface FrameBatch {
+  frames: FrameRect[]
+}
+
 export interface CursorUpdate {
   hotspot_x: number
   hotspot_y: number
-  png: string // base64
+  width?: number
+  height?: number
+  encoding: CursorEncoding
+  payload?: string // base64
   // Optional X11 / FreeRDP system cursor name (default | pointer | text |
   // wait | crosshair | …). Set by the worker when the server requests a
   // built-in shape instead of a bitmap; client maps it via
@@ -100,6 +113,7 @@ export interface ClipboardData {
 
 export interface ServerMessage {
   frame?: FrameRect
+  frame_batch?: FrameBatch
   cursor?: CursorUpdate
   status?: SessionStatus
   bell?: Record<string, never>
@@ -111,12 +125,27 @@ export interface InputMouse { x: number; y: number; buttons: number; wheel: numb
 export interface ResizeHint { width: number; height: number }
 export interface Heartbeat { ts_ms: number }
 
+/**
+ * Client-side decoder capability hints. The browser sends one of these
+ * once over the WS right after `open`; the worker uses it to decide
+ * whether to negotiate RDPGFX H.264 with the upstream server. A server
+ * that can only encode AVC444 H.264 still gets it advertised as
+ * AVC420, the wire payload arrives as `Encoding=h264` and gets
+ * handled by capabilities.ts in the worker.
+ */
+export interface ClientCaps {
+  h264: boolean
+  rfx: boolean
+  imageDecoder: boolean
+}
+
 export interface ClientMessage {
   key?: InputKey
   mouse?: InputMouse
   hb?: Heartbeat
   clipboard?: ClipboardData
   resize?: ResizeHint
+  caps?: ClientCaps
 }
 
 // ----- Bit layouts (kept in lockstep with renderer.worker.ts + worker_dummy.go) -----

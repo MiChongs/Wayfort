@@ -160,6 +160,13 @@ func protocolMaskString(mask uint32) string {
 	return strings.Join(parts, "+")
 }
 
+func selectedProtocolMaskString(mask uint32, rejected bool) string {
+	if rejected && mask == 0 {
+		return "rejected-all"
+	}
+	return protocolMaskString(mask)
+}
+
 // humanizeConnectErrorWithNego is humanizeConnectError plus an "[协商详情]"
 // suffix when the error class implies X.224 negotiation was involved
 // (SECURITY_NEGO / CONNECT_TRANSPORT). The two extra bitfields turn a
@@ -171,8 +178,9 @@ func protocolMaskString(mask uint32) string {
 func humanizeConnectErrorWithNego(code uint32, raw string, requested, selected uint32) string {
 	base := humanizeConnectError(code, raw)
 	if code == 0x0002000C || code == 0x0002000D {
+		rejected := code == 0x0002000C && selected == 0
 		base += fmt.Sprintf(" [协商详情] 本地请求: %s; 服务器选择: %s",
-			protocolMaskString(requested), protocolMaskString(selected))
+			protocolMaskString(requested), selectedProtocolMaskString(selected, rejected))
 	}
 	return base
 }

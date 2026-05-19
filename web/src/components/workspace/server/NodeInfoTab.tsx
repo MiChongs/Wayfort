@@ -8,8 +8,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { meService, nodeService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
-import { metaOf, protocolsForNode } from "../protocolMeta"
-import { useWorkspaceStore, type Protocol } from "../useWorkspaceStore"
+import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "../protocolMeta"
+import { useWorkspaceStore } from "../useWorkspaceStore"
 
 type Props = {
   nodeId: number
@@ -28,8 +28,15 @@ export function NodeInfoTab({ nodeId }: Props) {
 
   const isFav = (favorites.data?.node_ids ?? []).includes(nodeId)
 
-  const openWith = (n: Node, p: Protocol) =>
-    open({ nodeId: n.id, protocol: p, title: n.name, host: n.host, port: n.port })
+  const openWith = (n: Node, choice: ProtocolChoice) =>
+    open({
+      nodeId: n.id,
+      protocol: choice.protocol,
+      rdpBackend: choice.rdpBackend,
+      title: n.name,
+      host: n.host,
+      port: n.port,
+    })
 
   const copy = (val: string) => {
     void navigator.clipboard?.writeText(val)
@@ -48,7 +55,7 @@ export function NodeInfoTab({ nodeId }: Props) {
   }
 
   const n = node.data
-  const protos = protocolsForNode(n.protocol)
+  const choices = protocolChoicesForNode(n.protocol)
   const tags = (n.tags || "").split(",").map((s) => s.trim()).filter(Boolean)
   const hostPort = `${n.host}:${n.port}`
 
@@ -89,19 +96,20 @@ export function NodeInfoTab({ nodeId }: Props) {
           快捷动作
         </h3>
         <div className="grid grid-cols-2 gap-2">
-          {protos.map((p) => {
-            const meta = metaOf(p)
+          {choices.map((choice) => {
+            const meta = metaOf(choice.protocol)
             const Icon = meta.icon
             return (
               <Button
-                key={p}
+                key={choice.value}
                 variant="outline"
                 size="sm"
                 className="justify-start h-9"
-                onClick={() => openWith(n, p)}
+                onClick={() => openWith(n, choice)}
+                title={choice.description}
               >
                 <Icon className={`w-4 h-4 ${meta.tint}`} />
-                {meta.label}
+                <span className="truncate">{choice.label}</span>
               </Button>
             )
           })}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,6 +35,7 @@ type FreeRDPWorker struct {
 	out        chan ServerMessage
 	closeOnce  sync.Once
 	done       chan struct{}
+	closing    atomic.Bool
 	mu         sync.Mutex // guards writes to stdin
 }
 
@@ -51,7 +53,7 @@ func NewFreeRDPWorker(logger *zap.Logger, workerPath string, opts ...WorkerOptio
 	w := &FreeRDPWorker{
 		logger:     logger,
 		workerPath: workerPath,
-		out:        make(chan ServerMessage, 64),
+		out:        make(chan ServerMessage, 256),
 		done:       make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -110,8 +112,14 @@ func (w *FreeRDPWorker) Start(ctx context.Context, p StartParams) error {
 }
 
 func (w *FreeRDPWorker) Send(msg ClientMessage) error {
+	if w.closing.Load() {
+		return errors.New("worker closing")
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.closing.Load() {
+		return errors.New("worker closing")
+	}
 	if w.stdin == nil {
 		return errors.New("worker not started")
 	}
@@ -131,27 +139,54 @@ func (w *FreeRDPWorker) Recv() <-chan ServerMessage { return w.out }
 
 func (w *FreeRDPWorker) Close() error {
 	w.closeOnce.Do(func() {
+		w.closing.Store(true)
+		w.sendCloseFrameWithTimeout()
 		if w.stdin != nil {
 			_ = w.stdin.Close()
 		}
 		if w.cmd != nil && w.cmd.Process != nil {
-			// Give the worker a moment to flush; then kill.
-			done := make(chan struct{})
-			go func() { _ = w.cmd.Wait(); close(done) }()
+			// Give the worker a moment to flush; then kill. watchProcess owns
+			// cmd.Wait, so Close waits on w.done instead of calling Wait again.
 			select {
-			case <-done:
+			case <-w.done:
 			case <-time.After(2 * time.Second):
 				_ = w.cmd.Process.Kill()
+				<-w.done
 			}
+		} else {
+			<-w.done
 		}
-		<-w.done
 		close(w.out)
 	})
 	return nil
 }
 
-// pumpStdout reads framed JSON ServerMessages from the worker and forwards
-// them onto the out channel.
+func (w *FreeRDPWorker) sendCloseFrameWithTimeout() {
+	if w.stdin == nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		body, err := jsonEncode(struct {
+			Type string `json:"type"`
+		}{Type: "close"})
+		if err == nil {
+			_ = writeFrame(w.stdin, body)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		w.logger.Warn("freerdp worker close frame write timed out")
+	}
+}
+
+// pumpStdout reads framed ServerMessages from the worker and forwards them
+// onto the out channel. Hot frame/cursor payloads use the same binary header
+// as the browser WS hop so raw pixels never need JSON/base64 on stdout.
 func (w *FreeRDPWorker) pumpStdout() {
 	br := bufio.NewReaderSize(w.stdout, 128*1024)
 	for {
@@ -162,15 +197,22 @@ func (w *FreeRDPWorker) pumpStdout() {
 			}
 			return
 		}
-		msg, err := jsonDecode[ServerMessage](body)
+		msg, binaryPayload, err := DecodeServerMessageBinaryPayload(body)
 		if err != nil {
-			w.logger.Warn("freerdp worker stdout decode", zap.Error(err))
+			w.logger.Warn("freerdp worker stdout binary decode", zap.Error(err))
 			continue
+		}
+		if !binaryPayload {
+			msg, err = jsonDecode[ServerMessage](body)
+			if err != nil {
+				w.logger.Warn("freerdp worker stdout decode", zap.Error(err))
+				continue
+			}
 		}
 		select {
 		case w.out <- msg:
-		case <-time.After(500 * time.Millisecond):
-			w.logger.Warn("freerdp worker out queue stuck — dropping")
+		case <-w.done:
+			return
 		}
 	}
 }
@@ -189,7 +231,6 @@ func (w *FreeRDPWorker) watchProcess() {
 		return
 	}
 	err := w.cmd.Wait()
-	close(w.done)
 	// Surface a Closed/Error status to consumers so the WS handler can
 	// drop the browser connection cleanly.
 	status := SessionStatus{Phase: PhaseClosed}
@@ -201,4 +242,5 @@ func (w *FreeRDPWorker) watchProcess() {
 	case w.out <- ServerMessage{Status: &status}:
 	default:
 	}
+	close(w.done)
 }

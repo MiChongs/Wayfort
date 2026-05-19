@@ -4,6 +4,7 @@ import * as React from "react"
 import { ChevronRight, Star } from "lucide-react"
 import { toast } from "sonner"
 import type { Node } from "@/lib/api/types"
+import type { DesktopBackend } from "@/lib/desktop/types"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   ContextMenu,
@@ -17,7 +18,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
-import { metaOf, protocolsForNode, PROTOCOL_META } from "./protocolMeta"
+import { metaOf, protocolChoicesForNode, PROTOCOL_META, type ProtocolChoice } from "./protocolMeta"
 import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
 
 export type TreeFolder = {
@@ -40,7 +41,7 @@ export type TreeItem = TreeFolder | TreeLeaf
 type Props = {
   item: TreeItem
   depth?: number
-  onOpenTab: (node: Node, protocol: Protocol) => void
+  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
   onToggleFavorite?: (node: Node) => void
 }
 
@@ -59,7 +60,7 @@ function FolderRow({
 }: {
   folder: TreeFolder
   depth: number
-  onOpenTab: (node: Node, protocol: Protocol) => void
+  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
   onToggleFavorite?: (node: Node) => void
 }) {
   const Icon = folder.icon
@@ -108,11 +109,12 @@ function LeafRow({
 }: {
   leaf: TreeLeaf
   depth: number
-  onOpenTab: (node: Node, protocol: Protocol) => void
+  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
   onToggleFavorite?: (node: Node) => void
 }) {
-  const protocols = protocolsForNode(leaf.node.protocol)
-  const defaultProto = protocols[0]
+  const choices = protocolChoicesForNode(leaf.node.protocol)
+  const defaultChoice = choices[0]
+  const defaultProto = defaultChoice?.protocol ?? "tcp_forward"
   const meta = metaOf(defaultProto)
   const Icon = meta.icon
   const open = useWorkspaceStore((s) => s.open)
@@ -125,6 +127,7 @@ function LeafRow({
     const id = open({
       nodeId: leaf.node.id,
       protocol: defaultProto,
+      rdpBackend: defaultChoice?.rdpBackend,
       title: leaf.node.name,
       host: leaf.node.host,
       port: leaf.node.port,
@@ -143,7 +146,7 @@ function LeafRow({
       <ContextMenuTrigger asChild>
         <button
           type="button"
-          onDoubleClick={() => onOpenTab(leaf.node, defaultProto)}
+          onDoubleClick={() => onOpenTab(leaf.node, defaultProto, defaultChoice?.rdpBackend)}
           title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接`}
           className={cn(
             "group/leaf w-full flex items-center gap-2 px-2 py-1 rounded-sm text-sm",
@@ -163,10 +166,10 @@ function LeafRow({
       <ContextMenuContent className="w-56">
         <ContextMenuLabel className="truncate">{leaf.node.name}</ContextMenuLabel>
         <ContextMenuSeparator />
-        {protocols.length === 1 ? (
-          <ContextMenuItem onSelect={() => onOpenTab(leaf.node, protocols[0])}>
+        {choices.length === 1 ? (
+          <ContextMenuItem onSelect={() => openChoice(onOpenTab, leaf.node, choices[0])}>
             <Icon className={cn("w-4 h-4", meta.tint)} />
-            <span>打开 · {meta.label}</span>
+            <span>打开 · {choices[0].label}</span>
           </ContextMenuItem>
         ) : (
           <ContextMenuSub>
@@ -175,13 +178,13 @@ function LeafRow({
               <span>在工作台打开</span>
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
-              {protocols.map((p) => {
-                const m = PROTOCOL_META[p]
+              {choices.map((choice) => {
+                const m = PROTOCOL_META[choice.protocol]
                 const PIcon = m.icon
                 return (
-                  <ContextMenuItem key={p} onSelect={() => onOpenTab(leaf.node, p)}>
+                  <ContextMenuItem key={choice.value} onSelect={() => openChoice(onOpenTab, leaf.node, choice)}>
                     <PIcon className={cn("w-4 h-4", m.tint)} />
-                    <span>{m.label}</span>
+                    <span>{choice.label}</span>
                   </ContextMenuItem>
                 )
               })}
@@ -204,4 +207,12 @@ function LeafRow({
       </ContextMenuContent>
     </ContextMenu>
   )
+}
+
+function openChoice(
+  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void,
+  node: Node,
+  choice: ProtocolChoice,
+) {
+  onOpenTab(node, choice.protocol, choice.rdpBackend)
 }

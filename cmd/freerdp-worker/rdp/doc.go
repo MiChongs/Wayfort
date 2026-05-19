@@ -6,24 +6,27 @@
 //   - no tag: compiles only stub.go which returns "not built" errors,
 //     letting `go build ./...` succeed on hosts without libfreerdp.
 //
-// Channel coverage (Plan 17 M2 "complete implementation" sweep):
-//   - Surface bits (bitmap codec) via update->Bitmap                 ✓
-//   - Pointer (cursor) via update->pointer->{PointerNew,PointerSet}  ✓
-//   - Keyboard / mouse input via freerdp_input_send_*                ✓
-//   - CLIPRDR (clipboard, text + image + file-list per MS-RDPECLIP)  ✓
-//   - RDPSND (audio playback)                                        ✓
-//   - RDPGFX (graphics pipeline incl. AVC444 / RemoteFX)             ✓ raw forward
-//   - RDPDR (drive redirection — file transfer)                      ✓ raw forward
-//   - Multi-monitor (settings->MonitorCount + MonitorDefArray)       ✓
+// Channel coverage:
+//   - Surface bits via classic bitmap/GDI path                         enabled
+//   - Pointer/cursor                                                   enabled after cursor protocol fix
+//   - Keyboard / mouse input                                           enabled on FreeRDP owner thread
+//   - CLIPRDR text                                                     enabled after protocol fix
+//   - RDPEDISP dynamic resize                                          disabled
+//   - RDPSND audio playback                                            disabled
+//   - RDPGFX graphics pipeline                                         disabled
+//   - RDPDR drive redirection / file transfer                          disabled
+//   - Printers / smartcards                                            disabled
+//
+// Disabled channels must stay off in applySettings until this package and
+// the browser both implement the complete sub-protocol end to end.
+// See docs/rdp-backend-capabilities.md for the repo-level support matrix.
 //
 // All channel callbacks marshal events to ServerMessage and write to the
 // stdio frame channel set up in cmd/freerdp-worker/main.go. The gateway
 // in internal/desktop/ then forwards them to the browser.
 //
-// VALIDATION STATUS: every callback compiles and is wired into libfreerdp,
-// but end-to-end correctness against real Windows hosts requires testing
-// the operator must perform (no Windows RDP target available in the
-// development sandbox where this code was authored). Bugs found during
-// validation should be fixed in this package; the gateway / browser sides
-// are protocol-agnostic and should not need changes.
+// VALIDATION STATUS: the classic display path compiles and is wired into
+// libfreerdp. Channel-specific features are intentionally disabled until
+// their gateway and browser protocol paths are implemented and validated
+// against real Windows hosts.
 package rdp

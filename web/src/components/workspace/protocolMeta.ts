@@ -1,6 +1,7 @@
 import { Database, FolderTree, Monitor, Network, Server, Share2, Terminal } from "lucide-react"
 import type { Protocol } from "./useWorkspaceStore"
 import type { ComponentType } from "react"
+import type { DesktopBackend } from "@/lib/desktop/types"
 
 export type ProtocolMeta = {
   key: Protocol
@@ -14,6 +15,32 @@ export type ProtocolMeta = {
   // status indicator on the tab cycles through fresh→connecting→connected
   // or stays at connected (REST-based).
   ws: boolean
+}
+
+export type ProtocolChoice = {
+  protocol: Protocol
+  rdpBackend?: DesktopBackend
+  label: string
+  description?: string
+  value: string
+}
+
+export const RDP_BACKEND_META: Record<DesktopBackend, { label: string; shortLabel: string; description: string }> = {
+  freerdp: {
+    label: "FreeRDP",
+    shortLabel: "FreeRDP",
+    description: "后端 freerdp-worker 转码，适合审计、录制和网关侧控制。",
+  },
+  ironrdp: {
+    label: "IronRDP",
+    shortLabel: "IronRDP",
+    description: "浏览器 Wasm RDP 客户端，经 Devolutions Gateway 连接。",
+  },
+  dummy: {
+    label: "Dummy 测试栈",
+    shortLabel: "Dummy",
+    description: "测试图案 worker，仅用于调试链路。",
+  },
 }
 
 export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
@@ -103,6 +130,33 @@ export function protocolsForNode(protocol: string): Protocol[] {
       if (DB_PROTOS.has(protocol)) return ["dbcli", "tcp_forward"]
       return ["tcp_forward"]
   }
+}
+
+export function protocolChoicesForNode(protocol: string): ProtocolChoice[] {
+  const choices: ProtocolChoice[] = []
+  for (const p of protocolsForNode(protocol)) {
+    const meta = metaOf(p)
+    if (p !== "rdp_next") {
+      choices.push({ protocol: p, label: meta.label, value: p })
+      continue
+    }
+
+    for (const rdpBackend of ["freerdp", "ironrdp"] as const) {
+      choices.push({
+        protocol: p,
+        rdpBackend,
+        label: `${meta.label} · ${RDP_BACKEND_META[rdpBackend].label}`,
+        description: RDP_BACKEND_META[rdpBackend].description,
+        value: `${p}:${rdpBackend}`,
+      })
+    }
+  }
+  return choices
+}
+
+export function rdpBackendShortLabel(backend: DesktopBackend | undefined): string | null {
+  if (!backend) return null
+  return RDP_BACKEND_META[backend]?.shortLabel ?? backend
 }
 
 // Convenience reverse helpers

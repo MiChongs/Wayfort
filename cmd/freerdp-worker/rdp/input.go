@@ -1,8 +1,9 @@
 //go:build freerdp
 
 // input.go — Plan 17 M2 input forwarding. ClientMessages coming from the
-// gateway arrive on c.in; the inputPump dispatches them onto libfreerdp's
-// input PDU senders, channel data senders, or settings updates.
+// gateway arrive on c.in; runLoop drains them from the FreeRDP owner thread
+// before dispatching onto input PDU senders, channel data senders, or
+// settings updates.
 
 package rdp
 
@@ -18,22 +19,18 @@ extern BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
 */
 import "C"
 
-import (
-	"context"
+import "github.com/michongs/jumpserver-anonymous/internal/desktop"
 
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
-)
-
-func (c *Client) inputPump(ctx context.Context) {
-	for {
+func (c *Client) drainInput(limit int) {
+	for i := 0; i < limit; i++ {
 		select {
-		case <-ctx.Done():
-			return
 		case msg, ok := <-c.in:
 			if !ok {
 				return
 			}
 			c.dispatchInput(msg)
+		default:
+			return
 		}
 	}
 }
@@ -114,7 +111,10 @@ func (c *Client) dispatchInput(msg desktop.ClientMessage) {
 			C.wSendMouse(input, f, 0, 0)
 		}
 	case msg.Clipboard != nil:
-		if msg.Clipboard.MIME == "text/plain" || msg.Clipboard.MIME == "text/plain;charset=utf-8" {
+		switch msg.Clipboard.MIME {
+		case "text/plain;charset=utf-16le":
+			c.pushClipboardUTF16LE(msg.Clipboard.Payload)
+		case "text/plain", "text/plain;charset=utf-8":
 			c.pushClipboardText(string(msg.Clipboard.Payload))
 		}
 	case msg.Resize != nil:

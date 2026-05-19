@@ -41,3 +41,6 @@ func (c *stubClient) Close() error                       { return nil }
 // unconditionally so the freerdp-tagged and stub builds share the same
 // startup sequence.
 func ApplyWLogLevel(level string) bool { return false }
+
+// ConfigureWLogToStderr — no-op when libfreerdp isn't linked.
+func ConfigureWLogToStderr() bool { return false }

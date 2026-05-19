@@ -9,6 +9,10 @@ package rdp
 
 /*
 #cgo pkg-config: freerdp3 freerdp-client3 winpr3
+// Build against FreeRDP 3's current API surface only. This removes deprecated
+// 3.x compatibility fields such as Authenticate and legacy certificate
+// callbacks from the public structs at compile time.
+#cgo CFLAGS: -DWITHOUT_FREERDP_3x_DEPRECATED
 // __STDC_NO_THREADS__ tells winpr/platform.h to skip its `#include <threads.h>`
 // branch. C11 <threads.h> is optional in the standard, and MinGW-w64 / UCRT64
 // don't ship it (their thread support is winpthreads via <pthread.h> instead).
@@ -35,6 +39,7 @@ package rdp
 #include <freerdp/input.h>
 #include <freerdp/locale/keyboard.h>
 #include <freerdp/scancode.h>
+#include <freerdp/session.h>
 #include <freerdp/settings.h>
 #include <winpr/synch.h>
 #include <winpr/wtypes.h>
@@ -43,17 +48,19 @@ package rdp
 extern BOOL goPreConnect(freerdp* instance);
 extern BOOL goPostConnect(freerdp* instance);
 extern void goPostDisconnect(freerdp* instance);
-extern BOOL goAuthenticate(freerdp* instance, char** username, char** password, char** domain);
 extern BOOL goAuthenticateEx(freerdp* instance, char** username, char** password, char** domain,
                              rdp_auth_reason reason);
-extern DWORD goVerifyCertificate(freerdp* instance, const char* host, UINT16 port,
-                                 const char* common_name, const char* subject,
-                                 const char* issuer, const char* fingerprint, DWORD flags);
+extern int goVerifyX509Certificate(freerdp* instance, const BYTE* data, size_t length,
+                                   const char* hostname, UINT16 port, DWORD flags);
 extern int goLogonErrorInfo(freerdp* instance, UINT32 data, UINT32 type);
 extern void goOnChannelConnected(rdpContext* ctx, const char* name, void* iface);
 extern void goOnChannelDisconnected(rdpContext* ctx, const char* name, void* iface);
 extern BOOL goOnBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap);
+extern BOOL goOnSurfaceBits(rdpContext* ctx, const SURFACE_BITS_COMMAND* cmd);
+extern BOOL goOnBeginPaint(rdpContext* ctx);
+extern BOOL goOnEndPaint(rdpContext* ctx);
 extern BOOL goOnDesktopResize(rdpContext* ctx);
+extern BOOL goOnSaveSessionInfo(rdpContext* ctx, UINT32 type, void* data);
 extern BOOL goOnPointerNew(rdpContext* ctx, rdpPointer* pointer);
 extern void goOnPointerFree(rdpContext* ctx, rdpPointer* pointer);
 extern BOOL goOnPointerSet(rdpContext* ctx, rdpPointer* pointer);
@@ -217,6 +224,8 @@ BOOL wLoadChannels(freerdp* instance) {
 // front of ours so compressed RDP bitmap updates are decoded/composited into
 // context->gdi->primary_buffer before Go copies the updated rectangle.
 static pBitmapUpdate wOriginalBitmapUpdate = NULL;
+static pSurfaceBits wOriginalSurfaceBits = NULL;
+static pSaveSessionInfo wOriginalSaveSessionInfo = NULL;
 
 BOOL wBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap) {
     if (wOriginalBitmapUpdate && !wOriginalBitmapUpdate(ctx, bitmap)) {
@@ -225,12 +234,40 @@ BOOL wBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap) {
     return goOnBitmapUpdate(ctx, bitmap);
 }
 
+BOOL wSurfaceBits(rdpContext* ctx, const SURFACE_BITS_COMMAND* cmd) {
+    if (wOriginalSurfaceBits && !wOriginalSurfaceBits(ctx, cmd)) {
+        return FALSE;
+    }
+    return goOnSurfaceBits(ctx, cmd);
+}
+
+BOOL wSaveSessionInfo(rdpContext* ctx, UINT32 type, void* data) {
+    BOOL ok = TRUE;
+    if (wOriginalSaveSessionInfo) {
+        ok = wOriginalSaveSessionInfo(ctx, type, data);
+    }
+    if (!goOnSaveSessionInfo(ctx, type, data)) {
+        ok = FALSE;
+    }
+    return ok;
+}
+
 void wInstallUpdateCallbacks(rdpUpdate* update) {
+    update->BeginPaint   = goOnBeginPaint;
+    update->EndPaint     = goOnEndPaint;
     if (update->BitmapUpdate != wBitmapUpdate) {
         wOriginalBitmapUpdate = update->BitmapUpdate;
     }
     update->BitmapUpdate  = wBitmapUpdate;
     update->DesktopResize = goOnDesktopResize;
+    if (update->SurfaceBits != wSurfaceBits) {
+        wOriginalSurfaceBits = update->SurfaceBits;
+    }
+    update->SurfaceBits = wSurfaceBits;
+    if (update->SaveSessionInfo != wSaveSessionInfo) {
+        wOriginalSaveSessionInfo = update->SaveSessionInfo;
+    }
+    update->SaveSessionInfo = wSaveSessionInfo;
 }
 void wInstallPointerCallbacks(rdpPointer* pt) {
     pt->New         = wPointerNew;
@@ -245,9 +282,8 @@ void wInstallInstanceCallbacks(freerdp* instance) {
     instance->PostConnect          = goPostConnect;
     instance->PostDisconnect       = goPostDisconnect;
     instance->LoadChannels         = wLoadChannels;
-    instance->Authenticate         = goAuthenticate;
     instance->AuthenticateEx       = goAuthenticateEx;
-    instance->VerifyCertificateEx  = goVerifyCertificate;
+    instance->VerifyX509Certificate = goVerifyX509Certificate;
     instance->LogonErrorInfo       = goLogonErrorInfo;
 }
 void wRegisterChannelPubSub(rdpContext* ctx) {
@@ -272,7 +308,52 @@ void wInstallRdpgfx(RdpgfxClientContext* ctx) {
     ctx->EndFrame       = goRdpgfxEndFrame;
 }
 
+static RECTANGLE_16 wDesktopArea(UINT16 width, UINT16 height) {
+    RECTANGLE_16 area = {0};
+    area.left = 0;
+    area.top = 0;
+    area.right = width - 1;
+    area.bottom = height - 1;
+    return area;
+}
+
+BOOL wSendSuppressOutputAllow(rdpContext* ctx, UINT16 width, UINT16 height) {
+    if (!ctx || width == 0 || height == 0) {
+        return FALSE;
+    }
+    if (ctx->gdi) {
+        return gdi_send_suppress_output(ctx->gdi, FALSE);
+    }
+    if (!ctx->update || !ctx->update->SuppressOutput) {
+        return FALSE;
+    }
+    RECTANGLE_16 area = wDesktopArea(width, height);
+    return ctx->update->SuppressOutput(ctx, TRUE, &area);
+}
+
+BOOL wSendRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height) {
+    if (!ctx || !ctx->update || !ctx->update->RefreshRect || width == 0 || height == 0) {
+        return FALSE;
+    }
+    RECTANGLE_16 area = wDesktopArea(width, height);
+    return ctx->update->RefreshRect(ctx, 1, &area);
+}
+
 // ----- outbound CLIPRDR helpers -----
+UINT wSendCliprdrCapabilities(CliprdrClientContext* ctx) {
+    CLIPRDR_GENERAL_CAPABILITY_SET general = {0};
+    CLIPRDR_CAPABILITIES caps = {0};
+
+    general.capabilitySetType = CB_CAPSTYPE_GENERAL;
+    general.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+    general.version = CB_CAPS_VERSION_2;
+    general.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+
+    caps.common.msgType = CB_CLIP_CAPS;
+    caps.cCapabilitiesSets = 1;
+    caps.capabilitySets = (CLIPRDR_CAPABILITY_SET*)&general;
+    return ctx->ClientCapabilities(ctx, &caps);
+}
 UINT wSendCliprdrFormatList(CliprdrClientContext* ctx,
                              const CLIPRDR_FORMAT* formats, UINT32 numFormats) {
     CLIPRDR_FORMAT_LIST fl = {0};
@@ -280,6 +361,12 @@ UINT wSendCliprdrFormatList(CliprdrClientContext* ctx,
     fl.numFormats = numFormats;
     fl.formats    = (CLIPRDR_FORMAT*)formats;
     return ctx->ClientFormatList(ctx, &fl);
+}
+UINT wSendCliprdrFormatListResponse(CliprdrClientContext* ctx, UINT16 msgFlags) {
+    CLIPRDR_FORMAT_LIST_RESPONSE r = {0};
+    r.common.msgType = CB_FORMAT_LIST_RESPONSE;
+    r.common.msgFlags = msgFlags;
+    return ctx->ClientFormatListResponse(ctx, &r);
 }
 UINT wSendCliprdrFormatDataResponse(CliprdrClientContext* ctx,
                                      const BYTE* data, UINT32 size) {
@@ -289,6 +376,12 @@ UINT wSendCliprdrFormatDataResponse(CliprdrClientContext* ctx,
     r.common.dataLen    = size;
     r.requestedFormatData = (BYTE*)data;
     return ctx->ClientFormatDataResponse(ctx, &r);
+}
+UINT wSendCliprdrFormatDataRequest(CliprdrClientContext* ctx, UINT32 formatId) {
+    CLIPRDR_FORMAT_DATA_REQUEST r = {0};
+    r.common.msgType = CB_FORMAT_DATA_REQUEST;
+    r.requestedFormatId = formatId;
+    return ctx->ClientFormatDataRequest(ctx, &r);
 }
 
 // Register the static addin provider FreeRDP needs to look up channel
