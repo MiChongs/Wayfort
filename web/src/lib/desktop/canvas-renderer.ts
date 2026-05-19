@@ -5,6 +5,16 @@
 // The worker URL is resolved via the `new URL(..., import.meta.url)`
 // pattern Next.js / Turbopack natively supports — no extra config.
 
+// RenderMetrics is the 1Hz snapshot the worker emits for the perf panel.
+// `framesPainted` resets every window, so dividing by elapsed gives FPS;
+// `droppedFrames` is monotonic so we can chart cumulative drop count.
+export interface RenderMetrics {
+  avgDecodeMs: number
+  avgPaintMs: number
+  framesPainted: number
+  droppedFrames: number
+}
+
 export interface CanvasRendererHandle {
   canvas: HTMLCanvasElement
   worker: Worker
@@ -14,6 +24,10 @@ export interface CanvasRendererHandle {
   // the PNG as `style.cursor: url(...) hotX hotY, auto`.
   onCursor(cb: (data: { x: number; y: number; png: string }) => void): () => void
   onError(cb: (message: string) => void): () => void
+  // 1 Hz performance snapshot from the OffscreenCanvas worker. Wired
+  // into the SessionStats pipeline by the LegacyDesktopDisplay so the
+  // perf panel can chart decode / paint cost and dropped frames.
+  onMetrics(cb: (m: RenderMetrics) => void): () => void
   destroy(): void
 }
 
@@ -36,18 +50,28 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   const resizeCbs: Array<(w: number, h: number) => void> = []
   const cursorCbs: Array<(d: { x: number; y: number; png: string }) => void> = []
   const errorCbs: Array<(message: string) => void> = []
+  const metricsCbs: Array<(m: RenderMetrics) => void> = []
   worker.addEventListener("message", (ev: MessageEvent) => {
     const data = ev.data as
       | { type: "ready" }
       | { type: "resized"; width: number; height: number }
       | { type: "cursor"; x: number; y: number; png: string }
       | { type: "error"; message: string }
+      | ({ type: "metrics" } & RenderMetrics)
     if (data.type === "resized") {
       for (const cb of resizeCbs) cb(data.width, data.height)
     } else if (data.type === "cursor") {
       for (const cb of cursorCbs) cb(data)
     } else if (data.type === "error") {
       for (const cb of errorCbs) cb(data.message)
+    } else if (data.type === "metrics") {
+      const snapshot: RenderMetrics = {
+        avgDecodeMs: data.avgDecodeMs,
+        avgPaintMs: data.avgPaintMs,
+        framesPainted: data.framesPainted,
+        droppedFrames: data.droppedFrames,
+      }
+      for (const cb of metricsCbs) cb(snapshot)
     }
   })
 
@@ -73,6 +97,13 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       return () => {
         const i = errorCbs.indexOf(cb)
         if (i >= 0) errorCbs.splice(i, 1)
+      }
+    },
+    onMetrics: (cb) => {
+      metricsCbs.push(cb)
+      return () => {
+        const i = metricsCbs.indexOf(cb)
+        if (i >= 0) metricsCbs.splice(i, 1)
       }
     },
     destroy: () => {

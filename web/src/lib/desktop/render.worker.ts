@@ -29,6 +29,68 @@ let g2d: OffscreenCanvasRenderingContext2D | null = null
 let canvasW = 0
 let canvasH = 0
 
+// Block B — performance instrumentation. Sums and counters reset every
+// time we emit, so the main thread receives moving averages over the
+// last `METRICS_INTERVAL_MS` window. `droppedFrames` is monotonic
+// because the perf panel charts cumulative drops over time.
+const METRICS_INTERVAL_MS = 1000
+let decodeAccumMs = 0
+let paintAccumMs = 0
+let framesPainted = 0
+let droppedFrames = 0
+let metricsLastEmit = 0
+
+function maybeEmitMetrics(now: number) {
+  if (now - metricsLastEmit < METRICS_INTERVAL_MS) return
+  // Only emit if we actually did work — keeps the panel quiet for
+  // idle sessions instead of spamming zero rows.
+  if (framesPainted === 0 && droppedFrames === 0) {
+    metricsLastEmit = now
+    return
+  }
+  ctx.postMessage({
+    type: "metrics",
+    avgDecodeMs: framesPainted > 0 ? decodeAccumMs / framesPainted : 0,
+    avgPaintMs: framesPainted > 0 ? paintAccumMs / framesPainted : 0,
+    framesPainted,
+    droppedFrames,
+  })
+  decodeAccumMs = 0
+  paintAccumMs = 0
+  framesPainted = 0
+  metricsLastEmit = now
+}
+
+// Stale-frame coalescer. The server can deliver bursts (multiple frame
+// rects from one batch) faster than the GPU can present them. Without
+// coalescing, slow paths queue up and the worker spends most of its
+// time decoding frames the user will never see. We keep one queued
+// frame per region key (currently a single global slot since the
+// dummy backend sends full-canvas frames); newer arrivals replace
+// older ones and bump the dropped counter.
+let pendingFrame: FrameRect | null = null
+let coalesceRaf = 0
+function schedulePaint() {
+  if (coalesceRaf !== 0) return
+  // requestAnimationFrame inside a worker is supported in modern
+  // browsers (Chrome 79+, Edge 79+, Safari 16.4+, Firefox 100+).
+  // Falling back to setTimeout(0) is fine where rAF is missing — it
+  // just loses the visibility-pause behaviour.
+  const raf =
+    typeof self.requestAnimationFrame === "function"
+      ? self.requestAnimationFrame
+      : (cb: FrameRequestCallback) =>
+          self.setTimeout(() => cb(performance.now()), 0) as unknown as number
+  coalesceRaf = raf((ts) => {
+    coalesceRaf = 0
+    const next = pendingFrame
+    pendingFrame = null
+    if (!next) return
+    void paintFrame(next)
+    maybeEmitMetrics(ts)
+  })
+}
+
 ctx.addEventListener("message", async (ev: MessageEvent) => {
   const data = ev.data as
     | { type: "init"; canvas: OffscreenCanvas; width: number; height: number }
@@ -59,7 +121,13 @@ ctx.addEventListener("message", async (ev: MessageEvent) => {
     }
     case "server": {
       if (data.msg.frame) {
-        await paintFrame(data.msg.frame)
+        // Coalesce — if a previous frame is still pending, this one
+        // displaces it. The displaced frame was never painted so it
+        // counts as dropped. schedulePaint() drives the paint via the
+        // worker's rAF so we naturally pace with the display refresh.
+        if (pendingFrame) droppedFrames++
+        pendingFrame = data.msg.frame
+        schedulePaint()
       } else if (data.msg.cursor) {
         // Forward to main thread which sets the DOM cursor (PNG-data URL
         // applied to the <canvas>'s `cursor` style). Worker can't do that
@@ -93,6 +161,11 @@ async function paintFrame(f: FrameRect): Promise<void> {
     // Notify main thread so it can reflow the wrapper.
     ctx.postMessage({ type: "resized", width: neededW, height: neededH })
   }
+  // Two timers: `decodeStart`→`paintStart` measures bytes→ImageBitmap
+  // (or ImageData) decoding cost; `paintStart`→end measures the actual
+  // draw call onto the GPU-backed OffscreenCanvas. Recorded into the
+  // accumulators picked up by `maybeEmitMetrics`.
+  const decodeStart = performance.now()
   const bytes = base64ToBytes(f.payload)
   switch (f.encoding) {
     case "raw_bgra": {
@@ -107,7 +180,12 @@ async function paintFrame(f: FrameRect): Promise<void> {
         dst[i + 2] = bytes[i]
         dst[i + 3] = bytes[i + 3]
       }
+      const paintStart = performance.now()
       g2d.putImageData(id, f.x, f.y)
+      const end = performance.now()
+      decodeAccumMs += paintStart - decodeStart
+      paintAccumMs += end - paintStart
+      framesPainted++
       return
     }
     case "jpeg":
@@ -117,12 +195,22 @@ async function paintFrame(f: FrameRect): Promise<void> {
       })
       try {
         const bmp = await createImageBitmap(blob)
+        const paintStart = performance.now()
         g2d.drawImage(bmp, f.x, f.y, f.width, f.height)
+        const end = performance.now()
         bmp.close()
+        decodeAccumMs += paintStart - decodeStart
+        paintAccumMs += end - paintStart
+        framesPainted++
       } catch {
         try {
           const image = decodeFrameBytes(bytes, f.encoding)
+          const paintStart = performance.now()
           g2d.putImageData(image, f.x, f.y)
+          const end = performance.now()
+          decodeAccumMs += paintStart - decodeStart
+          paintAccumMs += end - paintStart
+          framesPainted++
         } catch (error) {
           ctx.postMessage({
             type: "error",
