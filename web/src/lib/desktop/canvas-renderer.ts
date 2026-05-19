@@ -23,6 +23,9 @@ interface DecodedFrame {
 type DecodeWorkerMessage =
   | { type: "decoded"; id: number; frames: DecodedFrame[] }
   | { type: "error"; id: number; message: string }
+  // Out-of-band signals — not tied to a decode request id.
+  | { type: "warn"; message: string }
+  | { type: "refresh-needed" }
 
 interface DecodeRequest {
   resolve(frames: DecodedFrame[]): void
@@ -60,6 +63,10 @@ export interface CanvasRendererHandle {
   onError(cb: (message: string) => void): () => void
   // 1 Hz performance snapshot used by the desktop perf panel.
   onMetrics(cb: (m: RenderMetrics) => void): () => void
+  // Fired when the decode worker hits a VideoDecoder error and needs
+  // the server to send a new IDR frame. Consumer should forward this
+  // to the WS layer as a `refresh` ClientMessage.
+  onRefreshNeeded(cb: () => void): () => void
   destroy(): void
 }
 
@@ -78,6 +85,7 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   const cursorCbs: Array<(cursor: CursorUpdate) => void> = []
   const errorCbs: Array<(message: string) => void> = []
   const metricsCbs: Array<(m: RenderMetrics) => void> = []
+  const refreshCbs: Array<() => void> = []
 
   let paintQueue = Promise.resolve()
   let pendingFrames: FrameBytes[] = []
@@ -88,6 +96,10 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   const decodeWorker = createDecodeWorker(
     (message) => emitError(message),
     decodeRequests,
+    () => {
+      if (destroyed) return
+      for (const cb of refreshCbs) cb()
+    },
   )
 
   // Perf-panel accumulators. Times are summed across the 1 s window and
@@ -285,6 +297,13 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
         if (i >= 0) metricsCbs.splice(i, 1)
       }
     },
+    onRefreshNeeded: (cb) => {
+      refreshCbs.push(cb)
+      return () => {
+        const i = refreshCbs.indexOf(cb)
+        if (i >= 0) refreshCbs.splice(i, 1)
+      }
+    },
     destroy: () => {
       destroyed = true
       window.clearInterval(metricsTimer)
@@ -309,6 +328,7 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       cursorCbs.length = 0
       errorCbs.length = 0
       metricsCbs.length = 0
+      refreshCbs.length = 0
       canvas.remove()
     },
   }
@@ -341,11 +361,23 @@ function isNearFullCanvasFrame(canvas: HTMLCanvasElement, frame: FrameRectMeta) 
 function createDecodeWorker(
   emitError: (message: string) => void,
   requests: Map<number, DecodeRequest>,
+  emitRefreshNeeded: () => void,
 ) {
   try {
     const worker = new Worker(new URL("./decode.worker.ts", import.meta.url), { type: "module" })
     worker.addEventListener("message", (event: MessageEvent<DecodeWorkerMessage>) => {
       const msg = event.data
+      if (msg.type === "refresh-needed") {
+        emitRefreshNeeded()
+        return
+      }
+      if (msg.type === "warn") {
+        // Surface worker-side warnings (e.g. h264 frames arriving on an
+        // unsupported browser) via the same channel as errors so
+        // consumers can route them to logs / toast.
+        emitError(`desktop decode worker warning: ${msg.message}`)
+        return
+      }
       const request = requests.get(msg.id)
       if (!request) return
       requests.delete(msg.id)

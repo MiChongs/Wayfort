@@ -193,6 +193,20 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	// is running underneath.
 	sessionID := uuid.NewString()
 	rdpOpts := ParseRdpOptions(node.ProtoOptions)
+	// Apply browser-side capability gating. The frontend probes
+	// WebCodecs.VideoDecoder + ImageDecoder via lib/desktop/capabilities.ts
+	// before this POST and sends the result in req.ClientCaps. If the
+	// browser can't decode H.264 we suppress GFX + H.264 here so
+	// libfreerdp's negotiation never advertises a codec that would
+	// land unrendered. RFX stays guided by the per-node options because
+	// it's currently always off client-side.
+	if req.ClientCaps != nil {
+		if !req.ClientCaps.H264 {
+			no := false
+			rdpOpts.EnableH264 = &no
+			rdpOpts.EnableGraphicsPipeline = &no
+		}
+	}
 	keyboard := req.Keyboard
 	if keyboard == "" {
 		keyboard = rdpOpts.Keyboard

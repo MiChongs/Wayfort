@@ -40,6 +40,16 @@ type StartSessionRequest struct {
 	// Plan 17 M1: "dummy" runs the test-pattern worker.
 	// M2 defaults to "freerdp" once libfreerdp is wired.
 	Backend string `json:"backend"`
+	// ClientCaps tells the manager what the browser's decoder can
+	// actually handle so it can pick a codec mix the client will
+	// render — e.g. an old Safari without WebCodecs.VideoDecoder
+	// must NOT have GFX/H.264 negotiated upstream, otherwise libfreerdp
+	// reaches `connected` but every frame arrives in a format the
+	// client drops on the floor. The browser collects this via
+	// `collectClientCapabilities()` (lib/desktop/capabilities.ts)
+	// before POSTing the start request. Nil = legacy / unknown client;
+	// the manager assumes full support to keep older builds working.
+	ClientCaps *ClientCaps `json:"client_caps,omitempty"`
 }
 
 type StartSessionResponse struct {
@@ -189,12 +199,29 @@ type ClientMessage struct {
 	Clipboard *ClipboardData `json:"clipboard,omitempty"`
 	Resize    *ResizeHint    `json:"resize,omitempty"`
 	// Caps is sent once by the browser right after WS open and carries
-	// the decoder capabilities the gateway / worker need before
-	// negotiating RDPGFX upstream. Currently consumed by ws_handler.go
-	// (logging only) — the gate that would refuse to enable H.264 on
-	// browsers without VideoDecoder is wired but not yet enforcing
-	// dynamic opt override; defer to follow-up.
+	// the decoder capabilities. Mostly informational at this point —
+	// the actual gate happens at session-start time via
+	// StartSessionRequest.ClientCaps which overrides RdpOptions
+	// before libfreerdp connects. Logging this on the WS hop keeps a
+	// breadcrumb if a client lies about what it can decode.
 	Caps *ClientCaps `json:"caps,omitempty"`
+	// Refresh asks the worker to send an RDP `Refresh Rect` PDU so the
+	// server immediately redraws the named region (or the entire
+	// canvas if x/y/width/height are zero). The browser triggers this
+	// when WebCodecs.VideoDecoder errors out and needs a new IDR
+	// keyframe to restart decoding — without it, the screen stays
+	// frozen until the server emits the next natural keyframe.
+	Refresh *RefreshRect `json:"refresh,omitempty"`
+}
+
+// RefreshRect mirrors the area carried by an RDP MS-RDPBCGR 2.2.11.2.2
+// Refresh Rect PDU. All-zero means "the whole desktop", which is what
+// the browser sends on a decoder error.
+type RefreshRect struct {
+	X      uint32 `json:"x,omitempty"`
+	Y      uint32 `json:"y,omitempty"`
+	Width  uint32 `json:"width,omitempty"`
+	Height uint32 `json:"height,omitempty"`
 }
 
 // ClientCaps mirrors the TypeScript ClientCaps shape (web/src/lib/

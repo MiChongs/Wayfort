@@ -413,5 +413,12 @@ BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended) {
 BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y) {
     return freerdp_input_send_mouse_event(input, flags, x, y);
 }
+// RefreshRect lives in input.go directly — see the comment there. cgo
+// kept rejecting a shared wrapper because cgo_wrappers.go preprocesses
+// with extra CFLAGS (WITHOUT_FREERDP_3x_DEPRECATED + on Windows
+// __STDC_NO_THREADS__) that input.go doesn't, and the resulting
+// signatures-after-preprocessing diverged for the new helper even
+// though they appeared identical in source. The other wrappers above
+// predate that strictness so they still work; new helpers stay inline.
 */
 import "C"

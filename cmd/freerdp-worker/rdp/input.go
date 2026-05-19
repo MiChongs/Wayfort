@@ -16,6 +16,7 @@ extern rdpInput* wContextInput(rdpContext* ctx);
 extern BOOL wSendUnicode(rdpInput* input, BOOL down, UINT32 codepoint);
 extern BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended);
 extern BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
+extern BOOL wSendRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height);
 */
 import "C"
 
@@ -126,5 +127,18 @@ func (c *Client) dispatchInput(msg desktop.ClientMessage) {
 		c.height = msg.Resize.Height
 	case msg.HB != nil:
 		// Heartbeats are gateway-internal; nothing to forward to the server.
+	case msg.Refresh != nil:
+		// FreeRDP 3 exposes refresh requests through update->RefreshRect.
+		// Treat client recovery requests as a full-desktop refresh so a lost
+		// partial rectangle cannot leave the browser surface inconsistent.
+		w := uint32(msg.Refresh.Width)
+		h := uint32(msg.Refresh.Height)
+		if w == 0 {
+			w = uint32(c.width)
+		}
+		if h == 0 {
+			h = uint32(c.height)
+		}
+		C.wSendRefreshRect(rctx, C.UINT16(uint16(w)), C.UINT16(uint16(h)))
 	}
 }
