@@ -112,7 +112,13 @@ const TEARDOWN_GRACE_MS = 5000
 // based on the `backend` prop. Picking the renderer at this layer
 // keeps each path's hook order stable (no conditional hooks).
 export function DesktopDisplay(props: DesktopDisplayProps): React.ReactElement {
-  const backend = props.backend ?? "ironrdp"
+  // Default mirrors the server config's `desktop.default_backend` (which
+  // defaults to "freerdp" in configs/config.example.yaml + the Go
+  // viper defaults). Using "freerdp" here means a fresh checkout
+  // without Devolutions Gateway enabled doesn't immediately hit the
+  // "ironrdp backend not configured" rejection from the gateway.
+  // Callers (workspace tab, /rdp-next route) override this per-session.
+  const backend = props.backend ?? "freerdp"
   if (backend === "ironrdp") {
     return (
       <IronRdpDesktopShell
