@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
+import type { DesktopBackend } from "@/lib/desktop/types"
 
 export type Protocol =
   | "ssh"
@@ -21,6 +22,13 @@ export type WorkspaceTab = {
   id: string
   nodeId: number
   protocol: Protocol
+  // Only meaningful when protocol === "rdp_next". Picks which renderer
+  // DesktopDisplay mounts: "freerdp" (libfreerdp worker — the default
+  // since server's `desktop.default_backend` is freerdp), "dummy" (test
+  // pattern, no remote host), or "ironrdp" (Wasm via Devolutions Gateway
+  // — requires `desktop.devolutions_gateway.enabled = true` on the
+  // server). Undefined = use the DesktopDisplay default (freerdp).
+  rdpBackend?: DesktopBackend
   title: string
   // Persisted snapshot of host/port so tab strip and recent list can render
   // without an extra node lookup; refreshed on demand.
@@ -45,6 +53,8 @@ export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" 
 type OpenInput = {
   nodeId: number
   protocol: Protocol
+  // rdp_next only — see WorkspaceTab.rdpBackend doc.
+  rdpBackend?: DesktopBackend
   title: string
   host?: string
   port?: number
@@ -112,7 +122,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       treeView: "favorites",
       recentlyClosed: [],
 
-      open: ({ nodeId, protocol, title, host, port }) => {
+      open: ({ nodeId, protocol, rdpBackend, title, host, port }) => {
         const id = genId()
         set((s) => ({
           tabs: [
@@ -121,6 +131,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
               id,
               nodeId,
               protocol,
+              rdpBackend,
               title,
               host,
               port,
@@ -188,6 +199,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         return get().open({
           nodeId: src.nodeId,
           protocol: src.protocol,
+          rdpBackend: src.rdpBackend,
           title: src.title,
           host: src.host,
           port: src.port,
@@ -231,6 +243,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         return get().open({
           nodeId: head.nodeId,
           protocol: head.protocol,
+          rdpBackend: head.rdpBackend,
           title: head.title,
           host: head.host,
           port: head.port,

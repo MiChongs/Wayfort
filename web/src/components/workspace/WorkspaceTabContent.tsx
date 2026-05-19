@@ -142,6 +142,7 @@ function TabBody({ tab }: { tab: TabModel }) {
             nodeName={tab.title}
             nodeHost={tab.host}
             nodePort={tab.port}
+            backend={tab.rdpBackend}
             onStatusChange={onDesktopStatusChange}
             onLatencyChange={onDesktopLatency}
           />
