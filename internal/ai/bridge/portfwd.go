@@ -28,7 +28,7 @@ func (p *PortForwardManager) Create(ctx context.Context, userID uint64, username
 	if ttlSeconds > 0 {
 		ttl = time.Duration(ttlSeconds) * time.Second
 	}
-	row, err := p.Mgr.Create(ctx, userID, username, node, ttl)
+	row, err := p.Mgr.Create(ctx, userID, username, node, tcpfwd.CreateOpts{TTL: ttl})
 	if err != nil {
 		return "", "", 0, err
 	}

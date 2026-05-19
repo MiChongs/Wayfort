@@ -237,6 +237,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	var pfManager *tcpfwd.Manager
 	var pfHandler *tcpfwd.Handler
 	var pfRelay *tcpfwd.WSRelay
+	var pfEvents *tcpfwd.WSEvents
 	if cfg.Protocols.TCPFwd.Enabled {
 		factory := func(ctx context.Context, node *model.Node) (string, proxy.ContextDialer, func(), error) {
 			hops, err := wsGateway.ResolveHops(ctx, node.ProxyChain)
@@ -249,9 +250,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			}
 			return pkgssh.AddrOf(node.Host, node.Port), dlr, rel, nil
 		}
-		pfManager = tcpfwd.NewManager(cfg.Protocols.TCPFwd, pfRepo, rc, auditWriter, logger, factory)
+		pfManager = tcpfwd.NewManager(cfg.Protocols.TCPFwd, pfRepo, nodeRepo, rc, auditWriter, logger, factory)
 		pfHandler = &tcpfwd.Handler{Manager: pfManager, Nodes: nodeRepo, Repo: pfRepo}
 		pfRelay = &tcpfwd.WSRelay{GW: wsGateway, Nodes: nodeRepo}
+		pfEvents = &tcpfwd.WSEvents{Manager: pfManager}
+		// Rehydrate forwarders that were active when the gateway last shut
+		// down. Failures are logged inside Resume; we don't block startup.
+		if _, rerr := pfManager.Resume(rootCtx); rerr != nil {
+			logger.Warn("tcpfwd resume failed", zap.Error(rerr))
+		}
 	}
 
 	routes := &server.Routes{
@@ -274,6 +281,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		DBCLI:      dbcliHandler,
 		TCPFwd:     pfHandler,
 		TCPRelay:   pfRelay,
+		TCPEvents:  pfEvents,
 		Issuer:     issuer,
 		Blocklist:  blocklist,
 		Resolver:   rbacResolver,

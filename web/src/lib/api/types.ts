@@ -149,9 +149,18 @@ export interface PortForward {
   created_at: string
   expires_at: string
   closed_at?: string | null
-  status: "active" | "expired" | "closed"
+  status: "active" | "expired" | "closed" | "port_unavailable"
   bytes_in?: number
   bytes_out?: number
+  label?: string
+  tags?: string[]
+  pinned?: boolean
+}
+
+export interface PortForwardPatch {
+  label?: string
+  tags?: string[]
+  pinned?: boolean
 }
 
 export interface Role {

@@ -18,8 +18,20 @@ type Handler struct {
 }
 
 type createReq struct {
-	NodeID uint64 `json:"node_id" binding:"required"`
-	TTL    string `json:"ttl"`
+	NodeID uint64   `json:"node_id" binding:"required"`
+	TTL    string   `json:"ttl"`
+	Label  string   `json:"label"`
+	Tags   []string `json:"tags"`
+	Pinned bool     `json:"pinned"`
+}
+
+// patchReq carries the partial update the owner wants to apply. All fields
+// are pointers so a missing JSON key means "leave that column alone". Empty
+// string and empty array are honoured as "clear it".
+type patchReq struct {
+	Label  *string   `json:"label,omitempty"`
+	Tags   *[]string `json:"tags,omitempty"`
+	Pinned *bool     `json:"pinned,omitempty"`
 }
 
 func (h *Handler) Create(c *gin.Context) {
@@ -47,12 +59,55 @@ func (h *Handler) Create(c *gin.Context) {
 		}
 		ttl = d
 	}
-	row, err := h.Manager.Create(c.Request.Context(), claims.UserID, claims.Username, node, ttl)
+	row, err := h.Manager.Create(c.Request.Context(), claims.UserID, claims.Username, node, CreateOpts{
+		TTL:    ttl,
+		Label:  req.Label,
+		Tags:   req.Tags,
+		Pinned: req.Pinned,
+	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, row)
+}
+
+// Patch updates the user-supplied metadata (label / tags / pinned) of an
+// existing forwarder. Owner-only: a non-admin user editing somebody else's
+// row gets 403.
+func (h *Handler) Patch(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil || claims.Anonymous {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+	id := c.Param("id")
+	var req patchReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Label == nil && req.Tags == nil && req.Pinned == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+		return
+	}
+	row, err := h.Manager.UpdateMeta(c.Request.Context(), claims.UserID, id, UpdateMeta{
+		Label:  req.Label,
+		Tags:   req.Tags,
+		Pinned: req.Pinned,
+	})
+	if err != nil {
+		switch err.Error() {
+		case "not found":
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		case "forbidden":
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, row)
 }
 
 func (h *Handler) Delete(c *gin.Context) {

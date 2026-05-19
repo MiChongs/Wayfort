@@ -35,7 +35,14 @@ func TestForwarderEndToEnd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	f, err := Start(ctx, "127.0.0.1", [2]int{0, 0}, directDialer{}, echo.Addr().String(), zap.NewNop())
+	f, err := Start(ctx, StartOpts{
+		ID:     "test-1",
+		UserID: 1,
+		Host:   "127.0.0.1",
+		Dialer: directDialer{},
+		Target: echo.Addr().String(),
+		Logger: zap.NewNop(),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
