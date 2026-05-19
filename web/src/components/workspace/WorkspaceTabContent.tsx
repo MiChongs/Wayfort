@@ -2,7 +2,8 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { Loader2 } from "lucide-react"
+import { ArrowDownToLine, ExternalLink, Loader2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { SftpWorkspace } from "@/components/sftp/SftpWorkspace"
 import { SideDock } from "./SideDock"
@@ -43,7 +44,30 @@ function LoadingShim({ label }: { label: string }) {
 function TabBody({ tab }: { tab: TabModel }) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
   const setLatency = useWorkspaceStore((s) => s.setLatency)
+  const setPoppedOut = useWorkspaceStore((s) => s.setPoppedOut)
   const open = useWorkspaceStore((s) => s.open)
+
+  // While the tab is showing in a standalone browser window, the main
+  // window renders a placeholder instead of a second live renderer — two
+  // simultaneous WS clients would compete for the same gateway session.
+  if (tab.poppedOut) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        <ExternalLink className="w-8 h-8 text-primary" />
+        <div className="text-base font-medium text-foreground">已弹出到新窗口</div>
+        <div className="text-xs">该 Tab 当前在独立浏览器窗口中运行。</div>
+        <div className="flex items-center gap-2 pt-2">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={() => setPoppedOut(tab.id, false)}
+          >
+            <ArrowDownToLine className="w-3.5 h-3.5" /> 收回到主窗口
+          </Button>
+        </div>
+      </div>
+    )
+  }
 
   // Wires WebSSHTerminal's internal Status → store TabStatus. Without this
   // the tab strip would show "未连接" forever even after the terminal had

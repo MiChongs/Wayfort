@@ -2,10 +2,13 @@
 
 import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
-import { Loader2, X } from "lucide-react"
+import { ExternalLink, Loader2, Pin, VolumeX, X } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { WorkspaceTab as WorkspaceTabModel } from "./useWorkspaceStore"
+import { useWorkspaceStore } from "./useWorkspaceStore"
 import { metaOf, rdpBackendShortLabel } from "./protocolMeta"
+import { GROUP_ACCENT_BG } from "./groupColors"
 
 type Props = {
   tab: WorkspaceTabModel
@@ -64,6 +67,16 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
   const [draft, setDraft] = React.useState(tab.title)
   const inputRef = React.useRef<HTMLInputElement>(null)
 
+  const prefs = useWorkspaceStore((s) => s.prefs)
+  const groups = useWorkspaceStore((s) => s.groups)
+  // Only render the group accent in manual mode — the derived modes are
+  // implied by adjacency in the strip, so a coloured stripe would be
+  // visual noise rather than information.
+  const groupAccent = React.useMemo(() => {
+    if (prefs.groupingMode !== "manual" || !tab.groupId) return null
+    return groups.find((g) => g.id === tab.groupId)?.color ?? null
+  }, [prefs.groupingMode, tab.groupId, groups])
+
   React.useEffect(() => {
     if (!editingTitle) return
     setDraft(tab.title)
@@ -102,9 +115,11 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
         initial={reduced ? false : { opacity: 0, scale: 0.96, y: 4 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={reduced ? undefined : { opacity: 0, scale: 0.92, y: 4 }}
+        whileHover={reduced || active ? undefined : { y: -1 }}
         transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
         className={cn(
-          "group/tab relative flex items-center gap-2 h-9 px-3 min-w-[148px] max-w-[232px] shrink-0",
+          "group/tab relative flex items-center gap-2 h-9 shrink-0",
+          tab.pinned ? "px-2 min-w-[64px] max-w-[120px]" : "px-3 min-w-[148px] max-w-[232px]",
           "border-r border-border/60 text-sm cursor-default select-none",
           "transition-colors duration-150",
           active
@@ -137,20 +152,56 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
           />
         )}
 
-        <Icon
-          className={cn(
-            "w-3.5 h-3.5 shrink-0 transition-colors",
-            active ? meta.tint : "text-muted-foreground group-hover/tab:text-foreground",
-          )}
-        />
+        {/* Manual-mode group accent — bottom stripe in the group's hue. */}
+        {groupAccent && (
+          <span
+            className={cn(
+              "absolute inset-x-0 bottom-0 h-[2px]",
+              GROUP_ACCENT_BG[groupAccent],
+            )}
+          />
+        )}
+
+        {tab.pinned ? (
+          <Pin className="w-3 h-3 shrink-0 text-primary fill-primary" aria-label="pinned" />
+        ) : prefs.showProtocolIcon ? (
+          <Icon
+            className={cn(
+              "w-3.5 h-3.5 shrink-0 transition-colors",
+              active ? meta.tint : "text-muted-foreground group-hover/tab:text-foreground",
+            )}
+          />
+        ) : null}
 
         <StatusDot status={tab.status} reduced={!!reduced} />
 
         {/* Latency chip — only visible once the renderer has produced a
             number (or explicitly reported null = unmeasurable). Hidden
-            for closed/error so a stale RTT doesn't linger on a dead tab. */}
-        {tab.status === "connected" && tab.latencyMs !== undefined && (
-          <LatencyBadge ms={tab.latencyMs} />
+            for closed/error so a stale RTT doesn't linger on a dead tab,
+            and dropped entirely when the user disabled the badge. */}
+        {!tab.pinned &&
+          prefs.showLatencyBadge &&
+          tab.status === "connected" &&
+          tab.latencyMs !== undefined && <LatencyBadge ms={tab.latencyMs} />}
+
+        {/* Mute / popped-out badges — small icons that the ContextMenu can
+            toggle. Hidden on pinned tabs because the row is already
+            compressed to icon + close. */}
+        {!tab.pinned && tab.muted && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <VolumeX className="w-3 h-3 shrink-0 text-muted-foreground/80" />
+            </TooltipTrigger>
+            <TooltipContent>已静音通知</TooltipContent>
+          </Tooltip>
+        )}
+        {!tab.pinned && tab.poppedOut && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <ExternalLink className="w-3 h-3 shrink-0 text-primary" />
+            </TooltipTrigger>
+            <TooltipContent>已弹出到新窗口</TooltipContent>
+          </Tooltip>
         )}
 
         {editingTitle ? (
@@ -180,9 +231,23 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
             className="flex-1 min-w-0 bg-transparent outline-none border-b border-primary px-0.5 text-sm"
             spellCheck={false}
           />
-        ) : (
+        ) : tab.pinned ? null : (
           <span className="flex-1 min-w-0 truncate flex items-center gap-1">
-            <span className="truncate">{tab.title}</span>
+            <motion.span
+              layout={!reduced}
+              layoutId={`workspace-tab-title-${tab.id}`}
+              className="truncate"
+            >
+              {tab.title}
+            </motion.span>
+            {tab.unread && (
+              <motion.span
+                aria-label="活动"
+                className="shrink-0 inline-flex w-1.5 h-1.5 rounded-full bg-primary"
+                initial={reduced ? undefined : { scale: 0 }}
+                animate={{ scale: 1 }}
+              />
+            )}
             {rdpBackendLabel && (
               <span className="shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] leading-none text-muted-foreground">
                 {rdpBackendLabel}
@@ -194,26 +259,30 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
           </span>
         )}
 
-        <motion.button
-          type="button"
-          tabIndex={-1}
-          onClick={(ev) => {
-            ev.stopPropagation()
-            onClose()
-          }}
-          whileHover={reduced ? undefined : { scale: 1.15 }}
-          whileTap={reduced ? undefined : { scale: 0.9 }}
-          className={cn(
-            "shrink-0 rounded-sm w-4 h-4 inline-flex items-center justify-center",
-            "text-muted-foreground hover:text-foreground hover:bg-accent",
-            "transition-opacity duration-150",
-            active ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover/tab:opacity-100",
-          )}
-          aria-label={`关闭 ${tab.title}`}
-          title="关闭 (Ctrl+W)"
-        >
-          <X className="w-3 h-3" />
-        </motion.button>
+        {/* Close button — pinned tabs survive by design, so the X stays
+            hidden until the user explicitly unpins via the ContextMenu. */}
+        {!tab.pinned && (
+          <motion.button
+            type="button"
+            tabIndex={-1}
+            onClick={(ev) => {
+              ev.stopPropagation()
+              onClose()
+            }}
+            whileHover={reduced ? undefined : { scale: 1.15 }}
+            whileTap={reduced ? undefined : { scale: 0.9 }}
+            className={cn(
+              "shrink-0 rounded-sm w-4 h-4 inline-flex items-center justify-center",
+              "text-muted-foreground hover:text-foreground hover:bg-accent",
+              "transition-opacity duration-150",
+              active ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover/tab:opacity-100",
+            )}
+            aria-label={`关闭 ${tab.title}`}
+            title="关闭 (Ctrl+W)"
+          >
+            <X className="w-3 h-3" />
+          </motion.button>
+        )}
       </motion.div>
     </div>
   )

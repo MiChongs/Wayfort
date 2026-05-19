@@ -244,7 +244,15 @@ export const dockerService = {
 
 export const portfwdService = {
   list: () => api<{ port_forwards: PortForward[] }>("GET", "/portforward"),
-  create: (node_id: number, ttl?: string) => api<PortForward>("POST", "/portforward", { body: { node_id, ttl } }),
+  create: (input: {
+    node_id: number
+    ttl?: string
+    label?: string
+    tags?: string[]
+    pinned?: boolean
+  }) => api<PortForward>("POST", "/portforward", { body: input }),
+  update: (id: string, patch: { label?: string; tags?: string[]; pinned?: boolean }) =>
+    api<PortForward>("PATCH", `/portforward/${id}`, { body: patch }),
   remove: (id: string) => api<void>("DELETE", `/portforward/${id}`),
 }
 

@@ -71,6 +71,7 @@ type Routes struct {
 	DBCLI      *dbcli.Handler
 	TCPFwd     *tcpfwd.Handler
 	TCPRelay   *tcpfwd.WSRelay
+	TCPEvents  *tcpfwd.WSEvents
 	Issuer     *auth.Issuer
 	Blocklist  *auth.Blocklist
 	Resolver   *auth.Resolver
@@ -413,8 +414,12 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)
 		}
+		if rt.TCPEvents != nil {
+			ops.GET("/ws/portforward/events", perm(auth.PermPortForward), rt.TCPEvents.Handle)
+		}
 		if rt.TCPFwd != nil {
 			ops.POST("/portforward", perm(auth.PermPortForward), rt.TCPFwd.Create)
+			ops.PATCH("/portforward/:id", perm(auth.PermPortForward), rt.TCPFwd.Patch)
 			ops.DELETE("/portforward/:id", perm(auth.PermPortForward), rt.TCPFwd.Delete)
 			ops.GET("/portforward", perm(auth.PermPortForward), rt.TCPFwd.List)
 		}

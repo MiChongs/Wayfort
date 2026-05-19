@@ -1,6 +1,7 @@
 "use client"
 
 import * as React from "react"
+import { useSearchParams } from "next/navigation"
 import { Group, Panel, Separator } from "react-resizable-panels"
 import type { Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
@@ -12,14 +13,21 @@ import { WorkspaceStatusBar } from "./WorkspaceStatusBar"
 import { WorkspaceTabBar } from "./WorkspaceTabBar"
 import { WorkspaceTabContent } from "./WorkspaceTabContent"
 import { WorkspaceWelcome } from "./WorkspaceWelcome"
+import { WorkspacePopout } from "./WorkspacePopout"
 import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
 
 export function WorkspaceShell() {
+  const searchParams = useSearchParams()
+  const popoutTabId = searchParams.get("popout") === "1" ? searchParams.get("tab") : null
   const tabs = useWorkspaceStore((s) => s.tabs)
   const open = useWorkspaceStore((s) => s.open)
   const sidebarOpen = useWorkspaceStore((s) => s.sidebarOpen)
   const [launcherOpen, setLauncherOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+
+  if (popoutTabId) {
+    return <WorkspacePopout tabId={popoutTabId} />
+  }
 
   const openTabFromTree = React.useCallback(
     (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => {
