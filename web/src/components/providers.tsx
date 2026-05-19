@@ -4,7 +4,7 @@ import * as React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { ThemeProvider as NextThemesProvider } from "next-themes"
-import { Toaster } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ConfirmDialogHost } from "@/components/common/confirm-dialog"
 
@@ -30,7 +30,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={client}>
         <TooltipProvider delayDuration={200}>
           {children}
-          <Toaster richColors position="top-right" closeButton />
+          {/*
+            position / closeButton / theme-sync / per-tone styling and
+            motion-spring animations all live inside the shadcn-aligned
+            Toaster wrapper at @/components/ui/sonner. Keep this mount
+            point free of inline props so the look stays consistent.
+          */}
+          <Toaster />
           <ConfirmDialogHost />
         </TooltipProvider>
         <ReactQueryDevtools initialIsOpen={false} />

@@ -131,3 +131,99 @@
     color-scheme: dark;
   }
 }
+
+/* =========================================================================
+   Sonner toast animations — motion-spring(300, 28) curve approximation.
+   The actual toast chrome lives in web/src/components/ui/sonner.tsx; this
+   block only owns the entry / exit motion. Selectors target sonner's
+   data-attributes so we don't need to touch its rendered DOM.
+
+   Spring physics intuition:
+     - Enter: 360ms with cubic-bezier(0.32, 0.72, 0, 1) (motion easeOutQuint)
+       plus a 60% keyframe overshoot of ~2px / scale 1.01 to mimic the
+       under-damped settle of spring(stiffness=300, damping=28). Matches
+       the feel of the conversation-list-item.tsx item-enter transition.
+     - Exit: 220ms cubic-bezier(0.4, 0, 1, 1) (ease-in). Snappy departure
+       so a fast operator clicking through toasts doesn't see them linger.
+     - prefers-reduced-motion: collapse to 0ms so the animation respects
+       the OS-level accessibility preference.
+   ========================================================================= */
+
+@keyframes toast-enter-right {
+  0%   { opacity: 0; transform: translateX(24px) scale(0.96); }
+  60%  { opacity: 1; transform: translateX(-2px) scale(1.01); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes toast-exit-right {
+  0%   { opacity: 1; transform: translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateX(24px) scale(0.96); }
+}
+@keyframes toast-enter-left {
+  0%   { opacity: 0; transform: translateX(-24px) scale(0.96); }
+  60%  { opacity: 1; transform: translateX(2px) scale(1.01); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes toast-exit-left {
+  0%   { opacity: 1; transform: translateX(0) scale(1); }
+  100% { opacity: 0; transform: translateX(-24px) scale(0.96); }
+}
+@keyframes toast-enter-top {
+  0%   { opacity: 0; transform: translateY(-16px) scale(0.96); }
+  60%  { opacity: 1; transform: translateY(2px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-exit-top {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-16px) scale(0.96); }
+}
+@keyframes toast-enter-bottom {
+  0%   { opacity: 0; transform: translateY(16px) scale(0.96); }
+  60%  { opacity: 1; transform: translateY(-2px) scale(1.01); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toast-exit-bottom {
+  0%   { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(16px) scale(0.96); }
+}
+
+[data-sonner-toaster][data-x-position="right"] [data-sonner-toast][data-mounted="true"] {
+  animation: toast-enter-right 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+[data-sonner-toaster][data-x-position="right"] [data-sonner-toast][data-removed="true"] {
+  animation: toast-exit-right 220ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+[data-sonner-toaster][data-x-position="left"] [data-sonner-toast][data-mounted="true"] {
+  animation: toast-enter-left 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+[data-sonner-toaster][data-x-position="left"] [data-sonner-toast][data-removed="true"] {
+  animation: toast-exit-left 220ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+[data-sonner-toaster][data-x-position="center"][data-y-position="top"] [data-sonner-toast][data-mounted="true"] {
+  animation: toast-enter-top 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+[data-sonner-toaster][data-x-position="center"][data-y-position="top"] [data-sonner-toast][data-removed="true"] {
+  animation: toast-exit-top 220ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+[data-sonner-toaster][data-x-position="center"][data-y-position="bottom"] [data-sonner-toast][data-mounted="true"] {
+  animation: toast-enter-bottom 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
+}
+[data-sonner-toaster][data-x-position="center"][data-y-position="bottom"] [data-sonner-toast][data-removed="true"] {
+  animation: toast-exit-bottom 220ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+/* Hover-expand polish — sonner toggles `data-expanded` on the stack when
+   the cursor enters; smooth the gap so the stack opens and re-collapses
+   without a snap. Mirrors motion's easeInOut curve. */
+[data-sonner-toaster] {
+  transition: gap 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-sonner-toast][data-mounted="true"],
+  [data-sonner-toast][data-removed="true"] {
+    animation-duration: 0ms !important;
+  }
+  [data-sonner-toaster] {
+    transition-duration: 0ms !important;
+  }
+}
