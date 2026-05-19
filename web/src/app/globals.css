@@ -79,6 +79,24 @@
   --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
   --sidebar-border: oklch(0.92 0.004 286.32);
   --sidebar-ring: oklch(0.705 0.015 286.067);
+
+  /* Toast tones — mirror Tailwind v4 emerald/red/amber/sky palettes.
+     Sonner reads these via --{tone}-bg/-text/-border in sonner.tsx so
+     the rendered surface stays inside our oklch design vocabulary.
+     Light values pair the -50 tinted background with -800 text and a
+     -500/40 border, matching alert.tsx's visual rhythm at toast scale. */
+  --toast-success-bg: oklch(0.965 0.045 152);          /* emerald-50ish */
+  --toast-success-text: oklch(0.38 0.118 152);         /* emerald-800ish */
+  --toast-success-border: oklch(0.7 0.18 152 / 0.4);   /* emerald-500/40 */
+  --toast-error-bg: oklch(0.97 0.03 25);               /* red-50ish */
+  --toast-error-text: oklch(0.43 0.18 27);             /* red-800ish */
+  --toast-error-border: oklch(0.7 0.21 27 / 0.4);      /* red-500/40 */
+  --toast-warning-bg: oklch(0.975 0.05 90);            /* amber-50ish */
+  --toast-warning-text: oklch(0.42 0.13 75);           /* amber-800ish */
+  --toast-warning-border: oklch(0.78 0.18 80 / 0.45);  /* amber-500/45 */
+  --toast-info-bg: oklch(0.965 0.04 230);              /* sky-50ish */
+  --toast-info-text: oklch(0.42 0.13 235);             /* sky-800ish */
+  --toast-info-border: oklch(0.7 0.17 235 / 0.4);      /* sky-500/40 */
 }
 
 .dark {
@@ -114,6 +132,22 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.552 0.016 285.938);
+
+  /* Dark-mode toast tones. Deep tinted surface (-950 ~50% over popover)
+     for readable contrast on a dark page, light foreground (-200ish),
+     and a softer -500/30 border so the tone reads as a halo not a slab. */
+  --toast-success-bg: oklch(0.235 0.05 152 / 0.92);    /* emerald-950 mix */
+  --toast-success-text: oklch(0.88 0.13 152);          /* emerald-200ish */
+  --toast-success-border: oklch(0.62 0.16 152 / 0.45);
+  --toast-error-bg: oklch(0.24 0.08 25 / 0.92);        /* red-950 mix */
+  --toast-error-text: oklch(0.88 0.13 25);             /* red-200ish */
+  --toast-error-border: oklch(0.65 0.19 27 / 0.5);
+  --toast-warning-bg: oklch(0.25 0.07 80 / 0.92);      /* amber-950 mix */
+  --toast-warning-text: oklch(0.92 0.13 90);           /* amber-200ish */
+  --toast-warning-border: oklch(0.72 0.17 80 / 0.5);
+  --toast-info-bg: oklch(0.235 0.07 235 / 0.92);       /* sky-950 mix */
+  --toast-info-text: oklch(0.88 0.13 235);             /* sky-200ish */
+  --toast-info-border: oklch(0.65 0.16 235 / 0.45);
 }
 
 @layer base {

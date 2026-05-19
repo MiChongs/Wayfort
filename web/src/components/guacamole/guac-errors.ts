@@ -14,8 +14,20 @@ export interface FriendlyError {
 }
 
 export function describeGuacError(code: number | undefined, raw?: string): FriendlyError {
-  if (code == null) {
-    return { title: raw || "未知错误" }
+  // `code == null` covers undefined/null. `!Number.isFinite(code)` catches
+  // NaN — the original ` == null` check let NaN through and
+  // `NaN.toString(16)` returned the literal string `"NaN"`, which
+  // surfaced in toasts as the nonsense `远程桌面错误 (code=0xNAN)`. That
+  // path triggered any time guacd sent us a dial/network error (no
+  // numeric Guacamole status code attached, error code parsed to NaN).
+  // Treat it the same as the unknown-code path so the toast title falls
+  // back to the raw guacd message instead of a fake hex placeholder.
+  if (code == null || !Number.isFinite(code)) {
+    const trimmed = raw?.trim()
+    return {
+      title: trimmed ? "远程桌面连接失败" : "未知错误",
+      hint: trimmed || undefined,
+    }
   }
   const map: Record<number, FriendlyError> = {
     0x0000: { title: "成功" },
@@ -58,10 +70,17 @@ export function describeGuacError(code: number | undefined, raw?: string): Frien
   }
   const m = map[code]
   if (m) return m
-  return {
-    title: `远程桌面错误 (code=0x${code.toString(16).toUpperCase()})`,
-    hint: raw,
-  }
+  // Unknown but valid numeric code — pad the hex to 4 chars wide so
+  // the title reads `0x0042` instead of `0x42`, matching how the rest
+  // of the project displays Guacamole status codes (guac-loader.tsx).
+  // If the caller passed a meaningful raw message, surface that as the
+  // title since it's almost always more informative than a hex glyph.
+  const trimmed = raw?.trim()
+  return trimmed
+    ? { title: trimmed }
+    : {
+        title: `远程桌面错误 (code=0x${code.toString(16).toUpperCase().padStart(4, "0")})`,
+      }
 }
 
 // State code map for Guacamole.Client.STATE_*

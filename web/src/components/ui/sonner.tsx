@@ -1,27 +1,26 @@
 "use client"
 
-// Sonner Toaster wrapped to match the project's shadcn New York design
-// language. The upstream `<Toaster>` renders its own DOM with default
-// styles — we set `unstyled: true` and feed Tailwind classNames per slot
-// so the rendered toast is indistinguishable from a shadcn `<Alert>`:
-// matching radius (--radius), tone palette (emerald/sky/amber/destructive),
-// and dark-mode tints. next-themes' resolvedTheme is forwarded so the
-// Toaster's own `theme` data attribute flips with the rest of the app.
+// Sonner Toaster wrapped in the shadcn New York way. Earlier revisions
+// of this file fought sonner with `unstyled: true` + per-slot classNames,
+// which left dark-mode toasts looking like flat black rows because our
+// `bg-destructive/5` overlay was invisible against `bg-background`. The
+// upstream-recommended path — and the one shadcn ships in its CLI — is
+// the opposite: keep sonner's internal styles ON, and only rebind its
+// CSS variables (`--normal-bg`, `--success-bg`, `--error-bg`, …) to our
+// design tokens. Sonner then renders its own polished surface, including
+// the close button and tone palette, but every colour and radius lands
+// inside the shadcn vocabulary.
 //
-// Animations are not styled here — they live in globals.css against
-// the data-attributes sonner sets on each toast root. Those keyframes
-// approximate motion(spring 300/28) so the entry/exit feel native to
-// the rest of the workspace v2 surface.
+// Per-tone backgrounds, foregrounds, and borders are defined in
+// `globals.css` (`--toast-{tone}-bg/-text/-border`) for light + dark
+// themes so the values cascade through `.dark`. Entry / exit motion
+// keyframes are also in globals.css, calibrated to motion-spring(300, 28).
 //
-// Callsites keep importing `toast` from "sonner" unchanged. This file
-// also re-exports it for new code that wants a single import.
+// next-themes' `resolvedTheme` is forwarded so sonner's own `theme=`
+// attribute flips with the rest of the app.
 
 import * as React from "react"
-import {
-	Toaster as SonnerToaster,
-	toast,
-	type ToasterProps,
-} from "sonner"
+import { Toaster as SonnerToaster, toast, type ToasterProps } from "sonner"
 import { useTheme } from "next-themes"
 import {
 	AlertTriangle,
@@ -32,59 +31,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 
-// Visual baseline shared by every tone. `pr-10` reserves room for the
-// floating close button; `backdrop-blur-sm` keeps the colour overlay
-// readable when the toast lands on top of dense content (terminal /
-// guacamole / iframe).
-const TOAST_BASE =
-	"group pointer-events-auto relative flex w-full items-start gap-3 rounded-lg border bg-background p-4 pr-10 text-sm shadow-lg shadow-black/5 backdrop-blur-sm"
-
-// Tone tables mirror web/src/components/ui/alert.tsx so a toast and
-// an inline Alert with the same severity look identical side-by-side.
-const TONE_DEFAULT =
-	"border-border text-foreground [&_[data-icon]]:text-foreground/70"
-const TONE_SUCCESS =
-	"border-emerald-500/40 bg-emerald-50/40 dark:bg-emerald-950/30 " +
-	"text-emerald-900 dark:text-emerald-100 " +
-	"[&_[data-icon]]:text-emerald-600 dark:[&_[data-icon]]:text-emerald-400"
-const TONE_ERROR =
-	"border-destructive/40 bg-destructive/5 text-destructive " +
-	"[&_[data-icon]]:text-destructive"
-const TONE_WARNING =
-	"border-amber-500/40 bg-amber-50/40 dark:bg-amber-950/30 " +
-	"text-amber-900 dark:text-amber-100 " +
-	"[&_[data-icon]]:text-amber-600 dark:[&_[data-icon]]:text-amber-400"
-const TONE_INFO =
-	"border-sky-500/40 bg-sky-50/40 dark:bg-sky-950/30 " +
-	"text-sky-900 dark:text-sky-100 " +
-	"[&_[data-icon]]:text-sky-600 dark:[&_[data-icon]]:text-sky-400"
-
-// Action / cancel buttons reuse the shadcn Button geometry (h-7, px-3,
-// rounded-md, text-xs, ring-2 focus-visible). Default uses primary
-// surface; cancel uses outline.
-const ACTION_BTN = cn(
-	"inline-flex h-7 items-center justify-center gap-1 rounded-md px-3 text-xs font-medium",
-	"bg-foreground text-background shadow-xs",
-	"transition-colors hover:bg-foreground/90",
-	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-	"disabled:pointer-events-none disabled:opacity-50",
-)
-const CANCEL_BTN = cn(
-	"inline-flex h-7 items-center justify-center gap-1 rounded-md px-3 text-xs font-medium",
-	"border border-border bg-background shadow-xs",
-	"transition-colors hover:bg-accent hover:text-accent-foreground",
-	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-)
-const CLOSE_BTN = cn(
-	"absolute right-2 top-2 inline-flex size-6 items-center justify-center rounded-md",
-	"text-foreground/60",
-	"transition-colors hover:bg-accent hover:text-foreground",
-	"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-	// Keep close visible without overriding tone text color of the row.
-	"group-[.toast]:opacity-70 group-[.toast]:hover:opacity-100",
-)
-
-const ICON_BASE = "size-4 shrink-0"
+const ICON = "size-4 shrink-0"
 
 export function Toaster(props: Omit<ToasterProps, "theme">) {
 	const { resolvedTheme } = useTheme()
@@ -95,41 +42,86 @@ export function Toaster(props: Omit<ToasterProps, "theme">) {
 			theme={theme}
 			position="top-right"
 			closeButton
+			richColors
 			visibleToasts={5}
 			gap={10}
 			offset={16}
-			// Lucide icons match the rest of the app. The `data-icon`
-			// attribute lets the per-tone classes recolor the SVG without
-			// a separate class string per icon.
+			expand
+			// Match the rest of the app's icons. Tone color flows through
+			// `currentColor`, which sonner sets from `--{tone}-text`.
 			icons={{
-				success: <CheckCircle2 className={ICON_BASE} data-icon />,
-				error: <XCircle className={ICON_BASE} data-icon />,
-				warning: <AlertTriangle className={ICON_BASE} data-icon />,
-				info: <Info className={ICON_BASE} data-icon />,
+				success: <CheckCircle2 className={ICON} aria-hidden />,
+				error: <XCircle className={ICON} aria-hidden />,
+				warning: <AlertTriangle className={ICON} aria-hidden />,
+				info: <Info className={ICON} aria-hidden />,
 				loading: (
-					<Loader2 className={cn(ICON_BASE, "animate-spin")} data-icon />
+					<Loader2 className={cn(ICON, "animate-spin")} aria-hidden />
 				),
 			}}
+			// Rebind sonner's CSS variables to our shadcn tokens. The
+			// `--toast-{tone}-*` triples come from globals.css and already
+			// carry the light/dark variants, so this stays static.
+			style={
+				{
+					"--width": "400px",
+					"--border-radius": "var(--radius)",
+					"--font-family":
+						"var(--font-sans, ui-sans-serif, system-ui, sans-serif)",
+					"--normal-bg": "var(--popover)",
+					"--normal-text": "var(--popover-foreground)",
+					"--normal-border": "var(--border)",
+					"--success-bg": "var(--toast-success-bg)",
+					"--success-text": "var(--toast-success-text)",
+					"--success-border": "var(--toast-success-border)",
+					"--error-bg": "var(--toast-error-bg)",
+					"--error-text": "var(--toast-error-text)",
+					"--error-border": "var(--toast-error-border)",
+					"--warning-bg": "var(--toast-warning-bg)",
+					"--warning-text": "var(--toast-warning-text)",
+					"--warning-border": "var(--toast-warning-border)",
+					"--info-bg": "var(--toast-info-bg)",
+					"--info-text": "var(--toast-info-text)",
+					"--info-border": "var(--toast-info-border)",
+				} as React.CSSProperties
+			}
 			toastOptions={{
-				unstyled: true,
 				classNames: {
-					// Outer row. Tone class is appended via the `default` /
-					// `success` / `error` / `warning` / `info` / `loading`
-					// per-type slots below — sonner merges them.
-					toast: TOAST_BASE,
-					default: TONE_DEFAULT,
-					success: TONE_SUCCESS,
-					error: TONE_ERROR,
-					warning: TONE_WARNING,
-					info: TONE_INFO,
-					loading: TONE_DEFAULT,
-					title: "text-sm font-semibold leading-tight",
+					// Sonner's own styles handle layout + padding. We add
+					// shadcn polish: stronger shadow, subtle ring for the
+					// glass edge, backdrop blur so toasts read on top of
+					// terminal / desktop canvases.
+					toast: cn(
+						"group/toast !rounded-[var(--radius)] !shadow-lg !shadow-black/[0.08]",
+						"ring-1 ring-black/[0.04] dark:ring-white/[0.06]",
+						"backdrop-blur-md",
+					),
+					title: "!text-[13px] !font-medium !leading-tight",
 					description:
-						"mt-1 text-xs leading-relaxed opacity-90 [&_p]:leading-relaxed",
-					actionButton: ACTION_BTN,
-					cancelButton: CANCEL_BTN,
-					closeButton: CLOSE_BTN,
-					icon: "mt-0.5 shrink-0",
+						"!text-[12px] !leading-relaxed !opacity-90 !mt-0.5 [&_p]:!leading-relaxed",
+					actionButton: cn(
+						"!inline-flex !h-7 !items-center !justify-center !rounded-md !px-3",
+						"!text-xs !font-medium",
+						"!bg-foreground !text-background !shadow-xs",
+						"hover:!bg-foreground/90",
+						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
+					),
+					cancelButton: cn(
+						"!inline-flex !h-7 !items-center !justify-center !rounded-md !px-3",
+						"!text-xs !font-medium",
+						"!border !border-border !bg-background !shadow-xs",
+						"hover:!bg-accent hover:!text-accent-foreground",
+						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
+					),
+					// Sonner ships a serviceable close button — we only
+					// tone down its visual weight so it doesn't compete
+					// with the title. The `:not(:hover)` opacity makes it
+					// recede until the cursor approaches.
+					closeButton: cn(
+						"!size-5 !rounded-md !border-0 !bg-transparent",
+						"!text-current/60 hover:!text-current",
+						"hover:!bg-current/10",
+						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
+					),
 				},
 			}}
 			{...props}
@@ -137,9 +129,7 @@ export function Toaster(props: Omit<ToasterProps, "theme">) {
 	)
 }
 
-// Re-export sonner's `toast` from this file so call sites can choose
-// between `import { toast } from "sonner"` (status quo, 149 sites) or
-// `import { toast } from "@/components/ui/sonner"` (preferred for new
-// code). Behaviour is identical; both flow through the single mounted
-// `<Toaster />` in providers.tsx.
+// Re-export sonner's `toast` so new callsites can prefer the single
+// shadcn entry point. Existing 149 callsites that import from "sonner"
+// keep working unchanged — both flow through the same Toaster mount.
 export { toast }
