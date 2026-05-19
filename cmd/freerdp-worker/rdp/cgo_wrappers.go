@@ -413,5 +413,23 @@ BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended) {
 BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y) {
     return freerdp_input_send_mouse_event(input, flags, x, y);
 }
+
+// wSendRefreshRect tells the server to redraw the given rectangle from
+// scratch. We use it when the browser-side H.264 VideoDecoder errors
+// out and a new keyframe (IDR) is needed immediately — without this,
+// the next IDR comes whenever the server decides to (typically
+// seconds), and the client renders nothing until then.
+//
+// Per MS-RDPBCGR 2.2.11.2.2, the RefreshRect PDU carries up to 255
+// rectangles. For our error-recovery use we always send a single
+// full-canvas rect; callers pass the active desktop size.
+BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom) {
+    RECTANGLE_16 rect;
+    rect.left = left;
+    rect.top = top;
+    rect.right = right;
+    rect.bottom = bottom;
+    return freerdp_input_send_refresh_rect(input, 1, &rect);
+}
 */
 import "C"

@@ -16,6 +16,7 @@ extern rdpInput* wContextInput(rdpContext* ctx);
 extern BOOL wSendUnicode(rdpInput* input, BOOL down, UINT32 codepoint);
 extern BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended);
 extern BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
+extern BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom);
 */
 import "C"
 
@@ -126,5 +127,24 @@ func (c *Client) dispatchInput(msg desktop.ClientMessage) {
 		c.height = msg.Resize.Height
 	case msg.HB != nil:
 		// Heartbeats are gateway-internal; nothing to forward to the server.
+	case msg.Refresh != nil:
+		// RDP `Refresh Rect` PDU. Browser fires this when its
+		// WebCodecs.VideoDecoder errors out and needs a fresh IDR
+		// keyframe immediately. Empty dimensions = whole canvas, which
+		// is what the browser sends on error recovery.
+		input := C.wContextInput(rctx)
+		left := C.UINT16(uint16(msg.Refresh.X))
+		top := C.UINT16(uint16(msg.Refresh.Y))
+		w := uint32(msg.Refresh.Width)
+		h := uint32(msg.Refresh.Height)
+		if w == 0 {
+			w = uint32(c.width)
+		}
+		if h == 0 {
+			h = uint32(c.height)
+		}
+		right := C.UINT16(uint16(msg.Refresh.X + w))
+		bottom := C.UINT16(uint16(msg.Refresh.Y + h))
+		C.wSendRefreshRect(input, left, top, right, bottom)
 	}
 }
