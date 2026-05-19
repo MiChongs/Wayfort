@@ -211,17 +211,17 @@ func goOnChannelConnected(ctx *C.rdpContext, name *C.char, iface unsafe.Pointer)
 	}
 	cname := C.GoString(name)
 	c.logger.Info("channel connected", zap.String("name", cname))
-	switch cname {
-	case "cliprdr":
+	switch {
+	case cname == "cliprdr":
 		c.cliprdr = iface
 		c.attachClipboard(iface)
-	case "rdpsnd":
+	case cname == "rdpsnd":
 		c.rdpsnd = iface
 		c.attachAudio(iface)
-	case "rdpgfx":
+	case isRdpgfxChannelName(cname):
 		c.rdpgfx = iface
 		c.attachGraphicsPipeline(iface)
-	case "rdpdr":
+	case cname == "rdpdr":
 		c.attachDriveRedirection(iface)
 	}
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
@@ -238,12 +238,12 @@ func goOnChannelDisconnected(ctx *C.rdpContext, name *C.char, iface unsafe.Point
 	}
 	cname := C.GoString(name)
 	c.logger.Info("channel disconnected", zap.String("name", cname))
-	switch cname {
-	case "cliprdr":
+	switch {
+	case cname == "cliprdr":
 		c.cliprdr = nil
-	case "rdpsnd":
+	case cname == "rdpsnd":
 		c.rdpsnd = nil
-	case "rdpgfx":
+	case isRdpgfxChannelName(cname):
 		c.rdpgfx = nil
 	}
 }

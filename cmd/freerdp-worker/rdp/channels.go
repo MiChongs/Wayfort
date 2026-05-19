@@ -40,6 +40,7 @@ extern UINT wSendCliprdrFormatDataRequest(CliprdrClientContext* ctx, UINT32 form
 import "C"
 
 import (
+	"hash/fnv"
 	"unsafe"
 
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
@@ -255,6 +256,7 @@ func (c *Client) attachAudio(iface unsafe.Pointer) {
 func (c *Client) attachGraphicsPipeline(iface unsafe.Pointer) {
 	ctx := (*C.RdpgfxClientContext)(iface)
 	ctx.custom = c.context
+	c.logger.Info("rdpgfx callbacks attached")
 	C.wInstallRdpgfx(ctx)
 }
 
@@ -295,6 +297,19 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 			keyframe = nalStreamHasKeyframe(nal)
 		}
 	}
+
+	// Per-region dedup: skip emit when the same region carries the same
+	// payload bytes as last time. RDP servers repaint static screen areas
+	// (idle taskbar, paused animations, polling windows that flush their
+	// entire surface every tick) — without dedup these flood WS bandwidth
+	// and waste browser decode cycles. H.264 frames are exempt because
+	// each one is part of a stateful decoder stream — dropping any single
+	// one breaks the IDR/delta chain for the browser's VideoDecoder.
+	if enc != desktop.EncodingH264 && c.gfxDedupCheckAndStore(uint8(cmd.codecId), uint16(cmd.left), uint16(cmd.top), uint16(cmd.right), uint16(cmd.bottom), buf) {
+		c.framesGfxDeduped.Add(1)
+		return 0
+	}
+
 	c.emit(desktop.ServerMessage{Frame: &desktop.FrameRect{
 		X:        uint32(cmd.left),
 		Y:        uint32(cmd.top),
@@ -305,6 +320,48 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 		Payload:  buf,
 	}})
 	return 0
+}
+
+// gfxDedupCheckAndStore returns true if the region's payload matches the
+// previously-emitted bytes for the same region — caller skips the emit in
+// that case. Always updates the stored hash so the next divergent payload
+// passes through. A 64-bit packed key (codec, left, top, right, bottom) is
+// fast to compute and unique within a single desktop session. Bounded to
+// 4096 regions to keep memory stable on long-running sessions.
+func (c *Client) gfxDedupCheckAndStore(codecID uint8, left, top, right, bottom uint16, payload []byte) bool {
+	key := uint64(codecID)<<56 |
+		uint64(left)<<42 |
+		uint64(top)<<28 |
+		uint64(right)<<14 |
+		uint64(bottom)
+	h := fnv.New64a()
+	_, _ = h.Write(payload)
+	digest := h.Sum64()
+
+	c.gfxDedupMu.RLock()
+	prior, ok := c.gfxDedup[key]
+	c.gfxDedupMu.RUnlock()
+	if ok && prior == digest {
+		return true
+	}
+
+	c.gfxDedupMu.Lock()
+	c.gfxDedup[key] = digest
+	if len(c.gfxDedup) > 4096 {
+		drop := len(c.gfxDedup) - 3072
+		for k := range c.gfxDedup {
+			if drop <= 0 {
+				break
+			}
+			if k == key {
+				continue
+			}
+			delete(c.gfxDedup, k)
+			drop--
+		}
+	}
+	c.gfxDedupMu.Unlock()
+	return false
 }
 
 // stripAvc420Wrapper peels off the [MS-RDPEGFX 2.2.4.4.1]
