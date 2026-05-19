@@ -1,135 +1,50 @@
 "use client"
 
-// Sonner Toaster wrapped in the shadcn New York way. Earlier revisions
-// of this file fought sonner with `unstyled: true` + per-slot classNames,
-// which left dark-mode toasts looking like flat black rows because our
-// `bg-destructive/5` overlay was invisible against `bg-background`. The
-// upstream-recommended path — and the one shadcn ships in its CLI — is
-// the opposite: keep sonner's internal styles ON, and only rebind its
-// CSS variables (`--normal-bg`, `--success-bg`, `--error-bg`, …) to our
-// design tokens. Sonner then renders its own polished surface, including
-// the close button and tone palette, but every colour and radius lands
-// inside the shadcn vocabulary.
+// shadcn New York 官方 Toaster wrapper —— 几乎 1:1 复制自
+// https://ui.shadcn.com/docs/components/sonner,只额外:
+//   1) `richColors` —— success/error/warning/info 自动着色,跟 Alert.tsx
+//      的视觉语义一致(红/绿/黄/蓝)
+//   2) `closeButton` —— 用 sonner 内置样式,不自定义
+//   3) `position="top-right"` —— 继承项目历史挂载位置
+//   4) `--width: 400px` —— 防止长 description(例如 guacd 网络错误原文)
+//      被截断成 "...the target machi"
 //
-// Per-tone backgrounds, foregrounds, and borders are defined in
-// `globals.css` (`--toast-{tone}-bg/-text/-border`) for light + dark
-// themes so the values cascade through `.dark`. Entry / exit motion
-// keyframes are also in globals.css, calibrated to motion-spring(300, 28).
+// 不做的事:不再叠加 backdrop-blur / ring / 自定义 icon / 自定义
+// classNames / 自定义动画 keyframes —— 那些会跟 sonner 自身的样式
+// 系统打架,让 toast 视觉脱离 shadcn 设计语言。
 //
-// next-themes' `resolvedTheme` is forwarded so sonner's own `theme=`
-// attribute flips with the rest of the app.
+// next-themes 的 resolvedTheme 透传给 sonner 的 theme prop,实现
+// light/dark 联动。Provider 结构不变,所以现有 toast call site 零修改。
 
 import * as React from "react"
-import { Toaster as SonnerToaster, toast, type ToasterProps } from "sonner"
 import { useTheme } from "next-themes"
-import {
-	AlertTriangle,
-	CheckCircle2,
-	Info,
-	Loader2,
-	XCircle,
-} from "lucide-react"
-import { cn } from "@/lib/utils"
+import { Toaster as SonnerToaster, toast, type ToasterProps } from "sonner"
 
-const ICON = "size-4 shrink-0"
+export function Toaster(props: ToasterProps) {
+  const { resolvedTheme } = useTheme()
+  const theme = (resolvedTheme ?? "system") as ToasterProps["theme"]
 
-export function Toaster(props: Omit<ToasterProps, "theme">) {
-	const { resolvedTheme } = useTheme()
-	const theme = (resolvedTheme ?? "system") as ToasterProps["theme"]
-
-	return (
-		<SonnerToaster
-			theme={theme}
-			position="top-right"
-			closeButton
-			richColors
-			visibleToasts={5}
-			gap={10}
-			offset={16}
-			expand
-			// Match the rest of the app's icons. Tone color flows through
-			// `currentColor`, which sonner sets from `--{tone}-text`.
-			icons={{
-				success: <CheckCircle2 className={ICON} aria-hidden />,
-				error: <XCircle className={ICON} aria-hidden />,
-				warning: <AlertTriangle className={ICON} aria-hidden />,
-				info: <Info className={ICON} aria-hidden />,
-				loading: (
-					<Loader2 className={cn(ICON, "animate-spin")} aria-hidden />
-				),
-			}}
-			// Rebind sonner's CSS variables to our shadcn tokens. The
-			// `--toast-{tone}-*` triples come from globals.css and already
-			// carry the light/dark variants, so this stays static.
-			style={
-				{
-					"--width": "400px",
-					"--border-radius": "var(--radius)",
-					"--font-family":
-						"var(--font-sans, ui-sans-serif, system-ui, sans-serif)",
-					"--normal-bg": "var(--popover)",
-					"--normal-text": "var(--popover-foreground)",
-					"--normal-border": "var(--border)",
-					"--success-bg": "var(--toast-success-bg)",
-					"--success-text": "var(--toast-success-text)",
-					"--success-border": "var(--toast-success-border)",
-					"--error-bg": "var(--toast-error-bg)",
-					"--error-text": "var(--toast-error-text)",
-					"--error-border": "var(--toast-error-border)",
-					"--warning-bg": "var(--toast-warning-bg)",
-					"--warning-text": "var(--toast-warning-text)",
-					"--warning-border": "var(--toast-warning-border)",
-					"--info-bg": "var(--toast-info-bg)",
-					"--info-text": "var(--toast-info-text)",
-					"--info-border": "var(--toast-info-border)",
-				} as React.CSSProperties
-			}
-			toastOptions={{
-				classNames: {
-					// Sonner's own styles handle layout + padding. We add
-					// shadcn polish: stronger shadow, subtle ring for the
-					// glass edge, backdrop blur so toasts read on top of
-					// terminal / desktop canvases.
-					toast: cn(
-						"group/toast !rounded-[var(--radius)] !shadow-lg !shadow-black/[0.08]",
-						"ring-1 ring-black/[0.04] dark:ring-white/[0.06]",
-						"backdrop-blur-md",
-					),
-					title: "!text-[13px] !font-medium !leading-tight",
-					description:
-						"!text-[12px] !leading-relaxed !opacity-90 !mt-0.5 [&_p]:!leading-relaxed",
-					actionButton: cn(
-						"!inline-flex !h-7 !items-center !justify-center !rounded-md !px-3",
-						"!text-xs !font-medium",
-						"!bg-foreground !text-background !shadow-xs",
-						"hover:!bg-foreground/90",
-						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
-					),
-					cancelButton: cn(
-						"!inline-flex !h-7 !items-center !justify-center !rounded-md !px-3",
-						"!text-xs !font-medium",
-						"!border !border-border !bg-background !shadow-xs",
-						"hover:!bg-accent hover:!text-accent-foreground",
-						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
-					),
-					// Sonner ships a serviceable close button — we only
-					// tone down its visual weight so it doesn't compete
-					// with the title. The `:not(:hover)` opacity makes it
-					// recede until the cursor approaches.
-					closeButton: cn(
-						"!size-5 !rounded-md !border-0 !bg-transparent",
-						"!text-current/60 hover:!text-current",
-						"hover:!bg-current/10",
-						"focus-visible:!outline-none focus-visible:!ring-2 focus-visible:!ring-ring/50",
-					),
-				},
-			}}
-			{...props}
-		/>
-	)
+  return (
+    <SonnerToaster
+      theme={theme}
+      className="toaster group"
+      position="top-right"
+      richColors
+      closeButton
+      style={
+        {
+          "--normal-bg": "var(--popover)",
+          "--normal-text": "var(--popover-foreground)",
+          "--normal-border": "var(--border)",
+          "--width": "400px",
+        } as React.CSSProperties
+      }
+      {...props}
+    />
+  )
 }
 
-// Re-export sonner's `toast` so new callsites can prefer the single
-// shadcn entry point. Existing 149 callsites that import from "sonner"
-// keep working unchanged — both flow through the same Toaster mount.
+// Re-export sonner 的 toast,既支持现有 `import { toast } from "sonner"`,
+// 也允许新 callsite 走 `import { toast } from "@/components/ui/sonner"`
+// 收敛入口。
 export { toast }

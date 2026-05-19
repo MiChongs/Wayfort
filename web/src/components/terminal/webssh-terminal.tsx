@@ -1,10 +1,12 @@
 "use client"
 
 import * as React from "react"
+import { useRouter } from "next/navigation"
+import { useTranslation } from "react-i18next"
 import { ArrowDownToLine } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
 import { useTheme } from "next-themes"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import {
   Dialog,
   DialogContent,
@@ -16,6 +18,12 @@ import {
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WebSSHConnection, type SessionStats } from "@/lib/ws/webssh-client"
+import {
+  renderConnectBanner,
+  renderDisconnectBanner,
+  formatDuration,
+} from "@/lib/terminal/banner"
+import { inferDisconnect } from "@/lib/terminal/disconnect-reasons"
 import { cn } from "@/lib/utils"
 import { TerminalCommandPalette } from "./terminal-command-palette"
 import { TerminalContextMenu } from "./terminal-context-menu"
@@ -107,6 +115,8 @@ export function WebSSHTerminal({
   const { settings, update, reset } = useTerminalSettings()
   const { resolvedTheme } = useTheme()
   const reduced = useReducedMotion()
+  const { t } = useTranslation()
+  const router = useRouter()
 
   const containerRef = React.useRef<HTMLDivElement | null>(null)
   const wrapRef = React.useRef<HTMLDivElement | null>(null)
@@ -119,6 +129,20 @@ export function WebSSHTerminal({
   const connRef = React.useRef<WebSSHConnection | null>(null)
   const handleRef = React.useRef<TerminalHandle | null>(null)
   const fitRafRef = React.useRef<number | null>(null)
+  // Lifecycle bookkeeping for the connect/disconnect banner pair.
+  // `openedAt` is set the moment the server confirms READY (not socket
+  // open), so the duration we display is what the user perceived as
+  // session time — not the handshake overhead. `userClosed` is the
+  // source of truth for "did the user click Disconnect or did the
+  // network drop us?" — `handleDisconnect` flips it true *before*
+  // calling `conn.close()`, and `onClose` reads it to pick the
+  // farewell banner vs. the diagnostic banner.
+  const openedAtRef = React.useRef<number>(0)
+  const userClosedRef = React.useRef<boolean>(false)
+  // Live mirror of `stats` for the onClose path — the handler captures
+  // its closure once and can't see future state updates, so we read
+  // through a ref instead.
+  const statsRef = React.useRef<SessionStats>({ bytesIn: 0, bytesOut: 0 })
 
   // Status flows through a ref so the WS callbacks always invoke the latest
   // parent handler without retriggering the connect effect.
@@ -430,15 +454,83 @@ export function WebSSHTerminal({
             ? `/ws/telnet/${nodeId}`
             : `/ws/dbcli/${nodeId}`
 
+      // Reset lifecycle counters on every (re)connect.
+      userClosedRef.current = false
+      openedAtRef.current = 0
+      statsRef.current = { bytesIn: 0, bytesOut: 0 }
+
       const conn = new WebSSHConnection(path, {
-        onReady: () => setStatus("open"),
+        onReady: () => {
+          setStatus("open")
+          openedAtRef.current = Date.now()
+          // Branded welcome banner — ANSI-coloured ASCII art + node
+          // metadata. Banner module returns a string with internal
+          // newlines, so write (not writeln) keeps it self-contained.
+          term.write(
+            renderConnectBanner(term.cols, {
+              host: host || displayName || `node #${nodeId}`,
+              user: username || "",
+              protocol,
+              t,
+            }),
+          )
+        },
         onOutput: (bytes) => term.write(bytes),
-        onError: (m) => toast.error("会话错误", { description: m }),
+        onError: (m) => toast.error(t("terminal.error.sessionError"), { description: m }),
         onClose: (m) => {
           setStatus("closed")
-          term.writeln(`\r\n\x1b[33m[connection closed: ${m}]\x1b[0m`)
+          const duration = formatDuration(
+            openedAtRef.current ? Date.now() - openedAtRef.current : 0,
+          )
+          const { bytesIn, bytesOut } = statsRef.current
+          if (userClosedRef.current) {
+            // Friendly farewell — we know exactly what happened, so
+            // skip diagnostics and surface a session summary instead.
+            term.writeln(
+              renderDisconnectBanner(term.cols, {
+                kind: "user",
+                t,
+                duration,
+                bytesIn,
+                bytesOut,
+              }),
+            )
+            toast.success(t("terminal.disconnect.userInitiated"), {
+              description: t("terminal.disconnect.userInitiatedDetail", {
+                duration,
+                bytesIn,
+                bytesOut,
+              }),
+            })
+          } else {
+            // Network or server dropped us. Classify the raw reason
+            // string, translate it, and offer an actionable next step.
+            const info = inferDisconnect(m)
+            const reasonText = t(`terminal.disconnect.reason.${info.category}`)
+            term.writeln(
+              renderDisconnectBanner(term.cols, {
+                kind: "unexpected",
+                t,
+                reason: reasonText,
+                raw: info.raw,
+              }),
+            )
+            const href = info.href
+            toast.error(t("terminal.disconnect.unexpected"), {
+              description: reasonText,
+              action: href
+                ? {
+                    label: t(`terminal.disconnect.suggestion.${info.suggestion}`),
+                    onClick: () => router.push(href),
+                  }
+                : undefined,
+            })
+          }
         },
-        onStats: (s) => setStats(s),
+        onStats: (s) => {
+          statsRef.current = s
+          setStats(s)
+        },
         onLatency: (ms) => setLatencyMs(ms),
       })
       conn.open({ cols: term.cols, rows: term.rows })
@@ -496,7 +588,7 @@ export function WebSSHTerminal({
           }
         },
       }
-    })().catch((e) => toast.error("终端加载失败", { description: String(e) }))
+    })().catch((e) => toast.error(t("terminal.error.loadFailed"), { description: String(e) }))
 
     return () => {
       disposed = true
@@ -557,12 +649,14 @@ export function WebSSHTerminal({
   function handleCopyInternal(term: { getSelection: () => string }) {
     const sel = term.getSelection?.() || ""
     if (!sel) {
-      toast("没有选中文本")
+      toast(t("terminal.copy.empty"))
       return
     }
     navigator.clipboard.writeText(sel).then(
-      () => toast.success("已复制", { description: `${sel.length} 字符` }),
-      () => toast.error("剪贴板被拒绝"),
+      () => toast.success(t("terminal.copy.success"), {
+        description: t("terminal.copy.successDetail", { count: sel.length }),
+      }),
+      () => toast.error(t("terminal.error.clipboardWriteDenied")),
     )
   }
 
@@ -576,7 +670,7 @@ export function WebSSHTerminal({
       }
       conn.sendInput(text)
     } catch {
-      toast.error("剪贴板读取被拒绝")
+      toast.error(t("terminal.error.clipboardReadDenied"))
     }
   }
 
@@ -670,6 +764,10 @@ export function WebSSHTerminal({
     setBumpKey((v) => v + 1)
   }
   function handleDisconnect() {
+    // Flag before close() so the upcoming onClose handler picks the
+    // user-initiated branch (farewell banner + success toast), not the
+    // unexpected-disconnect diagnostics path.
+    userClosedRef.current = true
     connRef.current?.close()
   }
 

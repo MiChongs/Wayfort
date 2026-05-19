@@ -1,0 +1,57 @@
+{
+  "terminal": {
+    "connect": {
+      "opening": "Connecting to {{host}}…",
+      "ready": "Connected",
+      "readyHint": "Secure channel to {{host}} established"
+    },
+    "disconnect": {
+      "userInitiated": "Disconnected",
+      "userInitiatedDetail": "Session lasted {{duration}}, {{bytesIn}} in / {{bytesOut}} out",
+      "unexpected": "Connection lost unexpectedly",
+      "reason": {
+        "networkUnreachable": "Cannot reach the server — check node host / port / network reachability",
+        "networkFlap": "Network flap caused the disconnect — a retry usually recovers",
+        "authFailed": "Authentication failed — check node credentials (username / password / domain)",
+        "serverClosed": "The server closed the session",
+        "timeout": "Connection timed out — firewall, network jitter, or overloaded target",
+        "unknown": "Unknown reason — see diagnostics below or contact your administrator"
+      },
+      "suggestion": {
+        "checkNode": "Check node",
+        "checkCredentials": "Edit credentials",
+        "retry": "Reconnect",
+        "contactAdmin": "Contact admin"
+      }
+    },
+    "status": {
+      "connecting": "Connecting",
+      "open": "Connected",
+      "closed": "Disconnected"
+    },
+    "overlay": {
+      "connecting": "Connecting…"
+    },
+    "copy": {
+      "empty": "No text selected",
+      "success": "Copied",
+      "successDetail": "{{count}} characters"
+    },
+    "error": {
+      "sessionError": "Session error",
+      "loadFailed": "Terminal failed to load",
+      "clipboardWriteDenied": "Clipboard write denied by browser",
+      "clipboardReadDenied": "Clipboard read denied by browser"
+    },
+    "banner": {
+      "slogan": "Secure Web Bastion  ·  S e c u r e   B a s t i o n",
+      "connectedTo": "Connected to",
+      "asUser": "User",
+      "sessionLabel": "Session",
+      "disconnectUser": "Disconnected",
+      "disconnectUnexpected": "Connection lost",
+      "diagnose": "Diagnostics",
+      "raw": "Raw"
+    }
+  }
+}
