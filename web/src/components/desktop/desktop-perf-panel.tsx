@@ -92,7 +92,7 @@ export function DesktopPerfPanel({ open, onOpenChange, sessionKey, stats, nodeNa
 
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
           {/* KPI grid */}
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             <KpiCard label="FPS" value={current?.fps ?? null} tone={fpsTone(current?.fps)} />
             <KpiCard
               label="延迟"
@@ -117,6 +117,8 @@ export function DesktopPerfPanel({ open, onOpenChange, sessionKey, stats, nodeNa
               value={current ? bytesPerSecForCard(current.bytesOutPerSec) : null}
               suffix="/s"
             />
+            <KpiCard label="编码" value={codecLabel(stats.codec)} tone={codecTone(stats.codec)} />
+            <KpiCard label="解码器" value={decoderPathLabel(stats.decoderPath)} tone={decoderPathTone(stats.decoderPath)} />
           </div>
 
           {/* Mini meta strip */}
@@ -319,6 +321,49 @@ function latencyTone(ms: number | null | undefined): "good" | "warn" | "bad" | u
   if (ms <= 80) return "good"
   if (ms <= 200) return "warn"
   return "bad"
+}
+
+// Codec + decoderPath KPI helpers. Tones tell the operator at a glance
+// which decoder stack the session ended up on: GPU H.264 is the
+// fastest + most bandwidth-efficient (good); ImageDecoder beats
+// createImageBitmap which beats JS decode on JPEG/PNG (good → warn →
+// bad). raw_bgra means GFX wasn't negotiated so the screen is being
+// shipped uncompressed (warn — flags a bandwidth bill).
+function codecLabel(codec: string | null | undefined): string | null {
+  if (!codec) return null
+  switch (codec) {
+    case "h264": return "H.264"
+    case "rfx": return "RFX"
+    case "jpeg": return "JPEG"
+    case "png": return "PNG"
+    case "raw_bgra": return "BGRA"
+    case "zlib_bgra": return "BGRA·z"
+    default: return codec
+  }
+}
+function codecTone(codec: string | null | undefined): "good" | "warn" | "bad" | undefined {
+  if (!codec) return undefined
+  if (codec === "h264") return "good"
+  if (codec === "rfx" || codec === "jpeg") return "warn"
+  return undefined
+}
+function decoderPathLabel(path: string | null | undefined): string | null {
+  if (!path) return null
+  switch (path) {
+    case "videodecoder": return "VideoDecoder"
+    case "imagedecoder": return "ImageDecoder"
+    case "imagebitmap": return "createImageBitmap"
+    case "js": return "JS"
+    default: return path
+  }
+}
+function decoderPathTone(path: string | null | undefined): "good" | "warn" | "bad" | undefined {
+  if (!path) return undefined
+  if (path === "videodecoder") return "good"
+  if (path === "imagedecoder") return "good"
+  if (path === "imagebitmap") return "warn"
+  if (path === "js") return "bad"
+  return undefined
 }
 
 // Chrome / Edge expose `performance.memory.usedJSHeapSize`; Safari /
