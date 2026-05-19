@@ -145,6 +145,13 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
 
         <StatusDot status={tab.status} reduced={!!reduced} />
 
+        {/* Latency chip — only visible once the renderer has produced a
+            number (or explicitly reported null = unmeasurable). Hidden
+            for closed/error so a stale RTT doesn't linger on a dead tab. */}
+        {tab.status === "connected" && tab.latencyMs !== undefined && (
+          <LatencyBadge ms={tab.latencyMs} />
+        )}
+
         {editingTitle ? (
           <input
             ref={inputRef}
@@ -261,4 +268,43 @@ function StatusDot({
     error: "bg-destructive",
   }[status]
   return <span aria-label={status} className={cn(base, color)} />
+}
+
+// LatencyBadge — tiny chip rendering "{ms}ms" next to the status dot.
+// Colour mirrors `desktop-status-bar.tsx`'s scheme so the user reads
+// the same thresholds on the tab strip and the detail bar:
+//
+//   ≤ 80 ms   → emerald (snappy)
+//   ≤ 200 ms  → amber   (noticeable)
+//   ≤ 500 ms  → orange  (laggy)
+//   > 500 ms  → red     (painful)
+//   null      → "—"     (renderer reports the channel is up but RTT
+//                       can't be measured, e.g. IronRDP Wasm path)
+function LatencyBadge({ ms }: { ms: number | null }) {
+  if (ms == null) {
+    return (
+      <span
+        title="该会话的延迟无法直接测量"
+        className="shrink-0 text-[10px] tabular-nums text-muted-foreground/60 leading-none"
+      >
+        —
+      </span>
+    )
+  }
+  const tone =
+    ms <= 80
+      ? "text-emerald-600 dark:text-emerald-400"
+      : ms <= 200
+        ? "text-amber-600 dark:text-amber-400"
+        : ms <= 500
+          ? "text-orange-600 dark:text-orange-400"
+          : "text-red-600 dark:text-red-400"
+  return (
+    <span
+      title={`往返延迟 ${ms} ms`}
+      className={cn("shrink-0 text-[10px] tabular-nums leading-none", tone)}
+    >
+      {ms}ms
+    </span>
+  )
 }

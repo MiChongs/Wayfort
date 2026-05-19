@@ -41,6 +41,7 @@ import { cn } from "@/lib/utils"
 import { DesktopCommandPalette } from "./desktop-command-palette"
 import { DesktopContextMenu } from "./desktop-context-menu"
 import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
+import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
 import { DesktopStatusBar } from "./desktop-status-bar"
 import { DesktopToolbar } from "./desktop-toolbar"
@@ -60,10 +61,17 @@ export interface IronRdpDesktopShellProps {
 	nodeName?: string
 	nodeHost?: string
 	nodePort?: number
+	// Callback bridge to the workspace tab (or any parent) so the tab
+	// badge / status bar / perf panel can mirror the session state in
+	// real time. All three are optional — leaving them undefined is the
+	// previous behaviour (no parent observation).
+	onStatusChange?: (status: DesktopStatus) => void
+	onStatsChange?: (stats: SessionStats) => void
+	onLatencyChange?: (ms: number | null) => void
 }
 
 export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.ReactElement {
-	const { nodeId, nodeName, nodeHost, nodePort } = props
+	const { nodeId, nodeName, nodeHost, nodePort, onStatusChange, onStatsChange, onLatencyChange } = props
 	const { settings, update, reset } = useDesktopSettings()
 	useReducedMotion()
 
@@ -87,9 +95,22 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 	const [fullscreen, setFullscreen] = React.useState(false)
 	const [settingsOpen, setSettingsOpen] = React.useState(false)
 	const [paletteOpen, setPaletteOpen] = React.useState(false)
+	const [perfOpen, setPerfOpen] = React.useState(false)
 	const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
 	const [pointer] = React.useState({ x: 0, y: 0 })
-	const [stats] = React.useState<SessionStats>({ bytesIn: 0, bytesOut: 0, latencyMs: null, fps: null })
+	// IronRDP path: the WebSocket is owned by the Wasm component
+	// (`<iron-remote-desktop>`), so we can't introspect bytes from a
+	// FrameClient like the legacy path does. We populate fps via a
+	// requestAnimationFrame-driven sampler against the host element,
+	// and leave bytesIn/bytesOut/latencyMs as null until the Wasm
+	// component exposes them on the `UserInteraction` handle (it
+	// doesn't, as of @devolutions/iron-remote-desktop 0.6).
+	const [stats, setStats] = React.useState<SessionStats>({
+		bytesIn: 0,
+		bytesOut: 0,
+		latencyMs: null,
+		fps: null,
+	})
 	const [bumpKey, setBumpKey] = React.useState(0)
 
 	// Drive the elapsed-time text on the loading overlay.
@@ -107,6 +128,63 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 		document.addEventListener("fullscreenchange", onChange)
 		return () => document.removeEventListener("fullscreenchange", onChange)
 	}, [])
+
+	// Bridge local lifecycle state out to the parent (workspace tab,
+	// perf panel, etc.) via the optional callback props. Each effect
+	// fires only when its watched value actually changes, so parents
+	// can `setState`/`setStatus` in the callback without thrashing.
+	React.useEffect(() => {
+		onStatusChange?.(status)
+	}, [status, onStatusChange])
+	React.useEffect(() => {
+		onStatsChange?.(stats)
+	}, [stats, onStatsChange])
+	React.useEffect(() => {
+		onLatencyChange?.(stats.latencyMs)
+	}, [stats.latencyMs, onLatencyChange])
+
+	// Keyboard shortcut: Ctrl+Shift+P toggles the perf panel. Matches
+	// the convention of the command palette + most browser devtools so
+	// users can memorise one binding across protocols. Capture-phase so
+	// it wins against the remote desktop's keyboard hook below.
+	React.useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
+				e.preventDefault()
+				setPerfOpen((v) => !v)
+			}
+		}
+		window.addEventListener("keydown", onKey, { capture: true })
+		return () => window.removeEventListener("keydown", onKey, { capture: true })
+	}, [])
+
+	// Frame-rate sampler — counts requestAnimationFrame callbacks per
+	// second while the session is connected. This measures the browser
+	// compositor cadence (not the canvas paint rate, which the Wasm
+	// component owns), but in practice serves as a usable smoothness
+	// proxy: if rAF stays at 60 Hz the UI feels fluid, if it drops the
+	// user sees jank either way. Pauses when the tab is hidden because
+	// rAF doesn't fire then.
+	React.useEffect(() => {
+		if (status !== "connected") return
+		let frames = 0
+		let windowStart = performance.now()
+		let raf = 0
+		const tick = () => {
+			frames++
+			const now = performance.now()
+			const elapsed = now - windowStart
+			if (elapsed >= 1000) {
+				const fps = Math.round((frames * 1000) / elapsed)
+				setStats((s) => (s.fps === fps ? s : { ...s, fps }))
+				frames = 0
+				windowStart = now
+			}
+			raf = requestAnimationFrame(tick)
+		}
+		raf = requestAnimationFrame(tick)
+		return () => cancelAnimationFrame(raf)
+	}, [status])
 
 	// Resolve the Wasm RDP backend module once. The package itself
 	// side-effects when imported; we only need the Backend reference
@@ -366,6 +444,15 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 					pointerY={pointer.y}
 					stats={stats}
 					keyboardLayout={settings.keyboardLayout}
+					onOpenPerfPanel={() => setPerfOpen(true)}
+				/>
+
+				<DesktopPerfPanel
+					open={perfOpen}
+					onOpenChange={setPerfOpen}
+					sessionKey={nodeId}
+					stats={stats}
+					nodeName={nodeName}
 				/>
 
 				<DesktopSettingsSheet

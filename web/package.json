@@ -51,7 +51,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "comlink": "^4.4.2",
-    "date-fns": "^4.1.0",
+    "date-fns": "^4.2.1",
     "fast-png": "^8.0.0",
     "fflate": "^0.8.3",
     "guacamole-common-js": "^1.5.0",

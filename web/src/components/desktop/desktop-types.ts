@@ -46,4 +46,13 @@ export interface SessionStats {
   bytesOut: number
   latencyMs: number | null
   fps: number | null
+  // Block B extensions — moving averages over the last ~1s window, plus
+  // a monotonically-rising counter for frames the renderer coalesced
+  // away because a newer one arrived before the previous painted.
+  // `null` means "not measurable on this path" so the UI can render
+  // "—" without confusing it with a zero. The legacy freerdp + worker
+  // path fills all of these; the IronRDP Wasm path leaves them null.
+  avgDecodeMs?: number | null
+  avgPaintMs?: number | null
+  droppedFrames?: number | null
 }

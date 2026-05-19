@@ -38,6 +38,7 @@ function LoadingShim({ label }: { label: string }) {
 // inline renderTabBody couldn't call hooks because it was a free function.
 function TabBody({ tab }: { tab: TabModel }) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
+  const setLatency = useWorkspaceStore((s) => s.setLatency)
   const open = useWorkspaceStore((s) => s.open)
 
   // Wires WebSSHTerminal's internal Status → store TabStatus. Without this
@@ -63,16 +64,42 @@ function TabBody({ tab }: { tab: TabModel }) {
     })
   }, [open, tab.host, tab.nodeId, tab.port, tab.title])
 
-  // Non-WS protocols don't have a clean phase signal yet — mark "connected"
-  // once the body mounts so the tab dot stops sticking at "fresh". RDP /
-  // VNC / Desktop expose their own internal phase UI inside the viewer for
-  // real-time feedback; the workspace-level dot is a coarse summary.
+  // DesktopDisplay (rdp_next) drives the same Tab status pipeline as
+  // WebSSH. The DesktopStatus enum is finer-grained than TabStatus, so
+  // we collapse the connection-in-progress states down to "connecting"
+  // and the terminal states to "closed"/"error" — the inner viewer
+  // shows the precise phase in its own loading overlay.
+  const onDesktopStatusChange = React.useCallback(
+    (s: "loading-script" | "connecting" | "handshake" | "connected" | "reconnecting" | "closed" | "error") => {
+      if (s === "connected") setStatus(tab.id, "connected")
+      else if (s === "error") setStatus(tab.id, "error")
+      else if (s === "closed") setStatus(tab.id, "closed")
+      else setStatus(tab.id, "connecting")
+    },
+    [setStatus, tab.id],
+  )
+
+  // RTT badge. `null` means the renderer can't measure latency for this
+  // session (e.g. IronRDP Wasm path) — the badge renders a dash. Wiping
+  // happens when the renderer reports null on disconnect.
+  const onDesktopLatency = React.useCallback(
+    (ms: number | null) => {
+      setLatency(tab.id, ms)
+    },
+    [setLatency, tab.id],
+  )
+
+  // Non-WS protocols that *do* push status (rdp_next via DesktopDisplay)
+  // are driven by their own callbacks below — don't pre-set them here
+  // or we race the callback. Protocols without callbacks (rdp/vnc on
+  // the legacy Guacamole path; sftp; tcp_forward) still need this
+  // bootstrap so the tab dot doesn't stick at "fresh".
   React.useEffect(() => {
     if (tab.protocol === "sftp" || tab.protocol === "tcp_forward") {
       setStatus(tab.id, "connected")
       return
     }
-    if (tab.protocol === "rdp" || tab.protocol === "vnc" || tab.protocol === "rdp_next") {
+    if (tab.protocol === "rdp" || tab.protocol === "vnc") {
       setStatus(tab.id, "connecting")
     }
   }, [tab.id, tab.protocol, setStatus])
@@ -115,6 +142,8 @@ function TabBody({ tab }: { tab: TabModel }) {
             nodeName={tab.title}
             nodeHost={tab.host}
             nodePort={tab.port}
+            onStatusChange={onDesktopStatusChange}
+            onLatencyChange={onDesktopLatency}
           />
         </SideDock>
       )

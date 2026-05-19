@@ -32,6 +32,12 @@ export type WorkspaceTab = {
   // payloads load cleanly.
   subTab?: SubTab
   dockOpen?: boolean
+  // Live round-trip latency reported by the session renderer (webssh,
+  // desktop, etc.). Transient — wiped on reload via `partialize` below
+  // because the WS connection is gone anyway. `null` means
+  // "unmeasurable" (e.g. IronRDP Wasm path) and renders as a dash;
+  // `undefined` means "never reported yet" and hides the badge.
+  latencyMs?: number | null
 }
 
 export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" | "all"
@@ -66,6 +72,10 @@ type Actions = {
   setActive: (id: string) => void
   reorder: (from: number, to: number) => void
   setStatus: (id: string, status: TabStatus) => void
+  // Live latency badge on the tab strip. `null` = unmeasurable
+  // (renders as "—" so the user knows the channel is up but RTT isn't
+  // available for this transport).
+  setLatency: (id: string, latencyMs: number | null) => void
   setSidebarOpen: (open: boolean) => void
   toggleSidebar: () => void
   setTreeView: (view: TreeView) => void
@@ -205,6 +215,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           tabs: s.tabs.map((t) => (t.id === id ? { ...t, status } : t)),
         })),
 
+      setLatency: (id, latencyMs) =>
+        set((s) => ({
+          tabs: s.tabs.map((t) => (t.id === id ? { ...t, latencyMs } : t)),
+        })),
+
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       setTreeView: (treeView) => set({ treeView }),
@@ -251,11 +266,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
     {
       name: "workspace:v1",
       // After a refresh the WS connections are gone — reset status so the
-      // user knows to click Reconnect. Drop the recently-closed stack too.
+      // user knows to click Reconnect. Drop the recently-closed stack
+      // too. `latencyMs` is also transient (the channel that produced
+      // the number is dead), so strip it off here.
       partialize: (s) => ({
         tabs: s.tabs.map((t) => ({
           ...t,
           status: "fresh" as const,
+          latencyMs: undefined,
           // subTab and dockOpen are part of WorkspaceTab and ride along.
         })),
         activeId: s.activeId,

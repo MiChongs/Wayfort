@@ -1,5 +1,6 @@
 "use client"
 
+import { Activity } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
 
@@ -11,6 +12,11 @@ type Props = {
   pointerY: number
   stats: SessionStats
   keyboardLayout: string
+  // Optional — when provided, the status bar shows a trailing
+  // "性能监视" button (Activity icon) that opens the perf panel.
+  // Falsy / undefined hides it cleanly so callers without a panel
+  // don't see a dead control.
+  onOpenPerfPanel?: () => void
 }
 
 const STATUS_TINT: Record<DesktopStatus, string> = {
@@ -41,6 +47,7 @@ export function DesktopStatusBar({
   pointerY,
   stats,
   keyboardLayout,
+  onOpenPerfPanel,
 }: Props) {
   // Latency colour: green ≤ 80ms, amber ≤ 200ms, red beyond.
   const latencyClass =
@@ -90,6 +97,23 @@ export function DesktopStatusBar({
         </>
       )}
       <span className="ml-auto opacity-70 uppercase">{keyboardLayout}</span>
+      {onOpenPerfPanel && (
+        <button
+          type="button"
+          onClick={onOpenPerfPanel}
+          aria-label="打开性能监视面板"
+          title="性能监视  (Ctrl+Shift+P)"
+          className={cn(
+            "inline-flex items-center gap-1 px-1.5 -mr-1 rounded-sm",
+            "text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/60",
+            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/60",
+            "transition-colors",
+          )}
+        >
+          <Activity className="w-3 h-3" />
+          <span>性能</span>
+        </button>
+      )}
     </footer>
   )
 }

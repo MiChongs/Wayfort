@@ -38,6 +38,7 @@ import {
 } from "@/lib/desktop/types"
 import { cn } from "@/lib/utils"
 import { DesktopCommandPalette } from "./desktop-command-palette"
+import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopContextMenu } from "./desktop-context-menu"
 import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
@@ -66,6 +67,15 @@ export interface DesktopDisplayProps {
    * production migration is done).
    */
   backend?: "freerdp" | "dummy" | "ironrdp"
+  /**
+   * Lifecycle observers used by the workspace tab + status bar to mirror
+   * session state in real time. All optional — the renderer works fine
+   * without them. The dispatcher forwards each one to whichever shell
+   * (IronRDP vs legacy) it picks.
+   */
+  onStatusChange?: (status: DesktopStatus) => void
+  onStatsChange?: (stats: SessionStats) => void
+  onLatencyChange?: (ms: number | null) => void
 }
 
 const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
@@ -110,6 +120,9 @@ export function DesktopDisplay(props: DesktopDisplayProps): React.ReactElement {
         nodeName={props.nodeName}
         nodeHost={props.nodeHost}
         nodePort={props.nodePort}
+        onStatusChange={props.onStatusChange}
+        onStatsChange={props.onStatsChange}
+        onLatencyChange={props.onLatencyChange}
       />
     )
   }
@@ -122,6 +135,9 @@ function LegacyDesktopDisplay({
   nodeHost,
   nodePort,
   backend = "freerdp",
+  onStatusChange,
+  onStatsChange,
+  onLatencyChange,
 }: DesktopDisplayProps) {
   const { settings, update, reset } = useDesktopSettings()
   useReducedMotion() // currently unused; reserved for future micro-animations
@@ -142,6 +158,21 @@ function LegacyDesktopDisplay({
   const [fullscreen, setFullscreen] = React.useState(false)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
+  const [perfOpen, setPerfOpen] = React.useState(false)
+
+  // Keyboard shortcut: Ctrl+Shift+P toggles the perf panel. Capture-
+  // phase so it wins against the canvas's keyboard hooks (which
+  // forward keystrokes to the remote desktop).
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault()
+        setPerfOpen((v) => !v)
+      }
+    }
+    window.addEventListener("keydown", onKey, { capture: true })
+    return () => window.removeEventListener("keydown", onKey, { capture: true })
+  }, [])
   const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
   const [pointer, setPointer] = React.useState({ x: 0, y: 0 })
   const [stats, setStats] = React.useState<SessionStats>({
@@ -173,6 +204,19 @@ function LegacyDesktopDisplay({
     document.addEventListener("fullscreenchange", onChange)
     return () => document.removeEventListener("fullscreenchange", onChange)
   }, [])
+
+  // Bridge local lifecycle state out to the parent (workspace tab, perf
+  // panel, etc.) via the optional callback props. Same pattern as
+  // IronRdpDesktopShell so both renderers feed the same outer state.
+  React.useEffect(() => {
+    onStatusChange?.(status)
+  }, [status, onStatusChange])
+  React.useEffect(() => {
+    onStatsChange?.(stats)
+  }, [stats, onStatsChange])
+  React.useEffect(() => {
+    onLatencyChange?.(stats.latencyMs)
+  }, [stats.latencyMs, onLatencyChange])
 
   // Apply the current cursor whenever cursorMode flips. The renderer
   // doesn't track this — we cache the last cursor server-side update in
@@ -319,6 +363,21 @@ function LegacyDesktopDisplay({
         })
         renderer.onError((message) => {
           console.warn("[DesktopDisplay] render worker", message)
+        })
+        // 1Hz performance snapshot from the OffscreenCanvas worker.
+        // `framesPainted` is the count over the last window, which
+        // collapses directly to FPS since the window is exactly 1 s.
+        // `droppedFrames` is monotonic, so the perf panel charts the
+        // cumulative count and derives a per-second drop rate by
+        // diffing samples.
+        renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames }) => {
+          setStats((prev) => ({
+            ...prev,
+            fps: framesPainted,
+            avgDecodeMs,
+            avgPaintMs,
+            droppedFrames,
+          }))
         })
       }
       const renderer = rendererRef.current
@@ -653,6 +712,15 @@ function LegacyDesktopDisplay({
           pointerY={pointer.y}
           stats={stats}
           keyboardLayout={settings.keyboardLayout}
+          onOpenPerfPanel={() => setPerfOpen(true)}
+        />
+
+        <DesktopPerfPanel
+          open={perfOpen}
+          onOpenChange={setPerfOpen}
+          sessionKey={nodeId}
+          stats={stats}
+          nodeName={nodeName}
         />
 
         <DesktopSettingsSheet
