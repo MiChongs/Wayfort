@@ -130,6 +130,10 @@ export interface ServerMessage {
   status?: SessionStatus
   bell?: Record<string, never>
   clipboard?: ClipboardData
+  // Echo of a client-supplied heartbeat. The browser subtracts
+  // `Date.now() - hb.ts_ms` to derive round-trip latency, which feeds
+  // the workspace tab badge and the perf panel.
+  hb?: Heartbeat
 }
 
 export interface InputKey { keysym: number; pressed: boolean }

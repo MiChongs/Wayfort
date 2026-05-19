@@ -138,6 +138,12 @@ type ServerMessage struct {
 	Status     *SessionStatus `json:"status,omitempty"`
 	Bell       *struct{}      `json:"bell,omitempty"`
 	Clipboard  *ClipboardData `json:"clipboard,omitempty"`
+	// HB echoes the client-supplied timestamp back. The browser uses
+	// the round-trip to drive its latency badge. We deliberately reuse
+	// the ClientMessage Heartbeat type so both directions stay in
+	// lockstep — if the field schema diverges the latency math goes
+	// silently wrong.
+	HB *Heartbeat `json:"hb,omitempty"`
 }
 
 type FrameBatch struct {

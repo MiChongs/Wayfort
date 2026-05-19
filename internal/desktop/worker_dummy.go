@@ -153,7 +153,11 @@ func (d *DummyWorker) drainInputs(ctx context.Context) {
 					d.height.Store(msg.Resize.Height)
 				}
 			case msg.HB != nil:
-				// noop heartbeat ack
+				// Echo the heartbeat back so the browser can measure
+				// round-trip latency. We deliberately copy the same
+				// ts_ms — the browser subtracts (now - ts_ms) to get
+				// RTT without needing wall-clock skew correction.
+				d.emit(ServerMessage{HB: &Heartbeat{TSMs: msg.HB.TSMs}})
 			}
 		}
 	}

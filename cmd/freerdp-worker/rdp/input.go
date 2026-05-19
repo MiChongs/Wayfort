@@ -16,7 +16,20 @@ extern rdpInput* wContextInput(rdpContext* ctx);
 extern BOOL wSendUnicode(rdpInput* input, BOOL down, UINT32 codepoint);
 extern BOOL wSendScancode(rdpInput* input, BOOL down, UINT16 scancode, BOOL extended);
 extern BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y);
-extern BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom);
+
+// Inline static helper — keeps the call under input.go's own cgo CFLAGS so
+// cgo's cross-file signature consistency check stays happy. A shared
+// wrapper in cgo_wrappers.go would also collide with the rdpContext-keyed
+// wSendRefreshRect already defined there (C disallows two same-named
+// functions in a single translation unit even with different signatures).
+static BOOL iSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom) {
+	RECTANGLE_16 rect;
+	rect.left = left;
+	rect.top = top;
+	rect.right = right;
+	rect.bottom = bottom;
+	return freerdp_input_send_refresh_rect_event(input, 1, &rect);
+}
 */
 import "C"
 
@@ -126,7 +139,12 @@ func (c *Client) dispatchInput(msg desktop.ClientMessage) {
 		c.width = msg.Resize.Width
 		c.height = msg.Resize.Height
 	case msg.HB != nil:
-		// Heartbeats are gateway-internal; nothing to forward to the server.
+		// Echo the heartbeat back so the browser can measure round-trip
+		// latency. The libfreerdp server itself doesn't see this — it's a
+		// pure gateway-side ping/pong over the same WS that carries
+		// frames. Copying ts_ms verbatim sidesteps wall-clock skew between
+		// browser and worker.
+		c.emit(desktop.ServerMessage{HB: &desktop.Heartbeat{TSMs: msg.HB.TSMs}})
 	case msg.Refresh != nil:
 		// RDP `Refresh Rect` PDU. Browser fires this when its
 		// WebCodecs.VideoDecoder errors out and needs a fresh IDR
@@ -145,6 +163,6 @@ func (c *Client) dispatchInput(msg desktop.ClientMessage) {
 		}
 		right := C.UINT16(uint16(msg.Refresh.X + w))
 		bottom := C.UINT16(uint16(msg.Refresh.Y + h))
-		C.wSendRefreshRect(input, left, top, right, bottom)
+		C.iSendRefreshRect(input, left, top, right, bottom)
 	}
 }

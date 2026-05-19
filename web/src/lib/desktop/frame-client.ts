@@ -68,6 +68,12 @@ export interface FrameClientOpts {
   // status bar to render ↓ KB / ↑ KB counters without re-rendering on
   // every frame.
   onStats?(stats: FrameClientStats): void
+  // Round-trip latency, derived from the heartbeat echo. Called once per
+  // server HB reply (~ every 20 s, matching `hbTimer`). `ms` is the wall
+  // clock delta between the heartbeat send and the echo arriving, so it
+  // includes WS hop + gateway dispatch + worker drain + return path.
+  // The desktop perf panel and the workspace tab badge consume this.
+  onLatency?(ms: number): void
 }
 
 export class FrameClient {
@@ -263,6 +269,15 @@ export class FrameClient {
       // text/plain*: write to navigator.clipboard. Other MIMEs (image,
       // file-list) are recognised but not yet plumbed end-to-end.
       this.opts.onClipboard?.(msg.clipboard)
+      return
+    }
+    if (msg.hb) {
+      // RTT = (now - echoed ts_ms). The worker copies the same ts_ms
+      // we sent so we sidestep wall-clock skew. Negative deltas can
+      // happen if `Date.now()` jumps backward (NTP correction); clamp
+      // to 0 rather than report a fictitious sub-zero latency.
+      const rtt = Math.max(0, Date.now() - msg.hb.ts_ms)
+      this.opts.onLatency?.(rtt)
       return
     }
     if (msg.bell) {

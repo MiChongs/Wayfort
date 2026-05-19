@@ -226,6 +226,11 @@ BOOL wLoadChannels(freerdp* instance) {
 static pBitmapUpdate wOriginalBitmapUpdate = NULL;
 static pSurfaceBits wOriginalSurfaceBits = NULL;
 static pSaveSessionInfo wOriginalSaveSessionInfo = NULL;
+static pcRdpgfxSurfaceCommand wOriginalRdpgfxSurfaceCommand = NULL;
+static pcRdpgfxCreateSurface wOriginalRdpgfxCreateSurface = NULL;
+static pcRdpgfxDeleteSurface wOriginalRdpgfxDeleteSurface = NULL;
+static pcRdpgfxStartFrame wOriginalRdpgfxStartFrame = NULL;
+static pcRdpgfxEndFrame wOriginalRdpgfxEndFrame = NULL;
 
 BOOL wBitmapUpdate(rdpContext* ctx, const BITMAP_UPDATE* bitmap) {
     if (wOriginalBitmapUpdate && !wOriginalBitmapUpdate(ctx, bitmap)) {
@@ -250,6 +255,57 @@ BOOL wSaveSessionInfo(rdpContext* ctx, UINT32 type, void* data) {
         ok = FALSE;
     }
     return ok;
+}
+
+UINT wRdpgfxSurfaceCommand(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_COMMAND* cmd) {
+    if (wOriginalRdpgfxSurfaceCommand && wOriginalRdpgfxSurfaceCommand != wRdpgfxSurfaceCommand) {
+        const UINT rc = wOriginalRdpgfxSurfaceCommand(ctx, cmd);
+        if (rc != CHANNEL_RC_OK) {
+            return rc;
+        }
+        return CHANNEL_RC_OK;
+    }
+    return goRdpgfxSurfaceCommand(ctx, cmd);
+}
+
+UINT wRdpgfxCreateSurface(RdpgfxClientContext* ctx, const RDPGFX_CREATE_SURFACE_PDU* pdu) {
+    if (wOriginalRdpgfxCreateSurface && wOriginalRdpgfxCreateSurface != wRdpgfxCreateSurface) {
+        const UINT rc = wOriginalRdpgfxCreateSurface(ctx, pdu);
+        if (rc != CHANNEL_RC_OK) {
+            return rc;
+        }
+    }
+    return goRdpgfxCreateSurface(ctx, pdu);
+}
+
+UINT wRdpgfxDeleteSurface(RdpgfxClientContext* ctx, const RDPGFX_DELETE_SURFACE_PDU* pdu) {
+    if (wOriginalRdpgfxDeleteSurface && wOriginalRdpgfxDeleteSurface != wRdpgfxDeleteSurface) {
+        const UINT rc = wOriginalRdpgfxDeleteSurface(ctx, pdu);
+        if (rc != CHANNEL_RC_OK) {
+            return rc;
+        }
+    }
+    return goRdpgfxDeleteSurface(ctx, pdu);
+}
+
+UINT wRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* pdu) {
+    if (wOriginalRdpgfxStartFrame && wOriginalRdpgfxStartFrame != wRdpgfxStartFrame) {
+        const UINT rc = wOriginalRdpgfxStartFrame(ctx, pdu);
+        if (rc != CHANNEL_RC_OK) {
+            return rc;
+        }
+    }
+    return goRdpgfxStartFrame(ctx, pdu);
+}
+
+UINT wRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu) {
+    if (wOriginalRdpgfxEndFrame && wOriginalRdpgfxEndFrame != wRdpgfxEndFrame) {
+        const UINT rc = wOriginalRdpgfxEndFrame(ctx, pdu);
+        if (rc != CHANNEL_RC_OK) {
+            return rc;
+        }
+    }
+    return goRdpgfxEndFrame(ctx, pdu);
 }
 
 void wInstallUpdateCallbacks(rdpUpdate* update) {
@@ -301,11 +357,26 @@ void wInstallCliprdr(CliprdrClientContext* ctx) {
     ctx->ServerFormatDataResponse  = goCliprdrServerFormatDataResponse;
 }
 void wInstallRdpgfx(RdpgfxClientContext* ctx) {
-    ctx->SurfaceCommand = goRdpgfxSurfaceCommand;
-    ctx->CreateSurface  = goRdpgfxCreateSurface;
-    ctx->DeleteSurface  = goRdpgfxDeleteSurface;
-    ctx->StartFrame     = goRdpgfxStartFrame;
-    ctx->EndFrame       = goRdpgfxEndFrame;
+    if (ctx->SurfaceCommand != wRdpgfxSurfaceCommand) {
+        wOriginalRdpgfxSurfaceCommand = ctx->SurfaceCommand;
+    }
+    ctx->SurfaceCommand = wRdpgfxSurfaceCommand;
+    if (ctx->CreateSurface != wRdpgfxCreateSurface) {
+        wOriginalRdpgfxCreateSurface = ctx->CreateSurface;
+    }
+    ctx->CreateSurface = wRdpgfxCreateSurface;
+    if (ctx->DeleteSurface != wRdpgfxDeleteSurface) {
+        wOriginalRdpgfxDeleteSurface = ctx->DeleteSurface;
+    }
+    ctx->DeleteSurface = wRdpgfxDeleteSurface;
+    if (ctx->StartFrame != wRdpgfxStartFrame) {
+        wOriginalRdpgfxStartFrame = ctx->StartFrame;
+    }
+    ctx->StartFrame = wRdpgfxStartFrame;
+    if (ctx->EndFrame != wRdpgfxEndFrame) {
+        wOriginalRdpgfxEndFrame = ctx->EndFrame;
+    }
+    ctx->EndFrame = wRdpgfxEndFrame;
 }
 
 static RECTANGLE_16 wDesktopArea(UINT16 width, UINT16 height) {
@@ -414,22 +485,12 @@ BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y) {
     return freerdp_input_send_mouse_event(input, flags, x, y);
 }
 
-// wSendRefreshRect tells the server to redraw the given rectangle from
-// scratch. We use it when the browser-side H.264 VideoDecoder errors
-// out and a new keyframe (IDR) is needed immediately — without this,
-// the next IDR comes whenever the server decides to (typically
-// seconds), and the client renders nothing until then.
-//
-// Per MS-RDPBCGR 2.2.11.2.2, the RefreshRect PDU carries up to 255
-// rectangles. For our error-recovery use we always send a single
-// full-canvas rect; callers pass the active desktop size.
-BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom) {
-    RECTANGLE_16 rect;
-    rect.left = left;
-    rect.top = top;
-    rect.right = right;
-    rect.bottom = bottom;
-    return freerdp_input_send_refresh_rect(input, 1, &rect);
-}
+// rdpInput-flavoured RefreshRect lives inline in input.go directly — a
+// shared wrapper here collides with the rdpContext-keyed wSendRefreshRect
+// defined further up (C does not allow two same-named functions in a
+// single translation unit, even with different signatures), and cgo also
+// rejects a shared helper because this file preprocesses with extra
+// CFLAGS that input.go doesn't (WITHOUT_FREERDP_3x_DEPRECATED +
+// __STDC_NO_THREADS__ on Windows).
 */
 import "C"

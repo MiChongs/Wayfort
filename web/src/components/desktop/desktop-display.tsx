@@ -383,6 +383,10 @@ function LegacyDesktopDisplay({
           if (!isCurrentSession()) return
           setStats((prev) => ({ ...prev, bytesIn: s.bytesIn, bytesOut: s.bytesOut }))
         },
+        onLatency: (ms) => {
+          if (!isCurrentSession()) return
+          setStats((prev) => ({ ...prev, latencyMs: ms }))
+        },
         onClipboard: (data) => {
           if (!isCurrentSession()) return
           if (settingsRef.current.clipboardDirection === "off" ||
