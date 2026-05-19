@@ -3,6 +3,9 @@
 // desktop-display.tsx (which would create a circular dep through
 // toolbar / settings / palette / etc).
 
+import type { DecoderPath } from "@/lib/desktop/canvas-renderer"
+import type { Encoding } from "@/lib/desktop/types"
+
 export type DesktopStatus =
   | "loading-script"   // OffscreenCanvas worker loading
   | "connecting"       // WS open, waiting for first SessionStatus
@@ -55,4 +58,12 @@ export interface SessionStats {
   avgDecodeMs?: number | null
   avgPaintMs?: number | null
   droppedFrames?: number | null
+  // Dominant frame encoding over the last 1 s window. `null` until
+  // the renderer paints its first frame so the perf panel can show
+  // "—" instead of a stale entry.
+  codec?: Encoding | null
+  // Which decode path the renderer actually used: "videodecoder"
+  // means GPU H.264; "imagedecoder" / "imagebitmap" are native image
+  // paths; "js" is the fast-png / jpeg-js / BGRA byte-swap path.
+  decoderPath?: DecoderPath | null
 }
