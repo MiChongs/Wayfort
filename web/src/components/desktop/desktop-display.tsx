@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { createRenderer, type CanvasRendererHandle } from "@/lib/desktop/canvas-renderer"
+import { collectClientCapabilities } from "@/lib/desktop/capabilities"
 import { desktopControl } from "@/lib/desktop/control-client"
 import { FrameClient } from "@/lib/desktop/frame-client"
 import { nodeService } from "@/lib/api/services"
@@ -214,6 +215,7 @@ function LegacyDesktopDisplay({
     let detachRendererCursor: (() => void) | null = null
     let detachRendererError: (() => void) | null = null
     let detachRendererMetrics: (() => void) | null = null
+    let detachRendererRefresh: (() => void) | null = null
 
     setStatus("loading-script")
     setErrorInfo(undefined)
@@ -257,6 +259,14 @@ function LegacyDesktopDisplay({
         avgPaintMs,
         droppedFrames,
       }))
+    })
+    // VideoDecoder error → ask gateway to send a full-screen RDP
+    // Refresh Rect PDU so the server emits a new IDR immediately.
+    // Without this the next IDR arrives at the server's natural
+    // cadence (seconds) and the user stares at a frozen screen.
+    detachRendererRefresh = renderer.onRefreshNeeded(() => {
+      if (cancelled) return
+      clientRef.current?.send({ refresh: {} })
     })
 
     function closeCurrentSession(endRemote: boolean) {
@@ -302,6 +312,12 @@ function LegacyDesktopDisplay({
     async function connect() {
       if (!isCurrentSession()) return
       closeCurrentSession(true)
+      // Probe the browser's decoder support before posting the session
+      // start so the gateway can suppress GFX/H.264 on browsers that
+      // can't render it. `collectClientCapabilities` is async but fast
+      // (~10 ms on Chromium, single-frame round-trip on Safari).
+      const clientCaps = await collectClientCapabilities()
+      if (!isCurrentSession()) return
       const start = await desktopControl.startSession({
         node_id: nodeId,
         width: settingsRef.current.preferredWidth,
@@ -309,6 +325,7 @@ function LegacyDesktopDisplay({
         dpi: 96,
         quality: "auto",
         backend,
+        client_caps: clientCaps,
       })
       if (!isCurrentSession()) {
         desktopControl.endSession(start.session_id).catch(() => {})
@@ -438,6 +455,7 @@ function LegacyDesktopDisplay({
       detachRendererCursor?.()
       detachRendererError?.()
       detachRendererMetrics?.()
+      detachRendererRefresh?.()
       closeCurrentSession(true)
       renderer.destroy()
       rendererRef.current = null

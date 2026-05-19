@@ -127,6 +127,13 @@ async function ensureVideoDecoder(): Promise<VideoDecoder | null> {
       }
       pendingH264.clear()
       ctx.postMessage({ type: "warn", message: `VideoDecoder errored, will reconfigure on next keyframe: ${message}` })
+      // Ask the gateway to push a refresh PDU so the server emits a new
+      // IDR right away; without that, the next keyframe arrives only
+      // when the server feels like it and the user stares at a frozen
+      // screen for seconds. Main thread (canvas-renderer.onRefreshNeeded)
+      // forwards this to the worker over WS as ClientMessage.refresh.
+      ctx.postMessage({ type: "refresh-needed" })
+      hasSeenH264Keyframe = false
       try { videoDecoder?.close() } catch { /* */ }
       videoDecoder = null
       videoDecoderConfigured = false
