@@ -469,16 +469,23 @@ func (c *Client) applySettings() error {
 	// implement. The codec table in channels.go routes any leaked
 	// AVC444 surface command back to EncodingH264 so the wire format
 	// stays honest if a server ignores our advertisement.
-	// Defaults are off until the browser-side VideoDecoder integration
-	// lands (Phase 2 of the H.264 modernization). Operators who want to
-	// exercise the wire path today can set `enable_graphics_pipeline:
-	// true` + `enable_h264: true` in a node's proto_options. The
-	// binary protocol already carries h264 / rfx frames intact, so
-	// flipping these flags surfaces the codec end-to-end without
-	// further code changes — once the worker decoder lands the
-	// defaults flip to true.
-	enableGFX := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, false))
-	enableH264 := enableGFX && goBool(cBoolDefault(opts.EnableH264, false))
+	// Browser-side WebCodecs.VideoDecoder integration is wired
+	// (Phase 2 of the H.264 modernization) and the binary protocol
+	// carries keyframe flags + AVC420 NAL streams stripped of their
+	// MS-RDPEGFX wrapper. With the decode path live, the GFX flags
+	// default on so a fresh node picks up the bandwidth + latency
+	// wins automatically. Three explicit signals still keep it off:
+	// safeGraphicsProfile (post-failure retry), per-node opt-out via
+	// `enable_graphics_pipeline: false` in proto_options, or the
+	// client_caps probe reporting the browser lacks VideoDecoder
+	// (ws_handler.go forwards capability.h264 as opts.EnableH264
+	// override — see Phase 2 follow-up note).
+	//
+	// RemoteFX (RFX) defaults off because the browser-side RFX
+	// decoder isn't wired yet — keeping the codec advertisement off
+	// avoids servers picking it instead of AVC420.
+	enableGFX := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
+	enableH264 := enableGFX && goBool(cBoolDefault(opts.EnableH264, true))
 	enableRFX := enableGFX && goBool(cBoolDefault(opts.EnableRemoteFx, false))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, cBool(enableRFX))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, cBool(!c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableNSCodec, true))))

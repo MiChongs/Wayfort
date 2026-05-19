@@ -140,6 +140,13 @@ type FrameRect struct {
 	Width    uint32   `json:"width"`
 	Height   uint32   `json:"height"`
 	Encoding Encoding `json:"encoding"`
+	// Keyframe is meaningful only for codec-encoded encodings (h264 /
+	// rfx) where the browser-side decoder needs to know whether it can
+	// start a fresh decode pipeline or has to wait for a key frame.
+	// `raw_bgra` / `zlib_bgra` / `jpeg` / `png` ignore this field — those
+	// encodings are independently decodable per frame. JSON-omitted on
+	// false so existing wire tests stay green.
+	Keyframe bool `json:"keyframe,omitempty"`
 	// Payload is base64 (json.RawMessage) in JSON wire format. In M1.5
 	// proto wire it's `bytes`. The Go struct keeps base64 here so the same
 	// type is used both for stdio JSON and WS JSON.

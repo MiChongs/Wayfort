@@ -39,6 +39,9 @@ const BINARY_ENCODING_ZLIB_BGRA = 4
 // blank frames.
 const BINARY_ENCODING_H264 = 5
 const BINARY_ENCODING_RFX = 6
+// BinaryFrameFlagKeyframe — bit 0 of the Flags byte at offset 2 of the
+// binary header. Mirrors internal/desktop/binary_frame.go.
+const BINARY_FLAG_KEYFRAME = 0x01
 
 export interface FrameClientStats {
   bytesIn: number
@@ -191,6 +194,12 @@ export class FrameClient {
     const view = new DataView(data)
     const kind = view.getUint8(0)
     const encoding = view.getUint8(1)
+    // Byte 2 carries the BinaryFrameFlags bitfield. Bit 0 marks the
+    // payload as an H.264 keyframe (IDR + optional SPS/PPS) which the
+    // VideoDecoder needs to start a new decode pipeline. Other bits
+    // are reserved.
+    const flags = view.getUint8(2)
+    const keyframe = (flags & BINARY_FLAG_KEYFRAME) !== 0
     const x = view.getUint32(8, false)
     const y = view.getUint32(12, false)
     const width = view.getUint32(16, false)
@@ -211,7 +220,7 @@ export class FrameClient {
     if (kind === BINARY_KIND_RECT) {
       const frameEncoding = decodeFrameEncoding(encoding)
       if (!frameEncoding) return
-      const frame: FrameRectMeta = { x, y, width, height, encoding: frameEncoding }
+      const frame: FrameRectMeta = { x, y, width, height, encoding: frameEncoding, keyframe }
       this.opts.onFrameBytes(frame, payload)
       return
     }
@@ -300,6 +309,8 @@ function decodeFrameBatchPayload(payload: Uint8Array): FrameBytes[] {
     const itemView = new DataView(payload.buffer, payload.byteOffset + off, BINARY_HEADER_SIZE)
     const kind = itemView.getUint8(0)
     const encoding = itemView.getUint8(1)
+    const flags = itemView.getUint8(2)
+    const keyframe = (flags & BINARY_FLAG_KEYFRAME) !== 0
     const x = itemView.getUint32(8, false)
     const y = itemView.getUint32(12, false)
     const width = itemView.getUint32(16, false)
@@ -312,7 +323,7 @@ function decodeFrameBatchPayload(payload: Uint8Array): FrameBytes[] {
     const end = off + payloadN
     if (end < off || end > payload.byteLength) return []
     frames.push({
-      frame: { x, y, width, height, encoding: frameEncoding },
+      frame: { x, y, width, height, encoding: frameEncoding, keyframe },
       payload: payload.subarray(off, end),
     })
     off = end
