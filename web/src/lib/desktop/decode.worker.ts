@@ -12,10 +12,18 @@ interface DecodeFrameInput {
   payload: Uint8Array
 }
 
+// DecoderPath names the actual code path taken for the most recent
+// decode. The perf panel surfaces this so operators can verify the
+// session is on the GPU path (videodecoder), the modern native image
+// path (imagedecoder), the legacy native path (imagebitmap), or the
+// pure-JS path that's only reached when nothing else works.
+export type DecoderPath = "videodecoder" | "imagedecoder" | "imagebitmap" | "js"
+
 interface DecodedFrameOutput {
   frame: FrameRectMeta
   bitmap?: ImageBitmap
   imageData?: ImageData
+  decoderPath?: DecoderPath
 }
 
 type WorkerIn =
@@ -52,7 +60,15 @@ async function decodeFrame(input: DecodeFrameInput): Promise<DecodedFrameOutput>
   validateFrame(frame)
   if (frame.encoding === "raw_bgra" || frame.encoding === "zlib_bgra") {
     const bgra = frame.encoding === "zlib_bgra" ? inflateBgraPayload(payload, frame.width, frame.height) : payload
-    return { frame, imageData: rawBgraToImageData(bgra, frame.width, frame.height) }
+    return {
+      frame,
+      imageData: rawBgraToImageData(bgra, frame.width, frame.height),
+      // BGRA goes straight to ImageData via a hand-rolled byte swap.
+      // No native API in play, but the CPU cost is dwarfed by the fact
+      // we already have the pixels; the panel labels this path "js" so
+      // operators see they're not on a codec route.
+      decoderPath: "js",
+    }
   }
   if (frame.encoding === "jpeg" || frame.encoding === "png") {
     return await decodeJpegOrPng(frame, payload)
@@ -160,7 +176,7 @@ async function deliverH264Frame(videoFrame: VideoFrame): Promise<void> {
   pendingH264.delete(videoFrame.timestamp)
   try {
     const bitmap = await createImageBitmap(videoFrame)
-    pending.resolve({ frame: pending.frame, bitmap })
+    pending.resolve({ frame: pending.frame, bitmap, decoderPath: "videodecoder" })
   } catch (e) {
     pending.reject(e instanceof Error ? e : new Error(String(e)))
   } finally {
@@ -240,24 +256,23 @@ async function decodeJpegOrPng(
       const bitmap = await createImageBitmap(result.image)
       result.image.close()
       decoder.close()
-      return { frame, bitmap }
+      return { frame, bitmap, decoderPath: "imagedecoder" }
     } catch {
-      // ImageDecoder is configured but threw — fall through to the
-      // older path. Browsers occasionally ship the API in a
-      // half-working state (Safari 17.0) and the right answer is to
-      // try the next native option instead of giving up.
+      // ImageDecoder is configured but threw — try the next native
+      // option instead of giving up. Browsers occasionally ship the
+      // API in a half-working state (Safari 17.0).
     }
   }
 
   const blob = new Blob([payload as BlobPart], { type: mime })
   try {
-    return { frame, bitmap: await createImageBitmap(blob) }
+    return { frame, bitmap: await createImageBitmap(blob), decoderPath: "imagebitmap" }
   } catch {
     // Final resort: JS decode. Reached only on stripped-down
     // execution environments without ImageDecoder or
     // createImageBitmap support — keeps display alive at a high CPU
     // cost.
-    return { frame, imageData: decodeEncodedImage(payload, encoding) }
+    return { frame, imageData: decodeEncodedImage(payload, encoding), decoderPath: "js" }
   }
 }
 
