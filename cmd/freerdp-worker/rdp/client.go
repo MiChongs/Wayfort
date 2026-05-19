@@ -131,7 +131,18 @@ type Client struct {
 	emptyPaints          atomic.Uint64
 	refreshRequests      atomic.Uint64
 	refreshFailures      atomic.Uint64
+	framesGfxDeduped     atomic.Uint64
 	saveSessionInfos     atomic.Uint64
+
+	// GFX surface command dedup: skip emit when the same region carries
+	// the same payload hash as last time. Spares WS bandwidth + browser
+	// decode cycles for static screen elements (taskbar, idle desktop,
+	// poll-driven windows that repaint the same pixels). Keyed by packed
+	// (codecId, left<<48|top<<32|right<<16|bottom). Value is FNV-64 of
+	// the payload bytes. Bounded by physical tile count of the desktop,
+	// so it does not grow unbounded.
+	gfxDedupMu sync.RWMutex
+	gfxDedup   map[uint64]uint64
 	logonSuccessSeen     atomic.Bool
 	logonErrorSeen       atomic.Bool
 	logonErrorData       atomic.Uint32
@@ -167,9 +178,10 @@ func NewClient(logger *zap.Logger) desktop.DesktopWorker {
 		// at 60 fps before emit() starts dropping into the resync path.
 		// Previous 256-slot buffer was sized for the GDI-only path and
 		// hit drops once GFX was enabled.
-		out:  make(chan desktop.ServerMessage, 1024),
-		in:   make(chan desktop.ClientMessage, 256),
-		done: make(chan struct{}),
+		out:      make(chan desktop.ServerMessage, 1024),
+		in:       make(chan desktop.ClientMessage, 256),
+		done:     make(chan struct{}),
+		gfxDedup: make(map[uint64]uint64, 256),
 	}
 }
 

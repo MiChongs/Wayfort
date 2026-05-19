@@ -43,6 +43,35 @@ const MAX_CANVAS_PIXELS = 8192 * 8192
 const MAX_PENDING_PAINT_FRAMES = 128
 const METRICS_INTERVAL_MS = 1000
 
+// Tile-aligned frame dedup. RDP servers repaint static screen areas
+// (idle taskbar, paused animations, polling windows that flush their
+// entire surface every tick); the backend GFX dedup already catches
+// surface-level repeats, and the in-browser cache catches per-tile
+// repeats that the backend missed (raw frame batches from the GDI
+// path, mixed-encoding sessions, frames the server slightly reshuffles
+// each tick but whose pixels do not change). Key snaps frame top-left
+// to the nearest 32 px boundary plus the dimensions so adjacent tiny
+// rects collapse to the same slot. Value is FNV-32 of the encoded
+// payload — comparing the raw bytes is fastest and matches what the
+// backend dedup also compares.
+const TILE_SIZE = 32
+const MAX_TILE_CACHE_ENTRIES = 256
+
+function fnv32a(bytes: Uint8Array): number {
+  let h = 0x811c9dc5
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i]
+    h = Math.imul(h, 0x01000193)
+  }
+  return h >>> 0
+}
+
+function tileCacheKey(x: number, y: number, w: number, h: number): string {
+  const tx = (x | 0) - ((x | 0) % TILE_SIZE)
+  const ty = (y | 0) - ((y | 0) % TILE_SIZE)
+  return `${tx},${ty},${w},${h}`
+}
+
 // RenderMetrics is the 1 Hz snapshot the renderer emits for the perf
 // panel. `framesPainted` resets every window so it converts directly
 // to FPS; `droppedFrames` is monotonic so the panel can chart the
@@ -134,6 +163,11 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   // session was on instead of flickering to "—".
   let lastCodec: Encoding | null = null
   let lastDecoderPath: DecoderPath | null = null
+  // Tile-aligned hash cache. `insertion` tracks insertion-order keys so
+  // eviction is O(1) once the cap is reached (drop the oldest insert).
+  // A Map iterates in insertion order natively, so the first key is the
+  // oldest — no separate doubly-linked list needed for this cap (256).
+  const tileCache = new Map<string, number>()
   const metricsTimer = window.setInterval(() => {
     if (destroyed) return
     if (framesPaintedWindow === 0 && droppedFramesTotal === 0) return
@@ -210,8 +244,43 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       // as dropped so the perf panel can chart the burst.
       droppedFramesTotal += pendingFrames.length
       pendingFrames = []
+      // Reset the tile cache too: a full-canvas redraw means every
+      // tile's contents are about to change, and stale hashes would
+      // suppress legitimate repaints right after the burst.
+      tileCache.clear()
     }
-    pendingFrames.push(...frames)
+    // Tile-cache filter: drop frames whose payload bytes match the
+    // last paint at the same tile-aligned slot. H.264 frames are
+    // never deduped on the client side because each one belongs to
+    // a stateful decoder stream — dropping any single frame breaks
+    // the IDR/delta chain inside the worker's VideoDecoder.
+    const accepted: FrameBytes[] = []
+    for (const item of frames) {
+      if (item.frame.encoding === "h264") {
+        accepted.push(item)
+        continue
+      }
+      const key = tileCacheKey(item.frame.x, item.frame.y, item.frame.width, item.frame.height)
+      const hash = fnv32a(item.payload)
+      const prior = tileCache.get(key)
+      if (prior === hash) {
+        droppedFramesTotal++
+        // Refresh insertion order so a frequently-repeating tile
+        // stays cached (move-to-end semantics on Map).
+        tileCache.delete(key)
+        tileCache.set(key, hash)
+        continue
+      }
+      tileCache.set(key, hash)
+      while (tileCache.size > MAX_TILE_CACHE_ENTRIES) {
+        const oldest = tileCache.keys().next().value
+        if (oldest === undefined) break
+        tileCache.delete(oldest)
+      }
+      accepted.push(item)
+    }
+    if (accepted.length === 0) return
+    pendingFrames.push(...accepted)
     trimPendingPaintFrames()
     schedulePaintFlush()
   }
@@ -371,6 +440,7 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       errorCbs.length = 0
       metricsCbs.length = 0
       refreshCbs.length = 0
+      tileCache.clear()
       canvas.remove()
     },
   }
