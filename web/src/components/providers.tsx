@@ -1,5 +1,11 @@
 "use client"
 
+// i18next singleton initialization. Loaded as a side-effect so it runs
+// once per app lifecycle before any client component calls
+// `useTranslation()`. react-i18next reads from this global instance —
+// no Provider needed in the tree.
+import "@/i18n/config"
+
 import * as React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
@@ -31,10 +37,10 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <TooltipProvider delayDuration={200}>
           {children}
           {/*
-            position / closeButton / theme-sync / per-tone styling and
-            motion-spring animations all live inside the shadcn-aligned
-            Toaster wrapper at @/components/ui/sonner. Keep this mount
-            point free of inline props so the look stays consistent.
+            position / closeButton / theme-sync / richColors / shadcn
+            popover-token CSS variables all live inside the wrapper at
+            @/components/ui/sonner. Keep this mount point free of inline
+            props so the look stays consistent with shadcn defaults.
           */}
           <Toaster />
           <ConfirmDialogHost />

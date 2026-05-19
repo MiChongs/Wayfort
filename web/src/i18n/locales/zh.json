@@ -1,0 +1,57 @@
+{
+  "terminal": {
+    "connect": {
+      "opening": "正在连接到 {{host}}…",
+      "ready": "已连接",
+      "readyHint": "已建立到 {{host}} 的安全通道"
+    },
+    "disconnect": {
+      "userInitiated": "您已断开连接",
+      "userInitiatedDetail": "本次会话持续 {{duration}},上下行 {{bytesIn}} / {{bytesOut}}",
+      "unexpected": "连接意外断开",
+      "reason": {
+        "networkUnreachable": "无法连接到服务端 —— 检查节点 host / port / 网络是否通畅",
+        "networkFlap": "网络波动导致连接中断 —— 稍候重试通常即可恢复",
+        "authFailed": "认证失败 —— 检查节点凭据用户名 / 密码 / 域是否正确",
+        "serverClosed": "服务端主动关闭了会话",
+        "timeout": "连接超时 —— 防火墙、网络抖动或目标过载",
+        "unknown": "未知原因 —— 查看下方诊断详情或联系管理员"
+      },
+      "suggestion": {
+        "checkNode": "去检查节点",
+        "checkCredentials": "去编辑凭据",
+        "retry": "重新连接",
+        "contactAdmin": "联系管理员"
+      }
+    },
+    "status": {
+      "connecting": "正在连接",
+      "open": "已连接",
+      "closed": "已断开"
+    },
+    "overlay": {
+      "connecting": "正在连接…"
+    },
+    "copy": {
+      "empty": "没有选中文本",
+      "success": "已复制",
+      "successDetail": "{{count}} 字符"
+    },
+    "error": {
+      "sessionError": "会话异常",
+      "loadFailed": "终端加载失败",
+      "clipboardWriteDenied": "剪贴板写入被浏览器拒绝",
+      "clipboardReadDenied": "剪贴板读取被浏览器拒绝"
+    },
+    "banner": {
+      "slogan": "安全 Web 跳板机  ·  S e c u r e   B a s t i o n",
+      "connectedTo": "已连接到",
+      "asUser": "登录用户",
+      "sessionLabel": "本次会话",
+      "disconnectUser": "您已断开连接",
+      "disconnectUnexpected": "连接已断开",
+      "diagnose": "诊断详情",
+      "raw": "原始信息"
+    }
+  }
+}
