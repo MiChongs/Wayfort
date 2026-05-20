@@ -75,11 +75,17 @@ func Bootstrap(ctx context.Context, deps BootstrapDeps) (*BootstrapResult, error
 
 	fanout := NewFanout(logger)
 	fanout.Register(NewWebhookNotifier())
-	// Stub IM/SIEM channels — replace each one with a real implementation
-	// as the integration phase progresses. Registering a stub keeps the
-	// dispatch path exercised end-to-end and lets admins create
-	// subscriptions today without 404-ing on an unknown channel.
-	for _, kind := range []string{"feishu", "dingtalk", "wecom", "slack", "teams", "siem", "email"} {
+	// Phase 16b — IM card implementations. Each posts a channel-native
+	// card (Lark interactive, DingTalk actionCard, WeCom markdown,
+	// Slack Block Kit, Teams MessageCard) and surfaces approve/reject
+	// affordances on pending events. siem + email still ship as stubs
+	// pending real wiring in a later phase.
+	fanout.Register(&FeishuNotifier{})
+	fanout.Register(&DingTalkNotifier{})
+	fanout.Register(&WeComNotifier{})
+	fanout.Register(&SlackNotifier{})
+	fanout.Register(&TeamsNotifier{})
+	for _, kind := range []string{"siem", "email"} {
 		fanout.Register(NewStubNotifier(kind, logger))
 	}
 
