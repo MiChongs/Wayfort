@@ -45,7 +45,11 @@ func (s *Service) UpdateRow(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	q, err := buildUpdateSQL(pl.protocol, schema, table, edit.SetColumns, key.Columns)
+	adapter, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, err
+	}
+	q, err := buildUpdateSQL(adapter.Dialect(), schema, table, edit.SetColumns, key.Columns)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +82,11 @@ func (s *Service) InsertRow(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	q, err := buildInsertSQL(pl.protocol, schema, table, cols)
+	adapter, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, err
+	}
+	q, err := buildInsertSQL(adapter.Dialect(), schema, table, cols)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +99,7 @@ func (s *Service) InsertRow(ctx context.Context, nodeID, userID uint64,
 	}
 	out := &ExecResult{Elapsed: time.Since(started)}
 	out.Affected, _ = res.RowsAffected()
-	if pl.protocol == model.NodeProtoMySQL {
+	if adapter.Capabilities().LastInsertID {
 		out.LastInsertID, _ = res.LastInsertId()
 	}
 	return out, nil
@@ -107,7 +115,11 @@ func (s *Service) DeleteRow(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	q, err := buildDeleteSQL(pl.protocol, schema, table, key.Columns)
+	adapter, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, err
+	}
+	q, err := buildDeleteSQL(adapter.Dialect(), schema, table, key.Columns)
 	if err != nil {
 		return nil, err
 	}
@@ -158,53 +170,51 @@ func (s *Service) Explain(ctx context.Context, nodeID, userID uint64,
 
 // ----- SQL builders -----
 
-func buildUpdateSQL(p model.NodeProtocol, schema, table string, setCols, keyCols []string) (string, error) {
-	q := quoteIdent(p)
+func buildUpdateSQL(d Dialect, schema, table string, setCols, keyCols []string) (string, error) {
 	setParts := make([]string, len(setCols))
 	args := 1
 	for i, c := range setCols {
-		setParts[i] = q(c) + " = " + placeholder(p, args)
+		setParts[i] = d.QuoteIdent(c) + " = " + d.Placeholder(args)
 		args++
 	}
 	whereParts := make([]string, len(keyCols))
 	for i, c := range keyCols {
-		whereParts[i] = q(c) + " = " + placeholder(p, args)
+		whereParts[i] = d.QuoteIdent(c) + " = " + d.Placeholder(args)
 		args++
 	}
 	return fmt.Sprintf("UPDATE %s.%s SET %s WHERE %s",
-		q(schema), q(table),
+		d.QuoteIdent(schema), d.QuoteIdent(table),
 		strings.Join(setParts, ", "),
 		strings.Join(whereParts, " AND ")), nil
 }
 
-func buildInsertSQL(p model.NodeProtocol, schema, table string, cols []string) (string, error) {
-	q := quoteIdent(p)
+func buildInsertSQL(d Dialect, schema, table string, cols []string) (string, error) {
 	colNames := make([]string, len(cols))
 	holders := make([]string, len(cols))
 	for i, c := range cols {
-		colNames[i] = q(c)
-		holders[i] = placeholder(p, i+1)
+		colNames[i] = d.QuoteIdent(c)
+		holders[i] = d.Placeholder(i + 1)
 	}
 	return fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)",
-		q(schema), q(table),
+		d.QuoteIdent(schema), d.QuoteIdent(table),
 		strings.Join(colNames, ", "),
 		strings.Join(holders, ", ")), nil
 }
 
-func buildDeleteSQL(p model.NodeProtocol, schema, table string, keyCols []string) (string, error) {
-	q := quoteIdent(p)
+func buildDeleteSQL(d Dialect, schema, table string, keyCols []string) (string, error) {
 	whereParts := make([]string, len(keyCols))
 	for i, c := range keyCols {
-		whereParts[i] = q(c) + " = " + placeholder(p, i+1)
+		whereParts[i] = d.QuoteIdent(c) + " = " + d.Placeholder(i+1)
 	}
 	return fmt.Sprintf("DELETE FROM %s.%s WHERE %s",
-		q(schema), q(table),
+		d.QuoteIdent(schema), d.QuoteIdent(table),
 		strings.Join(whereParts, " AND ")), nil
 }
 
 // quoteIdent returns the protocol-correct identifier quoter.
-//   postgres → "ident" (ANSI double-quote, doubled inside)
-//   mysql    → `ident` (backtick, doubled inside)
+//
+//	postgres → "ident" (ANSI double-quote, doubled inside)
+//	mysql    → `ident` (backtick, doubled inside)
 func quoteIdent(p model.NodeProtocol) func(string) string {
 	switch p {
 	case model.NodeProtoMySQL:

@@ -34,17 +34,17 @@ type TableInfo struct {
 	Schema string `json:"schema"`
 	Name   string `json:"name"`
 	// kind ∈ table | view | matview | sequence | function | procedure
-	Kind   string `json:"kind"`
+	Kind string `json:"kind"`
 }
 
 // ColumnInfo describes one column for the per-table detail view.
 type ColumnInfo struct {
-	Name          string  `json:"name"`
-	Type          string  `json:"type"`
-	Nullable      bool    `json:"nullable"`
-	IsPrimaryKey  bool    `json:"is_primary_key"`
-	DefaultValue  *string `json:"default_value,omitempty"`
-	OrdinalPos    int     `json:"ordinal_position"`
+	Name         string  `json:"name"`
+	Type         string  `json:"type"`
+	Nullable     bool    `json:"nullable"`
+	IsPrimaryKey bool    `json:"is_primary_key"`
+	DefaultValue *string `json:"default_value,omitempty"`
+	OrdinalPos   int     `json:"ordinal_position"`
 }
 
 // IndexInfo summarises an index for the table detail view.
@@ -124,6 +124,10 @@ func (s *Service) LoadColumns(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
+	return loadColumnsForPool(ctx, pl, schema, table)
+}
+
+func loadColumnsForPool(ctx context.Context, pl *pool, schema, table string) ([]ColumnInfo, error) {
 	switch pl.protocol {
 	case model.NodeProtoPostgres:
 		return loadPostgresColumns(ctx, pl, schema, table)

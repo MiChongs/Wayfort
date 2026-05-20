@@ -31,6 +31,7 @@ import (
 	mysqldrv "github.com/go-sql-driver/mysql"
 	pgx "github.com/jackc/pgx/v5"
 	pgxstdlib "github.com/jackc/pgx/v5/stdlib"
+	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -40,9 +41,11 @@ import (
 // Service is the public surface used by the REST handler. One instance
 // per process; concurrent calls are safe.
 type Service struct {
-	gw     *webssh.Gateway
-	sealer pkgcrypto.Vault
-	logger *zap.Logger
+	gw       *webssh.Gateway
+	sealer   pkgcrypto.Vault
+	logger   *zap.Logger
+	access   accessChecker
+	registry *Registry
 
 	mu    sync.Mutex
 	pools map[string]*pool
@@ -56,17 +59,22 @@ type Service struct {
 	maxOpenConns int           // per-pool max
 }
 
+type accessChecker interface {
+	Check(ctx context.Context, userID, nodeID uint64, action string) (bool, error)
+}
+
 type pool struct {
-	db          *sql.DB
-	release     func()
-	protocol    model.NodeProtocol
-	dialerName  string // for mysql only — globally-registered dial fn name
-	lastUsedAt  time.Time
+	db         *sql.DB
+	release    func()
+	protocol   model.NodeProtocol
+	adapter    Adapter
+	dialerName string // for mysql only — globally-registered dial fn name
+	lastUsedAt time.Time
 }
 
 // New constructs the Service. The gateway is borrowed for ResolveHops /
 // BuildChain (proxy chain) + repo lookups (nodes, credentials).
-func New(gw *webssh.Gateway, sealer pkgcrypto.Vault, logger *zap.Logger) *Service {
+func New(gw *webssh.Gateway, sealer pkgcrypto.Vault, logger *zap.Logger, access accessChecker) *Service {
 	if logger == nil {
 		logger = zap.NewNop()
 	}
@@ -74,6 +82,8 @@ func New(gw *webssh.Gateway, sealer pkgcrypto.Vault, logger *zap.Logger) *Servic
 		gw:           gw,
 		sealer:       sealer,
 		logger:       logger,
+		access:       access,
+		registry:     DefaultRegistry(),
 		pools:        map[string]*pool{},
 		queryTimeout: 60 * time.Second,
 		idleEvict:    10 * time.Minute,
@@ -117,11 +127,11 @@ func (s *Service) RunEvictor(ctx context.Context) error {
 // raw column values; the caller renders. Truncated=true means the result
 // hit MaxRows or a caller-supplied limit.
 type QueryResult struct {
-	Columns   []ColumnMeta    `json:"columns"`
-	Rows      [][]any         `json:"rows"`
-	Truncated bool            `json:"truncated"`
-	Elapsed   time.Duration   `json:"elapsed"`
-	RowCount  int             `json:"row_count"`
+	Columns   []ColumnMeta  `json:"columns"`
+	Rows      [][]any       `json:"rows"`
+	Truncated bool          `json:"truncated"`
+	Elapsed   time.Duration `json:"elapsed"`
+	RowCount  int           `json:"row_count"`
 }
 
 // ColumnMeta describes one column of the result set. Type is the
@@ -231,7 +241,11 @@ func (s *Service) Exec(ctx context.Context, nodeID, userID uint64,
 	}
 	out := &ExecResult{Elapsed: time.Since(started)}
 	out.Affected, _ = res.RowsAffected()
-	if pl.protocol == model.NodeProtoMySQL {
+	adapter, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, err
+	}
+	if adapter.Capabilities().LastInsertID {
 		out.LastInsertID, _ = res.LastInsertId()
 	}
 	return out, nil
@@ -262,6 +276,9 @@ func poolKey(nodeID, userID uint64, database string) string {
 // "use whatever the node's proto_options names, or the driver default".
 // Non-empty database overrides per call.
 func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64, database string) (*pool, error) {
+	if err := s.requireNodeAccess(ctx, userID, nodeID); err != nil {
+		return nil, err
+	}
 	key := poolKey(nodeID, userID, database)
 	s.mu.Lock()
 	if pl, ok := s.pools[key]; ok {
@@ -293,6 +310,20 @@ func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64, database
 	return pl, nil
 }
 
+func (s *Service) requireNodeAccess(ctx context.Context, userID, nodeID uint64) error {
+	if s.access == nil {
+		return errors.New("dbquery: asset resolver not configured")
+	}
+	ok, err := s.access.Check(ctx, userID, nodeID, asset.ActionConnect)
+	if err != nil {
+		return fmt.Errorf("dbquery: check node access: %w", err)
+	}
+	if !ok {
+		return errors.New("dbquery: node access denied")
+	}
+	return nil
+}
+
 // build does the heavy lifting: load the node + credential, build the
 // chain dialer, register / inject it into the driver, and Ping. The
 // returned pool is ready for queries.
@@ -310,7 +341,12 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64, database str
 	if node == nil {
 		return nil, errors.New("dbquery: node not found")
 	}
-	if !isRelational(node.EffectiveProtocol()) {
+	registry := s.registry
+	if registry == nil {
+		registry = DefaultRegistry()
+	}
+	adapter, ok := registry.Get(node.EffectiveProtocol())
+	if !ok {
 		return nil, fmt.Errorf("dbquery: protocol %q not supported", node.EffectiveProtocol())
 	}
 
@@ -419,6 +455,7 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64, database str
 		db:         db,
 		release:    release,
 		protocol:   node.EffectiveProtocol(),
+		adapter:    adapter,
 		dialerName: dialerName,
 		lastUsedAt: time.Now(),
 	}, nil
@@ -460,14 +497,6 @@ func (s *Service) closeAll() {
 }
 
 // ----- helpers --------------------------------------------------------------
-
-func isRelational(p model.NodeProtocol) bool {
-	switch p {
-	case model.NodeProtoMySQL, model.NodeProtoPostgres:
-		return true
-	}
-	return false
-}
 
 // stringOr returns s if non-empty, else d.
 func stringOr(s, d string) string {

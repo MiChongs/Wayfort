@@ -191,9 +191,9 @@ func (h *DBHandler) TableDDL(c *gin.Context) {
 
 // rowBody is shared by UpdateRow / InsertRow / DeleteRow.
 type rowBody struct {
-	Database string         `json:"database,omitempty"`
-	Schema   string         `json:"schema"`
-	Table    string         `json:"table"`
+	Database string `json:"database,omitempty"`
+	Schema   string `json:"schema"`
+	Table    string `json:"table"`
 	// PK columns + values identify the target row. Required for
 	// Update and Delete; ignored for Insert.
 	KeyColumns []string `json:"key_columns,omitempty"`
@@ -341,6 +341,10 @@ func (h *DBHandler) Explain(c *gin.Context) {
 	body.SQL = strings.TrimSpace(body.SQL)
 	if body.SQL == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "sql empty"})
+		return
+	}
+	if sqlHead(body.SQL) == "EXPLAIN" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provide the statement to explain without an EXPLAIN prefix"})
 		return
 	}
 	if !isReadOnlySQL(body.SQL) {
@@ -549,14 +553,14 @@ func sqlLiteral(v any) string {
 
 // queryBody is the shared shape for Query and Exec.
 type queryBody struct {
-	SQL    string `json:"sql"`
-	Args   []any  `json:"args,omitempty"`
+	SQL  string `json:"sql"`
+	Args []any  `json:"args,omitempty"`
 	// Database overrides the connection's bound DB. Required for PG
 	// cross-catalog browsing; optional for MySQL where the same
 	// connection can SELECT across schemas freely.
 	Database string `json:"database,omitempty"`
 	// Limit caps the SELECT row count (Query only). 0 = use server default.
-	Limit  int    `json:"limit,omitempty"`
+	Limit int `json:"limit,omitempty"`
 	// Reason is the human-supplied explanation that lands in audit + the
 	// approval ledger if enforcement kicks in.
 	Reason string `json:"reason,omitempty"`
@@ -685,7 +689,7 @@ func (h *DBHandler) Rows(c *gin.Context) {
 	if orderDir != "ASC" && orderDir != "DESC" {
 		orderDir = ""
 	}
-	sqlText, err := h.buildRowsSQL(c, nodeID, claims.UserID, database, schema, table, orderBy, orderDir, limit, offset)
+	sqlText, err := h.Svc.BuildRowsSQL(c.Request.Context(), nodeID, claims.UserID, database, schema, table, orderBy, orderDir, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -697,54 +701,6 @@ func (h *DBHandler) Rows(c *gin.Context) {
 	}
 	h.logSQL(c, nodeID, claims, "rows", sqlText, "", nil)
 	c.JSON(http.StatusOK, out)
-}
-
-// buildRowsSQL produces a quoted SELECT * for the right dialect. The
-// table name is validated by reading columns first so we never inject
-// an arbitrary string into the query — the columns call fails on a
-// non-existent table and rejects garbage names.
-func (h *DBHandler) buildRowsSQL(c *gin.Context, nodeID, userID uint64,
-	database, schema, table, orderBy, orderDir string, limit, offset int) (string, error) {
-	cols, err := h.Svc.LoadColumns(c.Request.Context(), nodeID, userID, database, schema, table)
-	if err != nil {
-		return "", err
-	}
-	if len(cols) == 0 {
-		return "", fmt.Errorf("table %s.%s has no columns or doesn't exist", schema, table)
-	}
-	knownCols := map[string]bool{}
-	for _, col := range cols {
-		knownCols[col.Name] = true
-	}
-	if orderBy != "" && !knownCols[orderBy] {
-		return "", fmt.Errorf("order_by column %q not in table", orderBy)
-	}
-	// The Svc has no public protocol getter; we use the column-fetch
-	// result to infer dialect indirectly by looking at the column Type
-	// strings. Postgres types are lowercase with parens; MySQL types
-	// uppercase. The robust path is to expose a tiny Protocol getter.
-	pgish := false
-	if len(cols) > 0 {
-		t := cols[0].Type
-		if strings.ContainsAny(t, "(") || strings.ContainsAny(t, " ") || strings.ToLower(t) == t {
-			pgish = true
-		}
-	}
-	quote := func(s string) string {
-		if pgish {
-			return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-		}
-		return "`" + strings.ReplaceAll(s, "`", "``") + "`"
-	}
-	q := "SELECT * FROM " + quote(schema) + "." + quote(table)
-	if orderBy != "" {
-		q += " ORDER BY " + quote(orderBy)
-		if orderDir != "" {
-			q += " " + orderDir
-		}
-	}
-	q += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, offset)
-	return q, nil
 }
 
 // logSQL pushes the statement into the audit ring buffer. We trim long
@@ -782,14 +738,41 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// isReadOnlySQL classifies a statement as read-only. We don't try to
-// parse SQL — that's a rabbit hole. Instead we look at the first
-// non-comment, non-whitespace token. Common safe heads: SELECT, WITH
-// (CTE — assumed to be a SELECT; INSERT/UPDATE inside WITH is a write
-// but rare and we accept that false-positive risk), EXPLAIN, SHOW,
-// DESCRIBE, DESC, ANALYZE-without-write.
+// isReadOnlySQL classifies a statement as read-only. This is a conservative
+// guard, not a full SQL parser: obvious writes and common read-looking
+// side-effect paths are rejected so callers use the write/approval endpoint.
 func isReadOnlySQL(s string) bool {
-	// Strip leading single-line + block comments.
+	s = expandMySQLExecutableComments(s)
+	s = stripLeadingSQLComments(s)
+	if s == "" || hasMultipleStatements(s) {
+		return false
+	}
+	upper := normaliseSQLForKeywordScan(s)
+	head := sqlHead(s)
+	if head == "" {
+		return false
+	}
+	if containsAnyKeyword(upper, []string{"PG_TERMINATE_BACKEND", "PG_CANCEL_BACKEND", "PG_RELOAD_CONF"}) {
+		return false
+	}
+	if containsKeywordSequence(upper, "INTO", "OUTFILE") || containsKeywordSequence(upper, "INTO", "DUMPFILE") {
+		return false
+	}
+	switch head {
+	case "SELECT":
+		return !containsKeyword(upper, "INTO")
+	case "WITH":
+		return !containsAnyKeyword(upper, []string{"INSERT", "UPDATE", "DELETE", "MERGE", "CREATE", "ALTER", "DROP", "TRUNCATE", "CALL", "DO", "COPY", "GRANT", "REVOKE", "INTO"})
+	case "EXPLAIN":
+		return !containsKeyword(upper, "ANALYZE")
+	case "SHOW", "DESCRIBE", "DESC", "VALUES":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripLeadingSQLComments(s string) string {
 	for {
 		s = strings.TrimLeftFunc(s, func(r rune) bool { return r == ' ' || r == '\t' || r == '\n' || r == '\r' })
 		if strings.HasPrefix(s, "--") {
@@ -797,29 +780,234 @@ func isReadOnlySQL(s string) bool {
 				s = s[idx+1:]
 				continue
 			}
-			return false
+			return ""
 		}
 		if strings.HasPrefix(s, "/*") {
 			if idx := strings.Index(s, "*/"); idx >= 0 {
 				s = s[idx+2:]
 				continue
 			}
+			return ""
+		}
+		return strings.TrimSpace(s)
+	}
+}
+
+func sqlHead(s string) string {
+	upper := strings.ToUpper(stripLeadingSQLComments(expandMySQLExecutableComments(s)))
+	for _, head := range []string{"SELECT", "WITH", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "VALUES"} {
+		if strings.HasPrefix(upper, head) && hasHeadBoundary(upper, head) {
+			return head
+		}
+	}
+	return ""
+}
+
+func expandMySQLExecutableComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if i+2 < len(s) && s[i] == '/' && s[i+1] == '*' && s[i+2] == '!' {
+			end := strings.Index(s[i+3:], "*/")
+			if end < 0 {
+				b.WriteString(s[i:])
+				break
+			}
+			inner := s[i+3 : i+3+end]
+			inner = strings.TrimLeftFunc(inner, func(r rune) bool { return r >= '0' && r <= '9' })
+			b.WriteByte(' ')
+			b.WriteString(inner)
+			b.WriteByte(' ')
+			i += 3 + end + 1
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func hasHeadBoundary(upper, head string) bool {
+	if len(upper) == len(head) {
+		return true
+	}
+	next := upper[len(head)]
+	return next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '(' || next == ';'
+}
+
+func hasMultipleStatements(s string) bool {
+	inSingle, inDouble, inBacktick := false, false, false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inSingle {
+			if ch == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		if inBacktick {
+			if ch == '`' {
+				inBacktick = false
+			}
+			continue
+		}
+		if ch == '-' && i+1 < len(s) && s[i+1] == '-' {
+			if idx := strings.IndexByte(s[i+2:], '\n'); idx >= 0 {
+				i += idx + 2
+				continue
+			}
 			return false
 		}
-		break
-	}
-	upper := strings.ToUpper(s)
-	for _, head := range []string{"SELECT", "WITH", "EXPLAIN", "SHOW", "DESCRIBE", "DESC", "VALUES"} {
-		if strings.HasPrefix(upper, head) {
-			// Boundary check: prefix must be followed by a non-letter.
-			next := byte(' ')
-			if len(upper) > len(head) {
-				next = upper[len(head)]
+		if ch == '/' && i+1 < len(s) && s[i+1] == '*' {
+			if idx := strings.Index(s[i+2:], "*/"); idx >= 0 {
+				i += idx + 3
+				continue
 			}
-			if next == ' ' || next == '\t' || next == '\n' || next == '\r' || next == '(' || next == ';' {
-				return true
-			}
+			return false
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case '`':
+			inBacktick = true
+		case ';':
+			return stripLeadingSQLComments(s[i+1:]) != ""
 		}
 	}
 	return false
+}
+
+func normaliseSQLForKeywordScan(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inSingle, inDouble, inBacktick := false, false, false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inSingle {
+			b.WriteByte(' ')
+			if ch == '\'' {
+				if i+1 < len(s) && s[i+1] == '\'' {
+					i++
+					b.WriteByte(' ')
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			b.WriteByte(' ')
+			if ch == '"' {
+				if i+1 < len(s) && s[i+1] == '"' {
+					i++
+					b.WriteByte(' ')
+					continue
+				}
+				inDouble = false
+			}
+			continue
+		}
+		if inBacktick {
+			b.WriteByte(' ')
+			if ch == '`' {
+				if i+1 < len(s) && s[i+1] == '`' {
+					i++
+					b.WriteByte(' ')
+					continue
+				}
+				inBacktick = false
+			}
+			continue
+		}
+		if ch == '-' && i+1 < len(s) && s[i+1] == '-' {
+			b.WriteString("  ")
+			i++
+			for i+1 < len(s) && s[i+1] != '\n' {
+				i++
+				b.WriteByte(' ')
+			}
+			continue
+		}
+		if ch == '/' && i+1 < len(s) && s[i+1] == '*' {
+			b.WriteString("  ")
+			i++
+			for i+1 < len(s) {
+				if s[i] == '*' && s[i+1] == '/' {
+					b.WriteString("  ")
+					i++
+					break
+				}
+				i++
+				b.WriteByte(' ')
+			}
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+			b.WriteByte(' ')
+		case '"':
+			inDouble = true
+			b.WriteByte(' ')
+		case '`':
+			inBacktick = true
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(byte(strings.ToUpper(string(ch))[0]))
+		}
+	}
+	return b.String()
+}
+
+func containsAnyKeyword(s string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if containsKeyword(s, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsKeywordSequence(s, first, second string) bool {
+	idx := keywordIndex(s, first)
+	if idx < 0 {
+		return false
+	}
+	return containsKeyword(s[idx+len(first):], second)
+}
+
+func containsKeyword(s, keyword string) bool {
+	return keywordIndex(s, keyword) >= 0
+}
+
+func keywordIndex(s, keyword string) int {
+	for start := 0; ; {
+		idx := strings.Index(s[start:], keyword)
+		if idx < 0 {
+			return -1
+		}
+		idx += start
+		beforeOK := idx == 0 || !isSQLIdent(s[idx-1])
+		after := idx + len(keyword)
+		afterOK := after >= len(s) || !isSQLIdent(s[after])
+		if beforeOK && afterOK {
+			return idx
+		}
+		start = idx + len(keyword)
+	}
+}
+
+func isSQLIdent(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
 }

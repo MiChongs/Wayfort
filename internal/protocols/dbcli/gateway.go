@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/michongs/jumpserver-anonymous/internal/approval"
+	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -23,8 +24,13 @@ type Handler struct {
 	GW       *webssh.Gateway
 	Launcher *Launcher
 	Sealer   pkgcrypto.Vault
+	Asset    assetChecker
 	// Approval is wired by the bootstrap; nil = no gating.
 	Approval *approval.Service
+}
+
+type assetChecker interface {
+	Check(ctx context.Context, userID, nodeID uint64, action string) (bool, error)
 }
 
 func (h *Handler) Handle(c *gin.Context) {
@@ -49,6 +55,10 @@ func (h *Handler) Handle(c *gin.Context) {
 	}
 	if node.Disabled || !isDBProto(node.EffectiveProtocol()) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node is not a db cli target"})
+		return
+	}
+	if err := h.requireNodeAccess(c.Request.Context(), claims.UserID, nodeID); err != nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -104,6 +114,20 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 	_ = ws.Close(websocket.StatusNormalClosure, "bye")
+}
+
+func (h *Handler) requireNodeAccess(ctx context.Context, userID, nodeID uint64) error {
+	if h.Asset == nil {
+		return errors.New("asset resolver not configured")
+	}
+	ok, err := h.Asset.Check(ctx, userID, nodeID, asset.ActionConnect)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("node access denied")
+	}
+	return nil
 }
 
 func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, spec LaunchSpec, cols, rows int) error {

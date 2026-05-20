@@ -25,7 +25,11 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
+	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
@@ -36,12 +40,8 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/secrets"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
-	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
-	"github.com/michongs/jumpserver-anonymous/internal/firewall"
-	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
+	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -291,7 +291,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		if err != nil {
 			logger.Warn("dbcli docker init failed", zap.Error(err))
 		} else {
-			dbcliHandler = &dbcli.Handler{GW: wsGateway, Launcher: dbLauncher, Sealer: sealer}
+			dbcliHandler = &dbcli.Handler{GW: wsGateway, Launcher: dbLauncher, Sealer: sealer, Asset: assetResolver}
 		}
 	}
 	pfRepo := repo.NewPortForwardRepo(db)
@@ -325,30 +325,30 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:       &api.NodeHandler{Repo: nodeRepo},
-		Proxy:      &api.ProxyHandler{Repo: proxyRepo},
-		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
-		Session:    &api.SessionHandler{Repo: sessionRepo},
-		SFTP:       sftpHandler,
-		WS:         wsGateway,
-		Guacamole:  guacHandler,
-		DBCLI:      dbcliHandler,
-		DB:         api.NewDBHandler(dbquery.New(wsGateway, sealer, logger), nil, auditWriter),
-		TCPFwd:     pfHandler,
-		TCPRelay:   pfRelay,
-		Issuer:     issuer,
-		Blocklist:  blocklist,
-		Resolver:   rbacResolver,
+		Node:      &api.NodeHandler{Repo: nodeRepo},
+		Proxy:     &api.ProxyHandler{Repo: proxyRepo},
+		Cred:      &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
+		Session:   &api.SessionHandler{Repo: sessionRepo},
+		SFTP:      sftpHandler,
+		WS:        wsGateway,
+		Guacamole: guacHandler,
+		DBCLI:     dbcliHandler,
+		DB:        api.NewDBHandler(dbquery.New(wsGateway, sealer, logger, assetResolver), nil, auditWriter),
+		TCPFwd:    pfHandler,
+		TCPRelay:  pfRelay,
+		Issuer:    issuer,
+		Blocklist: blocklist,
+		Resolver:  rbacResolver,
 		User: &api.UserHandler{
 			Repo: userRepo, Roles: roleRepo, Lockout: lockout,
 			Blocklist: blocklist, Resolver: rbacResolver,
 		},
-		Role: &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
-		Dept: &api.DepartmentHandler{Repo: deptRepo},
-		Group: &api.GroupHandler{Repo: groupRepo},
+		Role:       &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
+		Dept:       &api.DepartmentHandler{Repo: deptRepo},
+		Group:      &api.GroupHandler{Repo: groupRepo},
 		AssetGroup: &api.AssetGroupHandler{Repo: assetGroupRepo, Resolver: assetResolver},
-		Tag:   &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
-		Grant: &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
+		Tag:        &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
+		Grant:      &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
 		Me: &api.MeHandler{
 			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,
 			Email: emailOTP, Recovery: recoverySvc,
