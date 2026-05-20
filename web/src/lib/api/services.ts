@@ -482,3 +482,109 @@ export const insightsService = {
   network: (nodeId: number) =>
     api<NetworkSnapshot>("GET", `/nodes/${nodeId}/insights/network`),
 }
+
+// ---------------- Phase 15/16 — Approval Service ----------------
+//
+// The approval surface is a small REST API rooted at /api/v1/approvals.
+// Server-side authorization gates the admin endpoints (templates /
+// subscriptions / audit dump); regular users can create their own
+// requests, list their own + tasks-for-me, and verify the ledger chain.
+
+import type {
+  ApprovalEvent,
+  ApprovalGrant,
+  ApprovalRequest,
+  ApprovalRequestDetail,
+  ApprovalSubscription,
+  ApprovalTask,
+  ApprovalTemplate,
+  ChainVerifyResult,
+  ApprovalBusinessType,
+} from "./types"
+
+export type CreateApprovalRequestInput = {
+  business_type: ApprovalBusinessType
+  title: string
+  reason: string
+  resource_type?: string
+  resource_id?: string
+  payload?: Record<string, unknown>
+  window_start?: string
+  window_end?: string
+}
+
+export type CreateApprovalRequestOutput = {
+  request: ApprovalRequest
+  auto_approved: boolean
+  grant?: ApprovalGrant
+}
+
+export const approvalService = {
+  create: (body: CreateApprovalRequestInput) =>
+    api<CreateApprovalRequestOutput>("POST", "/approvals", { body }),
+  list: (query: {
+    status?: string
+    business_type?: string
+    mine?: boolean
+    limit?: number
+    offset?: number
+  } = {}) =>
+    api<{ items: ApprovalRequest[]; total: number }>("GET", "/approvals", {
+      query: {
+        status: query.status,
+        business_type: query.business_type,
+        mine: query.mine ? "1" : undefined,
+        limit: query.limit,
+        offset: query.offset,
+      },
+    }),
+  get: (id: string) => api<ApprovalRequestDetail>("GET", `/approvals/${id}`),
+  cancel: (id: string, reason: string) =>
+    api<{ ok: true }>("POST", `/approvals/${id}/cancel`, { body: { reason } }),
+  verifyChain: (id: string) =>
+    api<ChainVerifyResult>("GET", `/approvals/${id}/audit/verify`),
+  myTasks: (limit = 50) =>
+    api<{ items: ApprovalTask[] }>("GET", "/approvals/tasks/me", { query: { limit } }),
+  approve: (taskId: number, comment: string) =>
+    api<unknown>("POST", `/approvals/tasks/${taskId}/approve`, { body: { comment, approve: true } }),
+  reject: (taskId: number, comment: string) =>
+    api<unknown>("POST", `/approvals/tasks/${taskId}/reject`, { body: { comment, approve: false } }),
+  delegate: (taskId: number, delegate_to_id: number, comment: string) =>
+    api<{ task: ApprovalTask }>("POST", `/approvals/tasks/${taskId}/delegate`, {
+      body: { delegate_to_id, comment },
+    }),
+  revokeGrant: (grantId: string, reason: string) =>
+    api<{ ok: true }>("POST", `/approvals/grants/${grantId}/revoke`, { body: { reason } }),
+  checkGrant: (query: {
+    user_id: number
+    resource_type: string
+    resource_id: string
+    action?: string
+    business_type?: ApprovalBusinessType
+  }) =>
+    api<{ permitted: boolean; grant_id?: string; expires_at?: string }>(
+      "GET",
+      "/approvals/grants/check",
+      { query: { ...query, business_type: query.business_type } }
+    ),
+  eventsSince: (since: number, limit = 200) =>
+    api<{ items: ApprovalEvent[] }>("GET", "/approvals/audit/events", { query: { since, limit } }),
+  templates: {
+    list: () => api<{ items: ApprovalTemplate[] }>("GET", "/approvals/templates"),
+    create: (body: Partial<ApprovalTemplate>) =>
+      api<ApprovalTemplate>("POST", "/approvals/templates", { body }),
+    update: (id: number, body: Partial<ApprovalTemplate>) =>
+      api<ApprovalTemplate>("PATCH", `/approvals/templates/${id}`, { body }),
+    remove: (id: number) => api<{ ok: true }>("DELETE", `/approvals/templates/${id}`),
+  },
+  subscriptions: {
+    list: () =>
+      api<{ items: ApprovalSubscription[] }>("GET", "/approvals/subscriptions"),
+    create: (body: Partial<ApprovalSubscription>) =>
+      api<ApprovalSubscription>("POST", "/approvals/subscriptions", { body }),
+    update: (id: number, body: Partial<ApprovalSubscription>) =>
+      api<ApprovalSubscription>("PATCH", `/approvals/subscriptions/${id}`, { body }),
+    remove: (id: number) =>
+      api<{ ok: true }>("DELETE", `/approvals/subscriptions/${id}`),
+  },
+}

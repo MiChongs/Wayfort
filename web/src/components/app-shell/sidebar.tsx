@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation"
 import {
   Activity,
   Bot,
+  CheckCircle,
   ChevronDown,
   Cog,
   FileLock2,
@@ -37,6 +38,7 @@ const NAV: NavGroup[] = [
       { href: "/workspace", label: "工作台", icon: LayoutGrid },
       { href: "/nodes", label: "节点", icon: Server },
       { href: "/sessions", label: "会话", icon: Activity },
+      { href: "/approvals", label: "审批", icon: CheckCircle },
       { href: "/port-forwards", label: "端口转发", icon: Share2 },
       { href: "/ai", label: "AI 助手", icon: Sparkles },
     ],

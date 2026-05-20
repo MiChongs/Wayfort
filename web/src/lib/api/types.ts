@@ -449,3 +449,159 @@ export interface TokenPair {
   refresh_token?: string
   expires_at: string
 }
+
+// ---------------- Phase 15/16 — Approval Service ----------------
+
+export type ApprovalBusinessType =
+  | "asset_access"
+  | "credential_use"
+  | "command_exec"
+  | "sql_exec"
+  | "file_transfer"
+  | "session_extend"
+  | "session_elevate"
+  | "break_glass"
+  | "vendor_access"
+  | "audit_view"
+
+export type ApprovalRiskLevel = "low" | "medium" | "high" | "critical"
+
+export type ApprovalRequestStatus =
+  | "pending"
+  | "approved"
+  | "auto_approved"
+  | "rejected"
+  | "cancelled"
+  | "expired"
+
+export type ApprovalTaskState =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "delegated"
+  | "expired"
+  | "skipped"
+
+export type ApprovalStageMode = "all" | "any" | "quorum"
+
+export type ApprovalGrantStatus = "active" | "expired" | "revoked" | "used_up"
+
+export interface ApprovalRequest {
+  id: string
+  business_type: ApprovalBusinessType
+  title: string
+  reason: string
+  requester_id: number
+  requester_name: string
+  resource_type?: string
+  resource_id?: string
+  payload?: string
+  template_id?: number | null
+  risk_level: ApprovalRiskLevel
+  status: ApprovalRequestStatus
+  window_start: string
+  window_end: string
+  effective_window_end?: string | null
+  current_stage: number
+  total_stages: number
+  version: number
+  created_at: string
+  updated_at: string
+  resolved_at?: string | null
+  client_ip?: string
+}
+
+export interface ApprovalTask {
+  id: number
+  request_id: string
+  stage: number
+  stage_mode: ApprovalStageMode
+  quorum_n?: number
+  approver_id: number
+  approver_role?: string
+  state: ApprovalTaskState
+  comment?: string
+  delegated_to?: number | null
+  expires_at?: string | null
+  decided_at?: string | null
+  created_at: string
+}
+
+export interface ApprovalEvent {
+  id: number
+  request_id: string
+  kind: string
+  actor_id?: number
+  actor_name?: string
+  payload?: string
+  prev_hash: string
+  hash: string
+  signature?: string
+  kms_provider_id?: number | null
+  created_at: string
+}
+
+export interface ApprovalGrant {
+  id: string
+  request_id: string
+  business_type: ApprovalBusinessType
+  beneficiary_id: number
+  resource_type: string
+  resource_id: string
+  actions: string
+  max_uses: number
+  used_count: number
+  not_before: string
+  not_after: string
+  status: ApprovalGrantStatus
+  revoked_by?: number | null
+  revoked_at?: string | null
+  revoke_reason?: string
+  created_at: string
+}
+
+export interface ApprovalRequestDetail {
+  request: ApprovalRequest
+  tasks: ApprovalTask[]
+  events: ApprovalEvent[]
+  grant?: ApprovalGrant | null
+}
+
+export interface ChainVerifyResult {
+  request_id: string
+  total_events: number
+  ok: boolean
+  first_bad_event_id?: number
+  reason?: string
+}
+
+export interface ApprovalTemplate {
+  id: number
+  name: string
+  description: string
+  business_type: ApprovalBusinessType
+  priority: number
+  enabled: boolean
+  is_system: boolean
+  selector: string
+  stages: string
+  risk_rule?: string
+  auto_approve?: string
+  max_duration_sec: number
+  default_timeout_sec: number
+  created_at: string
+  updated_at: string
+}
+
+export interface ApprovalSubscription {
+  id: number
+  name: string
+  channel: string
+  target: string
+  secret?: string
+  business_type?: ApprovalBusinessType
+  event_mask?: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
