@@ -33,6 +33,12 @@ type BootstrapDeps struct {
 	// a LedgerSigner and attaches it to the Ledger so every event
 	// gets signed by the current primary KMS.
 	SignerLookup KMSSignerLookup
+	// Archiver is the optional WORM-style offsite archive. Nil → events
+	// stay only in the PostgreSQL append-only table. When non-nil, every
+	// successful AppendForRequest also batches the event for upload to
+	// the archiver (S3 Object Lock today, GCS / Azure Blob Immutability
+	// pluggable behind the same interface).
+	Archiver LedgerArchiver
 }
 
 // BootstrapResult is what cmd/jumpserver hangs onto so it can spawn the
@@ -64,6 +70,9 @@ func Bootstrap(ctx context.Context, deps BootstrapDeps) (*BootstrapResult, error
 		if signer := NewKMSLedgerSigner(deps.SignerLookup); signer != nil {
 			ledger = ledger.WithSigner(signer)
 		}
+	}
+	if deps.Archiver != nil {
+		ledger = ledger.WithArchiver(deps.Archiver)
 	}
 	policy := NewPolicyEngine(deps.Repo)
 

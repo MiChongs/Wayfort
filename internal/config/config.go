@@ -25,6 +25,35 @@ type Config struct {
 	AI        AIConfig        `mapstructure:"ai"`
 	Insights  InsightsConfig  `mapstructure:"insights"`
 	Desktop   DesktopConfig   `mapstructure:"desktop"`
+	Approval  ApprovalConfig  `mapstructure:"approval"`
+}
+
+// ApprovalConfig is the Phase 16c knob set for the audit-ledger offsite
+// archive. When `archive.enabled: true` the gateway pushes every
+// hash-chained ApprovalEvent to an S3-compatible bucket with Object Lock
+// retention so the chain survives even a complete loss of the primary
+// PostgreSQL store. MinIO works as a drop-in target.
+type ApprovalConfig struct {
+	Archive ApprovalArchiveConfig `mapstructure:"archive"`
+}
+
+type ApprovalArchiveConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// EndpointURL is empty for AWS S3; set to the MinIO / Ceph / other
+	// S3-compatible URL otherwise. UsePathStyle is forced on for
+	// non-empty endpoints.
+	EndpointURL     string `mapstructure:"endpoint_url"`
+	Region          string `mapstructure:"region"`
+	Bucket          string `mapstructure:"bucket"`
+	Prefix          string `mapstructure:"prefix"`
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	// RetentionMode is "GOVERNANCE" (admin can bypass) or "COMPLIANCE"
+	// (no one can shorten retention). Default GOVERNANCE.
+	RetentionMode string `mapstructure:"retention_mode"`
+	RetentionDays int    `mapstructure:"retention_days"`
+	FlushInterval time.Duration `mapstructure:"flush_interval"`
+	BatchSize     int           `mapstructure:"batch_size"`
 }
 
 // InsightsConfig — Plan 14: SSH-page live system dashboard. The frontend

@@ -404,6 +404,35 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		return signer, rowID, nil
 	}
 
+	// Phase 16c — optional WORM/S3 Object Lock archive. Disabled by
+	// default; admins opt in by setting `approval.archive.enabled: true`
+	// in the YAML. HeadBucket runs at construction so a bad bucket name
+	// fails the boot loudly instead of silently dropping events.
+	var approvalArchiver approval.LedgerArchiver
+	if cfg.Approval.Archive.Enabled {
+		ac := cfg.Approval.Archive
+		arch, archErr := approval.NewS3LedgerArchiver(rootCtx, approval.S3ArchiveConfig{
+			EndpointURL:     ac.EndpointURL,
+			Region:          ac.Region,
+			Bucket:          ac.Bucket,
+			Prefix:          ac.Prefix,
+			AccessKeyID:     ac.AccessKeyID,
+			SecretAccessKey: ac.SecretAccessKey,
+			RetentionMode:   ac.RetentionMode,
+			RetentionDays:   ac.RetentionDays,
+			FlushInterval:   ac.FlushInterval,
+			BatchSize:       ac.BatchSize,
+		})
+		if archErr != nil {
+			return fmt.Errorf("approval archive bootstrap: %w", archErr)
+		}
+		approvalArchiver = arch
+		logger.Info("approval ledger archive enabled",
+			zap.String("bucket", ac.Bucket),
+			zap.String("retention_mode", ac.RetentionMode),
+			zap.Int("retention_days", ac.RetentionDays))
+	}
+
 	approvalBoot, err := approval.Bootstrap(rootCtx, approval.BootstrapDeps{
 		DB:           db,
 		Repo:         approvalRepo,
@@ -413,6 +442,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		NodeRepo:     nodeRepo,
 		CredRepo:     credRepo,
 		SignerLookup: signerLookup,
+		Archiver:     approvalArchiver,
 	})
 	if err != nil {
 		return fmt.Errorf("approval bootstrap: %w", err)
