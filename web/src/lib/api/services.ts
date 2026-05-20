@@ -520,3 +520,246 @@ export const insightsService = {
   network: (nodeId: number) =>
     api<NetworkSnapshot>("GET", `/nodes/${nodeId}/insights/network`),
 }
+
+// ---------------- Phase 15/16 — Approval Service ----------------
+//
+// The approval surface is a small REST API rooted at /api/v1/approvals.
+// Server-side authorization gates the admin endpoints (templates /
+// subscriptions / audit dump); regular users can create their own
+// requests, list their own + tasks-for-me, and verify the ledger chain.
+
+import type {
+  ApprovalEvent,
+  ApprovalGrant,
+  ApprovalRequest,
+  ApprovalRequestDetail,
+  ApprovalSubscription,
+  ApprovalTask,
+  ApprovalTemplate,
+  ChainVerifyResult,
+  ApprovalBusinessType,
+  DBColumnInfo,
+  DBExecResult,
+  DBForeignKeyInfo,
+  DBIndexInfo,
+  DBProcessInfo,
+  DBQueryResult,
+  DBRowKey,
+  DBSchemaInfo,
+  DBTableStats,
+} from "./types"
+
+export type CreateApprovalRequestInput = {
+  business_type: ApprovalBusinessType
+  title: string
+  reason: string
+  resource_type?: string
+  resource_id?: string
+  payload?: Record<string, unknown>
+  window_start?: string
+  window_end?: string
+}
+
+export type CreateApprovalRequestOutput = {
+  request: ApprovalRequest
+  auto_approved: boolean
+  grant?: ApprovalGrant
+}
+
+export const approvalService = {
+  create: (body: CreateApprovalRequestInput) =>
+    api<CreateApprovalRequestOutput>("POST", "/approvals", { body }),
+  list: (query: {
+    status?: string
+    business_type?: string
+    mine?: boolean
+    limit?: number
+    offset?: number
+  } = {}) =>
+    api<{ items: ApprovalRequest[]; total: number }>("GET", "/approvals", {
+      query: {
+        status: query.status,
+        business_type: query.business_type,
+        mine: query.mine ? "1" : undefined,
+        limit: query.limit,
+        offset: query.offset,
+      },
+    }),
+  get: (id: string) => api<ApprovalRequestDetail>("GET", `/approvals/${id}`),
+  cancel: (id: string, reason: string) =>
+    api<{ ok: true }>("POST", `/approvals/${id}/cancel`, { body: { reason } }),
+  verifyChain: (id: string) =>
+    api<ChainVerifyResult>("GET", `/approvals/${id}/audit/verify`),
+  myTasks: (limit = 50) =>
+    api<{ items: ApprovalTask[] }>("GET", "/approvals/tasks/me", { query: { limit } }),
+  approve: (taskId: number, comment: string) =>
+    api<unknown>("POST", `/approvals/tasks/${taskId}/approve`, { body: { comment, approve: true } }),
+  reject: (taskId: number, comment: string) =>
+    api<unknown>("POST", `/approvals/tasks/${taskId}/reject`, { body: { comment, approve: false } }),
+  delegate: (taskId: number, delegate_to_id: number, comment: string) =>
+    api<{ task: ApprovalTask }>("POST", `/approvals/tasks/${taskId}/delegate`, {
+      body: { delegate_to_id, comment },
+    }),
+  revokeGrant: (grantId: string, reason: string) =>
+    api<{ ok: true }>("POST", `/approvals/grants/${grantId}/revoke`, { body: { reason } }),
+  checkGrant: (query: {
+    user_id: number
+    resource_type: string
+    resource_id: string
+    action?: string
+    business_type?: ApprovalBusinessType
+  }) =>
+    api<{ permitted: boolean; grant_id?: string; expires_at?: string }>(
+      "GET",
+      "/approvals/grants/check",
+      { query: { ...query, business_type: query.business_type } }
+    ),
+  eventsSince: (since: number, limit = 200) =>
+    api<{ items: ApprovalEvent[] }>("GET", "/approvals/audit/events", { query: { since, limit } }),
+  templates: {
+    list: () => api<{ items: ApprovalTemplate[] }>("GET", "/approvals/templates"),
+    create: (body: Partial<ApprovalTemplate>) =>
+      api<ApprovalTemplate>("POST", "/approvals/templates", { body }),
+    update: (id: number, body: Partial<ApprovalTemplate>) =>
+      api<ApprovalTemplate>("PATCH", `/approvals/templates/${id}`, { body }),
+    remove: (id: number) => api<{ ok: true }>("DELETE", `/approvals/templates/${id}`),
+  },
+  subscriptions: {
+    list: () =>
+      api<{ items: ApprovalSubscription[] }>("GET", "/approvals/subscriptions"),
+    create: (body: Partial<ApprovalSubscription>) =>
+      api<ApprovalSubscription>("POST", "/approvals/subscriptions", { body }),
+    update: (id: number, body: Partial<ApprovalSubscription>) =>
+      api<ApprovalSubscription>("PATCH", `/approvals/subscriptions/${id}`, { body }),
+    remove: (id: number) =>
+      api<{ ok: true }>("DELETE", `/approvals/subscriptions/${id}`),
+  },
+}
+
+// ---------------- Phase 17 — DB Studio ----------------
+
+export const dbService = {
+  ping: (nodeId: number, database?: string) =>
+    api<{ ok: true }>("GET", `/nodes/${nodeId}/db/ping`, { query: { database } }),
+  // Cluster-level DB list. Phase 17b — PostgreSQL connections are bound
+  // to one DB at a time, so the UI needs this to populate the database
+  // picker; subsequent schema / columns / rows calls forward the picked
+  // name so each catalog gets its own pool.
+  databases: (nodeId: number) =>
+    api<{ databases: string[] }>("GET", `/nodes/${nodeId}/db/databases`),
+  schema: (nodeId: number, database?: string) =>
+    api<DBSchemaInfo>("GET", `/nodes/${nodeId}/db/schema`, { query: { database } }),
+  columns: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ columns: DBColumnInfo[] }>("GET", `/nodes/${nodeId}/db/columns`, {
+      query: { schema, table, database },
+    }),
+  indexes: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ indexes: DBIndexInfo[] }>("GET", `/nodes/${nodeId}/db/indexes`, {
+      query: { schema, table, database },
+    }),
+  rows: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    opts: { limit?: number; offset?: number; order_by?: string; order_dir?: "ASC" | "DESC"; database?: string } = {}
+  ) =>
+    api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
+      query: { schema, table, ...opts },
+    }),
+  query: (
+    nodeId: number,
+    sql: string,
+    opts: { limit?: number; args?: unknown[]; reason?: string; database?: string } = {}
+  ) =>
+    api<DBQueryResult>("POST", `/nodes/${nodeId}/db/query`, {
+      body: { sql, args: opts.args, limit: opts.limit, reason: opts.reason, database: opts.database },
+    }),
+  exec: (nodeId: number, sql: string, opts: { args?: unknown[]; reason?: string; database?: string } = {}) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/exec`, {
+      body: { sql, args: opts.args, reason: opts.reason, database: opts.database },
+    }),
+  // Phase 19 — table structure + row CRUD + EXPLAIN
+  foreignKeys: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ foreign_keys: DBForeignKeyInfo[] }>("GET", `/nodes/${nodeId}/db/foreign_keys`, {
+      query: { schema, table, database },
+    }),
+  stats: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<DBTableStats>("GET", `/nodes/${nodeId}/db/stats`, {
+      query: { schema, table, database },
+    }),
+  ddl: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ ddl: string }>("GET", `/nodes/${nodeId}/db/ddl`, {
+      query: { schema, table, database },
+    }),
+  explain: (nodeId: number, sql: string, opts: { analyze?: boolean; database?: string; reason?: string } = {}) =>
+    api<DBQueryResult>("POST", `/nodes/${nodeId}/db/explain`, {
+      body: { sql, analyze: opts.analyze, database: opts.database, reason: opts.reason },
+    }),
+  rowUpdate: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    key: DBRowKey,
+    setColumns: string[],
+    setValues: unknown[],
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/update`, {
+      body: {
+        schema, table,
+        key_columns: key.columns, key_values: key.values,
+        set_columns: setColumns, set_values: setValues,
+        database: opts.database, reason: opts.reason,
+      },
+    }),
+  rowInsert: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    columns: string[],
+    values: unknown[],
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/insert`, {
+      body: {
+        schema, table,
+        set_columns: columns, set_values: values,
+        database: opts.database, reason: opts.reason,
+      },
+    }),
+  rowDelete: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    key: DBRowKey,
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/delete`, {
+      body: {
+        schema, table,
+        key_columns: key.columns, key_values: key.values,
+        database: opts.database, reason: opts.reason,
+      },
+    }),
+  // Phase 20 — running queries / cancel
+  processes: (nodeId: number, database?: string) =>
+    api<{ processes: DBProcessInfo[] }>("GET", `/nodes/${nodeId}/db/processes`, {
+      query: { database },
+    }),
+  kill: (nodeId: number, pid: number, database?: string) =>
+    api<{ cancelled: boolean }>("POST", `/nodes/${nodeId}/db/kill`, {
+      query: { pid, database },
+    }),
+  // Returns the export URL for a download anchor; bearer token rides as
+  // ?token=... so the browser's <a download> works without custom XHR
+  // headers (withTokenQuery is the same helper sessions/recording uses).
+  exportURL: (nodeId: number, opts: { schema: string; table: string; format: "csv" | "jsonl" | "sql"; database?: string; limit?: number }) => {
+    const q = new URLSearchParams()
+    q.set("schema", opts.schema)
+    q.set("table", opts.table)
+    q.set("format", opts.format)
+    if (opts.database) q.set("database", opts.database)
+    if (opts.limit && opts.limit > 0) q.set("limit", String(opts.limit))
+    return withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/db/export?${q.toString()}`)
+  },
+}

@@ -15,7 +15,7 @@ import (
 
 type ProviderHandler struct {
 	Repo     *airepo.ProviderRepo
-	Sealer   *pkgcrypto.Sealer
+	Sealer   pkgcrypto.Vault
 	Registry *provider.Registry
 }
 

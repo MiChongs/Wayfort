@@ -10,7 +10,7 @@ type OIDCClient struct {
 	DisplayName           string    `gorm:"size:128" json:"display_name"`
 	Issuer                string    `gorm:"size:512;not null" json:"issuer"`
 	ClientID              string    `gorm:"size:255;not null" json:"client_id"`
-	ClientSecretEncrypted []byte    `gorm:"type:varbinary(1024)" json:"-"`
+	ClientSecretEncrypted []byte    `json:"-"`
 	RedirectURI           string    `gorm:"size:512" json:"redirect_uri"`
 	Scopes                string    `gorm:"size:255" json:"scopes"`
 	UsernameClaim         string    `gorm:"size:64" json:"username_claim"`

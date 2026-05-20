@@ -5,7 +5,14 @@ server:
   shutdown_timeout: 10s
 
 db:
-  dsn: "jumpserver:jumpserver@tcp(127.0.0.1:3306)/jumpserver?charset=utf8mb4&parseTime=True&loc=Local"
+  # Phase 14: PostgreSQL DSN. Switched from MySQL because the
+  # credential pool now relies on bytea + KMS envelope semantics
+  # that GORM's Postgres driver handles more directly than its
+  # MySQL one (varbinary length ceilings interact poorly with
+  # rewrapped DEK blobs of varying length).
+  #
+  # Format: host=... user=... password=... dbname=... port=... sslmode=...
+  dsn: "host=127.0.0.1 user=jumpserver password=jumpserver dbname=jumpserver port=5432 sslmode=disable"
   max_open: 50
   max_idle: 10
   conn_max_lifetime: 1h
@@ -88,7 +95,32 @@ notify:
     max_retries: 3
 
 crypto:
-  master_key_hex: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  # ----- Phase 14: KMS-managed envelope encryption -----
+  #
+  # Credentials in the pool are now wrapped with envelope encryption:
+  # a fresh per-row DEK + a KEK held in an external KMS (Vault /
+  # OpenBao Transit, or AWS / Azure / GCP KMS). All KMS provider
+  # configuration lives in the `kms_providers` DB table — NOT in this
+  # YAML and NOT in environment variables.
+  #
+  # The bootstrap unseal passphrase lives in a single 0600 file under
+  # `unseal_passphrase_file`. If the file does not exist on first
+  # boot we mint a fresh 32-byte hex passphrase, write it 0600, and
+  # log a one-line warning. Operators are expected to:
+  #
+  #   1. Take a backup of `./var/keystore.unseal` out-of-band.
+  #   2. Visit /api/v1/setup/kms to register a real KMS provider
+  #      (Vault / AWS KMS / Azure Key Vault / GCP Cloud KMS).
+  #   3. Promote it primary; the rewrap job migrates existing
+  #      envelopes off the default-local provider.
+  unseal_passphrase_file: "./var/keystore.unseal"
+  #
+  # master_key_hex is the LEGACY pre-Phase-14 fixed AES-256 key.
+  # New installs leave it empty. Existing deployments with rows
+  # encrypted under the old Sealer keep it set during the one-shot
+  # migration window so the envelope vault can fall through to the
+  # legacy reader; remove it once every legacy row has been rewrapped.
+  master_key_hex: ""
 
 storage:
   sessions_dir: "./var/sessions"

@@ -107,6 +107,21 @@ type Routes struct {
 	// run SSH commands on the managed node.
 	Firewall *api.FirewallHandler
 	Docker   *api.DockerHandler
+
+	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
+	// under /api/v1/setup/kms/*.
+	KMS *api.KMSHandler
+
+	// Phase 15 — Approval Service surface. Nil when the subsystem is
+	// disabled (the routes are still registered and return 503 stubs the
+	// same way insights/firewall do).
+	Approval *api.ApprovalHandler
+
+	// Phase 17 — visual DB browser. Backs the structured schema /
+	// table-rows / SQL editor UI; complements the legacy /ws/dbcli
+	// terminal which stays for operators who want a literal psql/mysql
+	// shell.
+	DB *api.DBHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -302,6 +317,54 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// apt deps). Admin-only because it spawns package-manager
 		// commands and a CGo compile.
 		ops.POST("/desktop/bootstrap", auth.RequireAdmin(), desktopControl(rt).RetryBootstrap)
+
+		// Phase 14 — KMS provider setup wizard. All endpoints
+		// require admin because the ingested AuthSecret is a
+		// credential that grants decrypt-everything-this-gateway-
+		// owns access.
+		if rt.KMS != nil {
+			ops.GET("/setup/kms/status", auth.RequireAdmin(), rt.KMS.Status)
+			ops.GET("/setup/kms", auth.RequireAdmin(), rt.KMS.List)
+			ops.POST("/setup/kms", auth.RequireAdmin(), rt.KMS.Create)
+			ops.POST("/setup/kms/:id/test", auth.RequireAdmin(), rt.KMS.Test)
+			ops.POST("/setup/kms/:id/promote", auth.RequireAdmin(), rt.KMS.Promote)
+			ops.DELETE("/setup/kms/:id", auth.RequireAdmin(), rt.KMS.Delete)
+			ops.POST("/setup/kms/rewrap", auth.RequireAdmin(), rt.KMS.Rewrap)
+		}
+
+		// Phase 15 — Approval Service. The Create / List / Get / Cancel
+		// + tasks-for-me + decide + delegate surface is open to any
+		// authenticated user (with row-level filtering inside the
+		// handler). Templates, subscriptions and the ledger dump are
+		// admin-gated through the relevant approval:* permission codes.
+		if rt.Approval != nil {
+			ag := ops.Group("/approvals")
+			ag.POST("", rt.Approval.CreateRequest)
+			ag.GET("", rt.Approval.ListRequests)
+			ag.GET("/:id", rt.Approval.GetRequest)
+			ag.POST("/:id/cancel", rt.Approval.CancelRequest)
+			ag.GET("/:id/audit/verify", rt.Approval.VerifyChain)
+
+			ag.GET("/tasks/me", rt.Approval.MyTasks)
+			ag.POST("/tasks/:task_id/approve", perm(auth.PermApprovalDecide), rt.Approval.Approve)
+			ag.POST("/tasks/:task_id/reject", perm(auth.PermApprovalDecide), rt.Approval.Reject)
+			ag.POST("/tasks/:task_id/delegate", perm(auth.PermApprovalDecide), rt.Approval.Delegate)
+
+			ag.POST("/grants/:id/revoke", perm(auth.PermApprovalAdmin), rt.Approval.RevokeGrant)
+			ag.GET("/grants/check", rt.Approval.CheckGrant)
+
+			ag.GET("/audit/events", perm(auth.PermApprovalAuditRead), rt.Approval.EventsSince)
+
+			ag.GET("/templates", perm(auth.PermApprovalTemplateManage), rt.Approval.ListTemplates)
+			ag.POST("/templates", perm(auth.PermApprovalTemplateManage), rt.Approval.CreateTemplate)
+			ag.PATCH("/templates/:id", perm(auth.PermApprovalTemplateManage), rt.Approval.UpdateTemplate)
+			ag.DELETE("/templates/:id", perm(auth.PermApprovalTemplateManage), rt.Approval.DeleteTemplate)
+
+			ag.GET("/subscriptions", perm(auth.PermApprovalSubscribeManage), rt.Approval.ListSubscriptions)
+			ag.POST("/subscriptions", perm(auth.PermApprovalSubscribeManage), rt.Approval.CreateSubscription)
+			ag.PATCH("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.UpdateSubscription)
+			ag.DELETE("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.DeleteSubscription)
+		}
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
@@ -311,6 +374,33 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		}
 		if rt.DBCLI != nil {
 			ops.GET("/ws/dbcli/:node_id", rt.DBCLI.Handle)
+		}
+		// Phase 17 — structured DB browser. Reads (schema / columns /
+		// rows / SELECT-only Query) are open to any authenticated user
+		// with access to the node; writes (Exec) flow through the
+		// approval gate via h.Approval inside the handler.
+		if rt.DB != nil {
+			ops.GET("/nodes/:id/db/ping", rt.DB.Ping)
+			ops.GET("/nodes/:id/db/databases", rt.DB.Databases)
+			ops.GET("/nodes/:id/db/schema", rt.DB.Schema)
+			ops.GET("/nodes/:id/db/columns", rt.DB.Columns)
+			ops.GET("/nodes/:id/db/indexes", rt.DB.Indexes)
+			ops.GET("/nodes/:id/db/foreign_keys", rt.DB.ForeignKeys)
+			ops.GET("/nodes/:id/db/stats", rt.DB.TableStats)
+			ops.GET("/nodes/:id/db/ddl", rt.DB.TableDDL)
+			ops.GET("/nodes/:id/db/rows", rt.DB.Rows)
+			ops.GET("/nodes/:id/db/export", rt.DB.Export)
+			ops.POST("/nodes/:id/db/query", rt.DB.Query)
+			ops.POST("/nodes/:id/db/exec", rt.DB.Exec)
+			ops.POST("/nodes/:id/db/explain", rt.DB.Explain)
+			// Phase 19 — row-level edits. Approval gate (sql_exec)
+			// inside each handler.
+			ops.POST("/nodes/:id/db/row/update", rt.DB.RowUpdate)
+			ops.POST("/nodes/:id/db/row/insert", rt.DB.RowInsert)
+			ops.POST("/nodes/:id/db/row/delete", rt.DB.RowDelete)
+			// Phase 20 — server-side process panel + cancel
+			ops.GET("/nodes/:id/db/processes", rt.DB.Processes)
+			ops.POST("/nodes/:id/db/kill", rt.DB.Kill)
 		}
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)

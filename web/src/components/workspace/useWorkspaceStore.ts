@@ -6,6 +6,7 @@ export type Protocol =
   | "ssh"
   | "telnet"
   | "dbcli"
+  | "db_studio"
   | "rdp"
   | "rdp_next"
   | "vnc"

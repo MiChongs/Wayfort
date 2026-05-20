@@ -11,7 +11,27 @@ bin/
 /bin/
 /var/
 /configs/config.yaml
+# Editor / session-local artifacts that the lower section also lists; the
+# top half is kept for backward-compat with older worktree-based clones.
 /.worktrees/
+# Root-level config.yaml is the operator's private dev config (carries
+# auth.jwt_secret + optional plaintext db / smtp creds). Never commit.
+/config.yaml
+# Phase 14 bootstrap unseal passphrase + sessions volume bind-mount.
+/deployments/var/
 *.log
 *.cast
 .DS_Store
+
+# Editor / session-local clutter — never committed.
+/.idea/
+/.claude/
+/.omc/
+/.worktrees/
+/docs/
+
+# Web tooling — repo uses npm (package-lock.json). pnpm artifacts are
+# local-only when a contributor experiments with pnpm.
+/web/.omc/
+/web/pnpm-lock.yaml
+/web/pnpm-workspace.yaml

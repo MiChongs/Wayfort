@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -17,12 +18,18 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
+	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
@@ -31,17 +38,15 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/jumpserver-anonymous/internal/secrets"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
-	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
-	"github.com/michongs/jumpserver-anonymous/internal/firewall"
-	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
+	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/jumpserver-anonymous/pkg/kms"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
@@ -81,10 +86,66 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("automigrate: %w", err)
 	}
 
-	sealer, err := pkgcrypto.NewSealer(cfg.Crypto.MasterKeyHex)
+	// Phase 14 — bootstrap the envelope-encryption layer. This:
+	//   * reads (or mints) the bootstrap passphrase from
+	//     cfg.Crypto.UnsealPassphraseFile (0600 file, never an env var
+	//     or YAML field)
+	//   * stretches it via Argon2id into a key that unseals the
+	//     KMS-provider auth ciphertexts stored in the DB
+	//   * resolves the primary KMSProvider row (or creates a default
+	//     Local one on first boot) and runs a healthcheck
+	//
+	// The returned `secretsBoot.Service` is the envelope service the
+	// rest of the gateway hangs per-owner Vault adapters off.
+	secretsBoot, err := secrets.Bootstrap(rootCtx, secrets.BootstrapDeps{
+		SealRepo:       repo.NewKMSSealRepo(db),
+		ProviderRepo:   repo.NewKMSProviderRepo(db),
+		EnvelopeRepo:   repo.NewSecretEnvelopeRepo(db),
+		AuditRepo:      repo.NewSecretAuditRepo(db),
+		Logger:         logger,
+		UnsealFilePath: cfg.Crypto.UnsealPassphraseFile,
+	})
 	if err != nil {
-		return fmt.Errorf("crypto: %w", err)
+		return fmt.Errorf("secrets bootstrap: %w", err)
 	}
+	logger.Info("secrets bootstrap ok",
+		zap.String("primary_kms", string(secretsBoot.PrimaryRow.Kind)),
+		zap.String("primary_kms_name", secretsBoot.PrimaryRow.Name),
+		zap.Bool("fresh_install", secretsBoot.FreshInstall))
+
+	// One pkg/crypto.Vault per call-site OwnerType. Each adapter
+	// records its own envelope rows so audit + rotation can target
+	// specific credential families.
+	credentialVault := secretsBoot.NewVaultFor(model.OwnerCredentialSecret)
+	oidcVault := secretsBoot.NewVaultFor(model.OwnerOIDCClientSecret)
+	mfaVault := secretsBoot.NewVaultFor(model.OwnerUserMFASecret)
+	aiVault := secretsBoot.NewVaultFor(model.OwnerAIProviderAPIKey)
+	genericVault := secretsBoot.NewVaultFor(model.OwnerGeneric)
+
+	// Legacy migration aid. When cfg.Crypto.MasterKeyHex is non-empty
+	// the operator is mid-migration from Phase-13 single-master-key
+	// AES-GCM ciphertexts; we attach the old Sealer so the envelope
+	// adapter's Open() can fall through to it for pre-Phase-14 rows.
+	if cfg.Crypto.MasterKeyHex != "" {
+		legacy, err := pkgcrypto.NewSealer(cfg.Crypto.MasterKeyHex)
+		if err != nil {
+			return fmt.Errorf("legacy sealer: %w", err)
+		}
+		for _, v := range []pkgcrypto.Vault{credentialVault, oidcVault, mfaVault, aiVault, genericVault} {
+			if ev, ok := v.(*secrets.EnvelopeVault); ok {
+				ev.AttachLegacy(legacy)
+			}
+		}
+		logger.Warn("legacy AES master key attached — pre-Phase-14 ciphertexts will decrypt; rotate to envelope mode then drop crypto.master_key_hex from config")
+	}
+
+	// `sealer` keeps the old variable name so the rest of the
+	// wire-up reads unchanged where the single Vault still drives
+	// multiple subsystems (guacamole, dbcli, desktop). credentialVault
+	// is the right choice there because every plaintext those paths
+	// open is the password byte slice from a credentials row.
+	sealer := credentialVault
+	_ = genericVault // reserved for /api/v1/setup/* and ad-hoc owners
 	rc, err := cache.New(cfg.Redis)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
@@ -131,10 +192,10 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	blocklist := auth.NewBlocklist(rc.Client())
 	lockout := auth.NewLockoutPolicy(rc.Client(), cfg.Auth.Lockout.Threshold, cfg.Auth.Lockout.Window, cfg.Auth.Lockout.Duration)
 	rbacResolver := auth.NewResolver(userRepo, roleRepo, rc.Client())
-	oidcManager := auth.NewOIDCManager(oidcRepo, rc.Client(), sealer)
+	oidcManager := auth.NewOIDCManager(oidcRepo, rc.Client(), oidcVault)
 
 	// MFA + Passkey
-	totpSvc := mfa.NewTOTPService(cfg.Auth.MFA.TOTPIssuer, mfaRepo, sealer)
+	totpSvc := mfa.NewTOTPService(cfg.Auth.MFA.TOTPIssuer, mfaRepo, mfaVault)
 	recoverySvc := mfa.NewRecoveryService(recoveryRepo, cfg.Auth.MFA.RecoveryCodesCount)
 	var mailer *notify.Mailer
 	if cfg.Notify.SMTP.Host != "" {
@@ -233,7 +294,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		if err != nil {
 			logger.Warn("dbcli docker init failed", zap.Error(err))
 		} else {
-			dbcliHandler = &dbcli.Handler{GW: wsGateway, Launcher: dbLauncher, Sealer: sealer}
+			dbcliHandler = &dbcli.Handler{GW: wsGateway, Launcher: dbLauncher, Sealer: sealer, Asset: assetResolver}
 		}
 	}
 	pfRepo := repo.NewPortForwardRepo(db)
@@ -267,42 +328,197 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:       &api.NodeHandler{Repo: nodeRepo},
-		Proxy:      &api.ProxyHandler{Repo: proxyRepo},
-		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
-		Session:    &api.SessionHandler{Repo: sessionRepo},
-		SFTP:       sftpHandler,
-		WS:         wsGateway,
-		Guacamole:  guacHandler,
-		DBCLI:      dbcliHandler,
-		TCPFwd:     pfHandler,
-		TCPRelay:   pfRelay,
-		Issuer:     issuer,
-		Blocklist:  blocklist,
-		Resolver:   rbacResolver,
+		Node:      &api.NodeHandler{Repo: nodeRepo},
+		Proxy:     &api.ProxyHandler{Repo: proxyRepo},
+		Cred:      &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
+		Session:   &api.SessionHandler{Repo: sessionRepo},
+		SFTP:      sftpHandler,
+		WS:        wsGateway,
+		Guacamole: guacHandler,
+		DBCLI:     dbcliHandler,
+		DB:        api.NewDBHandler(dbquery.New(wsGateway, sealer, logger, assetResolver), nil, auditWriter),
+		TCPFwd:    pfHandler,
+		TCPRelay:  pfRelay,
+		Issuer:    issuer,
+		Blocklist: blocklist,
+		Resolver:  rbacResolver,
 		User: &api.UserHandler{
 			Repo: userRepo, Roles: roleRepo, Lockout: lockout,
 			Blocklist: blocklist, Resolver: rbacResolver,
 		},
-		Role: &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
-		Dept: &api.DepartmentHandler{Repo: deptRepo},
-		Group: &api.GroupHandler{Repo: groupRepo},
+		Role:       &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
+		Dept:       &api.DepartmentHandler{Repo: deptRepo},
+		Group:      &api.GroupHandler{Repo: groupRepo},
 		AssetGroup: &api.AssetGroupHandler{Repo: assetGroupRepo, Resolver: assetResolver},
-		Tag:   &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
-		Grant: &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
+		Tag:        &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
+		Grant:      &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
 		Me: &api.MeHandler{
 			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,
 			Email: emailOTP, Recovery: recoverySvc,
 			Favorites: favoriteRepo, Recent: recentRepo,
 			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
-		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
+		// Phase 14 switched OIDC client storage to the per-owner
+		// envelope adapter (oidcVault) so its secrets get rewrapped on
+		// rotation alongside credentials. Pre-Phase-14 code path used
+		// the credential `sealer` here; that fallback is gone now.
+		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: oidcVault, Manager: oidcManager},
 
 		// Phase 11 — terminal personalization.
 		Snippet:         &api.SnippetHandler{Repo: snippetRepo},
 		CommandHistory:  &api.CommandHistoryHandler{Repo: historyRepoTerm, Profile: terminalProfileRepo},
 		TerminalProfile: &api.TerminalProfileHandler{Repo: terminalProfileRepo},
+
+		// Phase 14 — KMS provider setup wizard. Admin-only endpoints
+		// under /api/v1/setup/kms/*.
+		KMS: &api.KMSHandler{
+			Providers: repo.NewKMSProviderRepo(db),
+			Envelopes: repo.NewSecretEnvelopeRepo(db),
+			Audits:    repo.NewSecretAuditRepo(db),
+			Service:   secretsBoot.Service,
+			Unsealer:  secretsBoot.Unsealer,
+		},
 	}
+
+	// Phase 15 — Approval Service. Always-on (no config gate) because the
+	// rest of the platform's high-risk endpoints will start gating on the
+	// resulting grants in subsequent phases. The bootstrap also seeds the
+	// built-in templates so a fresh install has a working set without an
+	// admin touching the UI.
+	approvalRepo := repo.NewApprovalRepo(db)
+
+	// Phase 16 — wire the KMS-backed ledger signer. Each Sign call
+	// resolves the *currently primary* KMS provider so an admin can
+	// rotate via /api/v1/setup/kms/:id/promote without restarting; new
+	// events get signed by the new key, existing events keep their
+	// historical signature.
+	kmsProviderRepo := repo.NewKMSProviderRepo(db)
+	signerLookup := func(ctx context.Context) (kms.Signer, uint64, error) {
+		if secretsBoot == nil || secretsBoot.Service == nil {
+			return nil, 0, nil
+		}
+		primary := secretsBoot.Service.PrimaryProvider()
+		if primary == nil {
+			return nil, 0, nil
+		}
+		// Type assert; providers that don't expose Sign (every cloud
+		// provider in Phase 16a) cause us to fall back to hash-chain-
+		// only — explicitly preferred over failing every approval
+		// transition closed.
+		signer, ok := primary.(kms.Signer)
+		if !ok {
+			return nil, 0, nil
+		}
+		row, err := kmsProviderRepo.Primary(ctx)
+		if err != nil {
+			return signer, 0, err
+		}
+		var rowID uint64
+		if row != nil {
+			rowID = row.ID
+		}
+		return signer, rowID, nil
+	}
+
+	// Phase 16c — optional WORM/S3 Object Lock archive. Disabled by
+	// default; admins opt in by setting `approval.archive.enabled: true`
+	// in the YAML. HeadBucket runs at construction so a bad bucket name
+	// fails the boot loudly instead of silently dropping events.
+	var approvalArchiver approval.LedgerArchiver
+	if cfg.Approval.Archive.Enabled {
+		ac := cfg.Approval.Archive
+		arch, archErr := approval.NewS3LedgerArchiver(rootCtx, approval.S3ArchiveConfig{
+			EndpointURL:     ac.EndpointURL,
+			Region:          ac.Region,
+			Bucket:          ac.Bucket,
+			Prefix:          ac.Prefix,
+			AccessKeyID:     ac.AccessKeyID,
+			SecretAccessKey: ac.SecretAccessKey,
+			RetentionMode:   ac.RetentionMode,
+			RetentionDays:   ac.RetentionDays,
+			FlushInterval:   ac.FlushInterval,
+			BatchSize:       ac.BatchSize,
+		})
+		if archErr != nil {
+			return fmt.Errorf("approval archive bootstrap: %w", archErr)
+		}
+		approvalArchiver = arch
+		logger.Info("approval ledger archive enabled",
+			zap.String("bucket", ac.Bucket),
+			zap.String("retention_mode", ac.RetentionMode),
+			zap.Int("retention_days", ac.RetentionDays))
+	}
+
+	approvalBoot, err := approval.Bootstrap(rootCtx, approval.BootstrapDeps{
+		DB:           db,
+		Repo:         approvalRepo,
+		Logger:       logger,
+		UserRepo:     userRepo,
+		RoleRepo:     roleRepo,
+		NodeRepo:     nodeRepo,
+		CredRepo:     credRepo,
+		SignerLookup: signerLookup,
+		Archiver:     approvalArchiver,
+	})
+	if err != nil {
+		return fmt.Errorf("approval bootstrap: %w", err)
+	}
+	routes.Approval = api.NewApprovalHandler(approvalBoot.Service, approvalRepo)
+
+	// Phase 16 — wire the per-resource enforcement gate into every
+	// action-bearing subsystem. The gate is opt-in per resource via the
+	// RequiresApproval flags on model.Node / model.Credential; nothing
+	// changes for existing deployments until an admin sets a flag.
+	//
+	// Pre-Phase-16 subsystems still build without these calls — passing
+	// a nil approval Service degrades the gate to a no-op.
+	approvalSvc := approvalBoot.Service
+	wsGateway.SetApproval(approvalSvc)
+	sftpHandler.Approval = approvalSvc
+	if guacHandler != nil {
+		guacHandler.Approval = approvalSvc
+	}
+	if dbcliHandler != nil {
+		dbcliHandler.Approval = approvalSvc
+	}
+	// Phase 17 — wire approval into the visual DB browser too. Same
+	// gate semantics as dbcli: writes (Exec) go through CheckEnforced;
+	// reads are unconditional.
+	if routes.DB != nil {
+		routes.DB.Approval = approvalSvc
+	}
+	if pfHandler != nil {
+		pfHandler.Approval = approvalSvc
+	}
+
+	// secrets.DecryptGate is the credential_use enforcement seam. We
+	// only gate user-initiated decrypts (Audit.UserID != nil); the
+	// rewrap job and bootstrap pass UserID == nil so the gate stays out
+	// of the system-level decrypts that have no human in the loop.
+	secretsBoot.Service.SetDecryptGate(func(ctx context.Context,
+		ownerType model.SecretEnvelopeOwnerType, ownerID uint64,
+		audit secrets.AuditContext) error {
+		if ownerType != model.OwnerCredentialSecret {
+			return nil
+		}
+		if audit.UserID == nil || *audit.UserID == 0 {
+			return nil
+		}
+		res, err := approvalSvc.CheckEnforced(ctx, approval.EnforcementCheck{
+			UserID:       *audit.UserID,
+			BusinessType: model.ApprovalBizCredentialUse,
+			ResourceType: "credential",
+			ResourceID:   strconv.FormatUint(ownerID, 10),
+			Action:       "credential_use",
+		})
+		if err != nil {
+			return err
+		}
+		if !res.Allowed {
+			return fmt.Errorf("%s", res.Reason)
+		}
+		return nil
+	})
 
 	// Plan 14 — wire the live system-insights service. Disabled by default;
 	// turn on with `insights.enabled: true` in config.
@@ -337,6 +553,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Audit:    auditWriter,
 			Sessions: sessionRepo,
 		})
+		desktopMgr.SetApproval(approvalSvc)
 		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
 		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
 
@@ -391,7 +608,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
 		SeedDefaultAgents:     cfg.AI.SeedDefaultAgents,
 	}, ai.Deps{
-		DB: db, Sealer: sealer, Logger: logger, AuditWriter: auditWriter,
+		DB: db, Sealer: aiVault, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
 		Sessions: sessionRepo, AuditRepo: auditRepo,
@@ -420,6 +637,13 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		g.Go(func() error { return aiSet.Janitor(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
+	// Phase 15 — approval reconciler: expires overdue grants, escalates
+	// timed-out tasks, flips past-window requests to expired. Best-effort
+	// single-goroutine sweep; multiple gateway processes converge via
+	// optimistic locking inside the repo.
+	if approvalBoot != nil && approvalBoot.Reconciler != nil {
+		g.Go(func() error { return approvalBoot.Reconciler.Run(gctx) })
+	}
 	// Plan 18 — async desktop worker bootstrap. Returns nil on failure so
 	// the gateway keeps running; per-session error surfaces via 503 and
 	// state surfaces via GET /api/v1/desktop/stats. The "scheduled" log

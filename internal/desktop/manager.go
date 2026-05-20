@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
@@ -31,6 +33,9 @@ type Manager struct {
 	sealer   PasswordOpener
 	audit    *audit.Writer
 	sessions *repo.SessionRepo
+	// approval is wired post-construction via SetApproval; nil = no
+	// gating (StartSession behaves as before Phase 16).
+	approval *approval.Service
 
 	mu      sync.Mutex
 	live    map[string]*Session // sessionID → Session
@@ -104,6 +109,10 @@ func (m *Manager) AttachIronRDP(signer *JWTSigner, sup *GatewaySupervisor) {
 	m.gatewaySup = sup
 }
 
+// SetApproval wires the Phase 16 approval gate; pass nil to keep the
+// pre-Phase-16 behaviour.
+func (m *Manager) SetApproval(svc *approval.Service) { m.approval = svc }
+
 // EnsureGateway brings up the Devolutions Gateway subprocess (and
 // generates its on-disk config) if the ironrdp backend is enabled.
 // Safe to call when no supervisor is attached — it's a no-op then.
@@ -165,6 +174,25 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 		}
 		if !ok {
 			return nil, errors.New("not authorised on this node")
+		}
+	}
+
+	// Phase 16 — approval gate (asset_access). Same flag as webssh /
+	// dbcli / guacamole; the desktop backend is just another way to
+	// reach the same privileged target.
+	if m.approval != nil {
+		res, err := m.approval.CheckEnforced(ctx, approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(req.NodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("approval check failed: %w", err)
+		}
+		if !res.Allowed {
+			return nil, errors.New(res.Reason)
 		}
 	}
 	node, err := m.nodes.FindByID(ctx, req.NodeID)

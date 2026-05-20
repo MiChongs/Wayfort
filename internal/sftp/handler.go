@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -29,6 +30,38 @@ type Handler struct {
 	Conn   *Connector
 	Audit  *audit.Writer
 	Logger *zap.Logger
+	// Approval gates write-side operations (Upload, WriteText, Remove,
+	// Rename, Mkdir, Chmod) when the target node has
+	// RequiresApprovalForFileXfer set. Reads (List, Stat, Download,
+	// ReadText) are not gated — the approval contract is for "is this
+	// user allowed to MUTATE files on this node" not "may they look at
+	// metadata".
+	Approval *approval.Service
+}
+
+// enforceFileXfer is the per-call gate; on Allowed=false the caller emits
+// 403 with the reason. Centralised here because every write-side handler
+// runs the identical check.
+func (h *Handler) enforceFileXfer(c *gin.Context, nodeID uint64, uid uint64, action string) bool {
+	if h.Approval == nil {
+		return true
+	}
+	res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+		UserID:       uid,
+		BusinessType: model.ApprovalBizFileTransfer,
+		ResourceType: "node",
+		ResourceID:   strconv.FormatUint(nodeID, 10),
+		Action:       action,
+	})
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+		return false
+	}
+	if !res.Allowed {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+		return false
+	}
+	return true
 }
 
 type listEntry struct {
@@ -212,6 +245,9 @@ func (h *Handler) Mkdir(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
+		return
+	}
 	var req mkdirReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -235,6 +271,9 @@ func (h *Handler) Mkdir(c *gin.Context) {
 func (h *Handler) Remove(c *gin.Context) {
 	nodeID, ok := parseNodeID(c)
 	if !ok {
+		return
+	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
 		return
 	}
 	target := c.Query("path")
@@ -293,6 +332,9 @@ func (h *Handler) Upload(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
+		return
+	}
 	target := c.Query("path")
 	if target == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path required"})
@@ -342,6 +384,9 @@ func (h *Handler) Download(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_read") {
+		return
+	}
 	target := c.Query("path")
 	if target == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "path required"})
@@ -378,6 +423,9 @@ type renameReq struct {
 func (h *Handler) Rename(c *gin.Context) {
 	nodeID, ok := parseNodeID(c)
 	if !ok {
+		return
+	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
 		return
 	}
 	var req renameReq
@@ -420,6 +468,9 @@ type chmodReq struct {
 func (h *Handler) Chmod(c *gin.Context) {
 	nodeID, ok := parseNodeID(c)
 	if !ok {
+		return
+	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
 		return
 	}
 	var req chmodReq
@@ -524,6 +575,9 @@ func (h *Handler) WriteText(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !h.enforceFileXfer(c, nodeID, currentUID(c), "sftp_write") {
+		return
+	}
 	var req writeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -570,6 +624,18 @@ func (h *Handler) WriteText(c *gin.Context) {
 	}
 	h.recordFile(c, nodeID, model.AuditFileWrite, target, n)
 	c.JSON(http.StatusOK, gin.H{"ok": true, "bytes": n, "path": target})
+}
+
+// currentUID extracts the authenticated user ID from the gin context. Returns
+// 0 if no claims are attached (the middleware should have rejected the
+// request earlier; this is a defensive fallback so the enforcement helper
+// can still produce a structured response rather than panic).
+func currentUID(c *gin.Context) uint64 {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		return 0
+	}
+	return claims.UserID
 }
 
 func (h *Handler) recordFile(c *gin.Context, nodeID uint64, kind model.AuditEventKind, target string, bytes int64) {

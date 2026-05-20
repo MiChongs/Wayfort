@@ -2,10 +2,13 @@ package tcpfwd
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 )
 
@@ -15,6 +18,9 @@ type Handler struct {
 	Manager *Manager
 	Nodes   *repo.NodeRepo
 	Repo    *repo.PortForwardRepo
+	// Approval gates Create against the target node's
+	// RequiresApprovalForConnect flag. nil = no gating.
+	Approval *approval.Service
 }
 
 type createReq struct {
@@ -38,6 +44,29 @@ func (h *Handler) Create(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
 		return
 	}
+
+	// Phase 16 — port forwards inherit the same asset_access gate as
+	// interactive sessions: a forwarder is a TCP pipe to a privileged
+	// network endpoint, so the same RequiresApprovalForConnect flag on
+	// the node controls it.
+	if h.Approval != nil {
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(req.NodeID, 10),
+			Action:       "port_forward",
+		})
+		if err != nil {
+			c.JSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.JSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
+	}
+
 	var ttl time.Duration
 	if req.TTL != "" {
 		d, perr := time.ParseDuration(req.TTL)

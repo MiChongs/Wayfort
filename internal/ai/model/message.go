@@ -18,7 +18,7 @@ type AIMessage struct {
 	ConversationID string      `gorm:"size:64;index;not null" json:"conversation_id"`
 	ParentID       *uint64     `gorm:"index" json:"parent_id,omitempty"`
 	Role           MessageRole `gorm:"size:16;not null" json:"role"`
-	Content        string      `gorm:"type:longtext" json:"content"`
+	Content        string      `gorm:"type:text" json:"content"`
 	ToolCallID     string      `gorm:"size:64" json:"tool_call_id,omitempty"`
 	ToolCalls      string      `gorm:"type:text" json:"tool_calls,omitempty"`
 	InputTokens    uint32      `json:"input_tokens"`

@@ -11,7 +11,7 @@ import (
 
 // Build constructs a runtime Provider from a stored DB row. The Sealer is used
 // to decrypt the API key in-memory; the plaintext never escapes this call.
-func Build(ctx context.Context, row *aimodel.AIProvider, sealer *pkgcrypto.Sealer) (Provider, error) {
+func Build(ctx context.Context, row *aimodel.AIProvider, sealer pkgcrypto.Vault) (Provider, error) {
 	if row == nil {
 		return nil, fmt.Errorf("nil provider row")
 	}

@@ -27,7 +27,7 @@ type AIToolInvocation struct {
 	Status          InvocationStatus `gorm:"size:16;index" json:"status"`
 	ApprovedBy      *uint64          `json:"approved_by,omitempty"`
 	ApprovedAt      *time.Time       `json:"approved_at,omitempty"`
-	OutputText      string           `gorm:"type:longtext" json:"output,omitempty"`
+	OutputText      string           `gorm:"type:text" json:"output,omitempty"`
 	OutputTruncated bool             `json:"output_truncated"`
 	DurationMs      uint32           `json:"duration_ms"`
 	ErrorMessage    string           `gorm:"size:1024" json:"error,omitempty"`

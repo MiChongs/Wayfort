@@ -12,7 +12,7 @@ import (
 
 type CredentialHandler struct {
 	Repo   *repo.CredentialRepo
-	Sealer *pkgcrypto.Sealer
+	Sealer pkgcrypto.Vault
 }
 
 type credPayload struct {

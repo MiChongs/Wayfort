@@ -16,7 +16,7 @@ import (
 // every chat turn. Invalidate must be called after admin changes a row.
 type Registry struct {
 	repo   *airepo.ProviderRepo
-	sealer *pkgcrypto.Sealer
+	sealer pkgcrypto.Vault
 
 	mu    sync.RWMutex
 	built map[uint64]cachedProvider
@@ -28,7 +28,7 @@ type cachedProvider struct {
 	at  time.Time
 }
 
-func NewRegistry(repo *airepo.ProviderRepo, sealer *pkgcrypto.Sealer) *Registry {
+func NewRegistry(repo *airepo.ProviderRepo, sealer pkgcrypto.Vault) *Registry {
 	return &Registry{repo: repo, sealer: sealer, built: map[uint64]cachedProvider{}, ttl: 30 * time.Minute}
 }
 

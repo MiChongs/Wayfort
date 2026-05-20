@@ -1,4 +1,4 @@
-import { Database, FolderTree, Monitor, Network, Server, Share2, Terminal } from "lucide-react"
+import { Database, FolderTree, Monitor, Network, Server, Share2, Table, Terminal } from "lucide-react"
 import type { Protocol } from "./useWorkspaceStore"
 import type { ComponentType } from "react"
 import type { DesktopBackend } from "@/lib/desktop/types"
@@ -68,6 +68,14 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     hrefSegment: "dbcli",
     ws: true,
   },
+  db_studio: {
+    key: "db_studio",
+    label: "数据库浏览",
+    icon: Table,
+    tint: "text-indigo-500 dark:text-indigo-400",
+    hrefSegment: "db",
+    ws: false,
+  },
   rdp: {
     key: "rdp",
     label: "RDP 远程桌面",
@@ -127,7 +135,15 @@ export function protocolsForNode(protocol: string): Protocol[] {
     case "tcp":
       return ["sftp", "tcp_forward"]
     default:
-      if (DB_PROTOS.has(protocol)) return ["dbcli", "tcp_forward"]
+      if (DB_PROTOS.has(protocol)) {
+        // db_studio (relational) only fits PG / MySQL. Redis + Mongo still
+        // have to use the terminal CLI today; surface dbcli as the only
+        // option for them.
+        if (protocol === "mysql" || protocol === "postgres") {
+          return ["db_studio", "dbcli", "tcp_forward"]
+        }
+        return ["dbcli", "tcp_forward"]
+      }
       return ["tcp_forward"]
   }
 }

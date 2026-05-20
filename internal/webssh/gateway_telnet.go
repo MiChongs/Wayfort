@@ -10,6 +10,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -40,6 +41,27 @@ func (g *Gateway) HandleNodeTelnet(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node is not a telnet target"})
 		return
 	}
+
+	// Phase 16 — same approval gate as the SSH handler.
+	if g.approval != nil {
+		res, err := g.approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			g.logger.Warn("approval check error", zap.Error(err), zap.Uint64("node_id", nodeID))
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
+	}
+
 	cols := atoiDefault(c.Query("cols"), 120)
 	rows := atoiDefault(c.Query("rows"), 32)
 

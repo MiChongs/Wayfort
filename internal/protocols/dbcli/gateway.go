@@ -9,6 +9,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
+	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -21,7 +23,14 @@ import (
 type Handler struct {
 	GW       *webssh.Gateway
 	Launcher *Launcher
-	Sealer   *pkgcrypto.Sealer
+	Sealer   pkgcrypto.Vault
+	Asset    assetChecker
+	// Approval is wired by the bootstrap; nil = no gating.
+	Approval *approval.Service
+}
+
+type assetChecker interface {
+	Check(ctx context.Context, userID, nodeID uint64, action string) (bool, error)
 }
 
 func (h *Handler) Handle(c *gin.Context) {
@@ -48,6 +57,32 @@ func (h *Handler) Handle(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node is not a db cli target"})
 		return
 	}
+	if err := h.requireNodeAccess(c.Request.Context(), claims.UserID, nodeID); err != nil {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Phase 16 — same asset_access gate as webssh; DB CLI sessions are
+	// just terminals into a privileged shell, so the gate sits on the
+	// node's RequiresApprovalForConnect flag.
+	if h.Approval != nil {
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
+	}
+
 	cred, err := h.GW.CredentialRepo().FindByID(c.Request.Context(), node.CredentialID)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -79,6 +114,20 @@ func (h *Handler) Handle(c *gin.Context) {
 		return
 	}
 	_ = ws.Close(websocket.StatusNormalClosure, "bye")
+}
+
+func (h *Handler) requireNodeAccess(ctx context.Context, userID, nodeID uint64) error {
+	if h.Asset == nil {
+		return errors.New("asset resolver not configured")
+	}
+	ok, err := h.Asset.Check(ctx, userID, nodeID, asset.ActionConnect)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("node access denied")
+	}
+	return nil
 }
 
 func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, spec LaunchSpec, cols, rows int) error {
@@ -113,7 +162,7 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	return runErr
 }
 
-func decode(s *pkgcrypto.Sealer, cred *model.Credential, fallbackUser string) (string, string, error) {
+func decode(s pkgcrypto.Vault, cred *model.Credential, fallbackUser string) (string, string, error) {
 	if cred == nil {
 		return fallbackUser, "", nil
 	}
