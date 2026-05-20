@@ -23,6 +23,7 @@ import {
   Zap,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -112,9 +113,15 @@ export function TerminalToolbar(p: Props) {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className={btnCls(false)} aria-label="发送控制信号" title="发送控制信号">
-              <Send className="w-3.5 h-3.5" />
-            </button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7 text-muted-foreground hover:text-foreground"
+              aria-label="发送控制信号"
+              title="发送控制信号"
+            >
+              <Send className="h-3.5 w-3.5" />
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <DropdownMenuLabel className="text-xs">发送控制字符</DropdownMenuLabel>
@@ -169,13 +176,15 @@ export function TerminalToolbar(p: Props) {
         <IconBtn icon={AArrowDown} onClick={p.onFontDec} title="字号 −" />
         <Tooltip>
           <TooltipTrigger asChild>
-            <button
+            <Button
+              size="sm"
+              variant="ghost"
               onClick={p.onFontReset}
-              className="text-[11px] font-mono px-1.5 h-7 inline-flex items-center text-muted-foreground hover:text-foreground hover:bg-muted/60 rounded-md transition-colors"
               aria-label="重置字号"
+              className="h-7 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
             >
               {p.fontSize}
-            </button>
+            </Button>
           </TooltipTrigger>
           <TooltipContent side="bottom">点击重置字号</TooltipContent>
         </Tooltip>
@@ -243,9 +252,21 @@ const IconBtn = React.forwardRef<
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button ref={ref} onClick={onClick} aria-label={title} className={btnCls(active, variant)}>
-          <Icon className="w-3.5 h-3.5" />
-        </button>
+        <Button
+          ref={ref}
+          size="icon"
+          variant="ghost"
+          onClick={onClick}
+          aria-label={title}
+          className={cn(
+            "h-7 w-7 text-muted-foreground hover:text-foreground",
+            active && "bg-muted text-foreground",
+            variant === "success" && "text-emerald-500 hover:text-emerald-400",
+            variant === "danger" && "text-red-500 hover:text-red-400",
+          )}
+        >
+          <Icon className="h-3.5 w-3.5" />
+        </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{title}</TooltipContent>
     </Tooltip>

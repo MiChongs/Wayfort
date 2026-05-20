@@ -1,24 +1,20 @@
 "use client"
 
+// Phase 10 — admin nodes page reshaped around the new AddNodeSheet (Sheet,
+// not Dialog) and the visual ProxyChainSummary column. Native confirm() is
+// replaced with the shadcn AlertDialog wrapper.
+
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, Server, Trash2 } from "lucide-react"
+import { Server } from "lucide-react"
 import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select"
-import {
-  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
-} from "@/components/ui/dialog"
-import { credentialService, nodeService, proxyService } from "@/lib/api/services"
-import type { Node, NodeProtocol } from "@/lib/api/types"
-import { DataTable, type Column } from "@/components/common/data-table"
 import { Badge } from "@/components/ui/badge"
-import { RdpOptionsForm } from "@/components/admin/nodes/rdp-options-form"
+import { DataTable, type Column } from "@/components/common/data-table"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
+import { AddNodeSheet } from "@/components/admin/add-node-sheet"
+import { ProxyChainSummary } from "@/components/admin/proxy-chain-builder"
+import { credentialService, nodeService, proxyService } from "@/lib/api/services"
+import type { Node } from "@/lib/api/types"
 
 export default function AdminNodesPage() {
   const qc = useQueryClient()
@@ -26,32 +22,54 @@ export default function AdminNodesPage() {
   const creds = useQuery({ queryKey: ["admin", "credentials"], queryFn: credentialService.list })
   const proxies = useQuery({ queryKey: ["admin", "proxies"], queryFn: proxyService.list })
 
-  const remove = useMutation({ mutationFn: (id: number) => nodeService.remove(id), onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "nodes"] }) })
+  const remove = useMutation({
+    mutationFn: (id: number) => nodeService.remove(id),
+    onSuccess: () => {
+      toast.success("节点已删除")
+      qc.invalidateQueries({ queryKey: ["admin", "nodes"] })
+    },
+    onError: (e: Error) => toast.error("删除失败", { description: e.message }),
+  })
 
   const columns: Column<Node>[] = [
     { header: "名称", cell: (n) => <span className="font-medium">{n.name}</span> },
     { header: "协议", cell: (n) => <Badge variant="secondary">{n.protocol}</Badge> },
     { header: "地址", cell: (n) => `${n.host}:${n.port}` },
     { header: "用户", cell: (n) => n.username || "—" },
-    { header: "代理链", cell: (n) => n.proxy_chain || "直连" },
+    {
+      header: "代理链",
+      cell: (n) => (
+        <ProxyChainSummary chain={n.proxy_chain || ""} proxies={proxies.data?.proxies || []} />
+      ),
+    },
     {
       header: "操作",
       className: "text-right",
       cell: (n) => (
-        <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(n.id)}>
-          <Trash2 className="w-4 h-4 text-destructive" />
-        </Button>
+        <ConfirmDeleteIconButton
+          title={`删除节点 “${n.name}”？`}
+          description={
+            <span>
+              将清除资产 <span className="font-mono">{n.host}:{n.port}</span> 的元数据,会话历史保留。
+            </span>
+          }
+          loading={remove.isPending}
+          onConfirm={() => remove.mutate(n.id)}
+        />
       ),
     },
   ]
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="space-y-4 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-          <Server className="w-5 h-5" /> 节点 - 资产
-        </h1>
-        <CreateNodeDialog
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
+            <Server className="h-5 w-5" /> 节点 — 资产
+          </h1>
+          <p className="text-sm text-muted-foreground">管理可登录的远端节点及其代理链。</p>
+        </div>
+        <AddNodeSheet
           credentials={creds.data?.credentials || []}
           proxies={proxies.data?.proxies || []}
           onCreated={() => qc.invalidateQueries({ queryKey: ["admin", "nodes"] })}
@@ -60,100 +78,4 @@ export default function AdminNodesPage() {
       <DataTable columns={columns} rows={nodes.data?.nodes} loading={nodes.isLoading} />
     </div>
   )
-}
-
-function CreateNodeDialog({
-  credentials, proxies, onCreated,
-}: {
-  credentials: { id: number; name: string }[]
-  proxies: { id: number; name: string }[]
-  onCreated: () => void
-}) {
-  const [open, setOpen] = React.useState(false)
-  const [draft, setDraft] = React.useState<Partial<Node> & { credential_id?: number }>({
-    protocol: "ssh", port: 22, name: "", host: "", username: "",
-  })
-  const create = useMutation({
-    mutationFn: () => nodeService.create(draft as Node),
-    onSuccess: () => { setOpen(false); onCreated(); toast.success("已创建节点") },
-    onError: (e: unknown) => toast.error("创建失败", { description: (e as Error).message }),
-  })
-
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild><Button><Plus className="w-4 h-4" /> 新增节点</Button></DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader><DialogTitle>新增节点</DialogTitle></DialogHeader>
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1"><Label>名称</Label><Input value={draft.name || ""} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></div>
-            <div className="space-y-1">
-              <Label>协议</Label>
-              <Select value={draft.protocol} onValueChange={(v) => setDraft({ ...draft, protocol: v as NodeProtocol, port: defaultPort(v as NodeProtocol) })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(["ssh", "telnet", "rdp", "vnc", "mysql", "postgres", "redis", "mongo", "tcp"] as NodeProtocol[]).map((p) => (
-                    <SelectItem key={p} value={p}>{p}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="space-y-1 col-span-2"><Label>主机</Label><Input value={draft.host || ""} onChange={(e) => setDraft({ ...draft, host: e.target.value })} /></div>
-            <div className="space-y-1"><Label>端口</Label><Input type="number" value={draft.port || ""} onChange={(e) => setDraft({ ...draft, port: Number(e.target.value) })} /></div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1"><Label>用户名（节点登录）</Label><Input value={draft.username || ""} onChange={(e) => setDraft({ ...draft, username: e.target.value })} /></div>
-            <div className="space-y-1">
-              <Label>凭据</Label>
-              <Select value={draft.credential_id ? String(draft.credential_id) : ""} onValueChange={(v) => setDraft({ ...draft, credential_id: Number(v) })}>
-                <SelectTrigger><SelectValue placeholder="选择凭据" /></SelectTrigger>
-                <SelectContent>{credentials.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}</SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label>代理链（逗号分隔的 proxy id）</Label>
-            <Input placeholder="例如 3,1" value={draft.proxy_chain || ""} onChange={(e) => setDraft({ ...draft, proxy_chain: e.target.value })} />
-            <div className="text-xs text-muted-foreground">可用代理：{proxies.map((p) => `${p.id}=${p.name}`).join(" / ") || "无"}</div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1"><Label>区域</Label><Input value={draft.region || ""} onChange={(e) => setDraft({ ...draft, region: e.target.value })} /></div>
-            <div className="space-y-1"><Label>标签（逗号分隔）</Label><Input value={draft.tags || ""} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} /></div>
-          </div>
-          <div className="space-y-1">
-            <Label>协议参数</Label>
-            {draft.protocol === "rdp" ? (
-              <RdpOptionsForm
-                value={draft.proto_options}
-                onChange={(v) => setDraft({ ...draft, proto_options: v })}
-              />
-            ) : (
-              <>
-                <Textarea
-                  placeholder='VNC 示例：{} · DB 示例：{"database":"main"}'
-                  value={draft.proto_options || ""}
-                  onChange={(e) => setDraft({ ...draft, proto_options: e.target.value })}
-                  rows={3}
-                />
-                <p className="text-[11px] text-muted-foreground leading-relaxed">
-                  其它协议暂用 JSON 文本。RDP 协议会显示结构化表单。
-                </p>
-              </>
-            )}
-          </div>
-          <div className="space-y-1"><Label>描述</Label><Textarea value={draft.description || ""} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
-          <Button onClick={() => create.mutate()} disabled={!draft.name || !draft.host || !draft.credential_id || create.isPending}>创建</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function defaultPort(p: NodeProtocol): number {
-  return { ssh: 22, telnet: 23, rdp: 3389, vnc: 5900, mysql: 3306, postgres: 5432, redis: 6379, mongo: 27017, tcp: 0 }[p] ?? 0
 }

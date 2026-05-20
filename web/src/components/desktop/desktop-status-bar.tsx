@@ -1,6 +1,8 @@
 "use client"
 
 import { Activity } from "lucide-react"
+import { motion, useReducedMotion } from "motion/react"
+import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
 
@@ -58,6 +60,7 @@ export function DesktopStatusBar({
         : stats.latencyMs > 200
           ? "text-amber-500"
           : "text-emerald-500"
+  const reducedMotion = useReducedMotion()
   return (
     <footer
       className={cn(
@@ -69,7 +72,15 @@ export function DesktopStatusBar({
       aria-label="desktop status"
     >
       <span className="inline-flex items-center gap-1.5">
-        <span className={cn("inline-block w-1.5 h-1.5 rounded-full", STATUS_TINT[status])} />
+        <motion.span
+          layout
+          transition={{ type: "spring", stiffness: 360, damping: 26 }}
+          className={cn("inline-block w-1.5 h-1.5 rounded-full", STATUS_TINT[status])}
+          aria-hidden
+        />
+        {!reducedMotion && (status === "connecting" || status === "handshake" || status === "reconnecting" || status === "loading-script") && (
+          <span className={cn("absolute -ml-[1.5px] -mt-[1.5px] inline-block h-2 w-2 animate-ping rounded-full opacity-60", STATUS_TINT[status])} aria-hidden />
+        )}
         {STATUS_LABEL[status]}
       </span>
       <Pipe />
@@ -98,21 +109,18 @@ export function DesktopStatusBar({
       )}
       <span className="ml-auto opacity-70 uppercase">{keyboardLayout}</span>
       {onOpenPerfPanel && (
-        <button
+        <Button
           type="button"
+          size="sm"
+          variant="ghost"
           onClick={onOpenPerfPanel}
           aria-label="打开性能监视面板"
           title="性能监视  (Ctrl+Shift+P)"
-          className={cn(
-            "inline-flex items-center gap-1 px-1.5 -mr-1 rounded-sm",
-            "text-[10px] text-muted-foreground hover:text-foreground hover:bg-accent/60",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/60",
-            "transition-colors",
-          )}
+          className="-mr-1 h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground"
         >
-          <Activity className="w-3 h-3" />
+          <Activity className="h-3 w-3" />
           <span>性能</span>
-        </button>
+        </Button>
       )}
     </footer>
   )

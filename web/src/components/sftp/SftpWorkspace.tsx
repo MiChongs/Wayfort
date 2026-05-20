@@ -16,6 +16,7 @@ import { SftpPreviewModal } from "./SftpPreviewModal"
 import { SftpEditorModal } from "./SftpEditorModal"
 import { SftpChmodDialog } from "./SftpChmodDialog"
 import { SftpPropertiesDialog } from "./SftpPropertiesDialog"
+import { useConfirm } from "@/components/admin/use-confirm"
 import { useSftpKeyboard } from "./useSftpKeyboard"
 import { useSftpSelection } from "./useSftpSelection"
 import { useSftpUploadQueue } from "./useSftpUploadQueue"
@@ -44,6 +45,7 @@ export function SftpWorkspace({
   className,
 }: SftpWorkspaceProps) {
   const qc = useQueryClient()
+  const { confirm: confirmDialog, dialog: confirmDeleteDialog } = useConfirm()
 
   const [path, setPath] = React.useState("/")
   const [search, setSearch] = React.useState("")
@@ -164,7 +166,12 @@ export function SftpWorkspace({
     if (paths.length === 0) return
     const label =
       paths.length === 1 ? `删除 "${basename(paths[0])}"？` : `删除选中的 ${paths.length} 项？`
-    if (!confirm(`${label}\n\n此操作不可撤销，目录将连同子项一并删除。`)) return
+    const confirmed = await confirmDialog({
+      title: label,
+      description: "此操作不可撤销,目录将连同子项一并删除。",
+      confirmLabel: "删除",
+    })
+    if (!confirmed) return
     let ok = 0
     let fail = 0
     for (const p of paths) {
@@ -314,6 +321,7 @@ export function SftpWorkspace({
 
   return (
     <div className={className ?? "flex flex-col h-[calc(100vh-3.5rem)] min-h-[500px]"}>
+      {confirmDeleteDialog}
       {showNodeHeader && (
         <NodeHeader nodeId={nodeId} node={node.data} loading={node.isLoading} />
       )}

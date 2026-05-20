@@ -4,6 +4,7 @@ import * as React from "react"
 import { Activity, Cpu, HardDrive, MemoryStick, Server, Users } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
 import { useInsightsHistory } from "@/lib/hooks/use-insights-history"
 import type {
   InsightsProcess,
@@ -115,12 +116,11 @@ export function OverviewTab({ system, processes, onJumpToProcesses }: OverviewTa
                 {formatBytes(system.memory.swap_used_kb)} / {formatBytes(system.memory.swap_total_kb)} ({swapPct}%)
               </span>
             </div>
-            <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-              <div
-                className={"h-full transition-[width] " + usagePctBg(swapPct)}
-                style={{ width: `${Math.min(100, swapPct)}%` }}
-              />
-            </div>
+            <Progress
+              value={Math.min(100, swapPct)}
+              className="h-1.5"
+              indicatorClassName={usagePctBg(swapPct)}
+            />
           </CardContent>
         </Card>
       )}

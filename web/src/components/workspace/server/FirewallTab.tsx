@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { useConfirm } from "@/components/admin/use-confirm"
 import {
   Select,
   SelectContent,
@@ -83,6 +84,7 @@ function codeOf(e: unknown): string | undefined {
 
 export function FirewallTab({ nodeId, active }: Props) {
   const qc = useQueryClient()
+  const { confirm: confirmDialog, dialog: confirmFwDialog } = useConfirm()
   const status = useQuery({
     queryKey: ["firewall", nodeId, "status"],
     queryFn: () => firewallService.status(nodeId),
@@ -201,6 +203,7 @@ export function FirewallTab({ nodeId, active }: Props) {
 
   return (
     <div className="flex flex-col h-full">
+      {confirmFwDialog}
       <header className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">
         <div className="flex items-center gap-2 min-w-0">
           <Shield className="w-4 h-4 text-primary" />
@@ -268,8 +271,15 @@ export function FirewallTab({ nodeId, active }: Props) {
                 key={chain}
                 chain={chain}
                 rules={group as typeof rules.data.rules}
-                onDelete={(idx) => {
-                  if (confirm(`删除规则 ${idx}?`)) deleteRule.mutate(idx)
+                onDelete={async (idx) => {
+                  if (
+                    await confirmDialog({
+                      title: `删除规则 ${idx}？`,
+                      description: "规则删除后立即生效;若误删可在节点详情里查看历史并重新添加。",
+                      confirmLabel: "删除",
+                    })
+                  )
+                    deleteRule.mutate(idx)
                 }}
               />
             ))}

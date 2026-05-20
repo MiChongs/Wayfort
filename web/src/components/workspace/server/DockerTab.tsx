@@ -17,6 +17,7 @@ import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useConfirm } from "@/components/admin/use-confirm"
 import { dockerService } from "@/lib/api/services"
 import type { DockerContainer } from "@/lib/api/types"
 
@@ -217,8 +218,19 @@ function ContainerRow({
   busy: boolean
 }) {
   const running = c.state === "running"
+  const { confirm: confirmDialog, dialog } = useConfirm()
+  const onRemove = async () => {
+    const ok = await confirmDialog({
+      title: `删除容器 “${c.names || c.id.slice(0, 12)}”？`,
+      description: "将以 force=true 立即终止并删除容器,持久卷不受影响。",
+      confirmLabel: "删除",
+    })
+    if (ok) onAction("remove", true)
+  }
   return (
-    <tr className="hover:bg-accent/40" title={c.command}>
+    <>
+      {dialog}
+      <tr className="hover:bg-accent/40" title={c.command}>
       <td className="px-2 py-1.5">
         <div className="font-medium truncate max-w-[10rem]">{c.names || c.id.slice(0, 12)}</div>
         <div className="text-[10px] text-muted-foreground font-mono">{c.id.slice(0, 12)}</div>
@@ -283,17 +295,14 @@ function ContainerRow({
             className="h-6 w-6 text-destructive"
             title="删除（强制）"
             disabled={busy}
-            onClick={() => {
-              if (confirm(`删除容器 ${c.names || c.id.slice(0, 12)}？(force=true)`)) {
-                onAction("remove", true)
-              }
-            }}
+            onClick={onRemove}
           >
             <Trash2 className="w-3 h-3" />
           </Button>
         </div>
       </td>
     </tr>
+    </>
   )
 }
 

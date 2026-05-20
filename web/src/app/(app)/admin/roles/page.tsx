@@ -1,7 +1,7 @@
 "use client"
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, ShieldCheck, Trash2 } from "lucide-react"
+import { Plus, ShieldCheck } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { roleService } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
 import type { Permission, Role } from "@/lib/api/types"
 
 export default function RolesPage() {
@@ -25,9 +26,12 @@ export default function RolesPage() {
     {
       header: "操作", className: "text-right",
       cell: (r) => !r.is_system && (
-        <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(r.id)}>
-          <Trash2 className="w-4 h-4 text-destructive" />
-        </Button>
+        <ConfirmDeleteIconButton
+          title={`删除角色 “${r.name}”？`}
+          description="已分配此角色的用户会立刻失去对应权限。"
+          loading={remove.isPending}
+          onConfirm={() => remove.mutate(r.id)}
+        />
       ),
     },
   ]
@@ -68,14 +72,17 @@ function CreateRole({ perms, onCreated }: { perms: Permission[]; onCreated: () =
               {perms.map((p) => {
                 const on = chosen.includes(p.code)
                 return (
-                  <button
-                    type="button" key={p.code}
+                  <Button
+                    type="button"
+                    key={p.code}
+                    size="sm"
+                    variant={on ? "default" : "outline"}
                     onClick={() => setChosen(on ? chosen.filter((x) => x !== p.code) : [...chosen, p.code])}
-                    className={`text-left text-xs rounded px-2 py-1 border ${on ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
+                    className="h-auto justify-start whitespace-normal py-1 text-left text-xs"
                     title={p.description}
                   >
                     {p.code}
-                  </button>
+                  </Button>
                 )
               })}
             </div>

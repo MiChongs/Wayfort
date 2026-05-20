@@ -20,6 +20,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
+import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import type { DesktopSettings, ScaleMode, ClipboardDirection } from "./desktop-types"
@@ -188,15 +189,22 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
                 </p>
               </Field>
 
-              <Field label={`粘贴行数确认阈值  ${settings.clipboardConfirmLines || "关闭"}`}>
-                <input
-                  type="range"
+              <Field
+                label={
+                  <span className="flex items-center justify-between gap-2">
+                    <span>粘贴行数确认阈值</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">
+                      {settings.clipboardConfirmLines || "关闭"}
+                    </span>
+                  </span>
+                }
+              >
+                <Slider
                   min={0}
                   max={20}
                   step={1}
-                  value={settings.clipboardConfirmLines}
-                  onChange={(e) => onChange({ clipboardConfirmLines: Number(e.target.value) })}
-                  className="w-full"
+                  value={[settings.clipboardConfirmLines]}
+                  onValueChange={(vals) => onChange({ clipboardConfirmLines: vals[0] ?? 0 })}
                 />
                 <p className="text-[10px] text-muted-foreground">
                   粘贴超过此行数前弹确认;0 表示从不弹。
@@ -242,7 +250,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">{label}</Label>

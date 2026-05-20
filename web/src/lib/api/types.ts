@@ -108,15 +108,69 @@ export interface Credential {
   updated_at?: string
 }
 
+export type ProxyKind = "direct" | "socks5" | "bastion" | "http_connect"
+
 export interface Proxy {
   id: number
   name: string
-  kind: "direct" | "socks5" | "bastion" | "http_connect"
+  kind: ProxyKind
   host: string
   port: number
   credential_id?: number | null
+  description?: string
+  disabled?: boolean
+  tags?: string
   created_at?: string
   updated_at?: string
+}
+
+// Phase 10 — proxy chain validation, testing, templates.
+export type ChainIssueSeverity = "error" | "warning" | "info"
+
+export interface ChainIssue {
+  hop: number
+  proxy_id?: number
+  severity: ChainIssueSeverity
+  code: string
+  message: string
+}
+
+export interface ChainValidationResult {
+  hops: Proxy[]
+  issues: ChainIssue[]
+  valid: boolean
+  resolve?: string
+}
+
+export interface ChainHopTestResult {
+  hop: number
+  proxy_id: number
+  name: string
+  kind: ProxyKind
+  ok: boolean
+  duration_ms: number
+  error?: string
+}
+
+export interface ChainTestResponse {
+  hops: Proxy[]
+  results: ChainHopTestResult[]
+  ok: boolean
+  target: string
+}
+
+export interface ProxyChainTemplate {
+  id: number
+  name: string
+  description?: string
+  chain: string
+  tags?: string
+  created_by?: number | null
+  created_at?: string
+  updated_at?: string
+  // Hydrated by GET — pre-resolved hop list + per-template lint issues.
+  hops?: Proxy[]
+  issues?: ChainIssue[]
 }
 
 export interface Session {

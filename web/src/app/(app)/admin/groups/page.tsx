@@ -1,13 +1,14 @@
 "use client"
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, Trash2, Users } from "lucide-react"
+import { Plus, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { groupService } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
 import type { UserGroup } from "@/lib/api/types"
 
 export default function GroupsPage() {
@@ -17,7 +18,7 @@ export default function GroupsPage() {
   const cols: Column<UserGroup>[] = [
     { header: "名称", cell: (g) => <span className="font-medium">{g.name}</span> },
     { header: "描述", cell: (g) => g.description || "—" },
-    { header: "操作", className: "text-right", cell: (g) => <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(g.id)}><Trash2 className="w-4 h-4 text-destructive" /></Button> },
+    { header: "操作", className: "text-right", cell: (g) => <ConfirmDeleteIconButton title={`删除用户组 “${g.name}”？`} description="组成员关系会被解除,但用户账号本身保留。" loading={remove.isPending} onConfirm={() => remove.mutate(g.id)} /> },
   ]
   return (
     <div className="p-6 space-y-4">

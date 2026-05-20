@@ -94,6 +94,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	userRepo := repo.NewUserRepo(db)
 	nodeRepo := repo.NewNodeRepo(db)
 	proxyRepo := repo.NewProxyRepo(db)
+	chainTemplateRepo := repo.NewChainTemplateRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
@@ -264,8 +265,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:       &api.NodeHandler{Repo: nodeRepo},
-		Proxy:      &api.ProxyHandler{Repo: proxyRepo},
+		Node:          &api.NodeHandler{Repo: nodeRepo},
+		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Builder: chain},
+		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
 		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
 		Session:    &api.SessionHandler{Repo: sessionRepo},
 		SFTP:       sftpHandler,
