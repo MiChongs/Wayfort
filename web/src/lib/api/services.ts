@@ -14,6 +14,7 @@ import type {
   AssetGrant,
   AssetGroup,
   AssetTag,
+  CommandHistoryRow,
   Credential,
   Department,
   DockerContainer,
@@ -34,6 +35,8 @@ import type {
   Proxy,
   Role,
   Session,
+  Snippet,
+  TerminalProfileRow,
   TokenPair,
   User,
   UserGroup,
@@ -124,6 +127,41 @@ export const credentialService = {
   update: (id: number, body: { name?: string; kind?: string; username?: string; secret?: string }) =>
     api<{ id: number }>("PATCH", `/credentials/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/credentials/${id}`),
+}
+
+// ----- Phase 11 — terminal personalization -----
+export const snippetService = {
+  list: () => api<{ snippets: Snippet[] }>("GET", "/me/snippets"),
+  create: (body: { name: string; description?: string; body: string; tags?: string; pinned?: boolean }) =>
+    api<Snippet>("POST", "/me/snippets", { body }),
+  update: (
+    id: number,
+    body: Partial<{ name: string; description: string; body: string; tags: string; pinned: boolean }>,
+  ) => api<Snippet>("PATCH", `/me/snippets/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/me/snippets/${id}`),
+  use: (id: number, variables: Record<string, string> = {}) =>
+    api<{ resolved: string; snippet: Snippet }>("POST", `/me/snippets/${id}/use`, { body: { variables } }),
+}
+
+export const commandHistoryService = {
+  list: (opts: { q?: string; node_id?: number; limit?: number } = {}) =>
+    api<{ history: CommandHistoryRow[] }>("GET", "/me/command-history", { query: opts }),
+  record: (body: {
+    node_id?: number
+    session_id?: string
+    command: string
+    exit_code?: number
+    duration_ms?: number
+    working_dir?: string
+  }) => api<{ recorded: boolean; id?: number; reason?: string }>("POST", "/me/command-history", { body }),
+  clear: (nodeId?: number) =>
+    api<void>("DELETE", "/me/command-history", { query: nodeId ? { node_id: nodeId } : {} }),
+}
+
+export const terminalProfileService = {
+  get: () => api<{ profile: TerminalProfileRow }>("GET", "/me/terminal-profile"),
+  set: (body: { body?: unknown; history_enabled?: boolean }) =>
+    api<{ profile: TerminalProfileRow }>("PATCH", "/me/terminal-profile", { body }),
 }
 
 // ----- sessions / port-forwards / sftp -----

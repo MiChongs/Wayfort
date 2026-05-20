@@ -7,15 +7,6 @@ import { ArrowDownToLine } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
 import { useTheme } from "next-themes"
 import { toast } from "@/components/ui/sonner"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WebSSHConnection, type SessionStats } from "@/lib/ws/webssh-client"
 import {
@@ -27,10 +18,13 @@ import { inferDisconnect } from "@/lib/terminal/disconnect-reasons"
 import { cn } from "@/lib/utils"
 import { TerminalCommandPalette } from "./terminal-command-palette"
 import { TerminalContextMenu } from "./terminal-context-menu"
+import { TerminalHistorySheet } from "./terminal-history-sheet"
 import { TerminalSearchPopover } from "./terminal-search-popover"
 import { TerminalSettingsSheet } from "./terminal-settings-sheet"
+import { TerminalSnippetsSheet } from "./terminal-snippets-sheet"
 import { TerminalStatusBar } from "./terminal-status-bar"
 import { TerminalToolbar } from "./terminal-toolbar"
+import { PasteConfirmSheet } from "./paste-confirm-sheet"
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -177,6 +171,8 @@ export function WebSSHTerminal({
   const [scrolledUp, setScrolledUp] = React.useState(false)
   const [pasteConfirm, setPasteConfirm] = React.useState<string | null>(null)
   const [hasSelection, setHasSelection] = React.useState(false)
+  const [snippetsOpen, setSnippetsOpen] = React.useState(false)
+  const [historyOpen, setHistoryOpen] = React.useState(false)
   const searchAnchorRef = React.useRef<HTMLButtonElement>(null)
 
   // Status bar metrics
@@ -557,6 +553,16 @@ export function WebSSHTerminal({
           setPaletteOpen(true)
           return false
         }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "i") {
+          // Phase 11 — open snippets sheet
+          setSnippetsOpen(true)
+          return false
+        }
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "h") {
+          // Phase 11 — open command history sheet
+          setHistoryOpen(true)
+          return false
+        }
         if (e.key === "F11") {
           toggleFullscreen()
           return false
@@ -816,6 +822,8 @@ export function WebSSHTerminal({
           onReconnect={handleReconnect}
           onDisconnect={handleDisconnect}
           onOpenSftp={onOpenSftp}
+          onOpenSnippets={() => setSnippetsOpen(true)}
+          onOpenHistory={() => setHistoryOpen(true)}
           searchTrigger={searchAnchorRef}
         />
 
@@ -920,49 +928,42 @@ export function WebSSHTerminal({
           }}
         />
 
-        <PasteConfirmDialog
+        <PasteConfirmSheet
           text={pasteConfirm}
           onConfirm={confirmPaste}
           onCancel={() => setPasteConfirm(null)}
+        />
+
+        <TerminalSnippetsSheet
+          open={snippetsOpen}
+          onOpenChange={setSnippetsOpen}
+          contextVars={{
+            host: host ?? "",
+            port: String(port ?? ""),
+            user: username ?? "",
+            node: displayName ?? "",
+            node_id: String(nodeId),
+          }}
+          onInsert={(resolved) => {
+            connRef.current?.sendInput(resolved)
+          }}
+        />
+        <TerminalHistorySheet
+          open={historyOpen}
+          onOpenChange={setHistoryOpen}
+          nodeId={nodeId}
+          onInsert={(cmd) => {
+            connRef.current?.sendInput(cmd)
+          }}
         />
       </div>
     </TooltipProvider>
   )
 }
 
-function PasteConfirmDialog({
-  text,
-  onConfirm,
-  onCancel,
-}: {
-  text: string | null
-  onConfirm: () => void
-  onCancel: () => void
-}) {
-  const lines = text ? text.split("\n").length : 0
-  const preview = text ? (text.length > 600 ? text.slice(0, 600) + "\n…" : text) : ""
-  return (
-    <Dialog open={!!text} onOpenChange={(v) => !v && onCancel()}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>粘贴 {lines} 行内容?</DialogTitle>
-          <DialogDescription>
-            多行粘贴会被立即执行,确认内容无误后再继续 —— 避免误粘脚本造成事故。
-          </DialogDescription>
-        </DialogHeader>
-        <pre className="bg-muted rounded-md p-2 text-xs font-mono whitespace-pre overflow-auto max-h-60 text-foreground">
-          {preview}
-        </pre>
-        <DialogFooter>
-          <Button variant="outline" onClick={onCancel}>
-            取消
-          </Button>
-          <Button onClick={onConfirm}>确认粘贴</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
+// PasteConfirmDialog was migrated to PasteConfirmSheet (Phase 11). The
+// Sheet provides full vertical room for long pastes and keeps page context
+// visible behind it.
 
 function playBell() {
   try {
