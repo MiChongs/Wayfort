@@ -1,16 +1,41 @@
+# Dev-environment compose. The app binary is intentionally NOT a service
+# here — operators run it on the host (`go run ./cmd/jumpserver` or via
+# GoLand) so iteration loops aren't gated on `docker build`. This file
+# only stands up the stateful + protocol dependencies the local binary
+# dials over the host-published ports.
+#
+# Host-side DSN for the locally-run app:
+#   db.dsn: "host=127.0.0.1 user=jumpserver password=jumpserver dbname=jumpserver port=5432 sslmode=disable"
+#   redis.addr: "127.0.0.1:6379"
+#   protocols.guacamole.guacd_addr: "127.0.0.1:4822"
+#
+# For a "real" compose deploy (CI / staging / prod) the upstream
+# Dockerfile in this directory still builds a release image — add an
+# `app:` service block back in with `build: { context: .., dockerfile:
+# deployments/Dockerfile }` and the env from the previous revision.
+
 services:
-  mysql:
-    image: mysql:8.0
+  # Phase 14 — Postgres replaces MySQL because the credential pool now
+  # stores bytea envelope blobs + KMS-wrapped DEKs, and GORM's Postgres
+  # driver handles those more directly than the MySQL one. Pin to a
+  # specific minor so `docker compose pull` doesn't silently upgrade
+  # storage encoding behind a running cluster.
+  postgres:
+    image: postgres:16-alpine
     environment:
-      MYSQL_ROOT_PASSWORD: rootpw
-      MYSQL_DATABASE: jumpserver
-      MYSQL_USER: jumpserver
-      MYSQL_PASSWORD: jumpserver
-    ports: ["3306:3306"]
+      POSTGRES_DB: jumpserver
+      POSTGRES_USER: jumpserver
+      POSTGRES_PASSWORD: jumpserver
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    # Map to host port 5433 to avoid colliding with any locally-installed
+    # PostgreSQL service that already owns 5432 (Windows `pgAdmin`,
+    # macOS `Postgres.app`, distro `postgresql.service`). Adjust the
+    # host-side port freely; container always listens on 5432.
+    ports: ["5433:5432"]
     volumes:
-      - mysql:/var/lib/mysql
+      - postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -ujumpserver -pjumpserver"]
+      test: ["CMD-SHELL", "pg_isready -U jumpserver -d jumpserver"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -35,8 +60,9 @@ services:
     ports: ["2222:2222"]
 
   # Apache Guacamole protocol daemon for RDP/VNC bridging.
-  # Mount the sessions volume so guacd can drop recording files at the same
-  # path the app sees.
+  # Mount the sessions volume so guacd can drop recording files at the
+  # same path the host-side app sees. The volume is bind-mounted into
+  # the host process via the `storage.sessions_dir` config knob.
   guacd:
     image: guacamole/guacd:1.5.5
     ports: ["4822:4822"]
@@ -44,28 +70,6 @@ services:
       - sessions:/var/lib/jumpserver/sessions
     restart: unless-stopped
 
-  app:
-    build:
-      context: ..
-      dockerfile: deployments/Dockerfile
-    depends_on:
-      mysql:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      JUMPSERVER_DB_DSN: "jumpserver:jumpserver@tcp(mysql:3306)/jumpserver?charset=utf8mb4&parseTime=True&loc=Local"
-      JUMPSERVER_REDIS_ADDR: "redis:6379"
-      JUMPSERVER_ANONYMOUS_ENABLED: "false"
-      JUMPSERVER_PROTOCOLS_GUACAMOLE_ENABLED: "true"
-      JUMPSERVER_PROTOCOLS_GUACAMOLE_GUACD_ADDR: "guacd:4822"
-      JUMPSERVER_PROTOCOLS_DBCLI_ENABLED: "false"
-    ports: ["8080:8080"]
-    volumes:
-      - sessions:/var/lib/jumpserver/sessions
-      # Uncomment when anonymous or dbcli is enabled (needs Docker SDK):
-      # - /var/run/docker.sock:/var/run/docker.sock
-
 volumes:
-  mysql: {}
+  postgres: {}
   sessions: {}

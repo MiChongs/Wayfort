@@ -1,4 +1,7 @@
-FROM golang:1.25-alpine AS build
+# Phase 14 — bumped to go1.26 to track go.mod (was 1.25). Alpine slim
+# stays the build environment; the final image only carries the static
+# binary so toolchain size doesn't matter.
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
