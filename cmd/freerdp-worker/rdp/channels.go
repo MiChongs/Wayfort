@@ -28,7 +28,8 @@ package rdp
 
 // All helpers live in cgo_wrappers.go; re-declare as extern here.
 extern void wInstallCliprdr(CliprdrClientContext* ctx);
-extern void wInstallRdpgfx(RdpgfxClientContext* ctx);
+extern BOOL wInstallRdpgfx(RdpgfxClientContext* ctx);
+extern rdpContext* wRdpgfxRdpContext(RdpgfxClientContext* ctx);
 extern UINT wSendCliprdrCapabilities(CliprdrClientContext* ctx);
 extern UINT wSendCliprdrFormatList(CliprdrClientContext* ctx,
                                     const CLIPRDR_FORMAT* formats, UINT32 numFormats);
@@ -254,56 +255,39 @@ func (c *Client) attachAudio(iface unsafe.Pointer) {
 
 func (c *Client) attachGraphicsPipeline(iface unsafe.Pointer) {
 	ctx := (*C.RdpgfxClientContext)(iface)
+	c.rdpgfxMu.Lock()
+	c.rdpgfxSurfaces = make(map[uint16]rdpgfxSurfaceState)
+	c.rdpgfxMu.Unlock()
 	ctx.custom = c.context
-	C.wInstallRdpgfx(ctx)
+	ok := goBool(C.wInstallRdpgfx(ctx))
+	c.rdpgfxGDIInitialized.Store(ok)
+	if !ok {
+		c.logger.Warn("rdpgfx channel attached but GDI graphics pipeline initialization failed")
+		return
+	}
+	c.logger.Info("rdpgfx GDI graphics pipeline callbacks attached")
 }
 
 //export goRdpgfxSurfaceCommand
 func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_COMMAND) C.UINT {
-	c := lookupByCustom(ctx.custom)
+	c, _ := clientFromRdpgfx(ctx)
 	if c == nil || cmd == nil {
 		return 0
 	}
-	// Forward the raw codec payload to the browser. Codec id mapping:
-	//   RDPGFX_CODECID_AVC420 / AVC444   → EncodingH264 (browser decodes
-	//      via WebCodecs.VideoDecoder; AVC444 should never arrive
-	//      because client.go disables FreeRDP_GfxAVC444 so the single-
-	//      stream decoder can consume what we forward)
-	//   RDPGFX_CODECID_PLANAR / UNCOMPRESSED → EncodingRawBGRA
-	//   RDPGFX_CODECID_CAVIDEO / CAPROGRESSIVE (RemoteFX) → EncodingRFX
-	enc := desktop.EncodingRawBGRA
-	switch cmd.codecId {
-	case C.RDPGFX_CODECID_AVC420, C.RDPGFX_CODECID_AVC444:
-		enc = desktop.EncodingH264
-	case C.RDPGFX_CODECID_CAVIDEO, C.RDPGFX_CODECID_CAPROGRESSIVE:
-		enc = desktop.EncodingRFX
-	case C.RDPGFX_CODECID_PLANAR, C.RDPGFX_CODECID_UNCOMPRESSED:
-		enc = desktop.EncodingRawBGRA
+	count := c.rdpgfxSurfaceCommands.Add(1)
+	if count == 1 {
+		c.logger.Info("phase: first rdpgfx surface command decoded by GDI",
+			zap.Uint32("surface_id", uint32(cmd.surfaceId)),
+			zap.Uint32("codec_id", uint32(cmd.codecId)),
+			zap.String("codec", rdpgfxCodecName(uint32(cmd.codecId))),
+			zap.Uint32("left", uint32(cmd.left)),
+			zap.Uint32("top", uint32(cmd.top)),
+			zap.Uint32("right", uint32(cmd.right)),
+			zap.Uint32("bottom", uint32(cmd.bottom)),
+			zap.Uint32("width", uint32(cmd.width)),
+			zap.Uint32("height", uint32(cmd.height)),
+			zap.Uint32("bytes", uint32(cmd.length)))
 	}
-	buf := C.GoBytes(unsafe.Pointer(cmd.data), C.int(cmd.length))
-	keyframe := false
-	if enc == desktop.EncodingH264 {
-		// Strip the [MS-RDPEGFX 2.2.4.4.1] AVC420EncodedBitmapStream
-		// wrapper to get the raw NAL bitstream, then scan the first few
-		// NAL units for the H.264 unit-type byte. Browser
-		// VideoDecoder needs `EncodedVideoChunk { type: "key" }` for
-		// the entry point (SPS/PPS+IDR) and `"delta"` for the rest —
-		// without that bit, the decoder stalls on the first frame
-		// because it doesn't know whether to wait or start.
-		if nal, ok := stripAvc420Wrapper(buf); ok {
-			buf = nal
-			keyframe = nalStreamHasKeyframe(nal)
-		}
-	}
-	c.emit(desktop.ServerMessage{Frame: &desktop.FrameRect{
-		X:        uint32(cmd.left),
-		Y:        uint32(cmd.top),
-		Width:    uint32(cmd.right - cmd.left),
-		Height:   uint32(cmd.bottom - cmd.top),
-		Encoding: enc,
-		Keyframe: keyframe,
-		Payload:  buf,
-	}})
 	return 0
 }
 
@@ -361,31 +345,427 @@ func nalStreamHasKeyframe(nal []byte) bool {
 			continue
 		}
 		switch nalByte & 0x1F {
-		case 5, 7, 8: // IDR slice / SPS / PPS — any of them is a key.
+		case 5:
 			return true
 		}
 	}
 	return false
 }
 
+func normalizeH264AnnexB(buf []byte) ([]byte, bool) {
+	if startsWithAnnexBStartCode(buf) {
+		return buf, true
+	}
+	if len(buf) < 5 {
+		return nil, false
+	}
+	out := make([]byte, 0, len(buf)+16)
+	for pos := 0; pos < len(buf); {
+		if len(buf)-pos < 4 {
+			return nil, false
+		}
+		n := int(buf[pos])<<24 | int(buf[pos+1])<<16 | int(buf[pos+2])<<8 | int(buf[pos+3])
+		pos += 4
+		if n <= 0 || n > len(buf)-pos {
+			return nil, false
+		}
+		out = append(out, 0x00, 0x00, 0x00, 0x01)
+		out = append(out, buf[pos:pos+n]...)
+		pos += n
+	}
+	return out, true
+}
+
+func startsWithAnnexBStartCode(buf []byte) bool {
+	return (len(buf) > 4 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1) ||
+		(len(buf) > 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 1)
+}
+
+//export goRdpgfxResetGraphics
+func goRdpgfxResetGraphics(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_RESET_GRAPHICS_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	c.rdpgfxResetGraphics.Add(1)
+	c.width = uint32(pdu.width)
+	c.height = uint32(pdu.height)
+	c.rdpgfxMu.Lock()
+	c.rdpgfxSurfaces = make(map[uint16]rdpgfxSurfaceState)
+	c.rdpgfxMu.Unlock()
+	c.logger.Info("rdpgfx reset graphics",
+		zap.Uint32("width", uint32(pdu.width)),
+		zap.Uint32("height", uint32(pdu.height)),
+		zap.Uint32("monitors", uint32(pdu.monitorCount)))
+	c.requestDesktopRefresh("rdpgfx reset graphics")
+	return 0
+}
+
+//export goRdpgfxOnOpen
+func goRdpgfxOnOpen(ctx *C.RdpgfxClientContext, doCapsAdvertise *C.BOOL, doFrameAcks *C.BOOL) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil {
+		return 0
+	}
+	count := c.rdpgfxOnOpen.Add(1)
+	if doCapsAdvertise != nil {
+		*doCapsAdvertise = C.TRUE
+	}
+	if doFrameAcks != nil {
+		*doFrameAcks = C.TRUE
+	}
+	c.logger.Info("rdpgfx channel open",
+		zap.Uint64("count", count),
+		zap.Bool("caps_advertise", doCapsAdvertise != nil && goBool(*doCapsAdvertise)),
+		zap.Bool("frame_acks", doFrameAcks != nil && goBool(*doFrameAcks)))
+	return 0
+}
+
+//export goRdpgfxOnClose
+func goRdpgfxOnClose(ctx *C.RdpgfxClientContext) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxOnClose.Add(1)
+		c.rdpgfxGDIInitialized.Store(false)
+	}
+	return 0
+}
+
+//export goRdpgfxCapsAdvertise
+func goRdpgfxCapsAdvertise(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_CAPS_ADVERTISE_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	count := c.rdpgfxCapsAdvertise.Add(1)
+	c.logger.Info("rdpgfx caps advertise",
+		zap.Uint64("count", count),
+		zap.Uint32("capset_count", uint32(pdu.capsSetCount)),
+		zap.Strings("capsets", rdpgfxCapsetNames(pdu)))
+	return 0
+}
+
+//export goRdpgfxCapsConfirm
+func goRdpgfxCapsConfirm(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_CAPS_CONFIRM_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil || pdu.capsSet == nil {
+		return 0
+	}
+	version := uint32(pdu.capsSet.version)
+	flags := uint32(pdu.capsSet.flags)
+	c.rdpgfxCapsVersion.Store(version)
+	c.rdpgfxCapsFlags.Store(flags)
+	count := c.rdpgfxCapsConfirm.Add(1)
+	c.logger.Info("rdpgfx caps confirmed",
+		zap.Uint64("count", count),
+		zap.Uint32("version", version),
+		zap.String("version_text", rdpgfxCapVersionName(version)),
+		zap.Uint32("flags", flags))
+	return 0
+}
+
 //export goRdpgfxCreateSurface
 func goRdpgfxCreateSurface(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_CREATE_SURFACE_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	c.rdpgfxCreateSurfaces.Add(1)
+	c.rdpgfxMu.Lock()
+	if c.rdpgfxSurfaces == nil {
+		c.rdpgfxSurfaces = make(map[uint16]rdpgfxSurfaceState)
+	}
+	c.rdpgfxSurfaces[uint16(pdu.surfaceId)] = rdpgfxSurfaceState{
+		id:           uint16(pdu.surfaceId),
+		width:        uint32(pdu.width),
+		height:       uint32(pdu.height),
+		pixelFormat:  uint8(pdu.pixelFormat),
+		targetWidth:  uint32(pdu.width),
+		targetHeight: uint32(pdu.height),
+	}
+	c.rdpgfxMu.Unlock()
 	return 0
 }
 
 //export goRdpgfxDeleteSurface
 func goRdpgfxDeleteSurface(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_DELETE_SURFACE_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	c.rdpgfxDeleteSurfaces.Add(1)
+	c.rdpgfxMu.Lock()
+	delete(c.rdpgfxSurfaces, uint16(pdu.surfaceId))
+	c.rdpgfxMu.Unlock()
+	return 0
+}
+
+//export goRdpgfxDeleteEncodingContext
+func goRdpgfxDeleteEncodingContext(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_DELETE_ENCODING_CONTEXT_PDU) C.UINT {
+	return 0
+}
+
+//export goRdpgfxSolidFill
+func goRdpgfxSolidFill(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_SOLID_FILL_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxSolidFills.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxSurfaceToSurface
+func goRdpgfxSurfaceToSurface(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_SURFACE_TO_SURFACE_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxSurfaceToSurface.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxSurfaceToCache
+func goRdpgfxSurfaceToCache(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_SURFACE_TO_CACHE_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxSurfaceToCache.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxCacheToSurface
+func goRdpgfxCacheToSurface(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_CACHE_TO_SURFACE_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxCacheToSurface.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxEvictCacheEntry
+func goRdpgfxEvictCacheEntry(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_EVICT_CACHE_ENTRY_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxEvictCache.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxMapSurfaceToOutput
+func goRdpgfxMapSurfaceToOutput(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	c.rdpgfxMapOutput.Add(1)
+	c.rdpgfxMu.Lock()
+	state := c.rdpgfxSurfaces[uint16(pdu.surfaceId)]
+	state.id = uint16(pdu.surfaceId)
+	state.mapped = true
+	state.outputX = uint32(pdu.outputOriginX)
+	state.outputY = uint32(pdu.outputOriginY)
+	if state.targetWidth == 0 {
+		state.targetWidth = state.width
+	}
+	if state.targetHeight == 0 {
+		state.targetHeight = state.height
+	}
+	c.rdpgfxSurfaces[uint16(pdu.surfaceId)] = state
+	c.rdpgfxMu.Unlock()
+	return 0
+}
+
+//export goRdpgfxMapSurfaceToScaledOutput
+func goRdpgfxMapSurfaceToScaledOutput(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU) C.UINT {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil {
+		return 0
+	}
+	c.rdpgfxMapScaledOutput.Add(1)
+	c.rdpgfxMu.Lock()
+	state := c.rdpgfxSurfaces[uint16(pdu.surfaceId)]
+	state.id = uint16(pdu.surfaceId)
+	state.mapped = true
+	state.outputX = uint32(pdu.outputOriginX)
+	state.outputY = uint32(pdu.outputOriginY)
+	state.targetWidth = uint32(pdu.targetWidth)
+	state.targetHeight = uint32(pdu.targetHeight)
+	c.rdpgfxSurfaces[uint16(pdu.surfaceId)] = state
+	c.rdpgfxMu.Unlock()
 	return 0
 }
 
 //export goRdpgfxStartFrame
 func goRdpgfxStartFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_START_FRAME_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxStartFrames.Add(1)
+	}
 	return 0
 }
 
 //export goRdpgfxEndFrame
 func goRdpgfxEndFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_END_FRAME_PDU) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxEndFrames.Add(1)
+		c.rdpgfxFrameAcks.Add(1)
+	}
 	return 0
+}
+
+//export goRdpgfxUpdateSurfaces
+func goRdpgfxUpdateSurfaces(ctx *C.RdpgfxClientContext) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxUpdateSurfaces.Add(1)
+	}
+	return 0
+}
+
+//export goRdpgfxUpdateSurfaceArea
+func goRdpgfxUpdateSurfaceArea(ctx *C.RdpgfxClientContext, surfaceID C.UINT16, nrRects C.UINT32, rects *C.RECTANGLE_16) C.UINT {
+	if c, _ := clientFromRdpgfx(ctx); c != nil {
+		c.rdpgfxUpdateSurfaceAreas.Add(uint64(nrRects))
+	}
+	return 0
+}
+
+func clientFromRdpgfx(ctx *C.RdpgfxClientContext) (*Client, *C.rdpContext) {
+	if ctx == nil {
+		return nil, nil
+	}
+	rctx := C.wRdpgfxRdpContext(ctx)
+	if rctx == nil {
+		return nil, nil
+	}
+	return registry.get(unsafe.Pointer(rctx)), rctx
+}
+
+// Phase 9 — names mirroring the RDPGFX_ORIG_KIND_* macros in
+// cgo_wrappers.go. Used in the diagnostic log line so the operator sees
+// "surface_command" rather than "8".
+var rdpgfxOriginalKindNames = map[uint32]string{
+	1:  "reset_graphics",
+	2:  "on_open",
+	3:  "on_close",
+	4:  "caps_advertise",
+	5:  "caps_confirm",
+	6:  "start_frame",
+	7:  "end_frame",
+	8:  "surface_command",
+	9:  "delete_encoding_context",
+	10: "create_surface",
+	11: "delete_surface",
+	12: "solid_fill",
+	13: "surface_to_surface",
+	14: "surface_to_cache",
+	15: "cache_to_surface",
+	16: "evict_cache_entry",
+	17: "map_surface_to_output",
+	18: "map_surface_to_scaled_output",
+	19: "update_surfaces",
+	20: "update_surface_area",
+}
+
+// goRdpgfxOriginalError is invoked from the C trampolines whenever a
+// wOriginalRdpgfx* handler returns a non-OK rc. We bump per-hook
+// counters so the gateway's "no first frame" diagnostic log can tell
+// the operator exactly what kind of error libfreerdp's local decoder
+// hit. The first occurrence of each kind also gets a single Warn log
+// so the failure mode is visible without grepping atomic counters.
+//
+//export goRdpgfxOriginalError
+func goRdpgfxOriginalError(ctx *C.RdpgfxClientContext, kind C.UINT32, rc C.UINT32) {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil {
+		return
+	}
+	k := uint32(kind)
+	r := uint32(rc)
+	c.rdpgfxOriginalErrors.Add(1)
+	var firstOfKind uint64
+	switch k {
+	case 8: // SURFACE_COMMAND — the hot path for AVC / NSCodec / Progressive
+		firstOfKind = c.rdpgfxOriginalSurfaceCommandErrors.Add(1)
+	case 10: // CREATE_SURFACE — surface registry corruption canary
+		firstOfKind = c.rdpgfxOriginalCreateSurfaceErrors.Add(1)
+	case 19: // UPDATE_SURFACES — frame envelope sealing failure
+		firstOfKind = c.rdpgfxOriginalUpdateSurfacesErrors.Add(1)
+	default:
+		// Other kinds are state-management and rarely error; bump only
+		// the aggregate counter so logs don't add a field per hook.
+	}
+	if c.logger != nil && firstOfKind == 1 {
+		name, ok := rdpgfxOriginalKindNames[k]
+		if !ok {
+			name = "unknown"
+		}
+		c.logger.Warn("rdpgfx original handler failed — go-side forward still active",
+			zap.Uint32("kind", k),
+			zap.String("kind_name", name),
+			zap.Uint32("rc", r))
+	}
+}
+
+func rdpgfxCodecName(codecID uint32) string {
+	switch codecID {
+	case C.RDPGFX_CODECID_UNCOMPRESSED:
+		return "uncompressed"
+	case C.RDPGFX_CODECID_CAVIDEO:
+		return "cavideo"
+	case C.RDPGFX_CODECID_CLEARCODEC:
+		return "clearcodec"
+	case C.RDPGFX_CODECID_CAPROGRESSIVE:
+		return "caprogressive"
+	case C.RDPGFX_CODECID_PLANAR:
+		return "planar"
+	case C.RDPGFX_CODECID_AVC420:
+		return "avc420"
+	case C.RDPGFX_CODECID_ALPHA:
+		return "alpha"
+	case C.RDPGFX_CODECID_AVC444:
+		return "avc444"
+	case C.RDPGFX_CODECID_AVC444v2:
+		return "avc444v2"
+	default:
+		return "unknown"
+	}
+}
+
+func rdpgfxCapsetNames(pdu *C.RDPGFX_CAPS_ADVERTISE_PDU) []string {
+	if pdu == nil || pdu.capsSets == nil || pdu.capsSetCount == 0 {
+		return nil
+	}
+	count := int(pdu.capsSetCount)
+	if count > 32 {
+		count = 32
+	}
+	caps := unsafe.Slice(pdu.capsSets, count)
+	names := make([]string, 0, len(caps))
+	for i := range caps {
+		names = append(names, rdpgfxCapVersionName(uint32(caps[i].version)))
+	}
+	return names
+}
+
+func rdpgfxCapVersionName(version uint32) string {
+	switch version {
+	case C.RDPGFX_CAPVERSION_8:
+		return "8"
+	case C.RDPGFX_CAPVERSION_81:
+		return "8.1"
+	case C.RDPGFX_CAPVERSION_10:
+		return "10"
+	case C.RDPGFX_CAPVERSION_101:
+		return "10.1"
+	case C.RDPGFX_CAPVERSION_102:
+		return "10.2"
+	case C.RDPGFX_CAPVERSION_103:
+		return "10.3"
+	case C.RDPGFX_CAPVERSION_104:
+		return "10.4"
+	case C.RDPGFX_CAPVERSION_105:
+		return "10.5"
+	case C.RDPGFX_CAPVERSION_106:
+		return "10.6"
+	case C.RDPGFX_CAPVERSION_106_ERR:
+		return "10.6-errata"
+	case C.RDPGFX_CAPVERSION_107:
+		return "10.7"
+	default:
+		return "unknown"
+	}
 }
 
 // ----- RDPDR (drive redirection / file transfer) -----

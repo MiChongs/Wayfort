@@ -34,7 +34,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const version = "0.1.0-m1-dummy"
+const version = "0.1.0-freerdp-worker"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {

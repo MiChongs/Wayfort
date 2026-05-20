@@ -13,12 +13,14 @@
 //   - CLIPRDR text                                                     enabled after protocol fix
 //   - RDPEDISP dynamic resize                                          disabled
 //   - RDPSND audio playback                                            disabled
-//   - RDPGFX graphics pipeline                                         disabled
+//   - RDPGFX graphics pipeline                                         enabled via worker-side GDI decode
 //   - RDPDR drive redirection / file transfer                          disabled
 //   - Printers / smartcards                                            disabled
 //
 // Disabled channels must stay off in applySettings until this package and
-// the browser both implement the complete sub-protocol end to end.
+// the browser both implement the complete sub-protocol end to end. RDPGFX is
+// intentionally terminated in the worker so the browser receives the same
+// frame encodings as the classic bitmap/GDI path.
 // See docs/rdp-backend-capabilities.md for the repo-level support matrix.
 //
 // All channel callbacks marshal events to ServerMessage and write to the

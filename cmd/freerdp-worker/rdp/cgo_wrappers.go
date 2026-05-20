@@ -34,6 +34,7 @@ package rdp
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/event.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #include <freerdp/update.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/input.h>
@@ -75,10 +76,30 @@ extern UINT goCliprdrServerFormatDataResponse(CliprdrClientContext* ctx, const C
 extern UINT goCliprdrMonitorReady(CliprdrClientContext* ctx, const CLIPRDR_MONITOR_READY* mr);
 
 extern UINT goRdpgfxSurfaceCommand(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_COMMAND* cmd);
+extern UINT goRdpgfxOnOpen(RdpgfxClientContext* ctx, BOOL* doCapsAdvertise, BOOL* doFrameAcks);
+extern UINT goRdpgfxOnClose(RdpgfxClientContext* ctx);
+extern UINT goRdpgfxCapsAdvertise(RdpgfxClientContext* ctx, const RDPGFX_CAPS_ADVERTISE_PDU* pdu);
+extern UINT goRdpgfxCapsConfirm(RdpgfxClientContext* ctx, const RDPGFX_CAPS_CONFIRM_PDU* pdu);
+extern UINT goRdpgfxDeleteEncodingContext(RdpgfxClientContext* ctx, const RDPGFX_DELETE_ENCODING_CONTEXT_PDU* pdu);
 extern UINT goRdpgfxCreateSurface(RdpgfxClientContext* ctx, const RDPGFX_CREATE_SURFACE_PDU* pdu);
 extern UINT goRdpgfxDeleteSurface(RdpgfxClientContext* ctx, const RDPGFX_DELETE_SURFACE_PDU* pdu);
+extern UINT goRdpgfxSolidFill(RdpgfxClientContext* ctx, const RDPGFX_SOLID_FILL_PDU* pdu);
+extern UINT goRdpgfxSurfaceToSurface(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_TO_SURFACE_PDU* pdu);
+extern UINT goRdpgfxSurfaceToCache(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_TO_CACHE_PDU* pdu);
+extern UINT goRdpgfxCacheToSurface(RdpgfxClientContext* ctx, const RDPGFX_CACHE_TO_SURFACE_PDU* pdu);
+extern UINT goRdpgfxEvictCacheEntry(RdpgfxClientContext* ctx, const RDPGFX_EVICT_CACHE_ENTRY_PDU* pdu);
+extern UINT goRdpgfxResetGraphics(RdpgfxClientContext* ctx, const RDPGFX_RESET_GRAPHICS_PDU* pdu);
+extern UINT goRdpgfxMapSurfaceToOutput(RdpgfxClientContext* ctx, const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* pdu);
+extern UINT goRdpgfxMapSurfaceToScaledOutput(RdpgfxClientContext* ctx, const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu);
 extern UINT goRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* pdu);
 extern UINT goRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu);
+extern UINT goRdpgfxUpdateSurfaces(RdpgfxClientContext* ctx);
+extern UINT goRdpgfxUpdateSurfaceArea(RdpgfxClientContext* ctx, UINT16 surfaceId, UINT32 nrRects, const RECTANGLE_16* rects);
+// Phase 9 diagnostic — invoked when a wOriginalRdpgfx* handler returns
+// a non-OK rc. The Go side bumps per-hook counters that surface in the
+// emitFrameStats zap line, so operators can tell at a glance whether
+// the libfreerdp build has a working AVC decoder or not.
+extern void goRdpgfxOriginalError(RdpgfxClientContext* ctx, UINT32 kind, UINT32 rc);
 extern void goAfterLoadChannels(rdpContext* ctx, BOOL ok);
 
 // ----- PubSub trampolines -----
@@ -300,43 +321,392 @@ void wInstallCliprdr(CliprdrClientContext* ctx) {
     ctx->ServerFormatDataRequest   = goCliprdrServerFormatDataRequest;
     ctx->ServerFormatDataResponse  = goCliprdrServerFormatDataResponse;
 }
-void wInstallRdpgfx(RdpgfxClientContext* ctx) {
-    ctx->SurfaceCommand = goRdpgfxSurfaceCommand;
-    ctx->CreateSurface  = goRdpgfxCreateSurface;
-    ctx->DeleteSurface  = goRdpgfxDeleteSurface;
-    ctx->StartFrame     = goRdpgfxStartFrame;
-    ctx->EndFrame       = goRdpgfxEndFrame;
+
+static pcRdpgfxResetGraphics wOriginalRdpgfxResetGraphics = NULL;
+static pcRdpgfxOnOpen wOriginalRdpgfxOnOpen = NULL;
+static pcRdpgfxOnClose wOriginalRdpgfxOnClose = NULL;
+static pcRdpgfxCapsAdvertise wOriginalRdpgfxCapsAdvertise = NULL;
+static pcRdpgfxCapsConfirm wOriginalRdpgfxCapsConfirm = NULL;
+static pcRdpgfxStartFrame wOriginalRdpgfxStartFrame = NULL;
+static pcRdpgfxEndFrame wOriginalRdpgfxEndFrame = NULL;
+static pcRdpgfxSurfaceCommand wOriginalRdpgfxSurfaceCommand = NULL;
+static pcRdpgfxDeleteEncodingContext wOriginalRdpgfxDeleteEncodingContext = NULL;
+static pcRdpgfxCreateSurface wOriginalRdpgfxCreateSurface = NULL;
+static pcRdpgfxDeleteSurface wOriginalRdpgfxDeleteSurface = NULL;
+static pcRdpgfxSolidFill wOriginalRdpgfxSolidFill = NULL;
+static pcRdpgfxSurfaceToSurface wOriginalRdpgfxSurfaceToSurface = NULL;
+static pcRdpgfxSurfaceToCache wOriginalRdpgfxSurfaceToCache = NULL;
+static pcRdpgfxCacheToSurface wOriginalRdpgfxCacheToSurface = NULL;
+static pcRdpgfxEvictCacheEntry wOriginalRdpgfxEvictCacheEntry = NULL;
+static pcRdpgfxMapSurfaceToOutput wOriginalRdpgfxMapSurfaceToOutput = NULL;
+static pcRdpgfxMapSurfaceToScaledOutput wOriginalRdpgfxMapSurfaceToScaledOutput = NULL;
+static pcRdpgfxUpdateSurfaces wOriginalRdpgfxUpdateSurfaces = NULL;
+static pcRdpgfxUpdateSurfaceArea wOriginalRdpgfxUpdateSurfaceArea = NULL;
+
+rdpContext* wRdpgfxRdpContext(RdpgfxClientContext* ctx) {
+    if (!ctx || !ctx->custom) {
+        return NULL;
+    }
+    rdpGdi* gdi = (rdpGdi*)ctx->custom;
+    return gdi->context;
 }
 
-static RECTANGLE_16 wDesktopArea(UINT16 width, UINT16 height) {
+// RDPGFX_ORIG_KIND_* — identifies which hook's wOriginalRdpgfx* handler
+// returned a non-OK code. Passed to goRdpgfxOriginalError so the Go side
+// can bump per-hook counters and log diagnostics. The numeric values are
+// part of the in-process ABI between the cgo trampolines and the //export
+// receiver in cgo_exports.go; never reused across hooks even after a hook
+// is removed.
+#define RDPGFX_ORIG_KIND_RESET_GRAPHICS           1
+#define RDPGFX_ORIG_KIND_ON_OPEN                  2
+#define RDPGFX_ORIG_KIND_ON_CLOSE                 3
+#define RDPGFX_ORIG_KIND_CAPS_ADVERTISE           4
+#define RDPGFX_ORIG_KIND_CAPS_CONFIRM             5
+#define RDPGFX_ORIG_KIND_START_FRAME              6
+#define RDPGFX_ORIG_KIND_END_FRAME                7
+#define RDPGFX_ORIG_KIND_SURFACE_COMMAND          8
+#define RDPGFX_ORIG_KIND_DELETE_ENCODING_CONTEXT  9
+#define RDPGFX_ORIG_KIND_CREATE_SURFACE          10
+#define RDPGFX_ORIG_KIND_DELETE_SURFACE          11
+#define RDPGFX_ORIG_KIND_SOLID_FILL              12
+#define RDPGFX_ORIG_KIND_SURFACE_TO_SURFACE      13
+#define RDPGFX_ORIG_KIND_SURFACE_TO_CACHE        14
+#define RDPGFX_ORIG_KIND_CACHE_TO_SURFACE        15
+#define RDPGFX_ORIG_KIND_EVICT_CACHE_ENTRY       16
+#define RDPGFX_ORIG_KIND_MAP_SURFACE_TO_OUTPUT   17
+#define RDPGFX_ORIG_KIND_MAP_SCALED_OUTPUT       18
+#define RDPGFX_ORIG_KIND_UPDATE_SURFACES         19
+#define RDPGFX_ORIG_KIND_UPDATE_SURFACE_AREA     20
+
+// Observer-pattern RDPGFX wrappers — the go-side //export handler is
+// invoked UNCONDITIONALLY, then libfreerdp's original handler runs and
+// its rc is returned upstream. The pre-Phase-9 implementation only
+// invoked the go handler when libfreerdp's original returned OK, which
+// in builds without a working H.264 client decoder (the experimental
+// WITH_VAAPI_H264_ENCODING build profile flagged this case in logs)
+// meant AVC420 SurfaceCommand payloads never reached the browser-side
+// WebCodecs.VideoDecoder. Decoupling restores Phase 1-6's "browser
+// decodes H.264 GPU-side" data path even when libfreerdp's local
+// decoder can't.
+//
+// Order: go handler first so it gets to copy any wire payload (e.g.
+// SurfaceCommand.data) before libfreerdp potentially mutates buffers
+// during its own decode. goRdpgfxSurfaceCommand already uses
+// C.GoBytes to make an independent copy, so this is belt-and-braces.
+UINT wRdpgfxResetGraphics(RdpgfxClientContext* ctx, const RDPGFX_RESET_GRAPHICS_PDU* pdu) {
+    goRdpgfxResetGraphics(ctx, pdu);
+    UINT rc = wOriginalRdpgfxResetGraphics ? wOriginalRdpgfxResetGraphics(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxResetGraphics) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_RESET_GRAPHICS, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxOnOpen(RdpgfxClientContext* ctx, BOOL* doCapsAdvertise, BOOL* doFrameAcks) {
+    UINT rc = wOriginalRdpgfxOnOpen ? wOriginalRdpgfxOnOpen(ctx, doCapsAdvertise, doFrameAcks) : CHANNEL_RC_OK;
+    if (doCapsAdvertise) {
+        *doCapsAdvertise = TRUE;
+    }
+    if (doFrameAcks) {
+        *doFrameAcks = TRUE;
+    }
+    // OnOpen is a one-shot lifecycle event; go-side just records the
+    // capability decisions and doesn't depend on libfreerdp state, so
+    // we always fire even if original failed.
+    goRdpgfxOnOpen(ctx, doCapsAdvertise, doFrameAcks);
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxOnOpen) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_ON_OPEN, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxOnClose(RdpgfxClientContext* ctx) {
+    goRdpgfxOnClose(ctx);
+    UINT rc = wOriginalRdpgfxOnClose ? wOriginalRdpgfxOnClose(ctx) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxOnClose) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_ON_CLOSE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxCapsAdvertise(RdpgfxClientContext* ctx, const RDPGFX_CAPS_ADVERTISE_PDU* pdu) {
+    goRdpgfxCapsAdvertise(ctx, pdu);
+    UINT rc = wOriginalRdpgfxCapsAdvertise ? wOriginalRdpgfxCapsAdvertise(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxCapsAdvertise) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_CAPS_ADVERTISE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxCapsConfirm(RdpgfxClientContext* ctx, const RDPGFX_CAPS_CONFIRM_PDU* pdu) {
+    goRdpgfxCapsConfirm(ctx, pdu);
+    UINT rc = wOriginalRdpgfxCapsConfirm ? wOriginalRdpgfxCapsConfirm(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxCapsConfirm) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_CAPS_CONFIRM, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* pdu) {
+    goRdpgfxStartFrame(ctx, pdu);
+    UINT rc = wOriginalRdpgfxStartFrame ? wOriginalRdpgfxStartFrame(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxStartFrame) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_START_FRAME, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu) {
+    goRdpgfxEndFrame(ctx, pdu);
+    UINT rc = wOriginalRdpgfxEndFrame ? wOriginalRdpgfxEndFrame(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxEndFrame) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_END_FRAME, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxSurfaceCommand(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_COMMAND* cmd) {
+    // Critical path for AVC420 / NSCodec / Progressive frames. Go side
+    // copies the payload (C.GoBytes) and emits Encoding=h264/rfx/... to
+    // the browser regardless of whether libfreerdp's local decoder
+    // succeeds. This is what Phase 9 unblocked.
+    goRdpgfxSurfaceCommand(ctx, cmd);
+    UINT rc = wOriginalRdpgfxSurfaceCommand ? wOriginalRdpgfxSurfaceCommand(ctx, cmd) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxSurfaceCommand) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_SURFACE_COMMAND, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxDeleteEncodingContext(RdpgfxClientContext* ctx, const RDPGFX_DELETE_ENCODING_CONTEXT_PDU* pdu) {
+    goRdpgfxDeleteEncodingContext(ctx, pdu);
+    UINT rc = wOriginalRdpgfxDeleteEncodingContext ? wOriginalRdpgfxDeleteEncodingContext(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxDeleteEncodingContext) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_DELETE_ENCODING_CONTEXT, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxCreateSurface(RdpgfxClientContext* ctx, const RDPGFX_CREATE_SURFACE_PDU* pdu) {
+    goRdpgfxCreateSurface(ctx, pdu);
+    UINT rc = wOriginalRdpgfxCreateSurface ? wOriginalRdpgfxCreateSurface(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxCreateSurface) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_CREATE_SURFACE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxDeleteSurface(RdpgfxClientContext* ctx, const RDPGFX_DELETE_SURFACE_PDU* pdu) {
+    goRdpgfxDeleteSurface(ctx, pdu);
+    UINT rc = wOriginalRdpgfxDeleteSurface ? wOriginalRdpgfxDeleteSurface(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxDeleteSurface) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_DELETE_SURFACE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxSolidFill(RdpgfxClientContext* ctx, const RDPGFX_SOLID_FILL_PDU* pdu) {
+    goRdpgfxSolidFill(ctx, pdu);
+    UINT rc = wOriginalRdpgfxSolidFill ? wOriginalRdpgfxSolidFill(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxSolidFill) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_SOLID_FILL, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxSurfaceToSurface(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_TO_SURFACE_PDU* pdu) {
+    goRdpgfxSurfaceToSurface(ctx, pdu);
+    UINT rc = wOriginalRdpgfxSurfaceToSurface ? wOriginalRdpgfxSurfaceToSurface(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxSurfaceToSurface) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_SURFACE_TO_SURFACE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxSurfaceToCache(RdpgfxClientContext* ctx, const RDPGFX_SURFACE_TO_CACHE_PDU* pdu) {
+    goRdpgfxSurfaceToCache(ctx, pdu);
+    UINT rc = wOriginalRdpgfxSurfaceToCache ? wOriginalRdpgfxSurfaceToCache(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxSurfaceToCache) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_SURFACE_TO_CACHE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxCacheToSurface(RdpgfxClientContext* ctx, const RDPGFX_CACHE_TO_SURFACE_PDU* pdu) {
+    goRdpgfxCacheToSurface(ctx, pdu);
+    UINT rc = wOriginalRdpgfxCacheToSurface ? wOriginalRdpgfxCacheToSurface(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxCacheToSurface) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_CACHE_TO_SURFACE, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxEvictCacheEntry(RdpgfxClientContext* ctx, const RDPGFX_EVICT_CACHE_ENTRY_PDU* pdu) {
+    goRdpgfxEvictCacheEntry(ctx, pdu);
+    UINT rc = wOriginalRdpgfxEvictCacheEntry ? wOriginalRdpgfxEvictCacheEntry(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxEvictCacheEntry) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_EVICT_CACHE_ENTRY, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxMapSurfaceToOutput(RdpgfxClientContext* ctx, const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* pdu) {
+    goRdpgfxMapSurfaceToOutput(ctx, pdu);
+    UINT rc = wOriginalRdpgfxMapSurfaceToOutput ? wOriginalRdpgfxMapSurfaceToOutput(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxMapSurfaceToOutput) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_MAP_SURFACE_TO_OUTPUT, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxMapSurfaceToScaledOutput(RdpgfxClientContext* ctx, const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu) {
+    goRdpgfxMapSurfaceToScaledOutput(ctx, pdu);
+    UINT rc = wOriginalRdpgfxMapSurfaceToScaledOutput ? wOriginalRdpgfxMapSurfaceToScaledOutput(ctx, pdu) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxMapSurfaceToScaledOutput) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_MAP_SCALED_OUTPUT, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxUpdateSurfaces(RdpgfxClientContext* ctx) {
+    goRdpgfxUpdateSurfaces(ctx);
+    UINT rc = wOriginalRdpgfxUpdateSurfaces ? wOriginalRdpgfxUpdateSurfaces(ctx) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxUpdateSurfaces) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_UPDATE_SURFACES, rc);
+    }
+    return rc;
+}
+
+UINT wRdpgfxUpdateSurfaceArea(RdpgfxClientContext* ctx, UINT16 surfaceId, UINT32 nrRects, const RECTANGLE_16* rects) {
+    goRdpgfxUpdateSurfaceArea(ctx, surfaceId, nrRects, rects);
+    UINT rc = wOriginalRdpgfxUpdateSurfaceArea ? wOriginalRdpgfxUpdateSurfaceArea(ctx, surfaceId, nrRects, rects) : CHANNEL_RC_OK;
+    if (rc != CHANNEL_RC_OK && wOriginalRdpgfxUpdateSurfaceArea) {
+        goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_UPDATE_SURFACE_AREA, rc);
+    }
+    return rc;
+}
+
+BOOL wInstallRdpgfx(RdpgfxClientContext* ctx) {
+    if (!ctx || !ctx->custom) {
+        return FALSE;
+    }
+    rdpContext* rdp = (rdpContext*)ctx->custom;
+    if (!rdp || !rdp->gdi) {
+        return FALSE;
+    }
+    if (!gdi_graphics_pipeline_init(rdp->gdi, ctx)) {
+        return FALSE;
+    }
+
+    wOriginalRdpgfxResetGraphics = ctx->ResetGraphics;
+    wOriginalRdpgfxOnOpen = ctx->OnOpen;
+    wOriginalRdpgfxOnClose = ctx->OnClose;
+    wOriginalRdpgfxCapsAdvertise = ctx->CapsAdvertise;
+    wOriginalRdpgfxCapsConfirm = ctx->CapsConfirm;
+    wOriginalRdpgfxStartFrame = ctx->StartFrame;
+    wOriginalRdpgfxEndFrame = ctx->EndFrame;
+    wOriginalRdpgfxSurfaceCommand = ctx->SurfaceCommand;
+    wOriginalRdpgfxDeleteEncodingContext = ctx->DeleteEncodingContext;
+    wOriginalRdpgfxCreateSurface = ctx->CreateSurface;
+    wOriginalRdpgfxDeleteSurface = ctx->DeleteSurface;
+    wOriginalRdpgfxSolidFill = ctx->SolidFill;
+    wOriginalRdpgfxSurfaceToSurface = ctx->SurfaceToSurface;
+    wOriginalRdpgfxSurfaceToCache = ctx->SurfaceToCache;
+    wOriginalRdpgfxCacheToSurface = ctx->CacheToSurface;
+    wOriginalRdpgfxEvictCacheEntry = ctx->EvictCacheEntry;
+    wOriginalRdpgfxMapSurfaceToOutput = ctx->MapSurfaceToOutput;
+    wOriginalRdpgfxMapSurfaceToScaledOutput = ctx->MapSurfaceToScaledOutput;
+    wOriginalRdpgfxUpdateSurfaces = ctx->UpdateSurfaces;
+    wOriginalRdpgfxUpdateSurfaceArea = ctx->UpdateSurfaceArea;
+
+    ctx->ResetGraphics = wRdpgfxResetGraphics;
+    ctx->OnOpen = wRdpgfxOnOpen;
+    ctx->OnClose = wRdpgfxOnClose;
+    ctx->CapsAdvertise = wRdpgfxCapsAdvertise;
+    ctx->CapsConfirm = wRdpgfxCapsConfirm;
+    ctx->StartFrame = wRdpgfxStartFrame;
+    ctx->EndFrame = wRdpgfxEndFrame;
+    ctx->SurfaceCommand = wRdpgfxSurfaceCommand;
+    ctx->DeleteEncodingContext = wRdpgfxDeleteEncodingContext;
+    ctx->CreateSurface = wRdpgfxCreateSurface;
+    ctx->DeleteSurface = wRdpgfxDeleteSurface;
+    ctx->SolidFill = wRdpgfxSolidFill;
+    ctx->SurfaceToSurface = wRdpgfxSurfaceToSurface;
+    ctx->SurfaceToCache = wRdpgfxSurfaceToCache;
+    ctx->CacheToSurface = wRdpgfxCacheToSurface;
+    ctx->EvictCacheEntry = wRdpgfxEvictCacheEntry;
+    ctx->MapSurfaceToOutput = wRdpgfxMapSurfaceToOutput;
+    ctx->MapSurfaceToScaledOutput = wRdpgfxMapSurfaceToScaledOutput;
+    ctx->UpdateSurfaces = wRdpgfxUpdateSurfaces;
+    if (ctx->UpdateSurfaceArea) {
+        ctx->UpdateSurfaceArea = wRdpgfxUpdateSurfaceArea;
+    }
+    return TRUE;
+}
+
+static RECTANGLE_16 wDesktopBounds(UINT16 width, UINT16 height) {
     RECTANGLE_16 area = {0};
     area.left = 0;
     area.top = 0;
-    area.right = width - 1;
-    area.bottom = height - 1;
+    area.right = width;
+    area.bottom = height;
     return area;
 }
 
 BOOL wSendSuppressOutputAllow(rdpContext* ctx, UINT16 width, UINT16 height) {
-    if (!ctx || width == 0 || height == 0) {
+    if (!ctx || !ctx->update || !ctx->update->SuppressOutput || width == 0 || height == 0) {
         return FALSE;
     }
+    RECTANGLE_16 area = wDesktopBounds(width, height);
     if (ctx->gdi) {
-        return gdi_send_suppress_output(ctx->gdi, FALSE);
+        // gdi_send_suppress_output(FALSE) is a local-state no-op when GDI already
+        // thinks output is allowed. Send the allow PDU explicitly during activation.
+        ctx->gdi->suppressOutput = FALSE;
     }
-    if (!ctx->update || !ctx->update->SuppressOutput) {
-        return FALSE;
-    }
-    RECTANGLE_16 area = wDesktopArea(width, height);
     return ctx->update->SuppressOutput(ctx, TRUE, &area);
 }
 
-BOOL wSendRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height) {
+BOOL wSendFocusIn(rdpContext* ctx) {
+    if (!ctx || !ctx->input) {
+        return FALSE;
+    }
+    return freerdp_input_send_focus_in_event(ctx->input, 0);
+}
+
+int wSendPendingFocusIn(freerdp* instance) {
+    if (!instance || !instance->context || !instance->context->input) {
+        return -1;
+    }
+    if (!freerdp_focus_required(instance)) {
+        return 0;
+    }
+    if (!freerdp_input_send_focus_in_event(instance->context->input, 0)) {
+        return -1;
+    }
+    if (!freerdp_input_send_focus_in_event(instance->context->input, 0)) {
+        return -1;
+    }
+    return 1;
+}
+
+BOOL wSendDesktopRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height) {
     if (!ctx || !ctx->update || !ctx->update->RefreshRect || width == 0 || height == 0) {
         return FALSE;
     }
-    RECTANGLE_16 area = wDesktopArea(width, height);
+    RECTANGLE_16 area = wDesktopBounds(width, height);
     return ctx->update->RefreshRect(ctx, 1, &area);
+}
+
+BOOL wSendContextRefreshRect(rdpContext* ctx, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom) {
+    if (!ctx || !ctx->update || !ctx->update->RefreshRect || right <= left || bottom <= top) {
+        return FALSE;
+    }
+    RECTANGLE_16 rect;
+    rect.left = left;
+    rect.top = top;
+    rect.right = right;
+    rect.bottom = bottom;
+    return ctx->update->RefreshRect(ctx, 1, &rect);
 }
 
 // ----- outbound CLIPRDR helpers -----
@@ -414,22 +784,5 @@ BOOL wSendMouse(rdpInput* input, UINT16 flags, UINT16 x, UINT16 y) {
     return freerdp_input_send_mouse_event(input, flags, x, y);
 }
 
-// wSendRefreshRect tells the server to redraw the given rectangle from
-// scratch. We use it when the browser-side H.264 VideoDecoder errors
-// out and a new keyframe (IDR) is needed immediately — without this,
-// the next IDR comes whenever the server decides to (typically
-// seconds), and the client renders nothing until then.
-//
-// Per MS-RDPBCGR 2.2.11.2.2, the RefreshRect PDU carries up to 255
-// rectangles. For our error-recovery use we always send a single
-// full-canvas rect; callers pass the active desktop size.
-BOOL wSendRefreshRect(rdpInput* input, UINT16 left, UINT16 top, UINT16 right, UINT16 bottom) {
-    RECTANGLE_16 rect;
-    rect.left = left;
-    rect.top = top;
-    rect.right = right;
-    rect.bottom = bottom;
-    return freerdp_input_send_refresh_rect(input, 1, &rect);
-}
 */
 import "C"
