@@ -9,9 +9,9 @@
 //   (BitmapUpdate, Pointer, Synchronize); polls freerdp_get_event_handles
 //   until disconnect; finally freerdp_disconnect + freerdp_context_free.
 //
-// Channels are subscribed in channels.go. During display stabilization the
-// default channel set is intentionally minimal: clipboard only, with audio,
-// device redirection, and GFX disabled until their payload paths are complete.
+// Channels are subscribed in channels.go. RDPGFX is decoded worker-side by
+// FreeRDP's GDI graphics pipeline and emitted as ordinary desktop frames;
+// audio and drive redirection remain deferred.
 
 package rdp
 
@@ -49,8 +49,10 @@ extern UINT32       wStaticChannelCount(rdpSettings* settings);
 extern UINT32       wDynamicChannelCount(rdpSettings* settings);
 extern const char*  wStaticChannelName(rdpSettings* settings, UINT32 index);
 extern const char*  wDynamicChannelName(rdpSettings* settings, UINT32 index);
+extern BOOL         wSendFocusIn(rdpContext* ctx);
+extern int          wSendPendingFocusIn(freerdp* instance);
 extern BOOL         wSendSuppressOutputAllow(rdpContext* ctx, UINT16 width, UINT16 height);
-extern BOOL         wSendRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height);
+extern BOOL         wSendDesktopRefreshRect(rdpContext* ctx, UINT16 width, UINT16 height);
 */
 import "C"
 
@@ -94,9 +96,15 @@ type Client struct {
 	rdpsnd  unsafe.Pointer // *RdpsndClientContext
 	rdpgfx  unsafe.Pointer // *RdpgfxClientContext
 
+	rdpgfxMu             sync.Mutex
+	rdpgfxSurfaces       map[uint16]rdpgfxSurfaceState
+	rdpgfxGDIInitialized atomic.Bool
+
 	cliprdrCapsSent           atomic.Bool
 	cliprdrFormatListSent     atomic.Bool
 	clipboardFallbackTried    bool
+	gfxCompatFallbackTried    bool
+	gfxCompatProfile          bool
 	safeGraphicsFallbackTried bool
 	safeGraphicsProfile       bool
 
@@ -108,36 +116,70 @@ type Client struct {
 	// "frames are flowing" — without it the gateway log can't distinguish
 	// "connect succeeded but server sent no frames" from "frames flowed
 	// then browser closed unexpectedly".
-	firstFrameLogged     atomic.Bool
-	framesEmitted        atomic.Uint64
-	framesDropped        atomic.Uint64
-	framesEncodeQueued   atomic.Uint64
-	framesEncodeFallback atomic.Uint64
-	framesEncodedRaw     atomic.Uint64
-	framesEncodedJPEG    atomic.Uint64
-	framesEncodedZlib    atomic.Uint64
-	frameEncodeInBytes   atomic.Uint64
-	frameEncodeOutBytes  atomic.Uint64
-	frameResyncPending   atomic.Bool
-	frameResyncs         atomic.Uint64
-	emitDropLastLogNano  atomic.Int64
-	emitDropSuppressed   atomic.Uint64
-	beginPaints          atomic.Uint64
-	endPaints            atomic.Uint64
-	bitmapUpdates        atomic.Uint64
-	surfaceBits          atomic.Uint64
-	desktopResizes       atomic.Uint64
-	paintRegions         atomic.Uint64
-	emptyPaints          atomic.Uint64
-	refreshRequests      atomic.Uint64
-	refreshFailures      atomic.Uint64
-	saveSessionInfos     atomic.Uint64
-	logonSuccessSeen     atomic.Bool
-	logonErrorSeen       atomic.Bool
-	logonErrorData       atomic.Uint32
-	logonErrorType       atomic.Uint32
-	logonErrorAtUnixNano atomic.Int64
-	logonErrorClosed     atomic.Bool
+	firstFrameLogged         atomic.Bool
+	framesEmitted            atomic.Uint64
+	framesDropped            atomic.Uint64
+	framesEncodeQueued       atomic.Uint64
+	framesEncodeFallback     atomic.Uint64
+	framesEncodedRaw         atomic.Uint64
+	framesEncodedJPEG        atomic.Uint64
+	framesEncodedZlib        atomic.Uint64
+	frameEncodeInBytes       atomic.Uint64
+	frameEncodeOutBytes      atomic.Uint64
+	frameResyncPending       atomic.Bool
+	frameResyncs             atomic.Uint64
+	emitDropLastLogNano      atomic.Int64
+	emitDropSuppressed       atomic.Uint64
+	beginPaints              atomic.Uint64
+	endPaints                atomic.Uint64
+	bitmapUpdates            atomic.Uint64
+	surfaceBits              atomic.Uint64
+	desktopResizes           atomic.Uint64
+	paintRegions             atomic.Uint64
+	emptyPaints              atomic.Uint64
+	refreshRequests          atomic.Uint64
+	refreshFailures          atomic.Uint64
+	saveSessionInfos         atomic.Uint64
+	rdpgfxResetGraphics      atomic.Uint64
+	rdpgfxOnOpen             atomic.Uint64
+	rdpgfxOnClose            atomic.Uint64
+	rdpgfxCapsAdvertise      atomic.Uint64
+	rdpgfxCapsConfirm        atomic.Uint64
+	rdpgfxCapsVersion        atomic.Uint32
+	rdpgfxCapsFlags          atomic.Uint32
+	rdpgfxSurfaceCommands    atomic.Uint64
+	rdpgfxCreateSurfaces     atomic.Uint64
+	rdpgfxDeleteSurfaces     atomic.Uint64
+	rdpgfxMapOutput          atomic.Uint64
+	rdpgfxMapScaledOutput    atomic.Uint64
+	rdpgfxSolidFills         atomic.Uint64
+	rdpgfxSurfaceToSurface   atomic.Uint64
+	rdpgfxSurfaceToCache     atomic.Uint64
+	rdpgfxCacheToSurface     atomic.Uint64
+	rdpgfxEvictCache         atomic.Uint64
+	rdpgfxStartFrames        atomic.Uint64
+	rdpgfxEndFrames          atomic.Uint64
+	rdpgfxUpdateSurfaces     atomic.Uint64
+	rdpgfxUpdateSurfaceAreas atomic.Uint64
+	rdpgfxFrameAcks          atomic.Uint64
+	// Phase 9 — diagnostic counters for libfreerdp's original RDPGFX
+	// handlers returning non-OK. With the experimental
+	// WITH_VAAPI_H264_ENCODING build profile (or any build lacking a
+	// working H.264 client decoder), the local AVC420 decode path
+	// errors out. The Phase 9 observer-pattern decoupling means the
+	// browser-side decode still works; these counters let operators
+	// confirm at a glance whether libfreerdp's local pipeline is
+	// silently failing without grepping per-line WARN logs.
+	rdpgfxOriginalErrors               atomic.Uint64
+	rdpgfxOriginalSurfaceCommandErrors atomic.Uint64
+	rdpgfxOriginalCreateSurfaceErrors  atomic.Uint64
+	rdpgfxOriginalUpdateSurfacesErrors atomic.Uint64
+	logonSuccessSeen         atomic.Bool
+	logonErrorSeen           atomic.Bool
+	logonErrorData           atomic.Uint32
+	logonErrorType           atomic.Uint32
+	logonErrorAtUnixNano     atomic.Int64
+	logonErrorClosed         atomic.Bool
 
 	framePool       *ants.Pool
 	frameSeq        atomic.Uint64
@@ -154,6 +196,18 @@ type Client struct {
 
 	reconnectBurst      int
 	reconnectBurstStart time.Time
+}
+
+type rdpgfxSurfaceState struct {
+	id           uint16
+	width        uint32
+	height       uint32
+	pixelFormat  uint8
+	mapped       bool
+	outputX      uint32
+	outputY      uint32
+	targetWidth  uint32
+	targetHeight uint32
 }
 
 // NewClient — libfreerdp-backed worker. Call Start to actually connect.
@@ -333,11 +387,9 @@ func (c *Client) applySettings() error {
 	//   0x0001 RNS_UD_CS_SUPPORT_ERRINFO_PDU
 	//   0x0020 RNS_UD_CS_VALID_CONNECTION_TYPE   (must accompany ConnectionType)
 	//   0x0080 RNS_UD_CS_SUPPORT_STATUSINFO_PDU
-	//   0x0200 RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL
+	//   0x0100 RNS_UD_CS_SUPPORT_DYNVC_GFX_PROTOCOL
+	//   0x0200 RNS_UD_CS_SUPPORT_DYNAMIC_TIME_ZONE
 	earlyCapabilityFlags := uint32(0x0001 | 0x0020 | 0x0080)
-	if opts.EnableGraphicsPipeline != nil && *opts.EnableGraphicsPipeline {
-		earlyCapabilityFlags |= 0x0200
-	}
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, C.UINT32(earlyCapabilityFlags))
 
 	// ConnectionType = CONNECTION_TYPE_BROADBAND_LOW (2). Tunnelled
@@ -354,6 +406,9 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportHeartbeatPdu, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportSkipChannelJoin, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RefreshRect, C.TRUE)
+	// Advertise suppress-output so we can explicitly send the "allow display
+	// updates" PDU after connect. Some hosts otherwise complete RDPGFX caps but
+	// never produce the first mapped surface.
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SuppressOutput, C.TRUE)
 
 	// Color depth — operator can drop to 16/24 for bandwidth-constrained
@@ -450,47 +505,29 @@ func (c *Client) applySettings() error {
 	// output fast-path enabled even in safe mode; the safe profile only strips
 	// optional caches/codecs that are not required for decoded BGRA output.
 	C.freerdp_settings_set_bool(s, C.FreeRDP_FastPathOutput, C.TRUE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_FrameMarkerCommandEnabled, C.TRUE)
 
-	// Codec / GFX toggles. The browser renderer now decodes h264 / rfx /
-	// raw_bgra / jpeg / png rectangles — RDPGFX SURFACE_COMMAND payloads
-	// for the AVC420 + RemoteFX arms are forwarded untouched via
-	// channels.go goRdpgfxSurfaceCommand and decoded by
-	// WebCodecs.VideoDecoder (h264) or by the existing image decoder
-	// path (rfx is not yet client-decoded; the wire tag is honest so
-	// future work can wire it up). GFX/H.264/RemoteFX stay disabled on
-	// three explicit signals: safe-profile (post-fail retry), explicit
-	// opt-out (opts.EnableGraphicsPipeline/EnableH264 = false), or the
-	// client_caps probe reporting the browser can't decode
-	// (ws_handler.go sets opts.EnableH264 = false in that case).
-	//
-	// AVC444 is forced off explicitly. Browsers' VideoDecoder takes a
-	// single YUV4:2:0 stream; AVC444 ships luma + chroma side-by-side
-	// and would need worker-side stream demux we deliberately don't
-	// implement. The codec table in channels.go routes any leaked
-	// AVC444 surface command back to EncodingH264 so the wire format
-	// stays honest if a server ignores our advertisement.
-	// Browser-side WebCodecs.VideoDecoder integration is wired
-	// (Phase 2 of the H.264 modernization) and the binary protocol
-	// carries keyframe flags + AVC420 NAL streams stripped of their
-	// MS-RDPEGFX wrapper. With the decode path live, the GFX flags
-	// default on so a fresh node picks up the bandwidth + latency
-	// wins automatically. Three explicit signals still keep it off:
-	// safeGraphicsProfile (post-failure retry), per-node opt-out via
-	// `enable_graphics_pipeline: false` in proto_options, or the
-	// client_caps probe reporting the browser lacks VideoDecoder
-	// (ws_handler.go forwards capability.h264 as opts.EnableH264
-	// override — see Phase 2 follow-up note).
-	//
-	// RemoteFX (RFX) defaults off because the browser-side RFX
-	// decoder isn't wired yet — keeping the codec advertisement off
-	// avoids servers picking it instead of AVC420.
+	// Codec / GFX toggles. RDPGFX is handled worker-side by FreeRDP's GDI
+	// graphics pipeline: surface/cache/frame PDUs are decoded into the local
+	// primary buffer, then emitted to the browser as ordinary BGRA/JPEG/Zlib
+	// rectangles. The first attempt uses FreeRDP's modern network:auto-style AVC
+	// profile. If a server negotiates GFX but only emits empty frames, retry with
+	// /gfx-style compatibility caps: keep RDPGFX, but stop advertising H.264 /
+	// AVC444 so the server must choose a non-AVC surface path.
 	enableGFX := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
-	enableH264 := enableGFX && goBool(cBoolDefault(opts.EnableH264, true))
+	enableH264 := enableGFX && !c.gfxCompatProfile && goBool(cBoolDefault(opts.EnableH264, true))
+	enableAVC444 := enableH264
 	enableRFX := enableGFX && goBool(cBoolDefault(opts.EnableRemoteFx, false))
+	enableNSCodec := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableNSCodec, true))
+	if enableGFX {
+		earlyCapabilityFlags |= 0x0100
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, C.UINT32(earlyCapabilityFlags))
+	}
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RemoteFxCodec, cBool(enableRFX))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, cBool(!c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableNSCodec, true))))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_NSCodec, cBool(enableNSCodec))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxH264, cBool(enableH264))
-	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxAVC444, C.FALSE)
+	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxAVC444, cBool(enableAVC444))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_GfxAVC444v2, cBool(enableAVC444))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportGraphicsPipeline, cBool(enableGFX))
 
 	// Performance vs. fidelity tradeoffs. All default false (i.e. keep
@@ -533,12 +570,19 @@ func (c *Client) applySettings() error {
 		zap.Bool("heartbeat_pdu", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_SupportHeartbeatPdu))))
 	c.logger.Info("freerdp graphics settings",
 		zap.Bool("safe_profile", c.safeGraphicsProfile),
+		zap.Bool("gfx_compat_profile", c.gfxCompatProfile),
 		zap.Uint8("color_depth", colorDepth),
+		zap.String("early_capability_flags", fmt.Sprintf("0x%04x", earlyCapabilityFlags)),
 		zap.Bool("bitmap_cache", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_BitmapCacheEnabled))),
 		zap.Uint32("offscreen_support_level", offscreenSupportLevel),
 		zap.Bool("fast_path_output", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_FastPathOutput))),
 		zap.Bool("refresh_rect", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_RefreshRect))),
 		zap.Bool("suppress_output", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_SuppressOutput))),
+		zap.Bool("support_graphics_pipeline", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_SupportGraphicsPipeline))),
+		zap.Bool("frame_marker", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_FrameMarkerCommandEnabled))),
+		zap.Bool("gfx_h264", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_GfxH264))),
+		zap.Bool("gfx_avc444", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_GfxAVC444))),
+		zap.Bool("gfx_avc444v2", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_GfxAVC444v2))),
 		zap.Bool("nscodec", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_NSCodec))),
 		zap.Bool("remotefx", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_RemoteFxCodec))))
 	c.logger.Info("freerdp logon settings",
@@ -628,6 +672,7 @@ func (c *Client) runLoop(ctx context.Context) {
 		return
 	}
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnected}})
+	c.sendFocusIn("initial activation")
 	c.requestDesktopRefresh("initial activation")
 
 	rctx := (*C.rdpContext)(c.context)
@@ -641,12 +686,25 @@ func (c *Client) runLoop(ctx context.Context) {
 	for {
 		c.drainInput(128)
 		c.emitPendingFrameResync("queued frame recovery")
+		c.sendPendingFocusIn()
 		if now := time.Now(); !now.Before(nextStats) {
 			c.emitFrameStats()
 			nextStats = now.Add(5 * time.Second)
 			if !c.firstFrameLogged.Load() && !now.Before(nextFirstFrameDiag) {
-				c.logFirstFrameWait(now.Sub(connectedAt))
+				elapsed := now.Sub(connectedAt)
+				c.logFirstFrameWait(elapsed)
 				c.requestDesktopRefresh("no first frame diagnostic")
+				if c.shouldFallbackFromRDPGFXStall(elapsed) {
+					if connected := c.tryFirstFrameStallGraphicsRetry(ctx, elapsed); connected {
+						rctx = (*C.rdpContext)(c.context)
+						connectedAt = time.Now()
+						nextFirstFrameDiag = connectedAt.Add(5 * time.Second)
+						c.sendFocusIn("graphics retry activation")
+						c.requestDesktopRefresh("graphics retry activation")
+						continue
+					}
+					return
+				}
 				nextFirstFrameDiag = now.Add(5 * time.Second)
 			}
 		}
@@ -680,6 +738,7 @@ func (c *Client) runLoop(ctx context.Context) {
 					rctx = (*C.rdpContext)(c.context)
 					connectedAt = time.Now()
 					nextFirstFrameDiag = connectedAt.Add(5 * time.Second)
+					c.sendFocusIn("clipboard fallback activation")
 					c.requestDesktopRefresh("clipboard fallback activation")
 					continue
 				}
@@ -690,6 +749,7 @@ func (c *Client) runLoop(ctx context.Context) {
 					rctx = (*C.rdpContext)(c.context)
 					connectedAt = time.Now()
 					nextFirstFrameDiag = connectedAt.Add(5 * time.Second)
+					c.sendFocusIn("safe graphics fallback activation")
 					c.requestDesktopRefresh("safe graphics fallback activation")
 					continue
 				}
@@ -699,6 +759,7 @@ func (c *Client) runLoop(ctx context.Context) {
 				rctx = (*C.rdpContext)(c.context)
 				connectedAt = time.Now()
 				nextFirstFrameDiag = connectedAt.Add(5 * time.Second)
+				c.sendFocusIn("auto-reconnect activation")
 				c.requestDesktopRefresh("auto-reconnect activation")
 				continue
 			}
@@ -761,6 +822,7 @@ func (c *Client) trySetupFallbackWithoutClipboard(ctx context.Context, rctx *C.r
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseReconnecting, Message: "retrying without clipboard"}})
 
 	c.tearDownInstanceQuietly()
+	c.resetFirstFrameDiagnostics()
 	disabled := false
 	c.params.RDP.RedirectClipboard = &disabled
 	if err := c.bringUpInstance(); err != nil {
@@ -832,6 +894,8 @@ func (c *Client) trySetupFallbackSafeGraphics(ctx context.Context, rctx *C.rdpCo
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseReconnecting, Message: "retrying safe graphics profile"}})
 
 	c.tearDownInstanceQuietly()
+	c.resetFirstFrameDiagnostics()
+	c.gfxCompatProfile = false
 	c.safeGraphicsProfile = true
 	if err := c.bringUpInstance(); err != nil {
 		c.logger.Error("setup retry with safe graphics failed to rebuild FreeRDP instance", zap.Error(err))
@@ -868,6 +932,143 @@ func (c *Client) trySetupFallbackSafeGraphics(ctx context.Context, rctx *C.rdpCo
 		Code:    code,
 	}})
 	return true, false
+}
+
+func (c *Client) shouldFallbackFromRDPGFXStall(elapsed time.Duration) bool {
+	if c.safeGraphicsProfile || c.firstFrameLogged.Load() {
+		return false
+	}
+	if elapsed < 10*time.Second {
+		return false
+	}
+	return c.rdpgfxOnOpen.Load() > 0 &&
+		c.rdpgfxCapsConfirm.Load() > 0 &&
+		c.rdpgfxResetGraphics.Load() > 0 &&
+		c.rdpgfxCreateSurfaces.Load() == 0 &&
+		c.rdpgfxSurfaceCommands.Load() == 0 &&
+		c.bitmapUpdates.Load() == 0 &&
+		c.surfaceBits.Load() == 0
+}
+
+func (c *Client) tryFirstFrameStallGraphicsRetry(ctx context.Context, elapsed time.Duration) bool {
+	if !c.gfxCompatProfile && !c.gfxCompatFallbackTried {
+		return c.tryFirstFrameStallCompatGraphics(ctx, elapsed)
+	}
+	return c.tryFirstFrameStallSafeGraphics(ctx, elapsed)
+}
+
+func (c *Client) tryFirstFrameStallCompatGraphics(ctx context.Context, elapsed time.Duration) bool {
+	if ctx.Err() != nil || c.instance == nil || c.firstFrameLogged.Load() || c.gfxCompatFallbackTried || c.safeGraphicsProfile {
+		return false
+	}
+	c.gfxCompatFallbackTried = true
+	c.logger.Warn("rdpgfx negotiated but produced no desktop surfaces; retrying with compatibility graphics profile",
+		zap.Duration("elapsed", elapsed),
+		zap.Uint64("rdpgfx_on_open", c.rdpgfxOnOpen.Load()),
+		zap.Uint64("rdpgfx_caps_confirm", c.rdpgfxCapsConfirm.Load()),
+		zap.Uint32("rdpgfx_caps_version", c.rdpgfxCapsVersion.Load()),
+		zap.Uint32("rdpgfx_caps_flags", c.rdpgfxCapsFlags.Load()),
+		zap.Uint64("rdpgfx_reset_graphics", c.rdpgfxResetGraphics.Load()),
+		zap.Uint64("rdpgfx_start_frames", c.rdpgfxStartFrames.Load()),
+		zap.Uint64("rdpgfx_end_frames", c.rdpgfxEndFrames.Load()),
+		zap.Uint64("rdpgfx_frame_acks", c.rdpgfxFrameAcks.Load()))
+	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseReconnecting, Message: "retrying rdpgfx compatibility profile after empty frames"}})
+
+	c.tearDownInstanceQuietly()
+	c.resetFirstFrameDiagnostics()
+	c.gfxCompatProfile = true
+	c.safeGraphicsProfile = false
+	if err := c.bringUpInstance(); err != nil {
+		c.logger.Error("rdpgfx compatibility retry failed to rebuild FreeRDP instance", zap.Error(err))
+		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+			Phase:   desktop.PhaseError,
+			Message: "RDPGFX compatibility retry 实例重建失败: " + err.Error(),
+		}})
+		return false
+	}
+
+	instance := (*C.freerdp)(c.instance)
+	rctx := (*C.rdpContext)(c.context)
+	if goBool(C.freerdp_connect(instance)) {
+		c.logSelectedProtocol(rctx, "rdpgfx compatibility retry succeeded")
+		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnected, Message: "connected with rdpgfx compatibility profile"}})
+		return true
+	}
+
+	code := uint32(C.freerdp_get_last_error(rctx))
+	raw := C.GoString(C.wErrorStr(rctx))
+	requested := uint32(C.wGetRequestedProtocols(rctx))
+	selected := uint32(C.wGetSelectedProtocol(rctx))
+	c.logger.Error("rdpgfx compatibility retry failed",
+		zap.Uint32("code", code),
+		zap.String("raw", raw),
+		zap.Uint32("requested_protocols_mask", requested),
+		zap.Uint32("selected_protocol_mask", selected),
+		zap.String("requested_protocols", protocolMaskString(requested)),
+		zap.String("selected_protocol", selectedProtocolMaskString(selected, selected == 0)))
+	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+		Phase:   desktop.PhaseError,
+		Message: humanizeConnectErrorWithNego(code, raw, requested, selected),
+		Code:    code,
+	}})
+	return false
+}
+
+func (c *Client) tryFirstFrameStallSafeGraphics(ctx context.Context, elapsed time.Duration) bool {
+	if ctx.Err() != nil || c.instance == nil || c.firstFrameLogged.Load() || c.safeGraphicsFallbackTried || c.safeGraphicsProfile {
+		return false
+	}
+	c.safeGraphicsFallbackTried = true
+	c.logger.Warn("rdpgfx negotiated but produced no desktop surfaces; retrying with safe graphics profile",
+		zap.Duration("elapsed", elapsed),
+		zap.Uint64("rdpgfx_on_open", c.rdpgfxOnOpen.Load()),
+		zap.Uint64("rdpgfx_caps_confirm", c.rdpgfxCapsConfirm.Load()),
+		zap.Uint32("rdpgfx_caps_version", c.rdpgfxCapsVersion.Load()),
+		zap.Uint32("rdpgfx_caps_flags", c.rdpgfxCapsFlags.Load()),
+		zap.Uint64("rdpgfx_reset_graphics", c.rdpgfxResetGraphics.Load()),
+		zap.Uint64("rdpgfx_start_frames", c.rdpgfxStartFrames.Load()),
+		zap.Uint64("rdpgfx_end_frames", c.rdpgfxEndFrames.Load()),
+		zap.Uint64("rdpgfx_frame_acks", c.rdpgfxFrameAcks.Load()))
+	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseReconnecting, Message: "retrying safe graphics profile after rdpgfx stall"}})
+
+	c.tearDownInstanceQuietly()
+	c.resetFirstFrameDiagnostics()
+	c.gfxCompatProfile = false
+	c.safeGraphicsProfile = true
+	if err := c.bringUpInstance(); err != nil {
+		c.logger.Error("rdpgfx stall safe graphics retry failed to rebuild FreeRDP instance", zap.Error(err))
+		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+			Phase:   desktop.PhaseError,
+			Message: "RDPGFX stall fallback 实例重建失败: " + err.Error(),
+		}})
+		return false
+	}
+
+	instance := (*C.freerdp)(c.instance)
+	rctx := (*C.rdpContext)(c.context)
+	if goBool(C.freerdp_connect(instance)) {
+		c.logSelectedProtocol(rctx, "rdpgfx stall retry with safe graphics succeeded")
+		c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{Phase: desktop.PhaseConnected, Message: "connected with safe graphics after rdpgfx stall"}})
+		return true
+	}
+
+	code := uint32(C.freerdp_get_last_error(rctx))
+	raw := C.GoString(C.wErrorStr(rctx))
+	requested := uint32(C.wGetRequestedProtocols(rctx))
+	selected := uint32(C.wGetSelectedProtocol(rctx))
+	c.logger.Error("rdpgfx stall retry with safe graphics failed",
+		zap.Uint32("code", code),
+		zap.String("raw", raw),
+		zap.Uint32("requested_protocols_mask", requested),
+		zap.Uint32("selected_protocol_mask", selected),
+		zap.String("requested_protocols", protocolMaskString(requested)),
+		zap.String("selected_protocol", selectedProtocolMaskString(selected, selected == 0)))
+	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
+		Phase:   desktop.PhaseError,
+		Message: humanizeConnectErrorWithNego(code, raw, requested, selected),
+		Code:    code,
+	}})
+	return false
 }
 
 func (c *Client) tryAutoReconnect(ctx context.Context, rctx *C.rdpContext) bool {
@@ -1112,8 +1313,63 @@ func (c *Client) clearChannelState() {
 	c.cliprdr = nil
 	c.rdpsnd = nil
 	c.rdpgfx = nil
+	c.rdpgfxGDIInitialized.Store(false)
+	c.rdpgfxMu.Lock()
+	c.rdpgfxSurfaces = nil
+	c.rdpgfxMu.Unlock()
 	c.cliprdrCapsSent.Store(false)
 	c.cliprdrFormatListSent.Store(false)
+}
+
+func (c *Client) resetFirstFrameDiagnostics() {
+	c.firstFrameLogged.Store(false)
+	c.frameResyncPending.Store(false)
+	c.beginPaints.Store(0)
+	c.endPaints.Store(0)
+	c.bitmapUpdates.Store(0)
+	c.surfaceBits.Store(0)
+	c.desktopResizes.Store(0)
+	c.paintRegions.Store(0)
+	c.emptyPaints.Store(0)
+	c.refreshRequests.Store(0)
+	c.refreshFailures.Store(0)
+	c.saveSessionInfos.Store(0)
+	c.rdpgfxGDIInitialized.Store(false)
+	c.rdpgfxResetGraphics.Store(0)
+	c.rdpgfxOnOpen.Store(0)
+	c.rdpgfxOnClose.Store(0)
+	c.rdpgfxCapsAdvertise.Store(0)
+	c.rdpgfxCapsConfirm.Store(0)
+	c.rdpgfxCapsVersion.Store(0)
+	c.rdpgfxCapsFlags.Store(0)
+	c.rdpgfxSurfaceCommands.Store(0)
+	c.rdpgfxCreateSurfaces.Store(0)
+	c.rdpgfxDeleteSurfaces.Store(0)
+	c.rdpgfxMapOutput.Store(0)
+	c.rdpgfxMapScaledOutput.Store(0)
+	c.rdpgfxSolidFills.Store(0)
+	c.rdpgfxSurfaceToSurface.Store(0)
+	c.rdpgfxSurfaceToCache.Store(0)
+	c.rdpgfxCacheToSurface.Store(0)
+	c.rdpgfxEvictCache.Store(0)
+	c.rdpgfxStartFrames.Store(0)
+	c.rdpgfxEndFrames.Store(0)
+	c.rdpgfxUpdateSurfaces.Store(0)
+	c.rdpgfxUpdateSurfaceAreas.Store(0)
+	c.rdpgfxFrameAcks.Store(0)
+	c.rdpgfxOriginalErrors.Store(0)
+	c.rdpgfxOriginalSurfaceCommandErrors.Store(0)
+	c.rdpgfxOriginalCreateSurfaceErrors.Store(0)
+	c.rdpgfxOriginalUpdateSurfacesErrors.Store(0)
+	c.logonSuccessSeen.Store(false)
+	c.logonErrorSeen.Store(false)
+	c.logonErrorData.Store(0)
+	c.logonErrorType.Store(0)
+	c.logonErrorAtUnixNano.Store(0)
+	c.logonErrorClosed.Store(false)
+	c.rdpgfxMu.Lock()
+	c.rdpgfxSurfaces = nil
+	c.rdpgfxMu.Unlock()
 }
 
 // emit posts to out without blocking; FreeRDP callbacks run on the protocol
@@ -1171,7 +1427,7 @@ func (c *Client) emitFrameStats() {
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
 		Phase: desktop.PhaseConnected,
 		Message: fmt.Sprintf(
-			"frames=%d dropped=%d resyncs=%d enc_raw=%d enc_jpeg=%d enc_zlib=%d enc_fallback=%d enc_in=%d enc_out=%d",
+			"frames=%d dropped=%d resyncs=%d enc_raw=%d enc_jpeg=%d enc_zlib=%d enc_fallback=%d enc_in=%d enc_out=%d gfx_cmds=%d gfx_frames=%d gfx_updates=%d",
 			c.framesEmitted.Load(),
 			c.framesDropped.Load(),
 			c.frameResyncs.Load(),
@@ -1181,8 +1437,36 @@ func (c *Client) emitFrameStats() {
 			c.framesEncodeFallback.Load(),
 			c.frameEncodeInBytes.Load(),
 			c.frameEncodeOutBytes.Load(),
+			c.rdpgfxSurfaceCommands.Load(),
+			c.rdpgfxEndFrames.Load(),
+			c.rdpgfxUpdateSurfaces.Load(),
 		),
 	}})
+}
+
+func (c *Client) sendFocusIn(reason string) {
+	if c.context == nil {
+		return
+	}
+	rctx := (*C.rdpContext)(c.context)
+	if !goBool(C.wSendFocusIn(rctx)) {
+		c.logger.Warn("freerdp focus-in event failed", zap.String("reason", reason))
+		return
+	}
+	c.logger.Info("freerdp focus-in event sent", zap.String("reason", reason))
+}
+
+func (c *Client) sendPendingFocusIn() {
+	if c.instance == nil {
+		return
+	}
+	rc := int(C.wSendPendingFocusIn((*C.freerdp)(c.instance)))
+	switch rc {
+	case 1:
+		c.logger.Info("freerdp pending focus-in events sent")
+	case -1:
+		c.logger.Warn("freerdp pending focus-in events failed")
+	}
 }
 
 func (c *Client) requestDesktopRefresh(reason string) {
@@ -1193,12 +1477,22 @@ func (c *Client) requestDesktopRefresh(reason string) {
 	rctx := (*C.rdpContext)(c.context)
 	width := C.UINT16(c.width)
 	height := C.UINT16(c.height)
+	gdiSuppressedBefore := false
+	if rctx.gdi != nil {
+		gdiSuppressedBefore = goBool(rctx.gdi.suppressOutput)
+	}
 	allowOK := goBool(C.wSendSuppressOutputAllow(rctx, width, height))
-	refreshOK := goBool(C.wSendRefreshRect(rctx, width, height))
+	gdiSuppressedAfter := false
+	if rctx.gdi != nil {
+		gdiSuppressedAfter = goBool(rctx.gdi.suppressOutput)
+	}
+	refreshOK := goBool(C.wSendDesktopRefreshRect(rctx, width, height))
 	fields := []zap.Field{
 		zap.String("reason", reason),
 		zap.Uint32("width", c.width),
 		zap.Uint32("height", c.height),
+		zap.Bool("gdi_suppress_output_before", gdiSuppressedBefore),
+		zap.Bool("gdi_suppress_output_after", gdiSuppressedAfter),
 		zap.Bool("suppress_output_allow_ok", allowOK),
 		zap.Bool("refresh_rect_ok", refreshOK),
 		zap.Uint64("request_count", c.refreshRequests.Load()),
@@ -1248,6 +1542,34 @@ func (c *Client) logFirstFrameWait(elapsed time.Duration) {
 		zap.Uint64("refresh_requests", c.refreshRequests.Load()),
 		zap.Uint64("refresh_failures", c.refreshFailures.Load()),
 		zap.Uint64("save_session_infos", c.saveSessionInfos.Load()),
+		zap.Bool("rdpgfx_gdi_initialized", c.rdpgfxGDIInitialized.Load()),
+		zap.Uint64("rdpgfx_on_open", c.rdpgfxOnOpen.Load()),
+		zap.Uint64("rdpgfx_on_close", c.rdpgfxOnClose.Load()),
+		zap.Uint64("rdpgfx_caps_advertise", c.rdpgfxCapsAdvertise.Load()),
+		zap.Uint64("rdpgfx_caps_confirm", c.rdpgfxCapsConfirm.Load()),
+		zap.Uint32("rdpgfx_caps_version", c.rdpgfxCapsVersion.Load()),
+		zap.Uint32("rdpgfx_caps_flags", c.rdpgfxCapsFlags.Load()),
+		zap.Uint64("rdpgfx_reset_graphics", c.rdpgfxResetGraphics.Load()),
+		zap.Uint64("rdpgfx_surface_commands", c.rdpgfxSurfaceCommands.Load()),
+		zap.Uint64("rdpgfx_create_surfaces", c.rdpgfxCreateSurfaces.Load()),
+		zap.Uint64("rdpgfx_delete_surfaces", c.rdpgfxDeleteSurfaces.Load()),
+		zap.Uint64("rdpgfx_map_output", c.rdpgfxMapOutput.Load()),
+		zap.Uint64("rdpgfx_map_scaled_output", c.rdpgfxMapScaledOutput.Load()),
+		zap.Uint64("rdpgfx_start_frames", c.rdpgfxStartFrames.Load()),
+		zap.Uint64("rdpgfx_end_frames", c.rdpgfxEndFrames.Load()),
+		zap.Uint64("rdpgfx_frame_acks", c.rdpgfxFrameAcks.Load()),
+		zap.Uint64("rdpgfx_update_surfaces", c.rdpgfxUpdateSurfaces.Load()),
+		zap.Uint64("rdpgfx_update_surface_areas", c.rdpgfxUpdateSurfaceAreas.Load()),
+		// Phase 9 — libfreerdp original-handler error counters. Non-
+		// zero rdpgfx_original_surface_command_errors with non-zero
+		// rdpgfx_surface_commands means the browser is decoding fine
+		// while libfreerdp's local decoder is silently failing (most
+		// likely the experimental WITH_VAAPI_H264_ENCODING build
+		// missing a working client-side AVC decoder).
+		zap.Uint64("rdpgfx_original_errors", c.rdpgfxOriginalErrors.Load()),
+		zap.Uint64("rdpgfx_original_surface_command_errors", c.rdpgfxOriginalSurfaceCommandErrors.Load()),
+		zap.Uint64("rdpgfx_original_create_surface_errors", c.rdpgfxOriginalCreateSurfaceErrors.Load()),
+		zap.Uint64("rdpgfx_original_update_surfaces_errors", c.rdpgfxOriginalUpdateSurfacesErrors.Load()),
 		zap.Bool("logon_success_seen", c.logonSuccessSeen.Load()),
 		zap.Bool("logon_error_seen", logonErrorSeen),
 		zap.Uint32("logon_error_data", logonErrorData),

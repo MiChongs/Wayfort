@@ -218,11 +218,13 @@ func goOnChannelConnected(ctx *C.rdpContext, name *C.char, iface unsafe.Pointer)
 	case "rdpsnd":
 		c.rdpsnd = iface
 		c.attachAudio(iface)
-	case "rdpgfx":
-		c.rdpgfx = iface
-		c.attachGraphicsPipeline(iface)
 	case "rdpdr":
 		c.attachDriveRedirection(iface)
+	default:
+		if cname == "rdpgfx" || cname == "Microsoft::Windows::RDS::Graphics" {
+			c.rdpgfx = iface
+			c.attachGraphicsPipeline(iface)
+		}
 	}
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
 		Phase:   desktop.PhaseConnected,
@@ -243,8 +245,11 @@ func goOnChannelDisconnected(ctx *C.rdpContext, name *C.char, iface unsafe.Point
 		c.cliprdr = nil
 	case "rdpsnd":
 		c.rdpsnd = nil
-	case "rdpgfx":
-		c.rdpgfx = nil
+	default:
+		if cname == "rdpgfx" || cname == "Microsoft::Windows::RDS::Graphics" {
+			c.rdpgfx = nil
+			c.rdpgfxGDIInitialized.Store(false)
+		}
 	}
 }
 
