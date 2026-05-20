@@ -31,6 +31,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/jumpserver-anonymous/internal/secrets"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
@@ -81,10 +82,66 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		return fmt.Errorf("automigrate: %w", err)
 	}
 
-	sealer, err := pkgcrypto.NewSealer(cfg.Crypto.MasterKeyHex)
+	// Phase 14 — bootstrap the envelope-encryption layer. This:
+	//   * reads (or mints) the bootstrap passphrase from
+	//     cfg.Crypto.UnsealPassphraseFile (0600 file, never an env var
+	//     or YAML field)
+	//   * stretches it via Argon2id into a key that unseals the
+	//     KMS-provider auth ciphertexts stored in the DB
+	//   * resolves the primary KMSProvider row (or creates a default
+	//     Local one on first boot) and runs a healthcheck
+	//
+	// The returned `secretsBoot.Service` is the envelope service the
+	// rest of the gateway hangs per-owner Vault adapters off.
+	secretsBoot, err := secrets.Bootstrap(rootCtx, secrets.BootstrapDeps{
+		SealRepo:       repo.NewKMSSealRepo(db),
+		ProviderRepo:   repo.NewKMSProviderRepo(db),
+		EnvelopeRepo:   repo.NewSecretEnvelopeRepo(db),
+		AuditRepo:      repo.NewSecretAuditRepo(db),
+		Logger:         logger,
+		UnsealFilePath: cfg.Crypto.UnsealPassphraseFile,
+	})
 	if err != nil {
-		return fmt.Errorf("crypto: %w", err)
+		return fmt.Errorf("secrets bootstrap: %w", err)
 	}
+	logger.Info("secrets bootstrap ok",
+		zap.String("primary_kms", string(secretsBoot.PrimaryRow.Kind)),
+		zap.String("primary_kms_name", secretsBoot.PrimaryRow.Name),
+		zap.Bool("fresh_install", secretsBoot.FreshInstall))
+
+	// One pkg/crypto.Vault per call-site OwnerType. Each adapter
+	// records its own envelope rows so audit + rotation can target
+	// specific credential families.
+	credentialVault := secretsBoot.NewVaultFor(model.OwnerCredentialSecret)
+	oidcVault := secretsBoot.NewVaultFor(model.OwnerOIDCClientSecret)
+	mfaVault := secretsBoot.NewVaultFor(model.OwnerUserMFASecret)
+	aiVault := secretsBoot.NewVaultFor(model.OwnerAIProviderAPIKey)
+	genericVault := secretsBoot.NewVaultFor(model.OwnerGeneric)
+
+	// Legacy migration aid. When cfg.Crypto.MasterKeyHex is non-empty
+	// the operator is mid-migration from Phase-13 single-master-key
+	// AES-GCM ciphertexts; we attach the old Sealer so the envelope
+	// adapter's Open() can fall through to it for pre-Phase-14 rows.
+	if cfg.Crypto.MasterKeyHex != "" {
+		legacy, err := pkgcrypto.NewSealer(cfg.Crypto.MasterKeyHex)
+		if err != nil {
+			return fmt.Errorf("legacy sealer: %w", err)
+		}
+		for _, v := range []pkgcrypto.Vault{credentialVault, oidcVault, mfaVault, aiVault, genericVault} {
+			if ev, ok := v.(*secrets.EnvelopeVault); ok {
+				ev.AttachLegacy(legacy)
+			}
+		}
+		logger.Warn("legacy AES master key attached — pre-Phase-14 ciphertexts will decrypt; rotate to envelope mode then drop crypto.master_key_hex from config")
+	}
+
+	// `sealer` keeps the old variable name so the rest of the
+	// wire-up reads unchanged where the single Vault still drives
+	// multiple subsystems (guacamole, dbcli, desktop). credentialVault
+	// is the right choice there because every plaintext those paths
+	// open is the password byte slice from a credentials row.
+	sealer := credentialVault
+	_ = genericVault // reserved for /api/v1/setup/* and ad-hoc owners
 	rc, err := cache.New(cfg.Redis)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
@@ -128,10 +185,10 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	blocklist := auth.NewBlocklist(rc.Client())
 	lockout := auth.NewLockoutPolicy(rc.Client(), cfg.Auth.Lockout.Threshold, cfg.Auth.Lockout.Window, cfg.Auth.Lockout.Duration)
 	rbacResolver := auth.NewResolver(userRepo, roleRepo, rc.Client())
-	oidcManager := auth.NewOIDCManager(oidcRepo, rc.Client(), sealer)
+	oidcManager := auth.NewOIDCManager(oidcRepo, rc.Client(), oidcVault)
 
 	// MFA + Passkey
-	totpSvc := mfa.NewTOTPService(cfg.Auth.MFA.TOTPIssuer, mfaRepo, sealer)
+	totpSvc := mfa.NewTOTPService(cfg.Auth.MFA.TOTPIssuer, mfaRepo, mfaVault)
 	recoverySvc := mfa.NewRecoveryService(recoveryRepo, cfg.Auth.MFA.RecoveryCodesCount)
 	var mailer *notify.Mailer
 	if cfg.Notify.SMTP.Host != "" {
@@ -266,7 +323,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		},
 		Node:       &api.NodeHandler{Repo: nodeRepo},
 		Proxy:      &api.ProxyHandler{Repo: proxyRepo},
-		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: sealer},
+		Cred:       &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
 		Session:    &api.SessionHandler{Repo: sessionRepo},
 		SFTP:       sftpHandler,
 		WS:         wsGateway,
@@ -293,7 +350,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Favorites: favoriteRepo, Recent: recentRepo,
 			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
-		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
+		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: oidcVault, Manager: oidcManager},
+
+		KMS: &api.KMSHandler{
+			Providers: repo.NewKMSProviderRepo(db),
+			Envelopes: repo.NewSecretEnvelopeRepo(db),
+			Audits:    repo.NewSecretAuditRepo(db),
+			Service:   secretsBoot.Service,
+			Unsealer:  secretsBoot.Unsealer,
+		},
 	}
 
 	// Plan 14 — wire the live system-insights service. Disabled by default;
@@ -383,7 +448,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
 		SeedDefaultAgents:     cfg.AI.SeedDefaultAgents,
 	}, ai.Deps{
-		DB: db, Sealer: sealer, Logger: logger, AuditWriter: auditWriter,
+		DB: db, Sealer: aiVault, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
 		Sessions: sessionRepo, AuditRepo: auditRepo,

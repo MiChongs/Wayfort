@@ -23,7 +23,7 @@ import (
 type OIDCManager struct {
 	repo   *repo.OIDCClientRepo
 	cache  *redis.Client
-	sealer *pkgcrypto.Sealer
+	sealer pkgcrypto.Vault
 
 	mu      sync.RWMutex
 	clients map[string]*OIDCInstance
@@ -45,7 +45,7 @@ type oidcState struct {
 	ReturnURL  string `json:"r,omitempty"`
 }
 
-func NewOIDCManager(r *repo.OIDCClientRepo, cache *redis.Client, sealer *pkgcrypto.Sealer) *OIDCManager {
+func NewOIDCManager(r *repo.OIDCClientRepo, cache *redis.Client, sealer pkgcrypto.Vault) *OIDCManager {
 	return &OIDCManager{repo: r, cache: cache, sealer: sealer, clients: map[string]*OIDCInstance{}}
 }
 

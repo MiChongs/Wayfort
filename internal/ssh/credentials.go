@@ -9,9 +9,9 @@ import (
 )
 
 // Resolver decrypts a Credential row into ssh.AuthMethods.
-type Resolver struct{ sealer *pkgcrypto.Sealer }
+type Resolver struct{ sealer pkgcrypto.Vault }
 
-func NewResolver(s *pkgcrypto.Sealer) *Resolver { return &Resolver{sealer: s} }
+func NewResolver(s pkgcrypto.Vault) *Resolver { return &Resolver{sealer: s} }
 
 func (r *Resolver) AuthMethods(c *model.Credential) ([]xssh.AuthMethod, error) {
 	if c == nil {

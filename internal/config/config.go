@@ -266,7 +266,33 @@ type NotifyWorkerConfig struct {
 }
 
 type CryptoConfig struct {
+	// MasterKeyHex is the legacy fixed AES-256 master key. Pre-Phase-14
+	// installations stored every credential row's ciphertext under this
+	// single key.
+	//
+	// Phase 14 moved credential pool encryption to KMS-managed envelope
+	// encryption: a fresh per-row DEK wrapped by a KEK kept in Vault /
+	// OpenBao / AWS / Azure / GCP KMS (see kms_providers table). The
+	// master key no longer participates in any new ciphertext.
+	//
+	// This field is retained ONLY as a one-shot migration aid: when set,
+	// the boot sequence wires up a read-only legacy Sealer that the
+	// envelope vault can fall back to for opening pre-Phase-14 byte
+	// layouts. Once a deployment has rewrapped every legacy row, the
+	// operator deletes this field from the YAML.
+	//
+	// New installs leave this empty.
 	MasterKeyHex string `mapstructure:"master_key_hex"`
+
+	// UnsealPassphraseFile is the path to a single-line 0600 file
+	// holding the bootstrap passphrase that unwraps KMS auth
+	// ciphertexts at startup. Defaults to "./var/keystore.unseal".
+	//
+	// The passphrase NEVER appears in the YAML, in env vars, or in
+	// argv — it lives at this path on disk under filesystem
+	// permissions. Operators who need stronger guarantees can mount
+	// the file from a hardware keystore or a systemd-credential.
+	UnsealPassphraseFile string `mapstructure:"unseal_passphrase_file"`
 }
 
 type StorageConfig struct {
@@ -375,6 +401,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.conversation_ttl_days", 90)
 	v.SetDefault("ai.seed_default_agents", true)
 	v.SetDefault("storage.sessions_dir", "./var/sessions")
+	// Phase 14 — KMS bootstrap unseal passphrase lives at this path
+	// by default. The file must exist (0600 permissions) and contain
+	// a single non-empty line. Set the value via /api/v1/setup/seal
+	// on the very first boot; subsequent boots just read it.
+	v.SetDefault("crypto.unseal_passphrase_file", "./var/keystore.unseal")
 	v.SetDefault("sshpool.max_sessions_per_client", 8)
 	v.SetDefault("sshpool.idle_eviction", 10*time.Minute)
 	v.SetDefault("sshpool.dial_timeout", 15*time.Second)
@@ -464,11 +495,11 @@ func (c *Config) validate() error {
 	if c.Auth.JWTSecret == "" || len(c.Auth.JWTSecret) < 16 {
 		return fmt.Errorf("auth.jwt_secret must be at least 16 bytes")
 	}
-	if c.Crypto.MasterKeyHex == "" {
-		return fmt.Errorf("crypto.master_key_hex is required")
-	}
-	if len(c.Crypto.MasterKeyHex) != 64 {
-		return fmt.Errorf("crypto.master_key_hex must be 64 hex chars (32 bytes)")
+	// Phase 14: master_key_hex is now legacy / migration-only. When
+	// present it must still be a valid 32-byte hex; when absent we
+	// rely entirely on the DB-stored KMS provider config.
+	if c.Crypto.MasterKeyHex != "" && len(c.Crypto.MasterKeyHex) != 64 {
+		return fmt.Errorf("crypto.master_key_hex must be 64 hex chars (32 bytes) when set; leave empty for new installs")
 	}
 	if c.DB.DSN == "" {
 		return fmt.Errorf("db.dsn is required")

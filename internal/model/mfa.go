@@ -15,7 +15,7 @@ type UserMFA struct {
 	UserID          uint64     `gorm:"index;not null" json:"user_id"`
 	Type            MFAType    `gorm:"size:16;not null" json:"type"`
 	DisplayName     string     `gorm:"size:128" json:"display_name"`
-	SecretEncrypted []byte     `gorm:"type:varbinary(512)" json:"-"`
+	SecretEncrypted []byte     `json:"-"`
 	Enabled         bool       `gorm:"default:false" json:"enabled"`
 	LastUsedAt      *time.Time `json:"last_used_at,omitempty"`
 	CreatedAt       time.Time  `json:"created_at"`

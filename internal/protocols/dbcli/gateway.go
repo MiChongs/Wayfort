@@ -21,7 +21,7 @@ import (
 type Handler struct {
 	GW       *webssh.Gateway
 	Launcher *Launcher
-	Sealer   *pkgcrypto.Sealer
+	Sealer   pkgcrypto.Vault
 }
 
 func (h *Handler) Handle(c *gin.Context) {
@@ -113,7 +113,7 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	return runErr
 }
 
-func decode(s *pkgcrypto.Sealer, cred *model.Credential, fallbackUser string) (string, string, error) {
+func decode(s pkgcrypto.Vault, cred *model.Credential, fallbackUser string) (string, string, error) {
 	if cred == nil {
 		return fallbackUser, "", nil
 	}

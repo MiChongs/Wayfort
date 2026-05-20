@@ -8,9 +8,9 @@ import "time"
 type WebauthnCredential struct {
 	ID              uint64     `gorm:"primaryKey" json:"id"`
 	UserID          uint64     `gorm:"index;not null" json:"user_id"`
-	CredentialID    []byte     `gorm:"type:varbinary(255);uniqueIndex;not null" json:"-"`
-	PublicKey       []byte     `gorm:"type:varbinary(512);not null" json:"-"`
-	AAGUID          []byte     `gorm:"type:varbinary(16)" json:"aaguid,omitempty"`
+	CredentialID    []byte     `gorm:"uniqueIndex;not null" json:"-"`
+	PublicKey       []byte     `gorm:"not null" json:"-"`
+	AAGUID          []byte     `json:"aaguid,omitempty"`
 	SignCount       uint32     `json:"sign_count"`
 	Transports      string     `gorm:"size:128" json:"transports,omitempty"`
 	AttestationType string     `gorm:"size:32" json:"attestation_type,omitempty"`

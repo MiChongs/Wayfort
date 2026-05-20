@@ -101,6 +101,10 @@ type Routes struct {
 	// run SSH commands on the managed node.
 	Firewall *api.FirewallHandler
 	Docker   *api.DockerHandler
+
+	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
+	// under /api/v1/setup/kms/*.
+	KMS *api.KMSHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -282,6 +286,20 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// apt deps). Admin-only because it spawns package-manager
 		// commands and a CGo compile.
 		ops.POST("/desktop/bootstrap", auth.RequireAdmin(), desktopControl(rt).RetryBootstrap)
+
+		// Phase 14 — KMS provider setup wizard. All endpoints
+		// require admin because the ingested AuthSecret is a
+		// credential that grants decrypt-everything-this-gateway-
+		// owns access.
+		if rt.KMS != nil {
+			ops.GET("/setup/kms/status", auth.RequireAdmin(), rt.KMS.Status)
+			ops.GET("/setup/kms", auth.RequireAdmin(), rt.KMS.List)
+			ops.POST("/setup/kms", auth.RequireAdmin(), rt.KMS.Create)
+			ops.POST("/setup/kms/:id/test", auth.RequireAdmin(), rt.KMS.Test)
+			ops.POST("/setup/kms/:id/promote", auth.RequireAdmin(), rt.KMS.Promote)
+			ops.DELETE("/setup/kms/:id", auth.RequireAdmin(), rt.KMS.Delete)
+			ops.POST("/setup/kms/rewrap", auth.RequireAdmin(), rt.KMS.Rewrap)
+		}
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)

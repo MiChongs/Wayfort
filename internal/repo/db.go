@@ -10,18 +10,25 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 )
 
-// Open dials MySQL with a runtime logger that:
+// Open dials PostgreSQL with a runtime logger that:
 //   - emits SLOW SQL warnings only when a query exceeds 1s (DDL during boot
-//     and one-off ALTERs commonly cross 200ms even on healthy databases, so
+//     and one-off ALTERs commonly cross 200ms even on a healthy database, so
 //     the default threshold is too chatty),
 //   - drops record-not-found noise (bootstrap and FindByX both use it as a
 //     normal control-flow signal),
 //   - keeps actual errors and genuine slow queries visible.
+//
+// Phase 14 — switched from MySQL to PostgreSQL because the credential pool
+// now relies on bytea columns + KMS-managed envelope encryption (Vault /
+// OpenBao Transit, or AWS / Azure / GCP KMS). PostgreSQL's bytea handling
+// and richer type system make the GORM auto-migration sturdier; MySQL
+// `varbinary(N)` ceilings interact poorly with rewrapped DEK blobs of
+// varying length.
 func Open(cfg config.DBConfig) (*gorm.DB, error) {
 	runtimeLogger := gormlogger.New(
 		log.New(os.Stdout, "\n", log.LstdFlags),
@@ -32,13 +39,13 @@ func Open(cfg config.DBConfig) (*gorm.DB, error) {
 			Colorful:                  false,
 		},
 	)
-	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{
+	db, err := gorm.Open(postgres.Open(cfg.DSN), &gorm.Config{
 		Logger:                                   runtimeLogger,
 		PrepareStmt:                              true,
 		DisableForeignKeyConstraintWhenMigrating: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open mysql: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -55,7 +62,12 @@ func Open(cfg config.DBConfig) (*gorm.DB, error) {
 
 // AutoMigrate runs schema migration under a silenced logger so the inevitable
 // CREATE TABLE / ALTER TABLE statements during a fresh install (each easily
-// 200–500 ms even on healthy MySQL) don't spam the SLOW SQL banner.
+// 200–500 ms even on healthy PostgreSQL) don't spam the SLOW SQL banner.
+//
+// Phase 14 additions:
+//   - SecretEnvelope: per-secret AEAD blob + wrapped DEK + KMS pointer
+//   - KMSProvider:    DB-stored KMS endpoint / auth config
+//   - SecretAudit:    per-decrypt audit trail
 func AutoMigrate(db *gorm.DB) error {
 	silent := gormlogger.New(
 		log.New(os.Stdout, "\n", log.LstdFlags),
@@ -107,5 +119,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&aimodel.AIConversation{},
 		&aimodel.AIMessage{},
 		&aimodel.AIToolInvocation{},
+
+		// Phase 14 — credential pool envelope encryption
+		&model.KMSProvider{},
+		&model.SecretEnvelope{},
+		&model.SecretAudit{},
+		&model.KMSSealMaterial{},
 	)
 }

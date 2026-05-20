@@ -24,7 +24,7 @@ type AIProvider struct {
 	Kind              ProviderKind `gorm:"size:24;not null" json:"kind"`
 	DisplayName       string       `gorm:"size:128" json:"display_name"`
 	BaseURL           string       `gorm:"size:512" json:"base_url,omitempty"`
-	APIKeyEncrypted   []byte       `gorm:"type:varbinary(2048)" json:"-"`
+	APIKeyEncrypted   []byte       `json:"-"`
 	APIKeyLast4       string       `gorm:"size:8" json:"api_key_last4,omitempty"`
 	DefaultModel      string       `gorm:"size:128" json:"default_model"`
 	Models            string       `gorm:"type:text" json:"models,omitempty"`

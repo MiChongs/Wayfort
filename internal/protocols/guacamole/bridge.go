@@ -443,7 +443,7 @@ func scanForGuacError(buf []byte) (int, string, bool) {
 // DecodeCredential pulls a plaintext (user, password) tuple out of a Credential
 // row using the supplied Sealer. The credential MUST be of kind "password"; we
 // don't yet support smartcard / certificate-based RDP auth in this MVP.
-func DecodeCredential(sealer *pkgcrypto.Sealer, cred *model.Credential) (user, pass string, err error) {
+func DecodeCredential(sealer pkgcrypto.Vault, cred *model.Credential) (user, pass string, err error) {
 	if cred == nil {
 		return "", "", nil
 	}

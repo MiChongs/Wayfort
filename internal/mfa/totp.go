@@ -22,10 +22,10 @@ import (
 type TOTPService struct {
 	issuer string
 	repo   *repo.UserMFARepo
-	sealer *pkgcrypto.Sealer
+	sealer pkgcrypto.Vault
 }
 
-func NewTOTPService(issuer string, r *repo.UserMFARepo, s *pkgcrypto.Sealer) *TOTPService {
+func NewTOTPService(issuer string, r *repo.UserMFARepo, s pkgcrypto.Vault) *TOTPService {
 	if issuer == "" {
 		issuer = "JumpServer"
 	}

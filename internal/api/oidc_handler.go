@@ -14,7 +14,7 @@ import (
 // OIDCClientHandler manages registered upstream IdPs.
 type OIDCClientHandler struct {
 	Repo    *repo.OIDCClientRepo
-	Sealer  *pkgcrypto.Sealer
+	Sealer  pkgcrypto.Vault
 	Manager *auth.OIDCManager
 }
 

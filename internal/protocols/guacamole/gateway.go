@@ -30,10 +30,10 @@ type Handler struct {
 	GW     *webssh.Gateway
 	Bridge *Bridge
 	Cfg    config.GuacamoleConfig
-	Sealer *pkgcrypto.Sealer
+	Sealer pkgcrypto.Vault
 }
 
-func NewHandler(gw *webssh.Gateway, cfg config.GuacamoleConfig, sealer *pkgcrypto.Sealer) *Handler {
+func NewHandler(gw *webssh.Gateway, cfg config.GuacamoleConfig, sealer pkgcrypto.Vault) *Handler {
 	return &Handler{
 		GW:     gw,
 		Bridge: NewBridge(cfg, gw.Logger()),

@@ -44,7 +44,7 @@ type Config struct {
 // Deps is everything ai.New needs from the host process.
 type Deps struct {
 	DB         *gorm.DB
-	Sealer     *pkgcrypto.Sealer
+	Sealer     pkgcrypto.Vault
 	Logger     *zap.Logger
 	AuditWriter *audit.Writer
 	Asset      *asset.Resolver
