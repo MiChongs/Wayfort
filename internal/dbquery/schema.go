@@ -25,13 +25,16 @@ type DatabaseInfo struct {
 	Tables []TableInfo `json:"tables"`
 }
 
-// TableInfo is one table row in the sidebar. The handler trims columns
-// to the cheap metadata so the initial render is fast; full column
-// details come from a separate per-table fetch.
+// TableInfo is one row in the schema tree. The "Tables" name is
+// historical — it now also carries views, materialized views,
+// sequences and functions/procedures. The UI splits them visually
+// by `kind`. Column metadata is fetched separately per-table to keep
+// the initial schema fetch cheap on busy clusters.
 type TableInfo struct {
 	Schema string `json:"schema"`
 	Name   string `json:"name"`
-	Kind   string `json:"kind"` // "table" | "view" | "matview"
+	// kind ∈ table | view | matview | sequence | function | procedure
+	Kind   string `json:"kind"`
 }
 
 // ColumnInfo describes one column for the per-table detail view.
@@ -153,21 +156,36 @@ func loadPostgresSchema(ctx context.Context, pl *pool) (*SchemaInfo, error) {
 	if err := pl.db.QueryRowContext(ctx, "SELECT current_database()").Scan(&current); err != nil {
 		return nil, fmt.Errorf("postgres current_database: %w", err)
 	}
+	// One UNION query so the schema tree is a single round-trip even
+	// with sequences + functions thrown in. relkind table:
+	//   r/p table; v view; m matview; S sequence; f foreign table.
 	rows, err := pl.db.QueryContext(ctx, `
 		SELECT n.nspname, c.relname,
 		       CASE c.relkind WHEN 'r' THEN 'table'
+		                      WHEN 'p' THEN 'table'
 		                      WHEN 'v' THEN 'view'
 		                      WHEN 'm' THEN 'matview'
-		                      WHEN 'p' THEN 'table'
+		                      WHEN 'S' THEN 'sequence'
+		                      WHEN 'f' THEN 'foreign_table'
 		                      ELSE c.relkind::text END
 		FROM pg_class c
 		JOIN pg_namespace n ON n.oid = c.relnamespace
-		WHERE c.relkind IN ('r','v','m','p')
+		WHERE c.relkind IN ('r','v','m','p','S','f')
 		  AND n.nspname NOT IN ('pg_catalog','information_schema')
 		  AND n.nspname NOT LIKE 'pg_toast%'
-		ORDER BY n.nspname, c.relname`)
+		UNION ALL
+		SELECT n.nspname, p.proname,
+		       CASE p.prokind WHEN 'f' THEN 'function'
+		                      WHEN 'p' THEN 'procedure'
+		                      WHEN 'a' THEN 'aggregate'
+		                      WHEN 'w' THEN 'window' END
+		FROM pg_proc p
+		JOIN pg_namespace n ON n.oid = p.pronamespace
+		WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+		  AND n.nspname NOT LIKE 'pg_toast%'
+		ORDER BY 1, 3, 2`)
 	if err != nil {
-		return nil, fmt.Errorf("postgres list tables: %w", err)
+		return nil, fmt.Errorf("postgres list objects: %w", err)
 	}
 	defer rows.Close()
 	bySchema := map[string][]TableInfo{}
@@ -270,9 +288,13 @@ func loadMysqlSchema(ctx context.Context, pl *pool) (*SchemaInfo, error) {
 		       LOWER(REPLACE(TABLE_TYPE, ' ', '_'))
 		FROM information_schema.TABLES
 		WHERE TABLE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
-		ORDER BY TABLE_SCHEMA, TABLE_NAME`)
+		UNION ALL
+		SELECT ROUTINE_SCHEMA, ROUTINE_NAME, LOWER(ROUTINE_TYPE)
+		FROM information_schema.ROUTINES
+		WHERE ROUTINE_SCHEMA NOT IN ('mysql','information_schema','performance_schema','sys')
+		ORDER BY 1, 3, 2`)
 	if err != nil {
-		return nil, fmt.Errorf("mysql list tables: %w", err)
+		return nil, fmt.Errorf("mysql list objects: %w", err)
 	}
 	defer rows.Close()
 	bySchema := map[string][]TableInfo{}
@@ -282,12 +304,18 @@ func loadMysqlSchema(ctx context.Context, pl *pool) (*SchemaInfo, error) {
 		if err := rows.Scan(&schema, &name, &kind); err != nil {
 			return nil, err
 		}
-		// MySQL TABLE_TYPE values: BASE TABLE / VIEW. Normalise to ours.
+		// information_schema labels:
+		//   tables.TABLE_TYPE  → BASE_TABLE / VIEW / SYSTEM_VIEW
+		//   routines.ROUTINE_TYPE → FUNCTION / PROCEDURE
 		switch kind {
 		case "base_table":
 			kind = "table"
-		case "view":
+		case "view", "system_view":
 			kind = "view"
+		case "function":
+			kind = "function"
+		case "procedure":
+			kind = "procedure"
 		}
 		if _, ok := bySchema[schema]; !ok {
 			order = append(order, schema)

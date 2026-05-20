@@ -1,7 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { ChevronRight, Database, Eye, Layers, Search, Table as TableIcon, View } from "lucide-react"
+import {
+  ChevronRight, Database, Eye, FunctionSquare, Hash, Layers,
+  Search, Table as TableIcon, View,
+} from "lucide-react"
 import type { DBSchemaInfo, DBTableInfo } from "@/lib/api/types"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
@@ -108,15 +111,18 @@ export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertId
                           active && "bg-primary/10 text-primary"
                         )}
                       >
-                        {t.kind === "view" || t.kind === "matview" ? (
-                          <View className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                        ) : (
-                          <TableIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                        )}
+                        <ObjectIcon kind={t.kind} />
                         <span className="truncate text-xs">{t.name}</span>
                         {t.kind !== "table" && (
-                          <span className="ml-1 text-[9px] uppercase text-muted-foreground tracking-wider">
-                            {t.kind === "matview" ? "MV" : t.kind}
+                          <span className={cn(
+                            "ml-1 text-[9px] uppercase tracking-wider",
+                            t.kind === "matview" ? "text-blue-500" :
+                            t.kind === "view" ? "text-sky-500" :
+                            t.kind === "sequence" ? "text-emerald-500" :
+                            t.kind === "function" || t.kind === "procedure" ? "text-violet-500" :
+                            "text-muted-foreground",
+                          )}>
+                            {kindShortLabel(t.kind)}
                           </span>
                         )}
                       </button>
@@ -134,6 +140,35 @@ export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertId
       </div>
     </aside>
   )
+}
+
+function ObjectIcon({ kind }: { kind: string }) {
+  const cls = "w-3.5 h-3.5 shrink-0"
+  switch (kind) {
+    case "view":
+    case "matview":
+      return <View className={cn(cls, "text-sky-500")} />
+    case "sequence":
+      return <Hash className={cn(cls, "text-emerald-500")} />
+    case "function":
+    case "procedure":
+    case "aggregate":
+    case "window":
+      return <FunctionSquare className={cn(cls, "text-violet-500")} />
+  }
+  return <TableIcon className={cn(cls, "text-muted-foreground")} />
+}
+
+function kindShortLabel(k: string): string {
+  switch (k) {
+    case "matview": return "MV"
+    case "sequence": return "SEQ"
+    case "procedure": return "PROC"
+    case "aggregate": return "AGG"
+    case "window": return "WIN"
+    case "foreign_table": return "FT"
+  }
+  return k
 }
 
 function qualifyIdent(t: DBTableInfo) {

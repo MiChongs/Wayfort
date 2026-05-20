@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
+  Download,
   Edit,
   FileCode,
   Plus,
@@ -14,6 +15,13 @@ import {
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
@@ -21,6 +29,20 @@ import type { DBTableInfo } from "@/lib/api/types"
 import { ResultGrid } from "./result-grid"
 import { RowEditor, deleteRow } from "./row-editor"
 import { StructureTab } from "./structure-tab"
+
+// downloadExport — open the streaming /db/export URL in a new tab. The
+// browser handles the download via Content-Disposition; auth rides on
+// the ?token=… helper (same shape session recording downloads use).
+function downloadExport(nodeId: number, table: DBTableInfo, format: "csv" | "jsonl" | "sql", database?: string) {
+  const url = dbService.exportURL(nodeId, { schema: table.schema, table: table.name, format, database })
+  const a = document.createElement("a")
+  a.href = url
+  a.target = "_blank"
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  toast.success(`开始导出 ${table.schema}.${table.name} → ${format.toUpperCase()}`)
+}
 
 type Props = {
   nodeId: number
@@ -142,6 +164,27 @@ export function BrowseTab({ nodeId, table, database }: Props) {
             >
               <Plus className="w-3.5 h-3.5" /> 新增
             </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="outline" size="sm" className="h-7 gap-1 text-xs">
+                  <Download className="w-3.5 h-3.5" /> 导出
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuLabel className="text-[10px] text-muted-foreground">
+                  服务端流式下载（无分页）
+                </DropdownMenuLabel>
+                <DropdownMenuItem onClick={() => downloadExport(nodeId, table, "csv", database)}>
+                  CSV
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => downloadExport(nodeId, table, "jsonl", database)}>
+                  JSON Lines
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => downloadExport(nodeId, table, "sql", database)}>
+                  SQL INSERT
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               type="button"
               variant="outline"

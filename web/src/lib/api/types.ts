@@ -687,3 +687,17 @@ export interface DBRowKey {
   columns: string[]
   values: unknown[]
 }
+
+// Phase 20 — running queries panel
+export interface DBProcessInfo {
+  pid: number
+  username: string
+  client_addr?: string
+  database?: string
+  state?: string
+  wait_event?: string
+  application?: string
+  query_start?: string
+  elapsed_sec?: number
+  query?: string
+}

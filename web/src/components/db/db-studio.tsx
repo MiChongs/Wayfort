@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Code2, Database, FileCode, RefreshCw, Telescope, Terminal, X } from "lucide-react"
+import { Activity, Code2, Database, FileCode, RefreshCw, Telescope, Terminal, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -21,6 +21,7 @@ import { SchemaTree } from "@/components/db/schema-tree"
 import { ResultGrid } from "@/components/db/result-grid"
 import { SQLEditor } from "@/components/db/sql-editor"
 import { BrowseTab } from "@/components/db/browse-tab"
+import { ProcessesPanel } from "@/components/db/processes-panel"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -71,7 +72,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
     enabled: database !== undefined,
   })
 
-  const [tab, setTab] = React.useState<"browse" | "query">("browse")
+  const [tab, setTab] = React.useState<"browse" | "query" | "processes">("browse")
   const [selected, setSelected] = React.useState<DBTableInfo | undefined>()
   const [sql, setSql] = React.useState(
     "-- Ctrl+Enter 执行；左侧表名双击插入到此处\nSELECT 1;\n"
@@ -230,7 +231,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
               </p>
             </div>
           ) : (
-            <Tabs value={tab} onValueChange={(v) => setTab(v as "browse" | "query")} className="flex-1 min-h-0 flex flex-col">
+            <Tabs value={tab} onValueChange={(v) => setTab(v as "browse" | "query" | "processes")} className="flex-1 min-h-0 flex flex-col">
               <div className="border-b px-3 pt-2 shrink-0 flex items-center justify-between gap-2">
                 <TabsList>
                   <TabsTrigger value="browse" className="gap-1">
@@ -238,6 +239,9 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                   </TabsTrigger>
                   <TabsTrigger value="query" className="gap-1">
                     <Code2 className="w-3.5 h-3.5" /> SQL
+                  </TabsTrigger>
+                  <TabsTrigger value="processes" className="gap-1">
+                    <Activity className="w-3.5 h-3.5" /> 进程
                   </TabsTrigger>
                 </TabsList>
                 {embedded && (
@@ -264,6 +268,9 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                     点左侧的表名开始浏览
                   </div>
                 )}
+              </TabsContent>
+              <TabsContent value="processes" className="flex-1 min-h-0 m-0">
+                <ProcessesPanel nodeId={nodeId} database={database} />
               </TabsContent>
               <TabsContent value="query" className="flex-1 min-h-0 m-0 flex flex-col">
                 <div className="flex-1 min-h-0 flex flex-col gap-2 p-3">

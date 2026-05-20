@@ -504,6 +504,7 @@ import type {
   DBExecResult,
   DBForeignKeyInfo,
   DBIndexInfo,
+  DBProcessInfo,
   DBQueryResult,
   DBRowKey,
   DBSchemaInfo,
@@ -702,4 +703,25 @@ export const dbService = {
         database: opts.database, reason: opts.reason,
       },
     }),
+  // Phase 20 — running queries / cancel
+  processes: (nodeId: number, database?: string) =>
+    api<{ processes: DBProcessInfo[] }>("GET", `/nodes/${nodeId}/db/processes`, {
+      query: { database },
+    }),
+  kill: (nodeId: number, pid: number, database?: string) =>
+    api<{ cancelled: boolean }>("POST", `/nodes/${nodeId}/db/kill`, {
+      query: { pid, database },
+    }),
+  // Returns the export URL for a download anchor; bearer token rides as
+  // ?token=... so the browser's <a download> works without custom XHR
+  // headers (withTokenQuery is the same helper sessions/recording uses).
+  exportURL: (nodeId: number, opts: { schema: string; table: string; format: "csv" | "jsonl" | "sql"; database?: string; limit?: number }) => {
+    const q = new URLSearchParams()
+    q.set("schema", opts.schema)
+    q.set("table", opts.table)
+    q.set("format", opts.format)
+    if (opts.database) q.set("database", opts.database)
+    if (opts.limit && opts.limit > 0) q.set("limit", String(opts.limit))
+    return withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/db/export?${q.toString()}`)
+  },
 }

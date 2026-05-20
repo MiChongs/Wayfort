@@ -359,6 +359,194 @@ func (h *DBHandler) Explain(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// Processes — GET /api/v1/nodes/:id/db/processes?database=...
+func (h *DBHandler) Processes(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	procs, err := h.Svc.ListProcesses(c.Request.Context(), nodeID, claims.UserID, c.Query("database"))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"processes": procs})
+}
+
+// Kill — POST /api/v1/nodes/:id/db/kill?database=...&pid=
+// Approval (sql_exec) gated — killing other sessions is a write-class
+// action even though no rows change.
+func (h *DBHandler) Kill(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	pid, _ := strconv.ParseInt(c.Query("pid"), 10, 64)
+	if pid <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pid required"})
+		return
+	}
+	if ok2, _ := h.checkSQLExec(c, nodeID, claims); !ok2 {
+		return
+	}
+	cancelled, err := h.Svc.CancelProcess(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), pid)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "kill", fmt.Sprintf("KILL %d", pid), "", nil)
+	c.JSON(http.StatusOK, gin.H{"cancelled": cancelled})
+}
+
+// Export — GET /api/v1/nodes/:id/db/export?database=&schema=&table=&format=&limit=
+// Streams the table contents (no pagination) straight to the client as
+// CSV, JSON Lines, or SQL INSERTs. Server-side streaming so 10 GB
+// tables don't OOM the gateway.
+func (h *DBHandler) Export(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table := c.Query("schema"), c.Query("table")
+	if schema == "" || table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	format := strings.ToLower(c.Query("format"))
+	if format == "" {
+		format = "csv"
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+
+	w := c.Writer
+	switch format {
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.%s.csv"`, schema, table))
+	case "jsonl":
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.%s.jsonl"`, schema, table))
+	case "sql":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.%s.sql"`, schema, table))
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be csv|jsonl|sql"})
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+
+	rowsWritten := 0
+	headerWritten := false
+	err := h.Svc.StreamExport(c.Request.Context(), nodeID, claims.UserID,
+		c.Query("database"), schema, table, limit,
+		func(cols []dbquery.ColumnMeta, row []any) error {
+			if !headerWritten {
+				if err := writeExportHeader(w, format, schema, table, cols); err != nil {
+					return err
+				}
+				headerWritten = true
+			}
+			rowsWritten++
+			return writeExportRow(w, format, schema, table, cols, row)
+		})
+
+	// We've already streamed bytes — can't change the status code now.
+	// Append an error footer so the downloader sees the failure.
+	if err != nil {
+		_, _ = w.Write([]byte("\n-- export failed: " + err.Error() + "\n"))
+	}
+	h.logSQL(c, nodeID, claims, "export", fmt.Sprintf("EXPORT %s.%s (%s, %d rows)", schema, table, format, rowsWritten), "", err)
+}
+
+func writeExportHeader(w gin.ResponseWriter, format, schema, table string, cols []dbquery.ColumnMeta) error {
+	switch format {
+	case "csv":
+		names := make([]string, len(cols))
+		for i, c := range cols {
+			names[i] = csvEscape(c.Name)
+		}
+		_, err := fmt.Fprintln(w, strings.Join(names, ","))
+		return err
+	case "sql":
+		_, err := fmt.Fprintf(w, "-- export of %s.%s, generated %s\n", schema, table, time.Now().UTC().Format(time.RFC3339))
+		return err
+	}
+	return nil
+}
+
+func writeExportRow(w gin.ResponseWriter, format, schema, table string, cols []dbquery.ColumnMeta, row []any) error {
+	switch format {
+	case "csv":
+		fields := make([]string, len(row))
+		for i, v := range row {
+			fields[i] = csvEscape(fmt.Sprint(orEmpty(v)))
+		}
+		_, err := fmt.Fprintln(w, strings.Join(fields, ","))
+		return err
+	case "jsonl":
+		obj := make(map[string]any, len(row))
+		for i, v := range row {
+			obj[cols[i].Name] = v
+		}
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(append(b, '\n'))
+		return err
+	case "sql":
+		quoted := make([]string, len(row))
+		for i, v := range row {
+			quoted[i] = sqlLiteral(v)
+		}
+		names := make([]string, len(cols))
+		for i, c := range cols {
+			names[i] = `"` + strings.ReplaceAll(c.Name, `"`, `""`) + `"`
+		}
+		_, err := fmt.Fprintf(w, "INSERT INTO %s.%s (%s) VALUES (%s);\n",
+			`"`+schema+`"`, `"`+table+`"`,
+			strings.Join(names, ", "), strings.Join(quoted, ", "))
+		return err
+	}
+	return nil
+}
+
+func orEmpty(v any) any {
+	if v == nil {
+		return ""
+	}
+	return v
+}
+
+func csvEscape(s string) string {
+	if !strings.ContainsAny(s, `,"`+"\n\r") {
+		return s
+	}
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// sqlLiteral renders a value as a SQL literal for the export-to-SQL
+// format. Strings escape single quotes; numbers and bools pass through;
+// nil → NULL. Postgres / MySQL both accept the resulting syntax.
+func sqlLiteral(v any) string {
+	if v == nil {
+		return "NULL"
+	}
+	switch x := v.(type) {
+	case bool:
+		if x {
+			return "TRUE"
+		}
+		return "FALSE"
+	case int, int32, int64, uint, uint32, uint64, float32, float64:
+		return fmt.Sprintf("%v", x)
+	case string:
+		return "'" + strings.ReplaceAll(x, "'", "''") + "'"
+	}
+	b, _ := json.Marshal(v)
+	return "'" + strings.ReplaceAll(string(b), "'", "''") + "'"
+}
+
 // queryBody is the shared shape for Query and Exec.
 type queryBody struct {
 	SQL    string `json:"sql"`

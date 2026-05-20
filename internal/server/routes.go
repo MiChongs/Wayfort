@@ -369,14 +369,18 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.GET("/nodes/:id/db/stats", rt.DB.TableStats)
 			ops.GET("/nodes/:id/db/ddl", rt.DB.TableDDL)
 			ops.GET("/nodes/:id/db/rows", rt.DB.Rows)
+			ops.GET("/nodes/:id/db/export", rt.DB.Export)
 			ops.POST("/nodes/:id/db/query", rt.DB.Query)
 			ops.POST("/nodes/:id/db/exec", rt.DB.Exec)
 			ops.POST("/nodes/:id/db/explain", rt.DB.Explain)
-			// Phase 19 — row-level edits. Approval gate
-			// (sql_exec) inside the handler.
+			// Phase 19 — row-level edits. Approval gate (sql_exec)
+			// inside each handler.
 			ops.POST("/nodes/:id/db/row/update", rt.DB.RowUpdate)
 			ops.POST("/nodes/:id/db/row/insert", rt.DB.RowInsert)
 			ops.POST("/nodes/:id/db/row/delete", rt.DB.RowDelete)
+			// Phase 20 — server-side process panel + cancel
+			ops.GET("/nodes/:id/db/processes", rt.DB.Processes)
+			ops.POST("/nodes/:id/db/kill", rt.DB.Kill)
 		}
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)
