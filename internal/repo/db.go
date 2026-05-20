@@ -125,5 +125,17 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.SecretEnvelope{},
 		&model.SecretAudit{},
 		&model.KMSSealMaterial{},
+
+		// Phase 15 — Approval Service.
+		// Six tables: requests (the unit of work), tasks (per-approver
+		// slots), events (append-only hash-chained ledger), templates
+		// (policy DSL), grants (time-bound permission slips), and
+		// subscriptions (IM/Webhook/SIEM fan-out targets).
+		&model.ApprovalRequest{},
+		&model.ApprovalTask{},
+		&model.ApprovalEvent{},
+		&model.ApprovalTemplate{},
+		&model.ApprovalGrant{},
+		&model.ApprovalSubscription{},
 	)
 }

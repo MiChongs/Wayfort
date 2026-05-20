@@ -52,6 +52,19 @@ const (
 	// :manage code below.
 	PermFirewallManage = "firewall:manage"
 	PermDockerManage   = "docker:manage"
+
+	// Phase 15 — Approval Service.
+	// Any authenticated user can OPEN a request for themselves, so we do not
+	// gate the create endpoint with a permission — the resource-level grant
+	// check on the action the request unlocks is what stops abuse. The
+	// permission codes here gate everything else: deciding (approving /
+	// rejecting / delegating), managing templates and subscriptions, and
+	// reading the tamper-evident audit ledger.
+	PermApprovalDecide          = "approval:decide"           // approve / reject / delegate any task assigned to me
+	PermApprovalAdmin           = "approval:admin"            // cancel / revoke any request or grant
+	PermApprovalTemplateManage  = "approval:template:manage"  // CRUD templates
+	PermApprovalSubscribeManage = "approval:subscribe:manage" // CRUD IM/Webhook integrations
+	PermApprovalAuditRead       = "approval:audit:read"       // dump + verify the ledger
 )
 
 // AllPermissions is the catalogue that gets seeded into the DB on boot so the
@@ -89,6 +102,11 @@ var AllPermissions = []struct {
 	{PermAIProviderGlobal, "ai", "配置全局 AI 提供商（管理员）"},
 	{PermFirewallManage, "ops", "修改节点防火墙规则"},
 	{PermDockerManage, "ops", "启停 / 删除节点 Docker 容器"},
+	{PermApprovalDecide, "approval", "审批：批准 / 驳回 / 委托分配到自己的任务"},
+	{PermApprovalAdmin, "approval", "审批：撤销请求 / 吊销 grant（管理员）"},
+	{PermApprovalTemplateManage, "approval", "审批：管理审批模板（管理员）"},
+	{PermApprovalSubscribeManage, "approval", "审批：管理 IM/Webhook 集成（管理员）"},
+	{PermApprovalAuditRead, "approval", "审批：导出与验签审计账本"},
 }
 
 // BuiltinRoles are seeded on first boot and protected from deletion.
@@ -98,10 +116,12 @@ var BuiltinRoles = map[string][]string{
 		PermNodeList, PermNodeRead, PermSessionList, PermSessionRead,
 		PermPortForward, PermAssetGroupManage, PermTagManage,
 		PermAIUse, PermAIAgentCreate, PermAIProviderUser,
+		PermApprovalDecide,
 	},
 	"auditor": {
 		PermNodeList, PermSessionList, PermSessionRead, PermAuditRead,
 		PermAIUse,
+		PermApprovalAuditRead,
 	},
 	"guest": {PermAIUse},
 }

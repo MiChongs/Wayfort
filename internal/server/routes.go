@@ -105,6 +105,11 @@ type Routes struct {
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
 	KMS *api.KMSHandler
+
+	// Phase 15 — Approval Service surface. Nil when the subsystem is
+	// disabled (the routes are still registered and return 503 stubs the
+	// same way insights/firewall do).
+	Approval *api.ApprovalHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -299,6 +304,40 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.POST("/setup/kms/:id/promote", auth.RequireAdmin(), rt.KMS.Promote)
 			ops.DELETE("/setup/kms/:id", auth.RequireAdmin(), rt.KMS.Delete)
 			ops.POST("/setup/kms/rewrap", auth.RequireAdmin(), rt.KMS.Rewrap)
+		}
+
+		// Phase 15 — Approval Service. The Create / List / Get / Cancel
+		// + tasks-for-me + decide + delegate surface is open to any
+		// authenticated user (with row-level filtering inside the
+		// handler). Templates, subscriptions and the ledger dump are
+		// admin-gated through the relevant approval:* permission codes.
+		if rt.Approval != nil {
+			ag := ops.Group("/approvals")
+			ag.POST("", rt.Approval.CreateRequest)
+			ag.GET("", rt.Approval.ListRequests)
+			ag.GET("/:id", rt.Approval.GetRequest)
+			ag.POST("/:id/cancel", rt.Approval.CancelRequest)
+			ag.GET("/:id/audit/verify", rt.Approval.VerifyChain)
+
+			ag.GET("/tasks/me", rt.Approval.MyTasks)
+			ag.POST("/tasks/:task_id/approve", perm(auth.PermApprovalDecide), rt.Approval.Approve)
+			ag.POST("/tasks/:task_id/reject", perm(auth.PermApprovalDecide), rt.Approval.Reject)
+			ag.POST("/tasks/:task_id/delegate", perm(auth.PermApprovalDecide), rt.Approval.Delegate)
+
+			ag.POST("/grants/:id/revoke", perm(auth.PermApprovalAdmin), rt.Approval.RevokeGrant)
+			ag.GET("/grants/check", rt.Approval.CheckGrant)
+
+			ag.GET("/audit/events", perm(auth.PermApprovalAuditRead), rt.Approval.EventsSince)
+
+			ag.GET("/templates", perm(auth.PermApprovalTemplateManage), rt.Approval.ListTemplates)
+			ag.POST("/templates", perm(auth.PermApprovalTemplateManage), rt.Approval.CreateTemplate)
+			ag.PATCH("/templates/:id", perm(auth.PermApprovalTemplateManage), rt.Approval.UpdateTemplate)
+			ag.DELETE("/templates/:id", perm(auth.PermApprovalTemplateManage), rt.Approval.DeleteTemplate)
+
+			ag.GET("/subscriptions", perm(auth.PermApprovalSubscribeManage), rt.Approval.ListSubscriptions)
+			ag.POST("/subscriptions", perm(auth.PermApprovalSubscribeManage), rt.Approval.CreateSubscription)
+			ag.PATCH("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.UpdateSubscription)
+			ag.DELETE("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.DeleteSubscription)
 		}
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)

@@ -17,6 +17,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
@@ -361,6 +362,25 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		},
 	}
 
+	// Phase 15 — Approval Service. Always-on (no config gate) because the
+	// rest of the platform's high-risk endpoints will start gating on the
+	// resulting grants in subsequent phases. The bootstrap also seeds the
+	// built-in templates so a fresh install has a working set without an
+	// admin touching the UI.
+	approvalRepo := repo.NewApprovalRepo(db)
+	approvalBoot, err := approval.Bootstrap(rootCtx, approval.BootstrapDeps{
+		DB:       db,
+		Repo:     approvalRepo,
+		Logger:   logger,
+		UserRepo: userRepo,
+		RoleRepo: roleRepo,
+		NodeRepo: nodeRepo,
+	})
+	if err != nil {
+		return fmt.Errorf("approval bootstrap: %w", err)
+	}
+	routes.Approval = api.NewApprovalHandler(approvalBoot.Service, approvalRepo)
+
 	// Plan 14 — wire the live system-insights service. Disabled by default;
 	// turn on with `insights.enabled: true` in config.
 	if cfg.Insights.Enabled {
@@ -477,6 +497,13 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		g.Go(func() error { return aiSet.Janitor(gctx) })
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
+	// Phase 15 — approval reconciler: expires overdue grants, escalates
+	// timed-out tasks, flips past-window requests to expired. Best-effort
+	// single-goroutine sweep; multiple gateway processes converge via
+	// optimistic locking inside the repo.
+	if approvalBoot != nil && approvalBoot.Reconciler != nil {
+		g.Go(func() error { return approvalBoot.Reconciler.Run(gctx) })
+	}
 	// Plan 18 — async desktop worker bootstrap. Returns nil on failure so
 	// the gateway keeps running; per-session error surfaces via 503 and
 	// state surfaces via GET /api/v1/desktop/stats. The "scheduled" log
