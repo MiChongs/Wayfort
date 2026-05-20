@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { dbService, nodeService } from "@/lib/api/services"
 import type { DBQueryResult, DBTableInfo } from "@/lib/api/types"
 import { SchemaTree } from "@/components/db/schema-tree"
@@ -19,22 +20,52 @@ import { cn } from "@/lib/utils"
 type Props = {
   nodeId: number
   // embedded=true means the host (workspace tab) owns the outer chrome.
-  // Skip the breadcrumb back-link, run with `h-full` instead of viewport
-  // math, and let the parent shell handle node identity.
   embedded?: boolean
   className?: string
 }
 
-// DBStudio — the visual DB browser. Reused by:
-//   - the standalone /nodes/[id]/db route (embedded=false)
-//   - workspace tab body              (embedded=true)
-// Same three-pane layout (schema tree / browse | sql tabs / result grid).
+// DBStudio — visual DB browser.
+//
+// PostgreSQL caveat: each connection is bound to one database at
+// connect time. The database picker here drives a per-DB pool on the
+// backend (see internal/dbquery poolKey). Switching the picker reloads
+// the schema tree from the new DB's catalog.
+//
+// MySQL: information_schema is cluster-wide, so the picker is more of a
+// "default schema for unqualified queries" hint than a hard scope. We
+// still keep it for symmetry + USE-equivalent behavior.
 export function DBStudio({ nodeId, embedded, className }: Props) {
   const node = useQuery({ queryKey: ["node", nodeId], queryFn: () => nodeService.get(nodeId) })
-  const schema = useQuery({
-    queryKey: ["db.schema", nodeId],
-    queryFn: () => dbService.schema(nodeId),
+
+  // database picker state: undefined while we load the list; "" once
+  // the user explicitly picks "default" (driver-default for the node).
+  // After the list loads we auto-pick the first non-system DB so the
+  // user immediately sees their tables instead of an empty postgres DB.
+  const [database, setDatabase] = React.useState<string | undefined>(undefined)
+  const dbList = useQuery({
+    queryKey: ["db.databases", nodeId],
+    queryFn: () => dbService.databases(nodeId),
     retry: false,
+  })
+
+  // First-load auto-pick: prefer the node's proto_options.database if it's
+  // in the list, else fall back to the first non-postgres / non-template
+  // entry.
+  React.useEffect(() => {
+    if (database !== undefined) return
+    const list = dbList.data?.databases
+    if (!list || list.length === 0) return
+    // Heuristic: skip "postgres" (the system bootstrap DB that's usually
+    // empty) when the operator has other catalogs.
+    const preferred = list.find((d) => d !== "postgres") ?? list[0]
+    setDatabase(preferred)
+  }, [dbList.data, database])
+
+  const schema = useQuery({
+    queryKey: ["db.schema", nodeId, database],
+    queryFn: () => dbService.schema(nodeId, database),
+    retry: false,
+    enabled: database !== undefined,
   })
 
   const [tab, setTab] = React.useState<"browse" | "query">("browse")
@@ -45,8 +76,15 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
   const [result, setResult] = React.useState<DBQueryResult | undefined>()
   const [resultErr, setResultErr] = React.useState<string | undefined>()
 
+  // Reset selected table when switching databases — the table list
+  // becomes stale and stale Browse queries would hit the new pool with
+  // an identifier from the old catalog.
+  React.useEffect(() => {
+    setSelected(undefined)
+  }, [database])
+
   const run = useMutation({
-    mutationFn: (s: string) => dbService.query(nodeId, s),
+    mutationFn: (s: string) => dbService.query(nodeId, s, { database }),
     onSuccess: (r) => {
       setResult(r)
       setResultErr(undefined)
@@ -69,6 +107,30 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
   }
 
   const errMsg = (schema.error as { message?: string })?.message
+  const dbListErr = (dbList.error as { message?: string })?.message
+  const databases = dbList.data?.databases ?? []
+
+  const dbPicker = (
+    <div className="flex items-center gap-1.5">
+      <Database className="w-3.5 h-3.5 text-muted-foreground" />
+      <Select
+        value={database ?? ""}
+        onValueChange={(v) => setDatabase(v)}
+        disabled={dbList.isLoading || databases.length === 0}
+      >
+        <SelectTrigger className="h-7 w-44 text-xs">
+          <SelectValue placeholder={dbList.isLoading ? "加载中…" : "选择数据库"} />
+        </SelectTrigger>
+        <SelectContent>
+          {databases.map((name) => (
+            <SelectItem key={name} value={name} className="font-mono text-xs">
+              {name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
 
   return (
     <div className={cn("flex flex-col", embedded ? "h-full" : "h-[calc(100vh-56px)]", className)}>
@@ -85,6 +147,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
             </span>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            {dbPicker}
             <Link
               href={`/nodes/${nodeId}/dbcli`}
               className="text-xs text-muted-foreground hover:text-primary inline-flex items-center gap-1"
@@ -96,12 +159,18 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
               variant="ghost"
               size="sm"
               className="h-7 px-2"
-              onClick={() => schema.refetch()}
-              title="刷新 schema"
+              onClick={() => { dbList.refetch(); schema.refetch() }}
+              title="刷新数据库与 schema"
             >
-              <RefreshCw className={schema.isFetching ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"} />
+              <RefreshCw className={schema.isFetching || dbList.isFetching ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"} />
             </Button>
           </div>
+        </div>
+      )}
+
+      {dbListErr && (
+        <div className="m-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs">
+          无法获取数据库列表：<span className="font-mono">{dbListErr}</span>
         </div>
       )}
 
@@ -127,7 +196,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
             </div>
           ) : (
             <Tabs value={tab} onValueChange={(v) => setTab(v as "browse" | "query")} className="flex-1 min-h-0 flex flex-col">
-              <div className="border-b px-3 pt-2 shrink-0 flex items-center justify-between">
+              <div className="border-b px-3 pt-2 shrink-0 flex items-center justify-between gap-2">
                 <TabsList>
                   <TabsTrigger value="browse" className="gap-1">
                     <Database className="w-3.5 h-3.5" /> 浏览
@@ -137,21 +206,24 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                   </TabsTrigger>
                 </TabsList>
                 {embedded && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 mb-1"
-                    onClick={() => schema.refetch()}
-                    title="刷新 schema"
-                  >
-                    <RefreshCw className={schema.isFetching ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"} />
-                  </Button>
+                  <div className="flex items-center gap-1 mb-1">
+                    {dbPicker}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 px-2"
+                      onClick={() => { dbList.refetch(); schema.refetch() }}
+                      title="刷新数据库与 schema"
+                    >
+                      <RefreshCw className={schema.isFetching || dbList.isFetching ? "w-3.5 h-3.5 animate-spin" : "w-3.5 h-3.5"} />
+                    </Button>
+                  </div>
                 )}
               </div>
               <TabsContent value="browse" className="flex-1 min-h-0 m-0 flex">
                 {selected ? (
-                  <BrowseTab nodeId={nodeId} table={selected} />
+                  <BrowseTab nodeId={nodeId} table={selected} database={database} />
                 ) : (
                   <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
                     点左侧的表名开始浏览

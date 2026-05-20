@@ -52,11 +52,56 @@ type IndexInfo struct {
 	Columns   []string `json:"columns"`
 }
 
-// LoadSchema returns the schema tree for a node. The result is cached
-// by the caller (the REST handler) for a short TTL because schemas
-// rarely change but the query is O(few thousand rows) on a busy DB.
-func (s *Service) LoadSchema(ctx context.Context, nodeID, userID uint64) (*SchemaInfo, error) {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+// ListDatabases returns the names of every database the connection is
+// allowed to see at the *cluster* level. For PostgreSQL we must open
+// a connection (defaulting to the bootstrap "postgres" DB) and read
+// pg_database; the result is then passed back to LoadSchema as the
+// per-call database param so each row's structure can be browsed.
+//
+// For MySQL the per-connection "database" is the same concept as
+// PostgreSQL's "schema" — so "SHOW DATABASES" returns what the user
+// expects to see in the picker, and LoadSchema's information_schema
+// query is already cluster-wide.
+func (s *Service) ListDatabases(ctx context.Context, nodeID, userID uint64) ([]string, error) {
+	// Use empty database → falls back to driver default / proto_options.
+	// For PG this is whatever the node's proto_options names (often
+	// "postgres" — the only DB guaranteed to exist on a fresh cluster).
+	pl, err := s.getOrOpen(ctx, nodeID, userID, "")
+	if err != nil {
+		return nil, err
+	}
+	var q string
+	switch pl.protocol {
+	case model.NodeProtoPostgres:
+		// datistemplate: hide template0 / template1
+		// datallowconn:  hide databases the connection can't open
+		q = `SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname`
+	case model.NodeProtoMySQL:
+		q = `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY SCHEMA_NAME`
+	default:
+		return nil, fmt.Errorf("dbquery: protocol %q list databases not implemented", pl.protocol)
+	}
+	rows, err := pl.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// LoadSchema returns the schema tree for a (node, database). For
+// PostgreSQL `database` is the catalog name (each catalog is a separate
+// pool); for MySQL it's optional — empty means "every non-system schema".
+func (s *Service) LoadSchema(ctx context.Context, nodeID, userID uint64, database string) (*SchemaInfo, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}
@@ -71,8 +116,8 @@ func (s *Service) LoadSchema(ctx context.Context, nodeID, userID uint64) (*Schem
 
 // LoadColumns returns the detailed column list for one table.
 func (s *Service) LoadColumns(ctx context.Context, nodeID, userID uint64,
-	schema, table string) ([]ColumnInfo, error) {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+	database, schema, table string) ([]ColumnInfo, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +132,8 @@ func (s *Service) LoadColumns(ctx context.Context, nodeID, userID uint64,
 
 // LoadIndexes returns indexes for one table.
 func (s *Service) LoadIndexes(ctx context.Context, nodeID, userID uint64,
-	schema, table string) ([]IndexInfo, error) {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+	database, schema, table string) ([]IndexInfo, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}

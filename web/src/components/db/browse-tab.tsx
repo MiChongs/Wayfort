@@ -14,6 +14,9 @@ import { ResultGrid } from "./result-grid"
 type Props = {
   nodeId: number
   table: DBTableInfo
+  // Explicit database — PostgreSQL needs it to route to the right
+  // per-catalog pool; MySQL uses it as the query default schema.
+  database?: string
 }
 
 // BrowseTab — "click a table, see its rows" without writing SQL.
@@ -21,7 +24,7 @@ type Props = {
 // piped to the backend via the rows endpoint so the order is stable
 // across pages. The column metadata panel sits to the right with type
 // + nullable + default + key flags.
-export function BrowseTab({ nodeId, table }: Props) {
+export function BrowseTab({ nodeId, table, database }: Props) {
   const [pageSize, setPageSize] = React.useState(100)
   const [page, setPage] = React.useState(0)
   const [orderBy, setOrderBy] = React.useState<string | undefined>(undefined)
@@ -35,23 +38,24 @@ export function BrowseTab({ nodeId, table }: Props) {
   }, [table.schema, table.name])
 
   const cols = useQuery({
-    queryKey: ["db.cols", nodeId, table.schema, table.name],
-    queryFn: () => dbService.columns(nodeId, table.schema, table.name),
+    queryKey: ["db.cols", nodeId, database, table.schema, table.name],
+    queryFn: () => dbService.columns(nodeId, table.schema, table.name, database),
     staleTime: 60_000,
   })
   const indexes = useQuery({
-    queryKey: ["db.idx", nodeId, table.schema, table.name],
-    queryFn: () => dbService.indexes(nodeId, table.schema, table.name),
+    queryKey: ["db.idx", nodeId, database, table.schema, table.name],
+    queryFn: () => dbService.indexes(nodeId, table.schema, table.name, database),
     staleTime: 60_000,
   })
   const rows = useQuery({
-    queryKey: ["db.rows", nodeId, table.schema, table.name, page, pageSize, orderBy, orderDir],
+    queryKey: ["db.rows", nodeId, database, table.schema, table.name, page, pageSize, orderBy, orderDir],
     queryFn: () =>
       dbService.rows(nodeId, table.schema, table.name, {
         limit: pageSize,
         offset: page * pageSize,
         order_by: orderBy,
         order_dir: orderBy ? orderDir : undefined,
+        database,
       }),
     placeholderData: (prev) => prev,
   })

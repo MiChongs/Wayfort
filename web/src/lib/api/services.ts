@@ -597,23 +597,29 @@ export const approvalService = {
 // ---------------- Phase 17 — DB Studio ----------------
 
 export const dbService = {
-  ping: (nodeId: number) =>
-    api<{ ok: true }>("GET", `/nodes/${nodeId}/db/ping`),
-  schema: (nodeId: number) =>
-    api<DBSchemaInfo>("GET", `/nodes/${nodeId}/db/schema`),
-  columns: (nodeId: number, schema: string, table: string) =>
+  ping: (nodeId: number, database?: string) =>
+    api<{ ok: true }>("GET", `/nodes/${nodeId}/db/ping`, { query: { database } }),
+  // Cluster-level DB list. Phase 17b — PostgreSQL connections are bound
+  // to one DB at a time, so the UI needs this to populate the database
+  // picker; subsequent schema / columns / rows calls forward the picked
+  // name so each catalog gets its own pool.
+  databases: (nodeId: number) =>
+    api<{ databases: string[] }>("GET", `/nodes/${nodeId}/db/databases`),
+  schema: (nodeId: number, database?: string) =>
+    api<DBSchemaInfo>("GET", `/nodes/${nodeId}/db/schema`, { query: { database } }),
+  columns: (nodeId: number, schema: string, table: string, database?: string) =>
     api<{ columns: DBColumnInfo[] }>("GET", `/nodes/${nodeId}/db/columns`, {
-      query: { schema, table },
+      query: { schema, table, database },
     }),
-  indexes: (nodeId: number, schema: string, table: string) =>
+  indexes: (nodeId: number, schema: string, table: string, database?: string) =>
     api<{ indexes: DBIndexInfo[] }>("GET", `/nodes/${nodeId}/db/indexes`, {
-      query: { schema, table },
+      query: { schema, table, database },
     }),
   rows: (
     nodeId: number,
     schema: string,
     table: string,
-    opts: { limit?: number; offset?: number; order_by?: string; order_dir?: "ASC" | "DESC" } = {}
+    opts: { limit?: number; offset?: number; order_by?: string; order_dir?: "ASC" | "DESC"; database?: string } = {}
   ) =>
     api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
       query: { schema, table, ...opts },
@@ -621,13 +627,13 @@ export const dbService = {
   query: (
     nodeId: number,
     sql: string,
-    opts: { limit?: number; args?: unknown[]; reason?: string } = {}
+    opts: { limit?: number; args?: unknown[]; reason?: string; database?: string } = {}
   ) =>
     api<DBQueryResult>("POST", `/nodes/${nodeId}/db/query`, {
-      body: { sql, args: opts.args, limit: opts.limit, reason: opts.reason },
+      body: { sql, args: opts.args, limit: opts.limit, reason: opts.reason, database: opts.database },
     }),
-  exec: (nodeId: number, sql: string, opts: { args?: unknown[]; reason?: string } = {}) =>
+  exec: (nodeId: number, sql: string, opts: { args?: unknown[]; reason?: string; database?: string } = {}) =>
     api<DBExecResult>("POST", `/nodes/${nodeId}/db/exec`, {
-      body: { sql, args: opts.args, reason: opts.reason },
+      body: { sql, args: opts.args, reason: opts.reason, database: opts.database },
     }),
 }

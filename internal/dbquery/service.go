@@ -154,8 +154,8 @@ type ExecResult struct {
 //     append LIMIT because the caller may have already paginated and a
 //     duplicate LIMIT would behave inconsistently across dialects.
 func (s *Service) Query(ctx context.Context, nodeID uint64, userID uint64,
-	statement string, args []any, requestedMax int) (*QueryResult, error) {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+	database, statement string, args []any, requestedMax int) (*QueryResult, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +217,8 @@ func (s *Service) Query(ctx context.Context, nodeID uint64, userID uint64,
 
 // Exec runs INSERT / UPDATE / DELETE / DDL. Returns affected rows.
 func (s *Service) Exec(ctx context.Context, nodeID, userID uint64,
-	statement string, args []any) (*ExecResult, error) {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+	database, statement string, args []any) (*ExecResult, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +239,8 @@ func (s *Service) Exec(ctx context.Context, nodeID, userID uint64,
 
 // Ping checks an existing pool (or opens one) and runs a no-op probe.
 // Used by the REST handler to fail-fast on connectivity / auth.
-func (s *Service) Ping(ctx context.Context, nodeID, userID uint64) error {
-	pl, err := s.getOrOpen(ctx, nodeID, userID)
+func (s *Service) Ping(ctx context.Context, nodeID, userID uint64, database string) error {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
 	if err != nil {
 		return err
 	}
@@ -249,18 +249,20 @@ func (s *Service) Ping(ctx context.Context, nodeID, userID uint64) error {
 	return pl.db.PingContext(ctx)
 }
 
-// poolKey is what identifies a (node, user) pool. Including the user
-// keeps per-user audit boundaries clean — every user gets their own
-// connection so the DB-side `usr` / `current_user` reflects who's
-// actually running the query.
-func poolKey(nodeID, userID uint64) string {
-	return strconv.FormatUint(nodeID, 10) + ":" + strconv.FormatUint(userID, 10)
+// poolKey is what identifies a (node, user, database) pool. Including
+// the user keeps per-user audit boundaries clean; including the database
+// is critical for PostgreSQL where the database is set at connect time
+// and can't be switched on an existing connection. Empty database keeps
+// pre-extension callers working — they get the driver default db.
+func poolKey(nodeID, userID uint64, database string) string {
+	return strconv.FormatUint(nodeID, 10) + ":" + strconv.FormatUint(userID, 10) + ":" + database
 }
 
-// getOrOpen reuses a live pool or opens a new one. Touched-time is
-// updated under the lock so the evictor doesn't kill a hot pool.
-func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64) (*pool, error) {
-	key := poolKey(nodeID, userID)
+// getOrOpen reuses a live pool or opens a new one. database="" means
+// "use whatever the node's proto_options names, or the driver default".
+// Non-empty database overrides per call.
+func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64, database string) (*pool, error) {
+	key := poolKey(nodeID, userID, database)
 	s.mu.Lock()
 	if pl, ok := s.pools[key]; ok {
 		pl.lastUsedAt = time.Now()
@@ -270,7 +272,7 @@ func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64) (*pool, 
 	s.mu.Unlock()
 
 	// Build outside the lock — opening involves DNS + chain dial.
-	pl, err := s.build(ctx, nodeID, userID)
+	pl, err := s.build(ctx, nodeID, userID, database)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +296,13 @@ func (s *Service) getOrOpen(ctx context.Context, nodeID, userID uint64) (*pool, 
 // build does the heavy lifting: load the node + credential, build the
 // chain dialer, register / inject it into the driver, and Ping. The
 // returned pool is ready for queries.
-func (s *Service) build(ctx context.Context, nodeID, userID uint64) (*pool, error) {
+//
+// `database` overrides the per-node proto_options.database when
+// non-empty. For postgres an empty argument falls back to proto_options
+// or "postgres". For mysql an empty argument falls back to "" (the
+// driver treats it as "no default schema"; SHOW DATABASES / SELECT
+// across schemas still works).
+func (s *Service) build(ctx context.Context, nodeID, userID uint64, database string) (*pool, error) {
 	node, err := s.gw.NodeRepo().FindByID(ctx, nodeID)
 	if err != nil {
 		return nil, fmt.Errorf("dbquery: load node: %w", err)
@@ -341,7 +349,9 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64) (*pool, erro
 	}
 
 	addr := net.JoinHostPort(node.Host, strconv.Itoa(node.Port))
-	database := dbNameFromOptions(node.ProtoOptions, node.EffectiveProtocol())
+	if database == "" {
+		database = dbNameFromOptions(node.ProtoOptions, node.EffectiveProtocol())
+	}
 
 	var (
 		db         *sql.DB

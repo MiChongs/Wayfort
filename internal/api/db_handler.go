@@ -50,28 +50,43 @@ func (h *DBHandler) gate(c *gin.Context) (uint64, *auth.Claims, bool) {
 	return nodeID, claims, true
 }
 
-// Ping — GET /api/v1/nodes/:id/db/ping
-// Cheap connectivity probe so the UI can show a friendly "can't reach"
-// message before opening the editor.
+// Ping — GET /api/v1/nodes/:id/db/ping?database=...
 func (h *DBHandler) Ping(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)
 	if !ok {
 		return
 	}
-	if err := h.Svc.Ping(c.Request.Context(), nodeID, claims.UserID); err != nil {
+	if err := h.Svc.Ping(c.Request.Context(), nodeID, claims.UserID, c.Query("database")); err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
-// Schema — GET /api/v1/nodes/:id/db/schema
+// Databases — GET /api/v1/nodes/:id/db/databases
+// Cluster-level DB listing for the UI's database picker. PostgreSQL
+// connections are bound to one DB at connect time; this surface lets
+// the operator switch to another one (which spawns a fresh pool).
+func (h *DBHandler) Databases(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	names, err := h.Svc.ListDatabases(c.Request.Context(), nodeID, claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"databases": names})
+}
+
+// Schema — GET /api/v1/nodes/:id/db/schema?database=...
 func (h *DBHandler) Schema(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)
 	if !ok {
 		return
 	}
-	info, err := h.Svc.LoadSchema(c.Request.Context(), nodeID, claims.UserID)
+	info, err := h.Svc.LoadSchema(c.Request.Context(), nodeID, claims.UserID, c.Query("database"))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -79,7 +94,7 @@ func (h *DBHandler) Schema(c *gin.Context) {
 	c.JSON(http.StatusOK, info)
 }
 
-// Columns — GET /api/v1/nodes/:id/db/columns?schema=...&table=...
+// Columns — GET /api/v1/nodes/:id/db/columns?database=...&schema=...&table=...
 func (h *DBHandler) Columns(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)
 	if !ok {
@@ -90,7 +105,7 @@ func (h *DBHandler) Columns(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
 		return
 	}
-	cols, err := h.Svc.LoadColumns(c.Request.Context(), nodeID, claims.UserID, schema, table)
+	cols, err := h.Svc.LoadColumns(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -98,7 +113,7 @@ func (h *DBHandler) Columns(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"columns": cols})
 }
 
-// Indexes — GET /api/v1/nodes/:id/db/indexes?schema=...&table=...
+// Indexes — GET /api/v1/nodes/:id/db/indexes?database=...&schema=...&table=...
 func (h *DBHandler) Indexes(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)
 	if !ok {
@@ -109,7 +124,7 @@ func (h *DBHandler) Indexes(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
 		return
 	}
-	idxs, err := h.Svc.LoadIndexes(c.Request.Context(), nodeID, claims.UserID, schema, table)
+	idxs, err := h.Svc.LoadIndexes(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -121,11 +136,14 @@ func (h *DBHandler) Indexes(c *gin.Context) {
 type queryBody struct {
 	SQL    string `json:"sql"`
 	Args   []any  `json:"args,omitempty"`
+	// Database overrides the connection's bound DB. Required for PG
+	// cross-catalog browsing; optional for MySQL where the same
+	// connection can SELECT across schemas freely.
+	Database string `json:"database,omitempty"`
 	// Limit caps the SELECT row count (Query only). 0 = use server default.
 	Limit  int    `json:"limit,omitempty"`
 	// Reason is the human-supplied explanation that lands in audit + the
-	// approval ledger if enforcement kicks in. The UI surfaces this when
-	// `confirm_write` is true.
+	// approval ledger if enforcement kicks in.
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -155,7 +173,7 @@ func (h *DBHandler) Query(c *gin.Context) {
 		return
 	}
 	out, err := h.Svc.Query(c.Request.Context(), nodeID, claims.UserID,
-		body.SQL, body.Args, body.Limit)
+		body.Database, body.SQL, body.Args, body.Limit)
 	if err != nil {
 		h.logSQL(c, nodeID, claims, "query.fail", body.SQL, body.Reason, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -216,7 +234,7 @@ func (h *DBHandler) Exec(c *gin.Context) {
 			return
 		}
 	}
-	out, err := h.Svc.Exec(c.Request.Context(), nodeID, claims.UserID, body.SQL, body.Args)
+	out, err := h.Svc.Exec(c.Request.Context(), nodeID, claims.UserID, body.Database, body.SQL, body.Args)
 	if err != nil {
 		h.logSQL(c, nodeID, claims, "exec.fail", body.SQL, body.Reason, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -226,15 +244,14 @@ func (h *DBHandler) Exec(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
-// Rows — GET /api/v1/nodes/:id/db/rows?schema=...&table=...&limit=&offset=
-// Browse mode for "click a table, see N rows". Wraps Query with a
-// SELECT * SQL we build server-side so the front-end doesn't have to
-// quote identifiers per-dialect.
+// Rows — GET /api/v1/nodes/:id/db/rows?database=...&schema=...&table=...&limit=&offset=
+// Browse mode for "click a table, see N rows".
 func (h *DBHandler) Rows(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)
 	if !ok {
 		return
 	}
+	database := c.Query("database")
 	schema, table := c.Query("schema"), c.Query("table")
 	if schema == "" || table == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
@@ -253,15 +270,12 @@ func (h *DBHandler) Rows(c *gin.Context) {
 	if orderDir != "ASC" && orderDir != "DESC" {
 		orderDir = ""
 	}
-	// Pull the protocol so we use the right quoting + LIMIT/OFFSET form.
-	// (LoadColumns has to open the pool anyway — we piggyback on it for
-	// the protocol info; cost is one round-trip.)
-	sqlText, err := h.buildRowsSQL(c, nodeID, claims.UserID, schema, table, orderBy, orderDir, limit, offset)
+	sqlText, err := h.buildRowsSQL(c, nodeID, claims.UserID, database, schema, table, orderBy, orderDir, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	out, err := h.Svc.Query(c.Request.Context(), nodeID, claims.UserID, sqlText, nil, limit)
+	out, err := h.Svc.Query(c.Request.Context(), nodeID, claims.UserID, database, sqlText, nil, limit)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -275,10 +289,8 @@ func (h *DBHandler) Rows(c *gin.Context) {
 // an arbitrary string into the query — the columns call fails on a
 // non-existent table and rejects garbage names.
 func (h *DBHandler) buildRowsSQL(c *gin.Context, nodeID, userID uint64,
-	schema, table, orderBy, orderDir string, limit, offset int) (string, error) {
-	// Validate identifiers by checking they exist. The cheap path is
-	// LoadColumns; the call also confirms the user can reach the table.
-	cols, err := h.Svc.LoadColumns(c.Request.Context(), nodeID, userID, schema, table)
+	database, schema, table, orderBy, orderDir string, limit, offset int) (string, error) {
+	cols, err := h.Svc.LoadColumns(c.Request.Context(), nodeID, userID, database, schema, table)
 	if err != nil {
 		return "", err
 	}
