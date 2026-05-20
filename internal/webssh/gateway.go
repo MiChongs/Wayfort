@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
@@ -47,6 +48,11 @@ type Gateway struct {
 	cache     *cache.Cache
 	anonymous AnonymousLauncher
 	anonOn    bool
+	// approval is nil unless the bootstrap wired the Phase 16 approval
+	// service. When non-nil, HandleNodeSSH / HandleNodeTelnet refuse a
+	// dial against any node whose RequiresApprovalForConnect flag is
+	// set and the requesting user has no active grant.
+	approval *approval.Service
 }
 
 type GatewayOptions struct {
@@ -91,6 +97,11 @@ func NewGateway(
 	}
 }
 
+// SetApproval wires the Phase 16 approval service after construction so the
+// existing NewGateway signature doesn't churn. Pass nil to disable the
+// gate; the gateway behaves identically to the pre-Phase-16 codebase.
+func (g *Gateway) SetApproval(svc *approval.Service) { g.approval = svc }
+
 // HandleNodeSSH upgrades the request to WebSocket and tunnels into the named node.
 func (g *Gateway) HandleNodeSSH(c *gin.Context) {
 	claims := auth.FromContext(c.Request.Context())
@@ -114,6 +125,29 @@ func (g *Gateway) HandleNodeSSH(c *gin.Context) {
 	if node.Disabled {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "node disabled"})
 		return
+	}
+
+	// Phase 16 — enforce per-node approval gate before WS upgrade. The
+	// dial happens later in runNodeSession; doing the check here means a
+	// rejected request never opens a socket the browser would need to
+	// tear down. CheckEnforced is a no-op when the node's flag is unset.
+	if g.approval != nil {
+		res, err := g.approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			g.logger.Warn("approval check error", zap.Error(err), zap.Uint64("node_id", nodeID))
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
 	}
 
 	conn, err := acceptWS(c)

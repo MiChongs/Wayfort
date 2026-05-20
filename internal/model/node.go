@@ -38,6 +38,14 @@ type Node struct {
 	Region       string    `gorm:"size:64" json:"region"`
 	Description  string    `gorm:"size:512" json:"description"`
 	Disabled     bool      `gorm:"default:false" json:"disabled"`
+
+	// Phase 16 — approval enforcement flags. When set, the action-bearing
+	// modules (webssh / dbcli / sftp / desktop / portforward) refuse the
+	// action unless approval.Service.VerifyGrant returns an active grant.
+	// Default false → no behavior change on existing deployments.
+	RequiresApprovalForConnect  bool `gorm:"default:false" json:"requires_approval_for_connect"`
+	RequiresApprovalForFileXfer bool `gorm:"default:false" json:"requires_approval_for_file_xfer"`
+
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

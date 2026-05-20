@@ -37,19 +37,21 @@ type Service struct {
 	policy   *PolicyEngine
 	engine   Engine
 	enricher ContextEnricher
+	enforcer Enforcer
 	notifier *FanoutNotifier
 	logger   *zap.Logger
 	clock    func() time.Time
 }
 
 // Options bundles construction parameters. The Engine field is required;
-// Notifier and Enricher are optional and default to no-ops.
+// Notifier / Enricher / Enforcer are optional and default to no-ops.
 type Options struct {
 	Repo     *repo.ApprovalRepo
 	Ledger   *Ledger
 	Policy   *PolicyEngine
 	Engine   Engine
 	Enricher ContextEnricher
+	Enforcer Enforcer
 	Notifier *FanoutNotifier
 	Logger   *zap.Logger
 }
@@ -79,6 +81,7 @@ func NewService(opt Options) (*Service, error) {
 		policy:   opt.Policy,
 		engine:   opt.Engine,
 		enricher: opt.Enricher,
+		enforcer: opt.Enforcer,
 		notifier: opt.Notifier,
 		logger:   logger,
 		clock:    time.Now,

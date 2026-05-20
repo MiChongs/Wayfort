@@ -26,6 +26,14 @@ type Credential struct {
 	Username   string         `gorm:"size:128" json:"username"`
 	Passphrase []byte         `json:"-"`
 	Secret     []byte         `json:"-"`
+
+	// Phase 16 — when set, decrypting this credential's secret requires
+	// an active credential_use grant for the calling user. Used for
+	// privileged service accounts (root, Administrator, dba) that
+	// shouldn't be reachable without a per-use approval. Default false →
+	// no behavior change.
+	RequiresApprovalForUse bool `gorm:"default:false" json:"requires_approval_for_use"`
+
 	CreatedAt  time.Time      `json:"created_at"`
 	UpdatedAt  time.Time      `json:"updated_at"`
 }

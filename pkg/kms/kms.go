@@ -134,6 +134,36 @@ type KMS interface {
 	Healthcheck(ctx context.Context) error
 }
 
+// Signer is an optional capability some KMS providers expose: produce and
+// verify a detached signature over a caller-supplied digest. Used by the
+// Phase 16 approval-ledger authenticated chain. The KMS interface
+// intentionally does not require Sign — not every provider has a usable
+// signing API (Azure Key Vault's sign is heavyweight, GCP requires a
+// separate asymmetric key, etc.). Callers do a type assertion and fall
+// back to hash-chain-only when Sign isn't available.
+//
+// Wire format
+// -----------
+// Sign returns provider-opaque bytes. The verifier must route a given
+// signature to the SAME provider via KeyID (or whatever identifier the
+// provider returns from SigningKeyID()). For Local that's the alias
+// stored on the kms_providers row; for cloud providers it's the key ARN /
+// resource path / Key Vault key ID.
+type Signer interface {
+	// Sign produces a detached signature over the digest. digest is
+	// already SHA-256-sized for our use; providers that want to apply
+	// their own hash treat this as the message bytes.
+	Sign(ctx context.Context, digest []byte) (signature []byte, err error)
+	// Verify checks a signature against the digest. Returns nil on
+	// success. Implementations MUST validate the signature
+	// cryptographically — never return nil unconditionally.
+	Verify(ctx context.Context, digest, signature []byte) error
+	// SigningKeyID returns the provider-side identifier of the signing
+	// key. The approval ledger stores this alongside the signature so a
+	// verifier can route to the correct key.
+	SigningKeyID() string
+}
+
 // Errors returned by KMS implementations.
 var (
 	ErrUnknownKind        = errors.New("kms: unknown provider kind")
@@ -143,6 +173,11 @@ var (
 	ErrInvalidWiremessage = errors.New("kms: malformed wrapped DEK")
 	ErrKeyVersionMismatch = errors.New("kms: stored key version differs from KMS response")
 	ErrRewrapNotSupported = errors.New("kms: provider does not support rewrap")
+	// ErrSignNotSupported is returned by Sign / Verify on providers that
+	// haven't implemented the Signer capability. Callers should treat
+	// it as "fall back to hash-chain-only" rather than failing the
+	// surrounding operation.
+	ErrSignNotSupported = errors.New("kms: provider does not support sign/verify")
 )
 
 // WrapError tags a provider-side error with its Kind so audit + logs can

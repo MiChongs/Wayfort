@@ -25,6 +25,14 @@ type BootstrapDeps struct {
 	UserRepo *repo.UserRepo
 	RoleRepo *repo.RoleRepo
 	NodeRepo *repo.NodeRepo
+	CredRepo *repo.CredentialRepo
+
+	// SignerLookup is the optional KMS-backed signer the ledger uses
+	// to produce authenticated chain entries. Nil → hash-chain-only
+	// (still tamper-evident). When non-nil, the bootstrap wraps it in
+	// a LedgerSigner and attaches it to the Ledger so every event
+	// gets signed by the current primary KMS.
+	SignerLookup KMSSignerLookup
 }
 
 // BootstrapResult is what cmd/jumpserver hangs onto so it can spawn the
@@ -52,10 +60,16 @@ func Bootstrap(ctx context.Context, deps BootstrapDeps) (*BootstrapResult, error
 	}
 
 	ledger := NewLedger(deps.Repo)
+	if deps.SignerLookup != nil {
+		if signer := NewKMSLedgerSigner(deps.SignerLookup); signer != nil {
+			ledger = ledger.WithSigner(signer)
+		}
+	}
 	policy := NewPolicyEngine(deps.Repo)
 
 	lookup := buildApproverLookup(deps.DB, deps.RoleRepo)
 	enricher := buildEnricher(deps.UserRepo, deps.RoleRepo, deps.NodeRepo)
+	enforcer := NewRepoEnforcer(deps.DB, deps.NodeRepo, deps.CredRepo)
 
 	engine := NewStateMachineEngine(deps.Repo, lookup, ledger)
 
@@ -75,6 +89,7 @@ func Bootstrap(ctx context.Context, deps BootstrapDeps) (*BootstrapResult, error
 		Policy:   policy,
 		Engine:   engine,
 		Enricher: enricher,
+		Enforcer: enforcer,
 		Notifier: fanout,
 		Logger:   logger,
 	})

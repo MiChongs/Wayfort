@@ -2,12 +2,15 @@ package kms
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"sort"
 	"strings"
 
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"golang.org/x/crypto/hkdf"
 )
 
 // Local is a KMS provider whose KEK lives in the application's own DB
@@ -129,6 +132,58 @@ func (l *Local) Rewrap(ctx context.Context, ciphertext []byte, keyID string, key
 	}
 	defer wipe(dek)
 	return l.EncryptDEK(ctx, dek, encryptionContext)
+}
+
+// signingKey derives the Ed25519 seed from the KEK via HKDF-SHA256 so the
+// signing key is cryptographically separate from the AEAD wrapping key
+// even though they share the same root secret. Same KEK → same Ed25519
+// keypair across process restarts, which is what we want: the ledger's
+// authenticity check survives node restarts and replicas.
+//
+// Domain separator "approval.ledger.signing.v1" is deliberately stable —
+// changing it would orphan every previously-signed event. Add a new
+// version constant if a key rotation policy ever demands it.
+func (l *Local) signingKey() ed25519.PrivateKey {
+	const info = "approval.ledger.signing.v1"
+	r := hkdf.New(sha256.New, l.kek, nil, []byte(info))
+	seed := make([]byte, ed25519.SeedSize)
+	_, _ = r.Read(seed)
+	return ed25519.NewKeyFromSeed(seed)
+}
+
+// SigningKeyID returns the same alias as the wrapping key — the kms_providers
+// row carries a single Name, and the ledger stores it so a future
+// auditor can verify "this signature was produced by the provider
+// identified as N".
+func (l *Local) SigningKeyID() string { return l.keyID }
+
+// Sign produces an Ed25519 signature over the supplied digest. The digest
+// is already SHA-256-sized by the caller (the approval ledger feeds in
+// event.Hash directly). Ed25519's PureEdDSA accepts arbitrary-length
+// messages, so we sign the digest verbatim.
+func (l *Local) Sign(_ context.Context, digest []byte) ([]byte, error) {
+	if len(digest) == 0 {
+		return nil, fmt.Errorf("kms local sign: empty digest")
+	}
+	pk := l.signingKey()
+	defer wipe(pk[:ed25519.SeedSize])
+	sig := ed25519.Sign(pk, digest)
+	return sig, nil
+}
+
+// Verify checks the signature; nil = valid.
+func (l *Local) Verify(_ context.Context, digest, signature []byte) error {
+	if len(signature) != ed25519.SignatureSize {
+		return fmt.Errorf("kms local verify: signature wrong length (%d != %d)",
+			len(signature), ed25519.SignatureSize)
+	}
+	pk := l.signingKey()
+	defer wipe(pk[:ed25519.SeedSize])
+	pub := pk.Public().(ed25519.PublicKey)
+	if !ed25519.Verify(pub, digest, signature) {
+		return fmt.Errorf("kms local verify: signature does not match")
+	}
+	return nil
 }
 
 // Healthcheck wraps + unwraps a 32-byte sentinel DEK and verifies the

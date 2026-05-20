@@ -61,9 +61,19 @@ type Service struct {
 	mu      sync.RWMutex
 	primary kms.KMS         // wrapper used to wrap fresh envelopes
 	cache   map[uint64]kms.KMS // resolved providers, keyed by KMSProvider.ID
+	// decryptGate is the Phase 16 approval enforcement hook. Invoked
+	// inside Decrypt BEFORE any KMS call so a denied decrypt skips
+	// network round-trips. nil disables the gate (default).
+	decryptGate DecryptGate
 
 	unsealer *kms.Unsealer
 }
+
+// DecryptGate is the approval-enforcement contract Decrypt invokes once it
+// has loaded the envelope row but before it asks the KMS to unwrap. The
+// implementation is wired by cmd/jumpserver during bootstrap; secrets
+// itself remains free of any approval-package import.
+type DecryptGate func(ctx context.Context, ownerType model.SecretEnvelopeOwnerType, ownerID uint64, audit AuditContext) error
 
 // Deps groups the constructor inputs.
 type Deps struct {
@@ -110,6 +120,22 @@ func (s *Service) SetPrimary(provider kms.KMS, row *model.KMSProvider) {
 	if row != nil {
 		s.cache[row.ID] = provider
 	}
+}
+
+// SetDecryptGate wires the Phase 16 approval gate. Pass nil to clear it.
+// Safe to call after construction; takes effect on the next Decrypt.
+func (s *Service) SetDecryptGate(g DecryptGate) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.decryptGate = g
+}
+
+// decryptGateOf returns the current gate under the read lock so callers
+// can invoke it without holding the lock through the gate execution.
+func (s *Service) decryptGateOf() DecryptGate {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.decryptGate
 }
 
 // PrimaryProvider exposes the active primary for code that needs to
@@ -278,6 +304,17 @@ func (s *Service) Decrypt(ctx context.Context, req DecryptRequest) ([]byte, erro
 			env.ID, env.OwnerType, env.OwnerID, req.OwnerType, req.OwnerID)
 		s.auditFailure(ctx, model.AuditOpDecrypt, env.ID, env.OwnerType, env.OwnerID, nil, req.Audit, err)
 		return nil, err
+	}
+
+	// Phase 16 — invoke the approval gate before we ask the KMS to
+	// unwrap. A denied decrypt audits as a failure and bubbles back to
+	// the caller; the caller is expected to be a handler that converts
+	// the error into a 403 with an "approval_required" hint.
+	if gate := s.decryptGateOf(); gate != nil {
+		if err := gate(ctx, env.OwnerType, env.OwnerID, req.Audit); err != nil {
+			s.auditFailure(ctx, model.AuditOpDecrypt, env.ID, env.OwnerType, env.OwnerID, nil, req.Audit, err)
+			return nil, err
+		}
 	}
 
 	// Verify AAD binding before we hit the KMS.

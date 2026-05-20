@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -31,6 +32,8 @@ type Handler struct {
 	Bridge *Bridge
 	Cfg    config.GuacamoleConfig
 	Sealer pkgcrypto.Vault
+	// Approval is wired by the bootstrap; nil = no gating.
+	Approval *approval.Service
 }
 
 func NewHandler(gw *webssh.Gateway, cfg config.GuacamoleConfig, sealer pkgcrypto.Vault) *Handler {
@@ -69,6 +72,28 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node protocol mismatch"})
 		return
 	}
+
+	// Phase 16 — asset_access gate, same as webssh / dbcli. RDP/VNC
+	// sessions to gated nodes need an active grant before the SOCKS
+	// listener gets spun up.
+	if h.Approval != nil {
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
+	}
+
 	cred, err := h.GW.CredentialRepo().FindByID(c.Request.Context(), node.CredentialID)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -22,6 +23,8 @@ type Handler struct {
 	GW       *webssh.Gateway
 	Launcher *Launcher
 	Sealer   pkgcrypto.Vault
+	// Approval is wired by the bootstrap; nil = no gating.
+	Approval *approval.Service
 }
 
 func (h *Handler) Handle(c *gin.Context) {
@@ -48,6 +51,28 @@ func (h *Handler) Handle(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "node is not a db cli target"})
 		return
 	}
+
+	// Phase 16 — same asset_access gate as webssh; DB CLI sessions are
+	// just terminals into a privileged shell, so the gate sits on the
+	// node's RequiresApprovalForConnect flag.
+	if h.Approval != nil {
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizAssetAccess,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "connect",
+		})
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
+			return
+		}
+		if !res.Allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+			return
+		}
+	}
+
 	cred, err := h.GW.CredentialRepo().FindByID(c.Request.Context(), node.CredentialID)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

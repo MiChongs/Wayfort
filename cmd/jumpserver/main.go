@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -44,6 +45,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/jumpserver-anonymous/pkg/kms"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
@@ -368,18 +370,103 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// built-in templates so a fresh install has a working set without an
 	// admin touching the UI.
 	approvalRepo := repo.NewApprovalRepo(db)
+
+	// Phase 16 — wire the KMS-backed ledger signer. Each Sign call
+	// resolves the *currently primary* KMS provider so an admin can
+	// rotate via /api/v1/setup/kms/:id/promote without restarting; new
+	// events get signed by the new key, existing events keep their
+	// historical signature.
+	kmsProviderRepo := repo.NewKMSProviderRepo(db)
+	signerLookup := func(ctx context.Context) (kms.Signer, uint64, error) {
+		if secretsBoot == nil || secretsBoot.Service == nil {
+			return nil, 0, nil
+		}
+		primary := secretsBoot.Service.PrimaryProvider()
+		if primary == nil {
+			return nil, 0, nil
+		}
+		// Type assert; providers that don't expose Sign (every cloud
+		// provider in Phase 16a) cause us to fall back to hash-chain-
+		// only — explicitly preferred over failing every approval
+		// transition closed.
+		signer, ok := primary.(kms.Signer)
+		if !ok {
+			return nil, 0, nil
+		}
+		row, err := kmsProviderRepo.Primary(ctx)
+		if err != nil {
+			return signer, 0, err
+		}
+		var rowID uint64
+		if row != nil {
+			rowID = row.ID
+		}
+		return signer, rowID, nil
+	}
+
 	approvalBoot, err := approval.Bootstrap(rootCtx, approval.BootstrapDeps{
-		DB:       db,
-		Repo:     approvalRepo,
-		Logger:   logger,
-		UserRepo: userRepo,
-		RoleRepo: roleRepo,
-		NodeRepo: nodeRepo,
+		DB:           db,
+		Repo:         approvalRepo,
+		Logger:       logger,
+		UserRepo:     userRepo,
+		RoleRepo:     roleRepo,
+		NodeRepo:     nodeRepo,
+		CredRepo:     credRepo,
+		SignerLookup: signerLookup,
 	})
 	if err != nil {
 		return fmt.Errorf("approval bootstrap: %w", err)
 	}
 	routes.Approval = api.NewApprovalHandler(approvalBoot.Service, approvalRepo)
+
+	// Phase 16 — wire the per-resource enforcement gate into every
+	// action-bearing subsystem. The gate is opt-in per resource via the
+	// RequiresApproval flags on model.Node / model.Credential; nothing
+	// changes for existing deployments until an admin sets a flag.
+	//
+	// Pre-Phase-16 subsystems still build without these calls — passing
+	// a nil approval Service degrades the gate to a no-op.
+	approvalSvc := approvalBoot.Service
+	wsGateway.SetApproval(approvalSvc)
+	sftpHandler.Approval = approvalSvc
+	if guacHandler != nil {
+		guacHandler.Approval = approvalSvc
+	}
+	if dbcliHandler != nil {
+		dbcliHandler.Approval = approvalSvc
+	}
+	if pfHandler != nil {
+		pfHandler.Approval = approvalSvc
+	}
+
+	// secrets.DecryptGate is the credential_use enforcement seam. We
+	// only gate user-initiated decrypts (Audit.UserID != nil); the
+	// rewrap job and bootstrap pass UserID == nil so the gate stays out
+	// of the system-level decrypts that have no human in the loop.
+	secretsBoot.Service.SetDecryptGate(func(ctx context.Context,
+		ownerType model.SecretEnvelopeOwnerType, ownerID uint64,
+		audit secrets.AuditContext) error {
+		if ownerType != model.OwnerCredentialSecret {
+			return nil
+		}
+		if audit.UserID == nil || *audit.UserID == 0 {
+			return nil
+		}
+		res, err := approvalSvc.CheckEnforced(ctx, approval.EnforcementCheck{
+			UserID:       *audit.UserID,
+			BusinessType: model.ApprovalBizCredentialUse,
+			ResourceType: "credential",
+			ResourceID:   strconv.FormatUint(ownerID, 10),
+			Action:       "credential_use",
+		})
+		if err != nil {
+			return err
+		}
+		if !res.Allowed {
+			return fmt.Errorf("%s", res.Reason)
+		}
+		return nil
+	})
 
 	// Plan 14 — wire the live system-insights service. Disabled by default;
 	// turn on with `insights.enabled: true` in config.
@@ -414,6 +501,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Audit:    auditWriter,
 			Sessions: sessionRepo,
 		})
+		desktopMgr.SetApproval(approvalSvc)
 		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
 		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
 
