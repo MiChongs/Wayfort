@@ -91,8 +91,12 @@ type BulkRunResult struct {
 	RunID      uint64 `gorm:"index;not null" json:"run_id"`
 	NodeID     uint64 `gorm:"not null" json:"node_id"`
 	NodeName   string `gorm:"size:128" json:"node_name"`
-	Stdout     string `gorm:"type:longtext" json:"stdout"`
-	Stderr     string `gorm:"type:longtext" json:"stderr"`
+	// PG: text is the unbounded variable-length string type; longtext is
+	// MySQL-only and trips SQLSTATE 42704 at AutoMigrate on a PG cluster.
+	// Bulk-run stdout/stderr can be megabytes for `journalctl` style
+	// commands, so we don't cap them with VARCHAR.
+	Stdout     string `gorm:"type:text" json:"stdout"`
+	Stderr     string `gorm:"type:text" json:"stderr"`
 	ExitCode   int    `json:"exit_code"`
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `gorm:"size:512" json:"error,omitempty"`
