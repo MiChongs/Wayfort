@@ -94,6 +94,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	userRepo := repo.NewUserRepo(db)
 	nodeRepo := repo.NewNodeRepo(db)
 	proxyRepo := repo.NewProxyRepo(db)
+	snippetRepo := repo.NewSnippetRepo(db)
+	historyRepoTerm := repo.NewCommandHistoryRepo(db)
+	terminalProfileRepo := repo.NewTerminalProfileRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
@@ -294,6 +297,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
 		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
+
+		// Phase 11 — terminal personalization.
+		Snippet:         &api.SnippetHandler{Repo: snippetRepo},
+		CommandHistory:  &api.CommandHistoryHandler{Repo: historyRepoTerm, Profile: terminalProfileRepo},
+		TerminalProfile: &api.TerminalProfileHandler{Repo: terminalProfileRepo},
 	}
 
 	// Plan 14 — wire the live system-insights service. Disabled by default;

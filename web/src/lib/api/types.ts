@@ -449,3 +449,39 @@ export interface TokenPair {
   refresh_token?: string
   expires_at: string
 }
+
+// ----- Phase 11 — terminal personalization -----
+
+export interface Snippet {
+  id: number
+  user_id: number
+  name: string
+  description?: string
+  body: string
+  tags?: string
+  pinned: boolean
+  usage_count: number
+  last_used_at?: string | null
+  created_at: string
+  updated_at: string
+  variables?: string[] // server-extracted {{var}} names
+}
+
+export interface CommandHistoryRow {
+  id: number
+  user_id: number
+  node_id?: number | null
+  session_id?: string
+  command: string
+  exit_code: number
+  duration_ms: number
+  working_dir?: string
+  created_at: string
+}
+
+export interface TerminalProfileRow {
+  user_id: number
+  body: string
+  history_enabled: boolean
+  updated_at?: string
+}

@@ -13,6 +13,7 @@ import {
   Download,
   Eraser,
   FolderTree,
+  History,
   Maximize,
   Minimize,
   Plug,
@@ -20,6 +21,7 @@ import {
   Search as SearchIcon,
   Send,
   Settings as SettingsIcon,
+  TerminalSquare,
   Zap,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
@@ -63,6 +65,9 @@ type Props = {
   onReconnect: () => void
   onDisconnect: () => void
   onOpenSftp?: () => void
+  // Phase 11 — optional snippet + history launchers.
+  onOpenSnippets?: () => void
+  onOpenHistory?: () => void
   searchTrigger: React.RefObject<HTMLButtonElement | null>
 }
 
@@ -109,6 +114,12 @@ export function TerminalToolbar(p: Props) {
         <IconBtn icon={Copy} onClick={p.onCopy} title="复制选区 (Ctrl/⌘+Shift+C)" />
         <IconBtn icon={Clipboard} onClick={p.onPaste} title="粘贴 (Ctrl/⌘+Shift+V)" />
         <IconBtn icon={Eraser} onClick={p.onClear} title="清屏" />
+        {p.onOpenSnippets && (
+          <IconBtn icon={TerminalSquare} onClick={p.onOpenSnippets} title="命令片段 (Ctrl/⌘+Shift+I)" />
+        )}
+        {p.onOpenHistory && (
+          <IconBtn icon={History} onClick={p.onOpenHistory} title="命令历史 (Ctrl/⌘+Shift+H)" />
+        )}
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

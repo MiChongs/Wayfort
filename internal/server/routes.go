@@ -87,6 +87,12 @@ type Routes struct {
 
 	AI *ai.Set
 
+	// Phase 11 — terminal personalization (snippets, command history,
+	// synced profile). All gated on the standard user auth middleware.
+	Snippet         *api.SnippetHandler
+	CommandHistory  *api.CommandHistoryHandler
+	TerminalProfile *api.TerminalProfileHandler
+
 	// Plan 14 — per-node live system telemetry served on the SSH page.
 	Insights *insights.Handler
 
@@ -152,6 +158,20 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/recent-nodes", rt.Me.RecentNodes)
 		me.GET("/login-history", rt.Me.LoginHistory)
 		me.GET("/nodes", rt.Me.VisibleNodes)
+
+		// Phase 11 — terminal personalization. User-scoped (no admin
+		// perm needed): every authenticated user manages their own
+		// snippets / history / profile.
+		me.GET("/snippets", rt.Snippet.List)
+		me.POST("/snippets", rt.Snippet.Create)
+		me.PATCH("/snippets/:id", rt.Snippet.Update)
+		me.DELETE("/snippets/:id", rt.Snippet.Delete)
+		me.POST("/snippets/:id/use", rt.Snippet.Use)
+		me.GET("/command-history", rt.CommandHistory.List)
+		me.POST("/command-history", rt.CommandHistory.Record)
+		me.DELETE("/command-history", rt.CommandHistory.Clear)
+		me.GET("/terminal-profile", rt.TerminalProfile.Get)
+		me.PATCH("/terminal-profile", rt.TerminalProfile.Set)
 
 		// Asset catalogue — read-only for every authenticated user. The
 		// workspace tree needs the full group/tag taxonomy to render
