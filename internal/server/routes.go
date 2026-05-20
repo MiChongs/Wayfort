@@ -361,6 +361,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// approval gate via h.Approval inside the handler.
 		if rt.DB != nil {
 			ops.GET("/nodes/:id/db/ping", rt.DB.Ping)
+			ops.GET("/nodes/:id/db/databases", rt.DB.Databases)
 			ops.GET("/nodes/:id/db/schema", rt.DB.Schema)
 			ops.GET("/nodes/:id/db/columns", rt.DB.Columns)
 			ops.GET("/nodes/:id/db/indexes", rt.DB.Indexes)
