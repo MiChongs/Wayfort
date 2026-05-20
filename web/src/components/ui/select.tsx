@@ -53,6 +53,15 @@ function SelectContent({ className, children, position = "popper", ...props }: R
   )
 }
 
+function SelectLabel({ className, ...props }: React.ComponentProps<typeof SelectPrimitive.Label>) {
+  return (
+    <SelectPrimitive.Label
+      className={cn("py-1.5 pl-8 pr-2 text-xs font-medium text-muted-foreground", className)}
+      {...props}
+    />
+  )
+}
+
 function SelectItem({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Item>) {
   return (
     <SelectPrimitive.Item
@@ -72,4 +81,4 @@ function SelectItem({ className, children, ...props }: React.ComponentProps<type
   )
 }
 
-export { Select, SelectGroup, SelectValue, SelectTrigger, SelectContent, SelectItem }
+export { Select, SelectGroup, SelectLabel, SelectValue, SelectTrigger, SelectContent, SelectItem }

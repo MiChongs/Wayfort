@@ -48,7 +48,12 @@ import { cn } from "@/lib/utils"
 const schema = z.object({
   username: z.string().min(1, "请输入用户名"),
   password: z.string().min(1, "请输入密码"),
-  remember: z.boolean().optional().default(true),
+  // 必填 + 由 useForm.defaultValues 提供初值。原写法
+  //   z.boolean().optional().default(true)
+  // 让 zod 的 input/output 类型分裂（input 可空，output 必填），
+  // 新版 @hookform/resolvers 严格校验后导致 Resolver / SubmitHandler
+  // 类型推断失配。改成必填即可对齐两端。
+  remember: z.boolean(),
 })
 
 type FormValues = z.infer<typeof schema>
