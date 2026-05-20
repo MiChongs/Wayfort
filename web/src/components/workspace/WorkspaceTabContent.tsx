@@ -24,6 +24,10 @@ const DesktopDisplay = dynamic(
   () => import("@/components/desktop/desktop-display").then((m) => m.DesktopDisplay),
   { ssr: false, loading: () => <LoadingShim label="加载 RDP (新栈)…" /> },
 )
+const DBStudio = dynamic(
+  () => import("@/components/db/db-studio").then((m) => m.DBStudio),
+  { ssr: false, loading: () => <LoadingShim label="加载数据库浏览…" /> },
+)
 
 function LoadingShim({ label }: { label: string }) {
   return (
@@ -68,7 +72,11 @@ function TabBody({ tab }: { tab: TabModel }) {
   // VNC / Desktop expose their own internal phase UI inside the viewer for
   // real-time feedback; the workspace-level dot is a coarse summary.
   React.useEffect(() => {
-    if (tab.protocol === "sftp" || tab.protocol === "tcp_forward") {
+    if (
+      tab.protocol === "sftp" ||
+      tab.protocol === "tcp_forward" ||
+      tab.protocol === "db_studio"
+    ) {
       setStatus(tab.id, "connected")
       return
     }
@@ -122,6 +130,12 @@ function TabBody({ tab }: { tab: TabModel }) {
       return <SftpWorkspace nodeId={tab.nodeId} showNodeHeader={false} className="h-full flex flex-col" />
     case "tcp_forward":
       return <TcpForwardPanel nodeId={tab.nodeId} />
+    case "db_studio":
+      return (
+        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+          <DBStudio nodeId={tab.nodeId} embedded />
+        </SideDock>
+      )
   }
 }
 

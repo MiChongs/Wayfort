@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowRight, Database, FolderOpen, Heart, LayoutGrid, Monitor, Play,
-  Server, Share2, Terminal as TerminalIcon,
+  Server, Share2, Table as TableIcon, Terminal as TerminalIcon,
 } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -215,6 +215,15 @@ function actionList(protocol: string): ActionItem[] {
   } else if (protocol === "vnc") {
     out.push({ href: "/vnc", label: "VNC 远程桌面", hint: "通过 Guacamole 渲染", icon: Monitor, protocol: "vnc" })
   } else if (["mysql", "postgres", "redis", "mongo"].includes(protocol)) {
+    if (protocol === "mysql" || protocol === "postgres") {
+      out.push({
+        href: "/db",
+        label: "数据库浏览",
+        hint: "可视化 schema / 表浏览 / SQL 编辑器",
+        icon: TableIcon,
+        protocol: "db_studio",
+      })
+    }
     out.push({ href: "/dbcli", label: "数据库 CLI", hint: "一次性容器，会话结束自动销毁", icon: TerminalIcon, protocol: "dbcli" })
   }
   if (protocol === "tcp") {
