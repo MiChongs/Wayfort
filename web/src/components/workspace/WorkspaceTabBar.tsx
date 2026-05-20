@@ -73,6 +73,7 @@ const PROTOCOL_LABEL: Record<Protocol, string> = {
   ssh: "SSH",
   telnet: "Telnet",
   dbcli: "数据库",
+  db_studio: "数据库浏览",
   rdp: "RDP",
   rdp_next: "RDP (新)",
   vnc: "VNC",
