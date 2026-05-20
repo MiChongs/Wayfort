@@ -35,3 +35,6 @@ bin/
 /web/.omc/
 /web/pnpm-lock.yaml
 /web/pnpm-workspace.yaml
+# Per-developer dev URLs (BACKEND_HTTP_URL / NEXT_PUBLIC_BACKEND_WS_URL).
+# `.env.example` covers the documentation case; `.env` is local-only.
+/web/.env
