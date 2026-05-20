@@ -142,7 +142,7 @@ export function TerminalSnippetsSheet({
               <TerminalSquare className="h-4 w-4" /> 命令片段
             </SheetTitle>
             <SheetDescription>
-              复用常用命令、{{`{{`}}变量{{`}}`}} 模板。Ctrl+Shift+I 可快速打开。
+              {`复用常用命令、{{变量}} 模板。Ctrl+Shift+I 可快速打开。`}
             </SheetDescription>
           </SheetHeader>
 

@@ -3,6 +3,7 @@
 import * as React from "react"
 import { ChevronDown, ChevronUp, RotateCw, Trash2, Upload, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
 import { fmtBytes } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { UploadTask } from "./useSftpUploadQueue"
@@ -119,37 +120,41 @@ function TaskRow({
         <span className={cn("text-xs shrink-0", tone[task.status])}>{labelByStatus[task.status]}</span>
       </div>
       <div className="mt-1 flex items-center gap-2">
-        <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
-          <div
-            className={cn(
-              "h-full transition-[width] duration-150 ease-out",
-              task.status === "error" ? "bg-destructive" : task.status === "cancelled" ? "bg-muted-foreground/40" : "bg-primary",
-            )}
-            style={{ width: `${task.status === "done" ? 100 : pct}%` }}
-          />
-        </div>
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground w-20 text-right">
+        <Progress
+          value={task.status === "done" ? 100 : pct}
+          className="h-1.5 flex-1"
+          indicatorClassName={cn(
+            task.status === "error" ? "bg-destructive" : task.status === "cancelled" ? "bg-muted-foreground/40" : "bg-primary",
+          )}
+        />
+        <span className="w-20 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
           {fmtBytes(task.sent)} / {fmtBytes(task.size)}
         </span>
         {(task.status === "pending" || task.status === "uploading") && (
-          <button
+          <Button
             type="button"
-            className="text-muted-foreground hover:text-foreground"
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
             onClick={() => onCancel(task.id)}
             title="取消"
+            aria-label="取消上传"
           >
-            <X className="w-3.5 h-3.5" />
-          </button>
+            <X className="h-3.5 w-3.5" />
+          </Button>
         )}
         {task.status === "error" && (
-          <button
+          <Button
             type="button"
-            className="text-muted-foreground hover:text-foreground"
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6 text-muted-foreground hover:text-foreground"
             onClick={() => onRetry(task.id)}
             title="重试"
+            aria-label="重试上传"
           >
-            <RotateCw className="w-3.5 h-3.5" />
-          </button>
+            <RotateCw className="h-3.5 w-3.5" />
+          </Button>
         )}
       </div>
       {task.error && (

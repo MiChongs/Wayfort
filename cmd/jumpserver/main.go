@@ -155,9 +155,12 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	userRepo := repo.NewUserRepo(db)
 	nodeRepo := repo.NewNodeRepo(db)
 	proxyRepo := repo.NewProxyRepo(db)
+	// Phase 11 — terminal personalisation (snippets / history / per-user prefs)
 	snippetRepo := repo.NewSnippetRepo(db)
 	historyRepoTerm := repo.NewCommandHistoryRepo(db)
 	terminalProfileRepo := repo.NewTerminalProfileRepo(db)
+	// Phase 10 — saved proxy-chain templates for the visual builder.
+	chainTemplateRepo := repo.NewChainTemplateRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
@@ -328,20 +331,21 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:      &api.NodeHandler{Repo: nodeRepo},
-		Proxy:     &api.ProxyHandler{Repo: proxyRepo},
-		Cred:      &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
-		Session:   &api.SessionHandler{Repo: sessionRepo},
-		SFTP:      sftpHandler,
-		WS:        wsGateway,
-		Guacamole: guacHandler,
-		DBCLI:     dbcliHandler,
-		DB:        api.NewDBHandler(dbquery.New(wsGateway, sealer, logger, assetResolver), nil, auditWriter),
-		TCPFwd:    pfHandler,
-		TCPRelay:  pfRelay,
-		Issuer:    issuer,
-		Blocklist: blocklist,
-		Resolver:  rbacResolver,
+		Node:          &api.NodeHandler{Repo: nodeRepo},
+		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Builder: chain},
+		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
+		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
+		Session:       &api.SessionHandler{Repo: sessionRepo},
+		SFTP:          sftpHandler,
+		WS:            wsGateway,
+		Guacamole:     guacHandler,
+		DBCLI:         dbcliHandler,
+		DB:            api.NewDBHandler(dbquery.New(wsGateway, sealer, logger, assetResolver), nil, auditWriter),
+		TCPFwd:        pfHandler,
+		TCPRelay:      pfRelay,
+		Issuer:        issuer,
+		Blocklist:     blocklist,
+		Resolver:      rbacResolver,
 		User: &api.UserHandler{
 			Repo: userRepo, Roles: roleRepo, Lockout: lockout,
 			Blocklist: blocklist, Resolver: rbacResolver,

@@ -1,13 +1,21 @@
 "use client"
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Network, Plus, Trash2 } from "lucide-react"
+import { Network, Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { departmentService } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
 import type { Department } from "@/lib/api/types"
 
 export default function DepartmentsPage() {
@@ -18,9 +26,12 @@ export default function DepartmentsPage() {
     { header: "名称", cell: (d) => <span style={{ paddingLeft: indent(d.path) }}><span className="font-medium">{d.name}</span></span> },
     { header: "路径", cell: (d) => <code className="text-xs font-mono">{d.path}</code> },
     { header: "操作", className: "text-right", cell: (d) => (
-      <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(d.id)}>
-        <Trash2 className="w-4 h-4 text-destructive" />
-      </Button>
+      <ConfirmDeleteIconButton
+        title={`删除部门 “${d.name}”？`}
+        description="子部门会一并删除,所属用户不会自动迁移到根部门,请先迁移。"
+        loading={remove.isPending}
+        onConfirm={() => remove.mutate(d.id)}
+      />
     )},
   ]
   return (
@@ -53,10 +64,13 @@ function CreateDept({ depts, onCreated }: { depts: Department[]; onCreated: () =
           <div className="space-y-1"><Label>名称</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
           <div className="space-y-1">
             <Label>父部门（可选）</Label>
-            <select className="h-9 w-full border rounded-md bg-background px-2" value={parentId ?? ""} onChange={(e) => setParentId(e.target.value ? Number(e.target.value) : null)}>
-              <option value="">无</option>
-              {depts.map((d) => <option key={d.id} value={d.id}>{d.path} {d.name}</option>)}
-            </select>
+            <Select value={parentId ? String(parentId) : "_none"} onValueChange={(v) => setParentId(v === "_none" ? null : Number(v))}>
+              <SelectTrigger><SelectValue placeholder="选择父部门" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="_none">无</SelectItem>
+                {depts.map((d) => <SelectItem key={d.id} value={String(d.id)}>{d.path} {d.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>取消</Button><Button onClick={() => create.mutate()} disabled={!name}>创建</Button></DialogFooter>

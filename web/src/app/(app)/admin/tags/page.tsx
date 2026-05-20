@@ -1,13 +1,14 @@
 "use client"
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, Tag as TagIcon, Trash2 } from "lucide-react"
+import { Plus, Tag as TagIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { tagService } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
 import type { AssetTag } from "@/lib/api/types"
 
 export default function TagsPage() {
@@ -17,7 +18,7 @@ export default function TagsPage() {
   const cols: Column<AssetTag>[] = [
     { header: "名称", cell: (t) => <span style={{ color: t.color }} className="font-medium">{t.name}</span> },
     { header: "颜色", cell: (t) => t.color || "—" },
-    { header: "操作", className: "text-right", cell: (t) => <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(t.id)}><Trash2 className="w-4 h-4 text-destructive" /></Button> },
+    { header: "操作", className: "text-right", cell: (t) => <ConfirmDeleteIconButton title={`删除标签 “${t.name}”？`} description="此操作不可恢复，使用该标签的资产将自动解除关联。" loading={remove.isPending} onConfirm={() => remove.mutate(t.id)} /> },
   ]
   const [open, setOpen] = React.useState(false)
   const [name, setName] = React.useState(""); const [color, setColor] = React.useState("")

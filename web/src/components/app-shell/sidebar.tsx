@@ -53,6 +53,7 @@ const NAV: NavGroup[] = [
       { href: "/admin/nodes", label: "资产 - 节点", icon: Server, adminOnly: true },
       { href: "/admin/credentials", label: "凭据", icon: KeyRound, adminOnly: true },
       { href: "/admin/proxies", label: "代理", icon: Network, adminOnly: true },
+      { href: "/admin/chain-templates", label: "代理链模板", icon: Sparkles, adminOnly: true },
       { href: "/admin/asset-groups", label: "资产组", icon: Tags, adminOnly: true },
       { href: "/admin/tags", label: "标签", icon: TagIcon, adminOnly: true },
       { href: "/admin/asset-grants", label: "资产授权", icon: FileLock2, adminOnly: true },

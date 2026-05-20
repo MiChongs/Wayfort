@@ -1,7 +1,7 @@
 "use client"
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Plus, ShieldCheck, Trash2 } from "lucide-react"
+import { Plus, ShieldCheck } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogT
 import { oidcService } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
 import { Badge } from "@/components/ui/badge"
+import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
 import type { OIDCClient } from "@/lib/api/types"
 
 export default function OIDCClientsPage() {
@@ -21,7 +22,7 @@ export default function OIDCClientsPage() {
     { header: "Issuer", cell: (c) => <code className="font-mono text-xs">{c.issuer}</code> },
     { header: "Client ID", cell: (c) => <code className="font-mono text-xs">{c.client_id}</code> },
     { header: "状态", cell: (c) => c.enabled ? <Badge variant="success">enabled</Badge> : <Badge variant="outline">disabled</Badge> },
-    { header: "操作", className: "text-right", cell: (c) => <Button variant="ghost" size="icon" onClick={() => confirm("确认删除？") && remove.mutate(c.id)}><Trash2 className="w-4 h-4 text-destructive" /></Button> },
+    { header: "操作", className: "text-right", cell: (c) => <ConfirmDeleteIconButton title={`删除 OIDC 客户端 “${c.display_name || c.name}”？`} description="已用此客户端登录的用户在 access token 过期后无法刷新。" loading={remove.isPending} onConfirm={() => remove.mutate(c.id)} /> },
   ]
   return (
     <div className="p-6 space-y-4">

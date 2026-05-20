@@ -14,6 +14,8 @@ import type {
   AssetGrant,
   AssetGroup,
   AssetTag,
+  ChainTestResponse,
+  ChainValidationResult,
   CommandHistoryRow,
   Credential,
   Department,
@@ -33,6 +35,7 @@ import type {
   Permission,
   PortForward,
   Proxy,
+  ProxyChainTemplate,
   Role,
   Session,
   Snippet,
@@ -115,10 +118,36 @@ export const nodeService = {
   remove: (id: number) => api<void>("DELETE", `/nodes/${id}`),
 }
 export const proxyService = {
-  list: () => api<{ proxies: Proxy[] }>("GET", "/proxies"),
+  list: () =>
+    api<{
+      proxies: Proxy[]
+      summary?: {
+        total: number
+        by_kind: Record<string, number>
+        kinds: string[]
+      }
+    }>("GET", "/proxies"),
   create: (body: Partial<Proxy>) => api<Proxy>("POST", "/proxies", { body }),
   update: (id: number, body: Partial<Proxy>) => api<Proxy>("PATCH", `/proxies/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/proxies/${id}`),
+  // Phase 10 — chain validate / test.
+  validateChain: (chain: string) =>
+    api<ChainValidationResult>("POST", "/proxies/chains/validate", { body: { chain } }),
+  testChain: (chain: string, target = "", timeoutSeconds = 10) =>
+    api<ChainTestResponse>("POST", "/proxies/chains/test", {
+      body: { chain, target, timeout_seconds: timeoutSeconds },
+    }),
+}
+
+// Phase 10 — reusable proxy chain presets.
+export const chainTemplateService = {
+  list: () =>
+    api<{ templates: ProxyChainTemplate[] }>("GET", "/proxies/chain-templates"),
+  create: (body: { name: string; description?: string; chain: string; tags?: string }) =>
+    api<ProxyChainTemplate>("POST", "/proxies/chain-templates", { body }),
+  update: (id: number, body: Partial<{ name: string; description: string; chain: string; tags: string }>) =>
+    api<ProxyChainTemplate>("PATCH", `/proxies/chain-templates/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/proxies/chain-templates/${id}`),
 }
 export const credentialService = {
   list: () => api<{ credentials: Credential[] }>("GET", "/credentials"),

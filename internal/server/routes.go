@@ -59,10 +59,11 @@ func desktopWS(rt *Routes) *desktop.WSHandler {
 }
 
 type Routes struct {
-	Auth       *api.AuthHandler
-	Node       *api.NodeHandler
-	Proxy      *api.ProxyHandler
-	Cred       *api.CredentialHandler
+	Auth          *api.AuthHandler
+	Node          *api.NodeHandler
+	Proxy         *api.ProxyHandler
+	ChainTemplate *api.ChainTemplateHandler
+	Cred          *api.CredentialHandler
 	Session    *api.SessionHandler
 	SFTP       *sftp.Handler
 	WS         *webssh.Gateway
@@ -237,6 +238,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/proxies", perm(auth.PermProxyManage), rt.Proxy.Create)
 		admin.PATCH("/proxies/:id", perm(auth.PermProxyManage), rt.Proxy.Update)
 		admin.DELETE("/proxies/:id", perm(auth.PermProxyManage), rt.Proxy.Delete)
+		// Phase 10 — proxy chain validate / test / templates.
+		admin.POST("/proxies/chains/validate", perm(auth.PermProxyManage), rt.Proxy.ValidateChain)
+		admin.POST("/proxies/chains/test", perm(auth.PermProxyManage), rt.Proxy.TestChain)
+		admin.GET("/proxies/chain-templates", perm(auth.PermProxyManage), rt.ChainTemplate.List)
+		admin.POST("/proxies/chain-templates", perm(auth.PermProxyManage), rt.ChainTemplate.Create)
+		admin.PATCH("/proxies/chain-templates/:id", perm(auth.PermProxyManage), rt.ChainTemplate.Update)
+		admin.DELETE("/proxies/chain-templates/:id", perm(auth.PermProxyManage), rt.ChainTemplate.Delete)
 		admin.GET("/credentials", perm(auth.PermCredentialManage), rt.Cred.List)
 		admin.POST("/credentials", perm(auth.PermCredentialManage), rt.Cred.Create)
 		admin.PATCH("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Update)
