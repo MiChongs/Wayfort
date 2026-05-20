@@ -26,6 +26,8 @@ type Props = {
   onRun: (sql: string) => void
   busy?: boolean
   onCancel?: () => void
+  // Slot rendered next to the Run button (e.g. EXPLAIN dropdown).
+  extraActions?: React.ReactNode
 }
 
 type HistoryEntry = {
@@ -47,7 +49,7 @@ const HISTORY_MAX = 50
 // cursor" extraction splits on top-level semicolons (ignoring those
 // inside single/double quotes) and picks whichever segment the cursor
 // is in. Good enough for ad-hoc queries; a real parser is overkill.
-export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel }: Props) {
+export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extraActions }: Props) {
   const [history, setHistory] = React.useState<HistoryEntry[]>([])
   const editorRef = React.useRef<unknown>(null)
 
@@ -136,6 +138,7 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel }: Pr
           <kbd className="text-[10px] text-muted-foreground border rounded px-1 py-0.5">
             Ctrl/⌘ + Enter
           </kbd>
+          {extraActions}
         </div>
         <div className="flex items-center gap-1">
           <HistoryButton history={history} onPick={(sql) => onChange(sql)} onClear={clearHistory} />

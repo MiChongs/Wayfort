@@ -132,6 +132,233 @@ func (h *DBHandler) Indexes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"indexes": idxs})
 }
 
+// ForeignKeys — GET /api/v1/nodes/:id/db/foreign_keys?database=...&schema=...&table=...
+func (h *DBHandler) ForeignKeys(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table := c.Query("schema"), c.Query("table")
+	if schema == "" || table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	fks, err := h.Svc.LoadForeignKeys(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"foreign_keys": fks})
+}
+
+// TableStats — GET /api/v1/nodes/:id/db/stats?database=...&schema=...&table=...
+func (h *DBHandler) TableStats(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table := c.Query("schema"), c.Query("table")
+	if schema == "" || table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	stats, err := h.Svc.LoadTableStats(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
+// TableDDL — GET /api/v1/nodes/:id/db/ddl?database=...&schema=...&table=...
+func (h *DBHandler) TableDDL(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table := c.Query("schema"), c.Query("table")
+	if schema == "" || table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	ddl, err := h.Svc.LoadTableDDL(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ddl": ddl})
+}
+
+// rowBody is shared by UpdateRow / InsertRow / DeleteRow.
+type rowBody struct {
+	Database string         `json:"database,omitempty"`
+	Schema   string         `json:"schema"`
+	Table    string         `json:"table"`
+	// PK columns + values identify the target row. Required for
+	// Update and Delete; ignored for Insert.
+	KeyColumns []string `json:"key_columns,omitempty"`
+	KeyValues  []any    `json:"key_values,omitempty"`
+	// SetColumns + SetValues are the new payload. Used by Update + Insert.
+	SetColumns []string `json:"set_columns,omitempty"`
+	SetValues  []any    `json:"set_values,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+func (h *DBHandler) checkSQLExec(c *gin.Context, nodeID uint64, claims *auth.Claims) (bool, *approval.EnforcementResult) {
+	if h.Approval == nil {
+		return true, nil
+	}
+	res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+		UserID:       claims.UserID,
+		BusinessType: model.ApprovalBizSQLExec,
+		ResourceType: "node",
+		ResourceID:   strconv.FormatUint(nodeID, 10),
+		Action:       "sql_exec",
+	})
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "approval check failed: " + err.Error()})
+		return false, nil
+	}
+	if !res.Allowed {
+		c.JSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
+		return false, &res
+	}
+	return true, &res
+}
+
+// RowUpdate — POST /api/v1/nodes/:id/db/row/update
+func (h *DBHandler) RowUpdate(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	var body rowBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Schema == "" || body.Table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	if ok2, _ := h.checkSQLExec(c, nodeID, claims); !ok2 {
+		return
+	}
+	out, err := h.Svc.UpdateRow(c.Request.Context(), nodeID, claims.UserID,
+		body.Database, body.Schema, body.Table,
+		dbquery.RowKey{Columns: body.KeyColumns, Values: body.KeyValues},
+		dbquery.RowEdit{SetColumns: body.SetColumns, SetValues: body.SetValues})
+	if err != nil {
+		h.logSQL(c, nodeID, claims, "row.update.fail", fmt.Sprintf("UPDATE %s.%s", body.Schema, body.Table), body.Reason, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "row.update.ok", fmt.Sprintf("UPDATE %s.%s set=%v key=%v", body.Schema, body.Table, body.SetColumns, body.KeyColumns), body.Reason, nil)
+	c.JSON(http.StatusOK, out)
+}
+
+// RowInsert — POST /api/v1/nodes/:id/db/row/insert
+func (h *DBHandler) RowInsert(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	var body rowBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Schema == "" || body.Table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	if ok2, _ := h.checkSQLExec(c, nodeID, claims); !ok2 {
+		return
+	}
+	out, err := h.Svc.InsertRow(c.Request.Context(), nodeID, claims.UserID,
+		body.Database, body.Schema, body.Table, body.SetColumns, body.SetValues)
+	if err != nil {
+		h.logSQL(c, nodeID, claims, "row.insert.fail", fmt.Sprintf("INSERT %s.%s", body.Schema, body.Table), body.Reason, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "row.insert.ok", fmt.Sprintf("INSERT %s.%s cols=%v", body.Schema, body.Table, body.SetColumns), body.Reason, nil)
+	c.JSON(http.StatusOK, out)
+}
+
+// RowDelete — POST /api/v1/nodes/:id/db/row/delete
+func (h *DBHandler) RowDelete(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	var body rowBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.Schema == "" || body.Table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	if ok2, _ := h.checkSQLExec(c, nodeID, claims); !ok2 {
+		return
+	}
+	out, err := h.Svc.DeleteRow(c.Request.Context(), nodeID, claims.UserID,
+		body.Database, body.Schema, body.Table,
+		dbquery.RowKey{Columns: body.KeyColumns, Values: body.KeyValues})
+	if err != nil {
+		h.logSQL(c, nodeID, claims, "row.delete.fail", fmt.Sprintf("DELETE %s.%s", body.Schema, body.Table), body.Reason, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "row.delete.ok", fmt.Sprintf("DELETE %s.%s key=%v", body.Schema, body.Table, body.KeyColumns), body.Reason, nil)
+	c.JSON(http.StatusOK, out)
+}
+
+// Explain — POST /api/v1/nodes/:id/db/explain
+// Body: { sql, database?, analyze? }
+//
+// EXPLAIN is read-only on both engines, but EXPLAIN ANALYZE on PG /
+// MySQL >=8.0.18 actually executes the statement. We still classify
+// the inner statement as read-only first; otherwise an operator
+// could "EXPLAIN ANALYZE DELETE …" to bypass the write gate.
+func (h *DBHandler) Explain(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		SQL      string `json:"sql"`
+		Database string `json:"database,omitempty"`
+		Analyze  bool   `json:"analyze,omitempty"`
+		Reason   string `json:"reason,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	body.SQL = strings.TrimSpace(body.SQL)
+	if body.SQL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sql empty"})
+		return
+	}
+	if !isReadOnlySQL(body.SQL) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "EXPLAIN refused: inner statement isn't read-only — ANALYZE would execute it",
+		})
+		return
+	}
+	out, err := h.Svc.Explain(c.Request.Context(), nodeID, claims.UserID, body.Database, body.SQL, body.Analyze)
+	if err != nil {
+		h.logSQL(c, nodeID, claims, "explain.fail", body.SQL, body.Reason, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "explain.ok", body.SQL, body.Reason, nil)
+	c.JSON(http.StatusOK, out)
+}
+
 // queryBody is the shared shape for Query and Exec.
 type queryBody struct {
 	SQL    string `json:"sql"`

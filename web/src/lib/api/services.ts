@@ -502,9 +502,12 @@ import type {
   ApprovalBusinessType,
   DBColumnInfo,
   DBExecResult,
+  DBForeignKeyInfo,
   DBIndexInfo,
   DBQueryResult,
+  DBRowKey,
   DBSchemaInfo,
+  DBTableStats,
 } from "./types"
 
 export type CreateApprovalRequestInput = {
@@ -635,5 +638,68 @@ export const dbService = {
   exec: (nodeId: number, sql: string, opts: { args?: unknown[]; reason?: string; database?: string } = {}) =>
     api<DBExecResult>("POST", `/nodes/${nodeId}/db/exec`, {
       body: { sql, args: opts.args, reason: opts.reason, database: opts.database },
+    }),
+  // Phase 19 — table structure + row CRUD + EXPLAIN
+  foreignKeys: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ foreign_keys: DBForeignKeyInfo[] }>("GET", `/nodes/${nodeId}/db/foreign_keys`, {
+      query: { schema, table, database },
+    }),
+  stats: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<DBTableStats>("GET", `/nodes/${nodeId}/db/stats`, {
+      query: { schema, table, database },
+    }),
+  ddl: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ ddl: string }>("GET", `/nodes/${nodeId}/db/ddl`, {
+      query: { schema, table, database },
+    }),
+  explain: (nodeId: number, sql: string, opts: { analyze?: boolean; database?: string; reason?: string } = {}) =>
+    api<DBQueryResult>("POST", `/nodes/${nodeId}/db/explain`, {
+      body: { sql, analyze: opts.analyze, database: opts.database, reason: opts.reason },
+    }),
+  rowUpdate: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    key: DBRowKey,
+    setColumns: string[],
+    setValues: unknown[],
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/update`, {
+      body: {
+        schema, table,
+        key_columns: key.columns, key_values: key.values,
+        set_columns: setColumns, set_values: setValues,
+        database: opts.database, reason: opts.reason,
+      },
+    }),
+  rowInsert: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    columns: string[],
+    values: unknown[],
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/insert`, {
+      body: {
+        schema, table,
+        set_columns: columns, set_values: values,
+        database: opts.database, reason: opts.reason,
+      },
+    }),
+  rowDelete: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    key: DBRowKey,
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/row/delete`, {
+      body: {
+        schema, table,
+        key_columns: key.columns, key_values: key.values,
+        database: opts.database, reason: opts.reason,
+      },
     }),
 }

@@ -22,6 +22,11 @@ type Props = {
   sortBy?: string
   sortDir?: "ASC" | "DESC"
   onSort?: (col: string, dir: "ASC" | "DESC") => void
+  // Optional row-end action slot (rendered next to the inspect button).
+  // BrowseTab passes Edit + Delete icons keyed on the row's PK; the SQL
+  // result grid leaves it undefined so freeform query results stay
+  // read-only.
+  rowActions?: (rowIdx: number) => React.ReactNode
 }
 
 // ResultGrid — paginated/server-sortable result table. Handles JSON /
@@ -36,6 +41,7 @@ export function ResultGrid({
   sortBy,
   sortDir,
   onSort,
+  rowActions,
 }: Props) {
   const [filter, setFilter] = React.useState("")
   const [inspect, setInspect] = React.useState<{ row: unknown[]; columns: { name: string; type: string }[] } | null>(null)
@@ -159,7 +165,8 @@ export function ResultGrid({
                 {row.map((cell, c) => (
                   <Cell key={c} value={cell} />
                 ))}
-                <td className="text-right opacity-0 group-hover:opacity-100 transition-opacity">
+                <td className="text-right opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pr-1">
+                  {rowActions?.(r)}
                   <button
                     type="button"
                     onClick={() => setInspect({ row, columns: result.columns })}

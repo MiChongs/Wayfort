@@ -659,3 +659,31 @@ export interface DBIndexInfo {
   is_unique: boolean
   columns: string[]
 }
+
+// Phase 19 — Structure tab + row CRUD
+
+export interface DBForeignKeyInfo {
+  direction: "out" | "in"
+  name: string
+  from_schema: string
+  from_table: string
+  from_columns: string[]
+  to_schema: string
+  to_table: string
+  to_columns: string[]
+  on_update: string
+  on_delete: string
+}
+
+export interface DBTableStats {
+  rows_approx: number
+  total_bytes: number
+  data_bytes: number
+  index_bytes: number
+  engine?: string
+}
+
+export interface DBRowKey {
+  columns: string[]
+  values: unknown[]
+}

@@ -3,11 +3,17 @@
 import * as React from "react"
 import Link from "next/link"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Code2, Database, FileCode, RefreshCw, Terminal } from "lucide-react"
+import { Code2, Database, FileCode, RefreshCw, Telescope, Terminal, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { dbService, nodeService } from "@/lib/api/services"
 import type { DBQueryResult, DBTableInfo } from "@/lib/api/types"
@@ -19,44 +25,41 @@ import { cn } from "@/lib/utils"
 
 type Props = {
   nodeId: number
-  // embedded=true means the host (workspace tab) owns the outer chrome.
   embedded?: boolean
   className?: string
 }
 
-// DBStudio — visual DB browser.
-//
-// PostgreSQL caveat: each connection is bound to one database at
-// connect time. The database picker here drives a per-DB pool on the
-// backend (see internal/dbquery poolKey). Switching the picker reloads
-// the schema tree from the new DB's catalog.
-//
-// MySQL: information_schema is cluster-wide, so the picker is more of a
-// "default schema for unqualified queries" hint than a hard scope. We
-// still keep it for symmetry + USE-equivalent behavior.
+// Result set inside the SQL tab. Each Run / Explain produces one entry;
+// the user keeps them around until explicit close. localStorage history
+// covers reload-survival; in-memory tabs are the immediate workspace.
+type ResultTab = {
+  id: number
+  title: string
+  sql: string
+  startedAt: number
+  // Exactly one of result / error / pending is populated.
+  result?: DBQueryResult
+  error?: string
+  pending?: boolean
+  // Tag the source so the title bar can show 📋 / EXPLAIN / EXPLAIN ANALYZE.
+  kind: "query" | "explain" | "explain_analyze"
+}
+
+let resultIdSeq = 0
+
 export function DBStudio({ nodeId, embedded, className }: Props) {
   const node = useQuery({ queryKey: ["node", nodeId], queryFn: () => nodeService.get(nodeId) })
 
-  // database picker state: undefined while we load the list; "" once
-  // the user explicitly picks "default" (driver-default for the node).
-  // After the list loads we auto-pick the first non-system DB so the
-  // user immediately sees their tables instead of an empty postgres DB.
   const [database, setDatabase] = React.useState<string | undefined>(undefined)
   const dbList = useQuery({
     queryKey: ["db.databases", nodeId],
     queryFn: () => dbService.databases(nodeId),
     retry: false,
   })
-
-  // First-load auto-pick: prefer the node's proto_options.database if it's
-  // in the list, else fall back to the first non-postgres / non-template
-  // entry.
   React.useEffect(() => {
     if (database !== undefined) return
     const list = dbList.data?.databases
     if (!list || list.length === 0) return
-    // Heuristic: skip "postgres" (the system bootstrap DB that's usually
-    // empty) when the operator has other catalogs.
     const preferred = list.find((d) => d !== "postgres") ?? list[0]
     setDatabase(preferred)
   }, [dbList.data, database])
@@ -73,28 +76,58 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
   const [sql, setSql] = React.useState(
     "-- Ctrl+Enter 执行；左侧表名双击插入到此处\nSELECT 1;\n"
   )
-  const [result, setResult] = React.useState<DBQueryResult | undefined>()
-  const [resultErr, setResultErr] = React.useState<string | undefined>()
 
-  // Reset selected table when switching databases — the table list
-  // becomes stale and stale Browse queries would hit the new pool with
-  // an identifier from the old catalog.
+  // Multi-result tabs ----------------------------------------------------------
+  const [results, setResults] = React.useState<ResultTab[]>([])
+  const [activeResult, setActiveResult] = React.useState<number | null>(null)
+
   React.useEffect(() => {
     setSelected(undefined)
   }, [database])
 
-  const run = useMutation({
-    mutationFn: (s: string) => dbService.query(nodeId, s, { database }),
-    onSuccess: (r) => {
-      setResult(r)
-      setResultErr(undefined)
-      if (r.truncated) toast.info(`结果被截断在 ${r.row_count} 行`)
+  const upsertResult = React.useCallback((tab: ResultTab) => {
+    setResults((prev) => {
+      const idx = prev.findIndex((r) => r.id === tab.id)
+      if (idx < 0) return [...prev, tab]
+      const next = prev.slice()
+      next[idx] = tab
+      return next
+    })
+  }, [])
+
+  const runStatement = React.useCallback(
+    (sqlText: string, kind: ResultTab["kind"]) => {
+      const id = ++resultIdSeq
+      const title = summariseSQL(sqlText)
+      const baseTab: ResultTab = { id, title, sql: sqlText, startedAt: Date.now(), pending: true, kind }
+      upsertResult(baseTab)
+      setActiveResult(id)
+      const promise =
+        kind === "query"
+          ? dbService.query(nodeId, sqlText, { database })
+          : dbService.explain(nodeId, sqlText, { database, analyze: kind === "explain_analyze" })
+      promise
+        .then((r) => {
+          upsertResult({ ...baseTab, pending: false, result: r })
+          if (r.truncated) toast.info(`结果被截断在 ${r.row_count} 行`)
+        })
+        .catch((e: { message?: string }) => {
+          upsertResult({ ...baseTab, pending: false, error: e.message || "未知错误" })
+        })
     },
-    onError: (e: { message?: string }) => {
-      setResult(undefined)
-      setResultErr(e.message || "未知错误")
-    },
-  })
+    [database, nodeId, upsertResult],
+  )
+
+  const closeResult = (id: number) => {
+    setResults((prev) => {
+      const next = prev.filter((r) => r.id !== id)
+      if (activeResult === id) {
+        const last = next[next.length - 1]
+        setActiveResult(last ? last.id : null)
+      }
+      return next
+    })
+  }
 
   const handlePickTable = (t: DBTableInfo) => {
     setSelected(t)
@@ -109,6 +142,8 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
   const errMsg = (schema.error as { message?: string })?.message
   const dbListErr = (dbList.error as { message?: string })?.message
   const databases = dbList.data?.databases ?? []
+  const activeTab = results.find((r) => r.id === activeResult)
+  const runPending = results.some((r) => r.pending)
 
   const dbPicker = (
     <div className="flex items-center gap-1.5">
@@ -232,21 +267,53 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
               </TabsContent>
               <TabsContent value="query" className="flex-1 min-h-0 m-0 flex flex-col">
                 <div className="flex-1 min-h-0 flex flex-col gap-2 p-3">
-                  <div className="h-[40%] min-h-[200px]">
+                  <div className="h-[40%] min-h-[200px] flex flex-col gap-1">
                     <SQLEditor
                       nodeId={nodeId}
                       value={sql}
                       onChange={setSql}
-                      onRun={(s) => run.mutate(s)}
-                      busy={run.isPending}
+                      onRun={(s) => runStatement(s, "query")}
+                      busy={runPending}
+                      extraActions={
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 gap-1 text-xs"
+                              disabled={runPending || !sql.trim()}
+                            >
+                              <Telescope className="w-3.5 h-3.5" /> EXPLAIN
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain")}>
+                              EXPLAIN
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain_analyze")}>
+                              EXPLAIN ANALYZE
+                              <span className="ml-2 text-[10px] text-muted-foreground">真的执行</span>
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      }
                     />
                   </div>
-                  <div className="flex-1 min-h-0 border rounded-md overflow-hidden">
-                    <ResultGrid
-                      result={result}
-                      loading={run.isPending}
-                      error={resultErr}
+                  <div className="flex-1 min-h-0 border rounded-md overflow-hidden flex flex-col">
+                    <ResultTabBar
+                      results={results}
+                      activeId={activeResult}
+                      onActivate={setActiveResult}
+                      onClose={closeResult}
                     />
+                    <div className="flex-1 min-h-0">
+                      <ResultGrid
+                        result={activeTab?.result}
+                        loading={activeTab?.pending}
+                        error={activeTab?.error}
+                      />
+                    </div>
                   </div>
                 </div>
               </TabsContent>
@@ -256,4 +323,79 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
       </div>
     </div>
   )
+}
+
+function ResultTabBar({
+  results,
+  activeId,
+  onActivate,
+  onClose,
+}: {
+  results: ResultTab[]
+  activeId: number | null
+  onActivate: (id: number) => void
+  onClose: (id: number) => void
+}) {
+  if (results.length === 0) {
+    return (
+      <div className="px-3 py-1 border-b text-[10px] text-muted-foreground bg-muted/30">
+        还没有结果 — 在编辑器里写 SQL，Ctrl+Enter 执行
+      </div>
+    )
+  }
+  return (
+    <div className="flex border-b bg-muted/30 overflow-x-auto">
+      {results.map((r) => (
+        <div
+          key={r.id}
+          className={cn(
+            "group flex items-center gap-1.5 pl-3 pr-1.5 py-1 border-r min-w-0 cursor-pointer text-xs",
+            r.id === activeId ? "bg-background text-foreground" : "text-muted-foreground hover:bg-muted/60",
+          )}
+          onClick={() => onActivate(r.id)}
+        >
+          <KindBadge kind={r.kind} />
+          <span className="truncate max-w-[12rem]">{r.title}</span>
+          {r.pending && <span className="text-[10px] text-amber-600">…</span>}
+          {r.error && <span className="text-[10px] text-destructive">✕</span>}
+          {r.result && (
+            <span className="text-[10px] text-muted-foreground tabular-nums">
+              {r.result.row_count}行 · {(r.result.elapsed / 1_000_000).toFixed(0)}ms
+            </span>
+          )}
+          <button
+            type="button"
+            className="opacity-0 group-hover:opacity-100 hover:text-destructive p-0.5"
+            onClick={(e) => { e.stopPropagation(); onClose(r.id) }}
+            title="关闭"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function KindBadge({ kind }: { kind: ResultTab["kind"] }) {
+  switch (kind) {
+    case "explain":
+      return <Badge variant="outline" className="text-[9px] px-1 py-0">EXP</Badge>
+    case "explain_analyze":
+      return <Badge variant="destructive" className="text-[9px] px-1 py-0">ANL</Badge>
+    default:
+      return <Badge variant="secondary" className="text-[9px] px-1 py-0">SQL</Badge>
+  }
+}
+
+// summariseSQL truncates the SQL to a tab title. We strip leading
+// comments + take the first meaningful line up to a sensible width.
+function summariseSQL(s: string): string {
+  const stripped = s
+    .replace(/--[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim()
+  const firstLine = stripped.split(/\r?\n/)[0] ?? stripped
+  if (firstLine.length <= 50) return firstLine || "(空查询)"
+  return firstLine.slice(0, 47) + "…"
 }
