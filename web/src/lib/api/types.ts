@@ -605,3 +605,57 @@ export interface ApprovalSubscription {
   created_at: string
   updated_at: string
 }
+
+// ---------------- Phase 17 — DB Studio ----------------
+
+export interface DBColumnMeta {
+  name: string
+  type: string
+  nullable?: boolean
+}
+
+export interface DBQueryResult {
+  columns: DBColumnMeta[]
+  rows: unknown[][]
+  truncated: boolean
+  elapsed: number  // nanoseconds (Go time.Duration JSON)
+  row_count: number
+}
+
+export interface DBExecResult {
+  affected: number
+  last_insert_id?: number
+  elapsed: number
+}
+
+export interface DBTableInfo {
+  schema: string
+  name: string
+  kind: "table" | "view" | "matview"
+}
+
+export interface DBDatabaseInfo {
+  name: string
+  tables: DBTableInfo[]
+}
+
+export interface DBSchemaInfo {
+  current_database: string
+  databases: DBDatabaseInfo[]
+}
+
+export interface DBColumnInfo {
+  name: string
+  type: string
+  nullable: boolean
+  is_primary_key: boolean
+  default_value?: string
+  ordinal_position: number
+}
+
+export interface DBIndexInfo {
+  name: string
+  is_primary: boolean
+  is_unique: boolean
+  columns: string[]
+}

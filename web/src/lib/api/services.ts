@@ -500,6 +500,11 @@ import type {
   ApprovalTemplate,
   ChainVerifyResult,
   ApprovalBusinessType,
+  DBColumnInfo,
+  DBExecResult,
+  DBIndexInfo,
+  DBQueryResult,
+  DBSchemaInfo,
 } from "./types"
 
 export type CreateApprovalRequestInput = {
@@ -587,4 +592,42 @@ export const approvalService = {
     remove: (id: number) =>
       api<{ ok: true }>("DELETE", `/approvals/subscriptions/${id}`),
   },
+}
+
+// ---------------- Phase 17 — DB Studio ----------------
+
+export const dbService = {
+  ping: (nodeId: number) =>
+    api<{ ok: true }>("GET", `/nodes/${nodeId}/db/ping`),
+  schema: (nodeId: number) =>
+    api<DBSchemaInfo>("GET", `/nodes/${nodeId}/db/schema`),
+  columns: (nodeId: number, schema: string, table: string) =>
+    api<{ columns: DBColumnInfo[] }>("GET", `/nodes/${nodeId}/db/columns`, {
+      query: { schema, table },
+    }),
+  indexes: (nodeId: number, schema: string, table: string) =>
+    api<{ indexes: DBIndexInfo[] }>("GET", `/nodes/${nodeId}/db/indexes`, {
+      query: { schema, table },
+    }),
+  rows: (
+    nodeId: number,
+    schema: string,
+    table: string,
+    opts: { limit?: number; offset?: number; order_by?: string; order_dir?: "ASC" | "DESC" } = {}
+  ) =>
+    api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
+      query: { schema, table, ...opts },
+    }),
+  query: (
+    nodeId: number,
+    sql: string,
+    opts: { limit?: number; args?: unknown[]; reason?: string } = {}
+  ) =>
+    api<DBQueryResult>("POST", `/nodes/${nodeId}/db/query`, {
+      body: { sql, args: opts.args, limit: opts.limit, reason: opts.reason },
+    }),
+  exec: (nodeId: number, sql: string, opts: { args?: unknown[]; reason?: string } = {}) =>
+    api<DBExecResult>("POST", `/nodes/${nodeId}/db/exec`, {
+      body: { sql, args: opts.args, reason: opts.reason },
+    }),
 }

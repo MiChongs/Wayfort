@@ -24,6 +24,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -332,6 +333,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		WS:         wsGateway,
 		Guacamole:  guacHandler,
 		DBCLI:      dbcliHandler,
+		DB:         api.NewDBHandler(dbquery.New(wsGateway, sealer, logger), nil, auditWriter),
 		TCPFwd:     pfHandler,
 		TCPRelay:   pfRelay,
 		Issuer:     issuer,
@@ -464,6 +466,12 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	if dbcliHandler != nil {
 		dbcliHandler.Approval = approvalSvc
+	}
+	// Phase 17 — wire approval into the visual DB browser too. Same
+	// gate semantics as dbcli: writes (Exec) go through CheckEnforced;
+	// reads are unconditional.
+	if routes.DB != nil {
+		routes.DB.Approval = approvalSvc
 	}
 	if pfHandler != nil {
 		pfHandler.Approval = approvalSvc

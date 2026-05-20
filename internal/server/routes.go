@@ -110,6 +110,12 @@ type Routes struct {
 	// disabled (the routes are still registered and return 503 stubs the
 	// same way insights/firewall do).
 	Approval *api.ApprovalHandler
+
+	// Phase 17 — visual DB browser. Backs the structured schema /
+	// table-rows / SQL editor UI; complements the legacy /ws/dbcli
+	// terminal which stays for operators who want a literal psql/mysql
+	// shell.
+	DB *api.DBHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -348,6 +354,19 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		}
 		if rt.DBCLI != nil {
 			ops.GET("/ws/dbcli/:node_id", rt.DBCLI.Handle)
+		}
+		// Phase 17 — structured DB browser. Reads (schema / columns /
+		// rows / SELECT-only Query) are open to any authenticated user
+		// with access to the node; writes (Exec) flow through the
+		// approval gate via h.Approval inside the handler.
+		if rt.DB != nil {
+			ops.GET("/nodes/:id/db/ping", rt.DB.Ping)
+			ops.GET("/nodes/:id/db/schema", rt.DB.Schema)
+			ops.GET("/nodes/:id/db/columns", rt.DB.Columns)
+			ops.GET("/nodes/:id/db/indexes", rt.DB.Indexes)
+			ops.GET("/nodes/:id/db/rows", rt.DB.Rows)
+			ops.POST("/nodes/:id/db/query", rt.DB.Query)
+			ops.POST("/nodes/:id/db/exec", rt.DB.Exec)
 		}
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)
