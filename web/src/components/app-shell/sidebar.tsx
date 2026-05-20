@@ -21,6 +21,7 @@ import {
   Tag as TagIcon,
   Tags,
   Users,
+  Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
@@ -38,6 +39,7 @@ const NAV: NavGroup[] = [
       { href: "/nodes", label: "节点", icon: Server },
       { href: "/sessions", label: "会话", icon: Activity },
       { href: "/port-forwards", label: "端口转发", icon: Share2 },
+      { href: "/ssh-tools", label: "SSH 工具", icon: Zap },
       { href: "/ai", label: "AI 助手", icon: Sparkles },
     ],
   },

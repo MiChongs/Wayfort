@@ -94,6 +94,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	userRepo := repo.NewUserRepo(db)
 	nodeRepo := repo.NewNodeRepo(db)
 	proxyRepo := repo.NewProxyRepo(db)
+	sshKeyRepo := repo.NewSSHKeyRepo(db)
+	knownHostRepo := repo.NewKnownHostRepo(db)
+	bulkRunRepo := repo.NewBulkRunRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
@@ -294,6 +297,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
 		OIDCClient: &api.OIDCClientHandler{Repo: oidcRepo, Sealer: sealer, Manager: oidcManager},
+
+		// Phase 12 — SSH power.
+		SSHKey:    &api.SSHKeysHandler{Repo: sshKeyRepo, Sealer: sealer},
+		KnownHost: &api.KnownHostsHandler{Repo: knownHostRepo},
+		BulkRun: &api.BulkRunHandler{
+			Repo: bulkRunRepo, Nodes: nodeRepo, Creds: credRepo,
+			Proxies: proxyRepo, Chain: chain, Resolver: resolver,
+			HostKey: hostKeyChecker.Callback(),
+		},
 	}
 
 	// Plan 14 — wire the live system-insights service. Disabled by default;

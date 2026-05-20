@@ -14,6 +14,8 @@ import type {
   AssetGrant,
   AssetGroup,
   AssetTag,
+  BulkRun,
+  BulkRunResult,
   Credential,
   Department,
   DockerContainer,
@@ -32,7 +34,9 @@ import type {
   Permission,
   PortForward,
   Proxy,
+  KnownHost,
   Role,
+  SSHKey,
   Session,
   TokenPair,
   User,
@@ -124,6 +128,46 @@ export const credentialService = {
   update: (id: number, body: { name?: string; kind?: string; username?: string; secret?: string }) =>
     api<{ id: number }>("PATCH", `/credentials/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/credentials/${id}`),
+}
+
+// ----- Phase 12 — SSH power -----
+export const sshKeyService = {
+  list: () => api<{ keys: SSHKey[] }>("GET", "/me/ssh-keys"),
+  create: (body: {
+    name: string
+    type?: string
+    private?: string
+    passphrase?: string
+  }) =>
+    api<{ key: SSHKey; private_pem_one_time?: string }>("POST", "/me/ssh-keys", { body }),
+  update: (id: number, body: { name?: string }) =>
+    api<SSHKey>("PATCH", `/me/ssh-keys/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/me/ssh-keys/${id}`),
+}
+
+export const knownHostService = {
+  list: () => api<{ hosts: KnownHost[] }>("GET", "/me/known-hosts"),
+  create: (body: Partial<KnownHost>) =>
+    api<KnownHost>("POST", "/me/known-hosts", { body }),
+  update: (id: number, body: Partial<KnownHost>) =>
+    api<KnownHost>("PATCH", `/me/known-hosts/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/me/known-hosts/${id}`),
+}
+
+export const bulkRunService = {
+  list: (limit = 50) =>
+    api<{ runs: BulkRun[] }>("GET", "/me/bulk-runs", { query: { limit } }),
+  get: (id: number) =>
+    api<{ run: BulkRun; results: BulkRunResult[] }>("GET", `/me/bulk-runs/${id}`),
+  run: (body: {
+    title?: string
+    command: string
+    node_ids: number[]
+    parallel?: number
+    timeout_seconds?: number
+  }) =>
+    api<{ run: BulkRun; results: BulkRunResult[] }>("POST", "/me/bulk-runs", { body }),
+  remove: (id: number) => api<void>("DELETE", `/me/bulk-runs/${id}`),
 }
 
 // ----- sessions / port-forwards / sftp -----

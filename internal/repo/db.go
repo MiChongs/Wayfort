@@ -107,5 +107,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&aimodel.AIConversation{},
 		&aimodel.AIMessage{},
 		&aimodel.AIToolInvocation{},
+
+		// Phase 12 — SSH power
+		&model.SSHKey{},
+		&model.KnownHost{},
+		&model.BulkRun{},
+		&model.BulkRunResult{},
 	)
 }
