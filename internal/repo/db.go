@@ -143,5 +143,11 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.ApprovalTemplate{},
 		&model.ApprovalGrant{},
 		&model.ApprovalSubscription{},
+
+		// Phase 12 — SSH power
+		&model.SSHKey{},
+		&model.KnownHost{},
+		&model.BulkRun{},
+		&model.BulkRunResult{},
 	)
 }

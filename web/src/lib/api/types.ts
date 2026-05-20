@@ -801,3 +801,57 @@ export interface DBProcessInfo {
   elapsed_sec?: number
   query?: string
 }
+
+// ----- Phase 12 — SSH power -----
+
+export interface SSHKey {
+  id: number
+  user_id: number
+  name: string
+  type: "ed25519" | "rsa-2048" | "rsa-3072" | "rsa-4096" | string
+  public: string
+  fingerprint: string
+  created_at: string
+  updated_at: string
+  last_used_at?: string | null
+}
+
+export interface KnownHost {
+  id: number
+  user_id: number
+  node_id?: number | null
+  host_addr: string
+  host_key_type: string
+  fingerprint: string
+  status: "trusted" | "revoked"
+  accepted_at: string
+  last_seen_at?: string | null
+  notes?: string
+}
+
+export interface BulkRun {
+  id: number
+  user_id: number
+  title: string
+  command: string
+  node_ids_json: string
+  node_count: number
+  ok_count: number
+  fail_count: number
+  duration_ms: number
+  summary?: string
+  created_at: string
+}
+
+export interface BulkRunResult {
+  id: number
+  run_id: number
+  node_id: number
+  node_name: string
+  stdout: string
+  stderr: string
+  exit_code: number
+  duration_ms: number
+  error?: string
+  created_at: string
+}

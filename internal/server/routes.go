@@ -95,6 +95,11 @@ type Routes struct {
 	CommandHistory  *api.CommandHistoryHandler
 	TerminalProfile *api.TerminalProfileHandler
 
+	// Phase 12 — SSH power features (user-scoped).
+	SSHKey     *api.SSHKeysHandler
+	KnownHost  *api.KnownHostsHandler
+	BulkRun    *api.BulkRunHandler
+
 	// Plan 14 — per-node live system telemetry served on the SSH page.
 	Insights *insights.Handler
 
@@ -189,6 +194,20 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.DELETE("/command-history", rt.CommandHistory.Clear)
 		me.GET("/terminal-profile", rt.TerminalProfile.Get)
 		me.PATCH("/terminal-profile", rt.TerminalProfile.Set)
+
+		// Phase 12 — SSH power: keys / known hosts / bulk run.
+		me.GET("/ssh-keys", rt.SSHKey.List)
+		me.POST("/ssh-keys", rt.SSHKey.Create)
+		me.PATCH("/ssh-keys/:id", rt.SSHKey.Update)
+		me.DELETE("/ssh-keys/:id", rt.SSHKey.Delete)
+		me.GET("/known-hosts", rt.KnownHost.List)
+		me.POST("/known-hosts", rt.KnownHost.Create)
+		me.PATCH("/known-hosts/:id", rt.KnownHost.Update)
+		me.DELETE("/known-hosts/:id", rt.KnownHost.Delete)
+		me.GET("/bulk-runs", rt.BulkRun.List)
+		me.POST("/bulk-runs", rt.BulkRun.Run)
+		me.GET("/bulk-runs/:id", rt.BulkRun.Get)
+		me.DELETE("/bulk-runs/:id", rt.BulkRun.Delete)
 
 		// Asset catalogue — read-only for every authenticated user. The
 		// workspace tree needs the full group/tag taxonomy to render

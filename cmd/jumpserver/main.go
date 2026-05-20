@@ -161,6 +161,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	terminalProfileRepo := repo.NewTerminalProfileRepo(db)
 	// Phase 10 — saved proxy-chain templates for the visual builder.
 	chainTemplateRepo := repo.NewChainTemplateRepo(db)
+	sshKeyRepo := repo.NewSSHKeyRepo(db)
+	knownHostRepo := repo.NewKnownHostRepo(db)
+	bulkRunRepo := repo.NewBulkRunRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
 	auditRepo := repo.NewAuditRepo(db)
@@ -389,6 +392,18 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Audits:    repo.NewSecretAuditRepo(db),
 			Service:   secretsBoot.Service,
 			Unsealer:  secretsBoot.Unsealer,
+		},
+		// (Phase 12 cherry-pick brought a duplicate OIDCClient line back —
+		// dropped; the canonical wiring with Sealer: oidcVault sits earlier
+		// in this struct literal.)
+
+		// Phase 12 — SSH power.
+		SSHKey:    &api.SSHKeysHandler{Repo: sshKeyRepo, Sealer: sealer},
+		KnownHost: &api.KnownHostsHandler{Repo: knownHostRepo},
+		BulkRun: &api.BulkRunHandler{
+			Repo: bulkRunRepo, Nodes: nodeRepo, Creds: credRepo,
+			Proxies: proxyRepo, Chain: chain, Resolver: resolver,
+			HostKey: hostKeyChecker.Callback(),
 		},
 	}
 
