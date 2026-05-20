@@ -231,25 +231,27 @@ func synthesisePostgresDDL(ctx context.Context, pl *pool, schema, table string) 
 	}
 
 	// 2. Constraints (PK / UNIQUE / CHECK / FK) — pg_get_constraintdef
-	//    returns the SQL fragment exactly.
+	//    returns the SQL fragment exactly. contype is the pg "char" SQL
+	//    type — a one-byte ASCII char. pgx stdlib hands it back as a
+	//    Go string, not uint8, so we scan into string and we keep it
+	//    only to drive ORDER BY (server-side); the rendered constraint
+	//    body comes from pg_get_constraintdef which knows the type.
 	consRows, err := pl.db.QueryContext(ctx, `
-		SELECT conname, contype, pg_get_constraintdef(c.oid)
+		SELECT conname, pg_get_constraintdef(c.oid)
 		FROM pg_constraint c
 		JOIN pg_class t ON t.oid = c.conrelid
 		JOIN pg_namespace n ON n.oid = t.relnamespace
 		WHERE n.nspname = $1 AND t.relname = $2
-		ORDER BY CASE contype WHEN 'p' THEN 1 WHEN 'u' THEN 2
-		                      WHEN 'f' THEN 3 WHEN 'c' THEN 4 ELSE 5 END,
+		ORDER BY CASE c.contype WHEN 'p' THEN 1 WHEN 'u' THEN 2
+		                        WHEN 'f' THEN 3 WHEN 'c' THEN 4 ELSE 5 END,
 		         conname`, schema, table)
 	if err != nil {
 		return "", err
 	}
 	defer consRows.Close()
 	for consRows.Next() {
-		var name string
-		var ctype byte
-		var def string
-		if err := consRows.Scan(&name, &ctype, &def); err != nil {
+		var name, def string
+		if err := consRows.Scan(&name, &def); err != nil {
 			return "", err
 		}
 		cols = append(cols, fmt.Sprintf("  CONSTRAINT %s %s", pgQuoteIdent(name), def))
