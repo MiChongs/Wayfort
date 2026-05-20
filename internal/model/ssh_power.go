@@ -30,8 +30,13 @@ type SSHKey struct {
 	Name       string `gorm:"size:128;not null" json:"name"`
 	Type       string `gorm:"size:32;not null" json:"type"`            // "ed25519" | "rsa-2048" | "rsa-3072" | "rsa-4096"
 	Public     string `gorm:"size:1024;not null" json:"public"`        // ssh-ed25519 AAA…  comment
-	Private    []byte `gorm:"type:varbinary(8192)" json:"-"`           // AES-256-GCM ciphertext
-	Passphrase []byte `gorm:"type:varbinary(2048)" json:"-"`           // ciphertext (may be empty)
+	// Private/Passphrase are AES-GCM ciphertexts produced by the Phase 14
+	// envelope vault. Phase 12 originally specified varbinary(N) for MySQL;
+	// the codebase has since migrated to PostgreSQL where bytea is the
+	// variable-length blob type (varbinary is MySQL-only — PG would error
+	// at AutoMigrate time with SQLSTATE 42704).
+	Private    []byte `gorm:"type:bytea" json:"-"` // AES-256-GCM ciphertext
+	Passphrase []byte `gorm:"type:bytea" json:"-"` // ciphertext (may be empty)
 	// Fingerprint is the SHA-256 fingerprint of Public (matches `ssh-keygen -lf`).
 	Fingerprint string `gorm:"size:128" json:"fingerprint"`
 	CreatedAt   time.Time `json:"created_at"`
