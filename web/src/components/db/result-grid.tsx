@@ -7,6 +7,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { toast } from "sonner"
 
@@ -141,16 +148,41 @@ export function ResultGrid({
             placeholder="过滤当前页"
             className="h-7 text-xs w-44"
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs"
-            onClick={() => exportCSV(result)}
-            title="导出 CSV"
-          >
-            <Download className="w-3.5 h-3.5" />
-          </Button>
+          {/* Phase 30i — multi-format result export. CSV (default),
+              JSON Lines (one row per line), SQL INSERT (idempotent
+              re-insertion). All operate on the in-memory result, so
+              they're client-side; for huge full-table exports use the
+              streaming export in BrowseTab. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs gap-1"
+                title="导出当前结果"
+              >
+                <Download className="w-3.5 h-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuLabel className="text-[10px] text-muted-foreground">
+                导出当前结果（仅本页）
+              </DropdownMenuLabel>
+              <DropdownMenuItem onClick={() => exportCSV(result)}>
+                CSV
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportJSONL(result)}>
+                JSON Lines
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => exportSQLInsert(result)}>
+                SQL INSERT
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => copyAsMarkdown(result)}>
+                Markdown 表格（复制）
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-auto">
@@ -520,11 +552,65 @@ function exportCSV(result: DBQueryResult) {
   const escape = (s: string) => `"${s.replace(/"/g, '""')}"`
   const head = result.columns.map((c) => escape(c.name)).join(",")
   const body = result.rows.map((r) => r.map((v) => escape(formatCell(v))).join(",")).join("\n")
-  const blob = new Blob([head + "\n" + body], { type: "text/csv;charset=utf-8" })
+  triggerDownload(head + "\n" + body, "text/csv;charset=utf-8", `result-${Date.now()}.csv`)
+}
+
+// exportJSONL — one JSON object per line. Use object form (not array)
+// so the column names survive the round-trip; jq / DuckDB / log-aggregator
+// pipelines all expect this shape.
+function exportJSONL(result: DBQueryResult) {
+  const lines = result.rows.map((r) => {
+    const obj: Record<string, unknown> = {}
+    result.columns.forEach((c, i) => { obj[c.name] = r[i] })
+    return JSON.stringify(obj)
+  })
+  triggerDownload(lines.join("\n"), "application/x-ndjson;charset=utf-8", `result-${Date.now()}.jsonl`)
+}
+
+// exportSQLInsert — generate `INSERT INTO target (cols) VALUES (...)` per
+// row. We don't know the target table at the ResultGrid level (this is
+// generic query output), so we emit `INSERT INTO "result"` and let the
+// operator find/replace to the real table. PG-flavoured ident quoting +
+// escape; user can swap to backticks for strict MySQL.
+function exportSQLInsert(result: DBQueryResult) {
+  const quoteIdent = (s: string) => `"${s.replace(/"/g, '""')}"`
+  const literal = (v: unknown): string => {
+    if (v === null || v === undefined) return "NULL"
+    if (typeof v === "number" || typeof v === "bigint") return String(v)
+    if (typeof v === "boolean") return v ? "TRUE" : "FALSE"
+    return "'" + String(v).replace(/'/g, "''") + "'"
+  }
+  const colNames = result.columns.map((c) => quoteIdent(c.name)).join(", ")
+  const lines = result.rows.map((r) => {
+    const vals = r.map(literal).join(", ")
+    return `INSERT INTO "result" (${colNames}) VALUES (${vals});`
+  })
+  const header = `-- Generated INSERT statements (${result.rows.length} rows)\n-- Replace "result" with your target table name.\n\n`
+  triggerDownload(header + lines.join("\n") + "\n", "text/plain;charset=utf-8", `result-${Date.now()}.sql`)
+}
+
+// copyAsMarkdown — small clipboard helper. Useful for pasting query
+// snapshots into PR descriptions or incident docs.
+function copyAsMarkdown(result: DBQueryResult) {
+  if (typeof navigator === "undefined") return
+  const escape = (s: string) => s.replace(/\|/g, "\\|").replace(/\n/g, " ")
+  const head = "| " + result.columns.map((c) => escape(c.name)).join(" | ") + " |"
+  const sep = "| " + result.columns.map(() => "---").join(" | ") + " |"
+  const body = result.rows.map((r) =>
+    "| " + r.map((v) => escape(formatCell(v))).join(" | ") + " |"
+  ).join("\n")
+  const text = [head, sep, body].join("\n")
+  navigator.clipboard?.writeText(text).then(() =>
+    toast.success(`已复制 Markdown 表格（${result.rows.length} 行）`, { duration: 1500 })
+  )
+}
+
+function triggerDownload(content: string, mime: string, filename: string) {
+  const blob = new Blob([content], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = `result-${Date.now()}.csv`
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
