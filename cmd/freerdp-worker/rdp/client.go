@@ -159,6 +159,8 @@ type Client struct {
 	rdpgfxEvictCache         atomic.Uint64
 	rdpgfxStartFrames        atomic.Uint64
 	rdpgfxEndFrames          atomic.Uint64
+	rdpgfxEndFrameSeqBase    atomic.Uint64
+	rdpgfxEndFrameCmdBase    atomic.Uint64
 	rdpgfxUpdateSurfaces     atomic.Uint64
 	rdpgfxUpdateSurfaceAreas atomic.Uint64
 	rdpgfxFrameAcks          atomic.Uint64
@@ -174,12 +176,12 @@ type Client struct {
 	rdpgfxOriginalSurfaceCommandErrors atomic.Uint64
 	rdpgfxOriginalCreateSurfaceErrors  atomic.Uint64
 	rdpgfxOriginalUpdateSurfacesErrors atomic.Uint64
-	logonSuccessSeen         atomic.Bool
-	logonErrorSeen           atomic.Bool
-	logonErrorData           atomic.Uint32
-	logonErrorType           atomic.Uint32
-	logonErrorAtUnixNano     atomic.Int64
-	logonErrorClosed         atomic.Bool
+	logonSuccessSeen                   atomic.Bool
+	logonErrorSeen                     atomic.Bool
+	logonErrorData                     atomic.Uint32
+	logonErrorType                     atomic.Uint32
+	logonErrorAtUnixNano               atomic.Int64
+	logonErrorClosed                   atomic.Bool
 
 	framePool       *ants.Pool
 	frameSeq        atomic.Uint64
@@ -512,11 +514,14 @@ func (c *Client) applySettings() error {
 	// primary buffer, then emitted to the browser as ordinary BGRA/JPEG/Zlib
 	// rectangles. The first attempt uses FreeRDP's modern network:auto-style AVC
 	// profile. If a server negotiates GFX but only emits empty frames, retry with
-	// /gfx-style compatibility caps: keep RDPGFX, but stop advertising H.264 /
-	// AVC444 so the server must choose a non-AVC surface path.
+	// /gfx-style compatibility caps: keep RDPGFX, but stop advertising H.264 so
+	// the server must choose a non-AVC surface path. AVC444 is not advertised by
+	// default because the browser pipeline only decodes AVC420's single H.264
+	// stream; AVC444/v2 can arrive as multi-stream payloads that WebCodecs cannot
+	// consume directly.
 	enableGFX := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
 	enableH264 := enableGFX && !c.gfxCompatProfile && goBool(cBoolDefault(opts.EnableH264, true))
-	enableAVC444 := enableH264
+	enableAVC444 := false
 	enableRFX := enableGFX && goBool(cBoolDefault(opts.EnableRemoteFx, false))
 	enableNSCodec := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableNSCodec, true))
 	if enableGFX {
@@ -1354,6 +1359,8 @@ func (c *Client) resetFirstFrameDiagnostics() {
 	c.rdpgfxEvictCache.Store(0)
 	c.rdpgfxStartFrames.Store(0)
 	c.rdpgfxEndFrames.Store(0)
+	c.rdpgfxEndFrameSeqBase.Store(0)
+	c.rdpgfxEndFrameCmdBase.Store(0)
 	c.rdpgfxUpdateSurfaces.Store(0)
 	c.rdpgfxUpdateSurfaceAreas.Store(0)
 	c.rdpgfxFrameAcks.Store(0)

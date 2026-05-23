@@ -30,6 +30,19 @@ const PROTOCOL_ICON: Record<NodeProtocol, React.ComponentType<{ className?: stri
   redis: Database,
   mongo: Database,
   tcp: Server,
+  // Phase 22+ — 国产数据库.
+  dameng: Database,
+  kingbase: Database,
+  vastbase: Database,
+  highgo: Database,
+  opengauss: Database,
+  gaussdb: Database,
+  tidb: Database,
+  oceanbase: Database,
+  starrocks: Database,
+  doris: Database,
+  gbase8a: Database,
+  gbase8s: Database,
 }
 
 export default function NodeDetail({ params }: { params: Promise<{ id: string }> }) {

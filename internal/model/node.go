@@ -17,6 +17,23 @@ const (
 	NodeProtoRedis    NodeProtocol = "redis"
 	NodeProtoMongo    NodeProtocol = "mongo"
 	NodeProtoTCP      NodeProtocol = "tcp"
+
+	// Phase 22+ — Chinese DB stack registered via internal/dbquery's
+	// plugin registry. PG-wire-compatible engines reuse the postgres
+	// adapter; MySQL-wire-compatible engines reuse the mysql adapter;
+	// Dameng (DM8) gets its own Oracle-flavoured adapter.
+	NodeProtoDameng    NodeProtocol = "dameng"    // 达梦 DM8
+	NodeProtoKingbase  NodeProtocol = "kingbase"  // 人大金仓 KingbaseES (PG-兼容)
+	NodeProtoVastbase  NodeProtocol = "vastbase"  // 海量 Vastbase (PG-兼容)
+	NodeProtoHighgo    NodeProtocol = "highgo"    // 瀚高 HighgoDB (PG-兼容)
+	NodeProtoOpenGauss NodeProtocol = "opengauss" // 华为 openGauss (PG-兼容)
+	NodeProtoGaussDB   NodeProtocol = "gaussdb"   // 华为 GaussDB (PG-兼容)
+	NodeProtoTiDB      NodeProtocol = "tidb"      // PingCAP TiDB (MySQL-兼容)
+	NodeProtoOceanBase NodeProtocol = "oceanbase" // 蚂蚁 OceanBase MySQL mode
+	NodeProtoStarRocks NodeProtocol = "starrocks" // 飞轮 StarRocks (MySQL-兼容)
+	NodeProtoDoris     NodeProtocol = "doris"     // Apache Doris (MySQL-兼容)
+	NodeProtoGBase8a   NodeProtocol = "gbase8a"   // 南大通用 GBase 8a (MySQL-兼容)
+	NodeProtoGBase8s   NodeProtocol = "gbase8s"   // 南大通用 GBase 8s (PG-兼容)
 )
 
 // Node is a target host the user wants to reach. ProxyChain is an ordered

@@ -720,6 +720,11 @@ export const approvalService = {
 // ---------------- Phase 17 — DB Studio ----------------
 
 export const dbService = {
+  // Phase 22 — cluster-level engine catalogue + per-node capabilities.
+  // Front-end consumers cache both for the lifetime of the tab.
+  engines: () => api<{ engines: import("./types").DBEngineInfo[] }>("GET", "/db/engines"),
+  capabilities: (nodeId: number) =>
+    api<import("./types").DBCapabilities>("GET", `/nodes/${nodeId}/db/capabilities`),
   ping: (nodeId: number, database?: string) =>
     api<{ ok: true }>("GET", `/nodes/${nodeId}/db/ping`, { query: { database } }),
   // Cluster-level DB list. Phase 17b — PostgreSQL connections are bound

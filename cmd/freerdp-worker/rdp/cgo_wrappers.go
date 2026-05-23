@@ -93,6 +93,7 @@ extern UINT goRdpgfxMapSurfaceToOutput(RdpgfxClientContext* ctx, const RDPGFX_MA
 extern UINT goRdpgfxMapSurfaceToScaledOutput(RdpgfxClientContext* ctx, const RDPGFX_MAP_SURFACE_TO_SCALED_OUTPUT_PDU* pdu);
 extern UINT goRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* pdu);
 extern UINT goRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu);
+extern void goRdpgfxEndFrameAfter(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu, UINT32 rc);
 extern UINT goRdpgfxUpdateSurfaces(RdpgfxClientContext* ctx);
 extern UINT goRdpgfxUpdateSurfaceArea(RdpgfxClientContext* ctx, UINT16 surfaceId, UINT32 nrRects, const RECTANGLE_16* rects);
 // Phase 9 diagnostic — invoked when a wOriginalRdpgfx* handler returns
@@ -459,6 +460,7 @@ UINT wRdpgfxStartFrame(RdpgfxClientContext* ctx, const RDPGFX_START_FRAME_PDU* p
 UINT wRdpgfxEndFrame(RdpgfxClientContext* ctx, const RDPGFX_END_FRAME_PDU* pdu) {
     goRdpgfxEndFrame(ctx, pdu);
     UINT rc = wOriginalRdpgfxEndFrame ? wOriginalRdpgfxEndFrame(ctx, pdu) : CHANNEL_RC_OK;
+    goRdpgfxEndFrameAfter(ctx, pdu, rc);
     if (rc != CHANNEL_RC_OK && wOriginalRdpgfxEndFrame) {
         goRdpgfxOriginalError(ctx, RDPGFX_ORIG_KIND_END_FRAME, rc);
     }

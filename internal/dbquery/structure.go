@@ -47,10 +47,10 @@ func (s *Service) LoadForeignKeys(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return loadPostgresForeignKeys(ctx, pl, schema, table)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlForeignKeys(ctx, pl, schema, table)
 	}
 	return nil, nil
@@ -63,10 +63,10 @@ func (s *Service) LoadTableStats(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return loadPostgresStats(ctx, pl, schema, table)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlStats(ctx, pl, schema, table)
 	}
 	return nil, fmt.Errorf("dbquery: stats not implemented for %q", pl.protocol)
@@ -84,10 +84,10 @@ func (s *Service) LoadTableDDL(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return "", err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return synthesisePostgresDDL(ctx, pl, schema, table)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlDDL(ctx, pl, schema, table)
 	}
 	return "", fmt.Errorf("dbquery: DDL not implemented for %q", pl.protocol)

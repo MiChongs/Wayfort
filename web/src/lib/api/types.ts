@@ -31,6 +31,59 @@ export type NodeProtocol =
   | "redis"
   | "mongo"
   | "tcp"
+  // Phase 22+ — Chinese DB stack registered via the dbquery plugin
+  // registry. Family-MySQL engines reuse the MySQL adapter; Family-PG
+  // engines reuse the Postgres adapter; Dameng (DM8) has its own
+  // Oracle-flavoured adapter.
+  | "dameng"
+  | "kingbase"
+  | "vastbase"
+  | "highgo"
+  | "opengauss"
+  | "gaussdb"
+  | "tidb"
+  | "oceanbase"
+  | "starrocks"
+  | "doris"
+  | "gbase8a"
+  | "gbase8s"
+
+// DBEngineFamily mirrors internal/dbquery.Family — a coarse
+// compatibility band the UI uses to render per-engine SQL hints.
+export type DBEngineFamily = "mysql" | "postgres" | "oracle"
+
+// DBCapabilities mirrors internal/dbquery.Capabilities. The DB Studio
+// consumes one of these per node and conditionally renders / disables
+// every toolbar button, sidebar section and row affordance.
+export interface DBCapabilities {
+  list_databases: boolean
+  schemas: boolean
+  row_edits: boolean
+  explain: boolean
+  explain_analyze: boolean
+  processes: boolean
+  kill_process: boolean
+  table_ddl: boolean
+  table_stats: boolean
+  foreign_keys: boolean
+  export: boolean
+  last_insert_id: boolean
+  sequences: boolean
+  functions: boolean
+  transactions: boolean
+  database_scope: "catalog" | "schema"
+  vendor_label?: string
+}
+
+// DBEngineInfo is one entry of the cluster-level engine catalog
+// returned by GET /db/engines. The "新增节点" sheet renders it as the
+// protocol dropdown; the DB Studio renders it on the empty state.
+export interface DBEngineInfo {
+  protocol: NodeProtocol
+  family: DBEngineFamily
+  vendor_label: string
+  capabilities: DBCapabilities
+}
 
 export interface Node {
   id: number

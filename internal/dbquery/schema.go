@@ -74,12 +74,12 @@ func (s *Service) ListDatabases(ctx context.Context, nodeID, userID uint64) ([]s
 		return nil, err
 	}
 	var q string
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		// datistemplate: hide template0 / template1
 		// datallowconn:  hide databases the connection can't open
 		q = `SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname`
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		q = `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY SCHEMA_NAME`
 	default:
 		return nil, fmt.Errorf("dbquery: protocol %q list databases not implemented", pl.protocol)
@@ -108,10 +108,10 @@ func (s *Service) LoadSchema(ctx context.Context, nodeID, userID uint64, databas
 	if err != nil {
 		return nil, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return loadPostgresSchema(ctx, pl)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlSchema(ctx, pl)
 	}
 	return nil, fmt.Errorf("dbquery: protocol %q schema not implemented", pl.protocol)
@@ -128,10 +128,10 @@ func (s *Service) LoadColumns(ctx context.Context, nodeID, userID uint64,
 }
 
 func loadColumnsForPool(ctx context.Context, pl *pool, schema, table string) ([]ColumnInfo, error) {
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return loadPostgresColumns(ctx, pl, schema, table)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlColumns(ctx, pl, schema, table)
 	}
 	return nil, fmt.Errorf("dbquery: protocol %q columns not implemented", pl.protocol)
@@ -144,10 +144,10 @@ func (s *Service) LoadIndexes(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return nil, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return loadPostgresIndexes(ctx, pl, schema, table)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return loadMysqlIndexes(ctx, pl, schema, table)
 	}
 	return nil, nil

@@ -118,9 +118,25 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
   },
 }
 
-// Default protocols available for a given node based on its declared
-// protocol — mirrors `actionList()` in nodes/[id]/page.tsx but flatter.
-const DB_PROTOS = new Set(["mysql", "postgres", "redis", "mongo"])
+// Phase 22+ — every protocol the dbquery plugin registry knows about
+// at compile time. The legacy mysql/postgres + Chinese DBs all route
+// to the same workspace actions (DB Studio for relational; dbcli for
+// terminal). The runtime engine catalogue (/api/v1/db/engines) is the
+// authoritative source; this set is only the static fallback for
+// nodes whose protocol the front-end recognises ahead of a roundtrip.
+const RELATIONAL_DB_PROTOS = new Set([
+  "mysql", "postgres",
+  // PG-family
+  "kingbase", "vastbase", "highgo", "opengauss", "gaussdb", "gbase8s",
+  // MySQL-family
+  "tidb", "oceanbase", "starrocks", "doris", "gbase8a",
+  // Oracle-family (Dameng)
+  "dameng",
+])
+
+// CLI-only DB protocols — schema-free / key-value stores stay on the
+// terminal flow until a structured Studio tab supports them.
+const CLI_ONLY_DB_PROTOS = new Set(["redis", "mongo"])
 
 export function protocolsForNode(protocol: string): Protocol[] {
   switch (protocol) {
@@ -135,13 +151,12 @@ export function protocolsForNode(protocol: string): Protocol[] {
     case "tcp":
       return ["sftp", "tcp_forward"]
     default:
-      if (DB_PROTOS.has(protocol)) {
-        // db_studio (relational) only fits PG / MySQL. Redis + Mongo still
-        // have to use the terminal CLI today; surface dbcli as the only
-        // option for them.
-        if (protocol === "mysql" || protocol === "postgres") {
-          return ["db_studio", "dbcli", "tcp_forward"]
-        }
+      if (RELATIONAL_DB_PROTOS.has(protocol)) {
+        // Relational DBs (vanilla + every Chinese DB) get DB Studio
+        // first, terminal CLI second, port forward last.
+        return ["db_studio", "dbcli", "tcp_forward"]
+      }
+      if (CLI_ONLY_DB_PROTOS.has(protocol)) {
         return ["dbcli", "tcp_forward"]
       }
       return ["tcp_forward"]

@@ -149,14 +149,14 @@ func (s *Service) Explain(ctx context.Context, nodeID, userID uint64,
 		return nil, err
 	}
 	var q string
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		if analyze {
 			q = "EXPLAIN (ANALYZE, BUFFERS, VERBOSE) " + statement
 		} else {
 			q = "EXPLAIN " + statement
 		}
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		if analyze {
 			q = "EXPLAIN ANALYZE FORMAT=TREE " + statement
 		} else {
@@ -217,7 +217,7 @@ func buildDeleteSQL(d Dialect, schema, table string, keyCols []string) (string, 
 //	mysql    → `ident` (backtick, doubled inside)
 func quoteIdent(p model.NodeProtocol) func(string) string {
 	switch p {
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return func(s string) string {
 			return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 		}
@@ -233,7 +233,7 @@ func quoteIdent(p model.NodeProtocol) func(string) string {
 // regardless of position.
 func placeholder(p model.NodeProtocol, n int) string {
 	switch p {
-	case model.NodeProtoPostgres:
+	case FamilyPostgres:
 		return fmt.Sprintf("$%d", n)
 	default:
 		return "?"

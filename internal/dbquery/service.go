@@ -20,6 +20,7 @@ package dbquery
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -28,9 +29,6 @@ import (
 	"sync"
 	"time"
 
-	mysqldrv "github.com/go-sql-driver/mysql"
-	pgx "github.com/jackc/pgx/v5"
-	pgxstdlib "github.com/jackc/pgx/v5/stdlib"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -64,12 +62,22 @@ type accessChecker interface {
 }
 
 type pool struct {
-	db         *sql.DB
-	release    func()
-	protocol   model.NodeProtocol
-	adapter    Adapter
-	dialerName string // for mysql only — globally-registered dial fn name
-	lastUsedAt time.Time
+	db          *sql.DB
+	release     func() // proxy-chain release (gateway)
+	driverClose func() // driver-level cleanup returned by Driver.Open (e.g. mysql dial name dereg)
+	protocol    model.NodeProtocol
+	adapter     Adapter
+	lastUsedAt  time.Time
+}
+
+// family returns the adapter's Family tag without forcing every call
+// site to type-assert through the adapter. Empty when adapter is nil
+// (defensive default; shouldn't happen in production code).
+func (p *pool) family() Family {
+	if p == nil || p.adapter == nil {
+		return ""
+	}
+	return p.adapter.Family()
 }
 
 // New constructs the Service. The gateway is borrowed for ResolveHops /
@@ -384,55 +392,29 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64, database str
 		pwBytes[i] = 0
 	}
 
-	addr := net.JoinHostPort(node.Host, strconv.Itoa(node.Port))
 	if database == "" {
 		database = dbNameFromOptions(node.ProtoOptions, node.EffectiveProtocol())
 	}
 
-	var (
-		db         *sql.DB
-		dialerName string
-	)
-
-	switch node.EffectiveProtocol() {
-	case model.NodeProtoPostgres:
-		// pgx/stdlib accepts a per-pool ConnConfig with DialFunc — no
-		// global state, no name registry. Cleaner than mysql.
-		connCfg, err := pgx.ParseConfig("")
-		if err != nil {
-			release()
-			return nil, fmt.Errorf("dbquery: parse pgx config: %w", err)
-		}
-		connCfg.Host = node.Host
-		connCfg.Port = uint16(node.Port)
-		connCfg.User = user
-		connCfg.Password = password
-		connCfg.Database = stringOr(database, "postgres")
-		connCfg.TLSConfig = nil // chain already encrypted (or operator's choice)
-		connCfg.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-			return chain.DialContext(ctx, network, address)
-		}
-		db = pgxstdlib.OpenDB(*connCfg)
-
-	case model.NodeProtoMySQL:
-		// mysql driver registers a global dialer-name map. We use a
-		// unique name so two concurrent pools don't collide.
-		dialerName = fmt.Sprintf("chain-%d-%d-%d", nodeID, userID, time.Now().UnixNano())
-		mysqldrv.RegisterDialContext(dialerName, func(ctx context.Context, address string) (net.Conn, error) {
-			return chain.DialContext(ctx, "tcp", address)
-		})
-		dsn := fmt.Sprintf("%s:%s@%s(%s)/%s?parseTime=true&loc=Local&charset=utf8mb4",
-			user, password, dialerName, addr, database)
-		db, err = sql.Open("mysql", dsn)
-		if err != nil {
-			mysqldrv.DeregisterDialContext(dialerName)
-			release()
-			return nil, fmt.Errorf("dbquery: open mysql: %w", err)
-		}
-
-	default:
+	// Phase 22 — dispatch through the adapter's Driver. Each adapter
+	// owns its own DSN flavour + dialer hook; service.go no longer
+	// hard-codes mysql/postgres. New engines plug in by registering an
+	// Adapter in their init(); nothing here changes.
+	params := ConnectionParams{
+		Host:     node.Host,
+		Port:     node.Port,
+		User:     user,
+		Password: password,
+		Database: database,
+		Extra:    parseProtoOptionsExtras(node.ProtoOptions),
+	}
+	dialFn := func(ctx context.Context, network, address string) (net.Conn, error) {
+		return chain.DialContext(ctx, network, address)
+	}
+	db, driverClose, err := adapter.Driver().Open(ctx, params, dialFn)
+	if err != nil {
 		release()
-		return nil, fmt.Errorf("dbquery: protocol %q not implemented", node.EffectiveProtocol())
+		return nil, fmt.Errorf("dbquery: open %s: %w", adapter.Protocol(), err)
 	}
 
 	db.SetMaxOpenConns(s.maxOpenConns)
@@ -443,21 +425,21 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64, database str
 	if err := db.PingContext(pingCtx); err != nil {
 		cancel()
 		_ = db.Close()
-		if dialerName != "" {
-			mysqldrv.DeregisterDialContext(dialerName)
+		if driverClose != nil {
+			driverClose()
 		}
 		release()
-		return nil, fmt.Errorf("dbquery: ping: %w", err)
+		return nil, fmt.Errorf("dbquery: ping %s: %w", adapter.Protocol(), err)
 	}
 	cancel()
 
 	return &pool{
-		db:         db,
-		release:    release,
-		protocol:   node.EffectiveProtocol(),
-		adapter:    adapter,
-		dialerName: dialerName,
-		lastUsedAt: time.Now(),
+		db:          db,
+		release:     release,
+		driverClose: driverClose,
+		protocol:    node.EffectiveProtocol(),
+		adapter:     adapter,
+		lastUsedAt:  time.Now(),
 	}, nil
 }
 
@@ -470,8 +452,8 @@ func (s *Service) evictIdle() {
 		if pl.lastUsedAt.Before(cutoff) {
 			s.logger.Info("dbquery: evicting idle pool", zap.String("key", k))
 			_ = pl.db.Close()
-			if pl.dialerName != "" {
-				mysqldrv.DeregisterDialContext(pl.dialerName)
+			if pl.driverClose != nil {
+				pl.driverClose()
 			}
 			if pl.release != nil {
 				pl.release()
@@ -486,8 +468,8 @@ func (s *Service) closeAll() {
 	defer s.mu.Unlock()
 	for k, pl := range s.pools {
 		_ = pl.db.Close()
-		if pl.dialerName != "" {
-			mysqldrv.DeregisterDialContext(pl.dialerName)
+		if pl.driverClose != nil {
+			pl.driverClose()
 		}
 		if pl.release != nil {
 			pl.release()
@@ -523,6 +505,60 @@ func normalise(v any) any {
 		return x.UTC().Format(time.RFC3339Nano)
 	}
 	return v
+}
+
+// parseProtoOptionsExtras decodes the node's proto_options JSON into a
+// flat string map. Adapter drivers receive this via ConnectionParams.
+// Extra so engine-specific tuning (sslmode, charset, application_name,
+// search_path, tenant=oracle for OceanBase, etc.) flows through without
+// each driver having to re-parse the blob. Reserved keys "database" /
+// "dbname" / "schema" are dropped from the extras (they're routed via
+// ConnectionParams.Database).
+func parseProtoOptionsExtras(raw string) map[string]string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var blob map[string]any
+	if err := json.Unmarshal([]byte(raw), &blob); err != nil {
+		return nil
+	}
+	if len(blob) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(blob))
+	for k, v := range blob {
+		switch strings.ToLower(k) {
+		case "database", "dbname", "schema", "rdp":
+			// "database"/"dbname"/"schema" already handled via
+			// ConnectionParams.Database. "rdp" is the desktop sub-
+			// envelope — irrelevant to a DB driver.
+			continue
+		}
+		switch x := v.(type) {
+		case string:
+			out[k] = x
+		case bool:
+			if x {
+				out[k] = "true"
+			} else {
+				out[k] = "false"
+			}
+		case float64:
+			// JSON numbers come back as float64; render without
+			// the .0 tail when integer-valued so port numbers etc.
+			// land cleanly.
+			if x == float64(int64(x)) {
+				out[k] = fmt.Sprintf("%d", int64(x))
+			} else {
+				out[k] = fmt.Sprintf("%g", x)
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // dbNameFromOptions reads proto_options JSON looking for "database" /

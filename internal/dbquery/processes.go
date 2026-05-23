@@ -37,10 +37,10 @@ func (s *Service) ListProcesses(ctx context.Context, nodeID, userID uint64, data
 	if err != nil {
 		return nil, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		return listPostgresProcesses(ctx, pl)
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		return listMysqlProcesses(ctx, pl)
 	}
 	return nil, fmt.Errorf("dbquery: processes not implemented for %q", pl.protocol)
@@ -55,14 +55,14 @@ func (s *Service) CancelProcess(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return false, err
 	}
-	switch pl.protocol {
-	case model.NodeProtoPostgres:
+	switch pl.family() {
+	case FamilyPostgres:
 		var ok bool
 		if err := pl.db.QueryRowContext(ctx, "SELECT pg_cancel_backend($1)", pid).Scan(&ok); err != nil {
 			return false, err
 		}
 		return ok, nil
-	case model.NodeProtoMySQL:
+	case FamilyMySQL:
 		// KILL QUERY targets the running statement only (the session
 		// stays). The result is empty; an absent process gives an
 		// error which we propagate so the UI can show it.

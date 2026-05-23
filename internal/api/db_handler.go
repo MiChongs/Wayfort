@@ -63,6 +63,35 @@ func (h *DBHandler) Ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// Engines — GET /api/v1/db/engines (no node id; cluster-level catalog).
+// Returns every adapter currently in the registry, with its family +
+// vendor label + capability flags. Powers the node-creation protocol
+// picker and the DB Studio's per-engine UI gates.
+func (h *DBHandler) Engines(c *gin.Context) {
+	if h == nil || h.Svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "db browser disabled"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"engines": h.Svc.EngineCatalog()})
+}
+
+// Capabilities — GET /api/v1/nodes/:id/db/capabilities
+// Per-node capability matrix. The UI calls it once on tab mount and
+// caches; subsequent toolbar / sidebar / row-edit affordances flip on
+// or off without re-querying.
+func (h *DBHandler) Capabilities(c *gin.Context) {
+	nodeID, _, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	caps, err := h.Svc.CapabilitiesForNode(c.Request.Context(), nodeID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, caps)
+}
+
 // Databases — GET /api/v1/nodes/:id/db/databases
 // Cluster-level DB listing for the UI's database picker. PostgreSQL
 // connections are bound to one DB at connect time; this surface lets

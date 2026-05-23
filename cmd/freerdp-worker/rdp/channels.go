@@ -253,6 +253,8 @@ func (c *Client) attachAudio(iface unsafe.Pointer) {
 
 // ----- RDPGFX (RemoteFX / AVC444) -----
 
+const maxRdpgfxEncodedPayloadBytes = 64 * 1024 * 1024
+
 func (c *Client) attachGraphicsPipeline(iface unsafe.Pointer) {
 	ctx := (*C.RdpgfxClientContext)(iface)
 	c.rdpgfxMu.Lock()
@@ -276,7 +278,7 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 	}
 	count := c.rdpgfxSurfaceCommands.Add(1)
 	if count == 1 {
-		c.logger.Info("phase: first rdpgfx surface command decoded by GDI",
+		c.logger.Info("phase: first rdpgfx surface command received",
 			zap.Uint32("surface_id", uint32(cmd.surfaceId)),
 			zap.Uint32("codec_id", uint32(cmd.codecId)),
 			zap.String("codec", rdpgfxCodecName(uint32(cmd.codecId))),
@@ -288,7 +290,110 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 			zap.Uint32("height", uint32(cmd.height)),
 			zap.Uint32("bytes", uint32(cmd.length)))
 	}
+	c.forwardRdpgfxSurfaceCommand(cmd)
 	return 0
+}
+
+func (c *Client) forwardRdpgfxSurfaceCommand(cmd *C.RDPGFX_SURFACE_COMMAND) {
+	if cmd == nil || cmd.data == nil || cmd.length == 0 || cmd.length > maxRdpgfxEncodedPayloadBytes {
+		return
+	}
+	originX, originY := c.rdpgfxSurfaceOutputOrigin(uint16(cmd.surfaceId))
+	payload := C.GoBytes(unsafe.Pointer(cmd.data), C.int(cmd.length))
+	frame, ok := rdpgfxSurfaceCommandFrame(
+		uint32(cmd.codecId),
+		originX,
+		originY,
+		uint32(cmd.left),
+		uint32(cmd.top),
+		uint32(cmd.right),
+		uint32(cmd.bottom),
+		uint32(cmd.width),
+		uint32(cmd.height),
+		payload,
+	)
+	if !ok {
+		return
+	}
+	if !c.firstFrameLogged.Swap(true) {
+		c.logger.Info("phase: first forwarded rdpgfx encoded frame from server",
+			zap.Uint32("x", frame.X),
+			zap.Uint32("y", frame.Y),
+			zap.Uint32("width", frame.Width),
+			zap.Uint32("height", frame.Height),
+			zap.String("encoding", string(frame.Encoding)),
+			zap.Bool("keyframe", frame.Keyframe),
+			zap.Int("payload_bytes", len(frame.Payload)))
+	}
+	seq := c.frameSeq.Add(1) - 1
+	c.completeFrame(seq, desktop.ServerMessage{Frame: &frame})
+}
+
+func (c *Client) rdpgfxSurfaceOutputOrigin(surfaceID uint16) (uint32, uint32) {
+	c.rdpgfxMu.Lock()
+	defer c.rdpgfxMu.Unlock()
+	state, ok := c.rdpgfxSurfaces[surfaceID]
+	if !ok || !state.mapped {
+		return 0, 0
+	}
+	return state.outputX, state.outputY
+}
+
+func rdpgfxSurfaceCommandFrame(codecID, originX, originY, left, top, right, bottom, width, height uint32, payload []byte) (desktop.FrameRect, bool) {
+	x, y, w, h, ok := rdpgfxSurfaceDestination(originX, originY, left, top, right, bottom, width, height)
+	if !ok || len(payload) == 0 {
+		return desktop.FrameRect{}, false
+	}
+	switch codecID {
+	case C.RDPGFX_CODECID_AVC420:
+		if stripped, ok := stripAvc420Wrapper(payload); ok {
+			payload = stripped
+		}
+		nal, ok := normalizeH264AnnexB(payload)
+		if !ok {
+			return desktop.FrameRect{}, false
+		}
+		return desktop.FrameRect{
+			X:        x,
+			Y:        y,
+			Width:    w,
+			Height:   h,
+			Encoding: desktop.EncodingH264,
+			Keyframe: nalStreamHasKeyframe(nal),
+			Payload:  nal,
+		}, true
+	case C.RDPGFX_CODECID_CAPROGRESSIVE, C.RDPGFX_CODECID_CAPROGRESSIVE_V2:
+		return desktop.FrameRect{
+			X:        x,
+			Y:        y,
+			Width:    w,
+			Height:   h,
+			Encoding: desktop.EncodingRFX,
+			Payload:  payload,
+		}, true
+	default:
+		return desktop.FrameRect{}, false
+	}
+}
+
+func rdpgfxSurfaceDestination(originX, originY, left, top, right, bottom, width, height uint32) (uint32, uint32, uint32, uint32, bool) {
+	w := width
+	h := height
+	if right > left {
+		w = right - left
+	}
+	if bottom > top {
+		h = bottom - top
+	}
+	if w == 0 || h == 0 {
+		return 0, 0, 0, 0, false
+	}
+	if x := uint64(originX) + uint64(left); x <= uint64(^uint32(0)) {
+		if y := uint64(originY) + uint64(top); y <= uint64(^uint32(0)) {
+			return uint32(x), uint32(y), w, h, true
+		}
+	}
+	return 0, 0, 0, 0, false
 }
 
 // stripAvc420Wrapper peels off the [MS-RDPEGFX 2.2.4.4.1]
@@ -600,9 +705,28 @@ func goRdpgfxStartFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_START_FRAME_PD
 func goRdpgfxEndFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_END_FRAME_PDU) C.UINT {
 	if c, _ := clientFromRdpgfx(ctx); c != nil {
 		c.rdpgfxEndFrames.Add(1)
+		c.rdpgfxEndFrameSeqBase.Store(c.frameSeq.Load())
+		c.rdpgfxEndFrameCmdBase.Store(c.rdpgfxSurfaceCommands.Load())
 		c.rdpgfxFrameAcks.Add(1)
 	}
 	return 0
+}
+
+//export goRdpgfxEndFrameAfter
+func goRdpgfxEndFrameAfter(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_END_FRAME_PDU, rc C.UINT32) {
+	c, _ := clientFromRdpgfx(ctx)
+	if c == nil || pdu == nil || rc != 0 {
+		return
+	}
+	if c.rdpgfxSurfaceCommands.Load() == c.rdpgfxEndFrameCmdBase.Load() {
+		return
+	}
+	if c.frameSeq.Load() != c.rdpgfxEndFrameSeqBase.Load() {
+		return
+	}
+	if !c.emitFullGDIFrame("rdpgfx end frame fallback") {
+		c.requestFrameResync()
+	}
 }
 
 //export goRdpgfxUpdateSurfaces

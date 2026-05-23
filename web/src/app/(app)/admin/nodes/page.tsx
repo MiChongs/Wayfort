@@ -127,6 +127,27 @@ const PROTOCOL_GROUPS: { label: string; items: { value: NodeProtocol; hint?: str
     ],
   },
   {
+    // Phase 22+ — Chinese DB stack registered via internal/dbquery.
+    // Order: 国产 PG-family first, then MySQL-family, then Oracle-family
+    // (Dameng), grouping by behavioural compatibility so operators
+    // pick the right Studio capabilities at a glance.
+    label: "国产数据库",
+    items: [
+      { value: "dameng", hint: "达梦 DM8 · Oracle 风格" },
+      { value: "kingbase", hint: "人大金仓 · PG 兼容" },
+      { value: "vastbase", hint: "海量 Vastbase · PG 兼容" },
+      { value: "highgo", hint: "瀚高 HighgoDB · PG 兼容" },
+      { value: "opengauss", hint: "华为 openGauss · PG 兼容" },
+      { value: "gaussdb", hint: "华为 GaussDB · PG 兼容" },
+      { value: "gbase8s", hint: "南大通用 GBase 8s · PG 兼容" },
+      { value: "tidb", hint: "PingCAP TiDB · MySQL 兼容" },
+      { value: "oceanbase", hint: "蚂蚁 OceanBase · MySQL 兼容" },
+      { value: "starrocks", hint: "StarRocks · MySQL 兼容 (OLAP)" },
+      { value: "doris", hint: "Apache Doris · MySQL 兼容 (OLAP)" },
+      { value: "gbase8a", hint: "南大通用 GBase 8a · MySQL 兼容" },
+    ],
+  },
+  {
     label: "通用",
     items: [
       { value: "tcp", hint: "任意 TCP 端口转发" },
@@ -435,9 +456,18 @@ function initialDraft(): Partial<Node> & { credential_id?: number } {
 }
 
 function defaultPort(p: NodeProtocol): number {
-  return (
-    { ssh: 22, telnet: 23, rdp: 3389, vnc: 5900, mysql: 3306, postgres: 5432, redis: 6379, mongo: 27017, tcp: 0 }[p] ?? 0
-  )
+  // Phase 22 — extend with the Chinese DB ports listed by each vendor's
+  // default installer. Kept in sync with add-node-sheet's PROTO_OPTIONS
+  // table; values lifted from the official vendor docs.
+  const ports: Partial<Record<NodeProtocol, number>> = {
+    ssh: 22, telnet: 23, rdp: 3389, vnc: 5900,
+    mysql: 3306, postgres: 5432, redis: 6379, mongo: 27017, tcp: 0,
+    dameng: 5236,
+    kingbase: 54321, vastbase: 5432, highgo: 5866,
+    opengauss: 5432, gaussdb: 5432, gbase8s: 9088,
+    tidb: 4000, oceanbase: 2881, starrocks: 9030, doris: 9030, gbase8a: 5258,
+  }
+  return ports[p] ?? 0
 }
 
 function protoOptionsExample(p: NodeProtocol): string {

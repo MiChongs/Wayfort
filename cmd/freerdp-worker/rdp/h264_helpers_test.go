@@ -5,6 +5,8 @@ package rdp
 import (
 	"bytes"
 	"testing"
+
+	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 )
 
 func TestStripAvc420Wrapper(t *testing.T) {
@@ -123,5 +125,42 @@ func TestNalStreamHasKeyframe(t *testing.T) {
 				t.Fatalf("nalStreamHasKeyframe(%x) = %v, want %v", tt.nal, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRdpgfxSurfaceCommandFrameAVC420(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte{0x00, 0x00, 0x00, 0x02, 0x65, 0xaa}
+	frame, ok := rdpgfxSurfaceCommandFrame(
+		0x000B, // RDPGFX_CODECID_AVC420
+		10, 20,
+		1, 2, 65, 58,
+		64, 56,
+		payload,
+	)
+	if !ok {
+		t.Fatal("rdpgfxSurfaceCommandFrame rejected AVC420 payload")
+	}
+	if frame.X != 11 || frame.Y != 22 || frame.Width != 64 || frame.Height != 56 {
+		t.Fatalf("frame geometry = (%d,%d %dx%d), want (11,22 64x56)", frame.X, frame.Y, frame.Width, frame.Height)
+	}
+	if frame.Encoding != desktop.EncodingH264 {
+		t.Fatalf("frame encoding = %q, want %q", frame.Encoding, desktop.EncodingH264)
+	}
+	if !frame.Keyframe {
+		t.Fatal("frame should be marked as keyframe")
+	}
+	wantPayload := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xaa}
+	if !bytes.Equal(frame.Payload, wantPayload) {
+		t.Fatalf("frame payload = %x, want %x", frame.Payload, wantPayload)
+	}
+}
+
+func TestRdpgfxSurfaceCommandFrameRejectsUnsupportedCodec(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := rdpgfxSurfaceCommandFrame(0x0008, 0, 0, 0, 0, 1, 1, 1, 1, []byte{1}); ok {
+		t.Fatal("rdpgfxSurfaceCommandFrame accepted unsupported codec")
 	}
 }

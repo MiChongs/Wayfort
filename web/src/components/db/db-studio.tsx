@@ -72,6 +72,18 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
     enabled: database !== undefined,
   })
 
+  // Phase 22 — pull the per-node capability matrix once. Cached for 5
+  // minutes; toolbar / sidebar / tab triggers all gate on it so an
+  // OLAP engine like StarRocks (no row edits, no FKs) doesn't expose
+  // buttons that would 4xx server-side.
+  const caps = useQuery({
+    queryKey: ["db.capabilities", nodeId],
+    queryFn: () => dbService.capabilities(nodeId),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+  const c = caps.data
+
   const [tab, setTab] = React.useState<"browse" | "query" | "processes">("browse")
   const [selected, setSelected] = React.useState<DBTableInfo | undefined>()
   const [sql, setSql] = React.useState(
@@ -240,10 +252,21 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                   <TabsTrigger value="query" className="gap-1">
                     <Code2 className="w-3.5 h-3.5" /> SQL
                   </TabsTrigger>
-                  <TabsTrigger value="processes" className="gap-1">
-                    <Activity className="w-3.5 h-3.5" /> 进程
-                  </TabsTrigger>
+                  {/* Phase 22 — gate Processes tab on adapter Capabilities.
+                      Engines without observable process state (some
+                      analytical engines, embedded SQL servers) skip the
+                      tab entirely instead of showing an inert button. */}
+                  {(c?.processes ?? true) && (
+                    <TabsTrigger value="processes" className="gap-1">
+                      <Activity className="w-3.5 h-3.5" /> 进程
+                    </TabsTrigger>
+                  )}
                 </TabsList>
+                {c?.vendor_label && (
+                  <Badge variant="outline" className="font-mono text-[10px]">
+                    {c.vendor_label}
+                  </Badge>
+                )}
                 {embedded && (
                   <div className="flex items-center gap-1 mb-1">
                     {dbPicker}

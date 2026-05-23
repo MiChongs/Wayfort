@@ -408,6 +408,11 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// with access to the node; writes (Exec) flow through the
 		// approval gate via h.Approval inside the handler.
 		if rt.DB != nil {
+			// Phase 22 — engine catalog (cluster-level, no node id) +
+			// per-node capabilities. The UI consumes both during the
+			// "new node" sheet and DB Studio mount.
+			ops.GET("/db/engines", rt.DB.Engines)
+			ops.GET("/nodes/:id/db/capabilities", rt.DB.Capabilities)
 			ops.GET("/nodes/:id/db/ping", rt.DB.Ping)
 			ops.GET("/nodes/:id/db/databases", rt.DB.Databases)
 			ops.GET("/nodes/:id/db/schema", rt.DB.Schema)
