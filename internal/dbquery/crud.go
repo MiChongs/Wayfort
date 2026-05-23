@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
 // RowKey identifies one row in a table by its primary-key column
@@ -211,12 +210,13 @@ func buildDeleteSQL(d Dialect, schema, table string, keyCols []string) (string, 
 		strings.Join(whereParts, " AND ")), nil
 }
 
-// quoteIdent returns the protocol-correct identifier quoter.
-//
-//	postgres → "ident" (ANSI double-quote, doubled inside)
-//	mysql    → `ident` (backtick, doubled inside)
-func quoteIdent(p model.NodeProtocol) func(string) string {
-	switch p {
+// quoteIdent returns the family-correct identifier quoter. PG-family
+// (postgres + KingbaseES + openGauss + Vastbase + HighgoDB + GaussDB +
+// GBase 8s) and Oracle-family (Dameng DM8) use ANSI double-quote;
+// MySQL-family (mysql + TiDB + OceanBase + StarRocks + Doris + GBase
+// 8a) uses backticks.
+func quoteIdent(f Family) func(string) string {
+	switch f {
 	case FamilyMySQL:
 		return func(s string) string {
 			return "`" + strings.ReplaceAll(s, "`", "``") + "`"
@@ -225,17 +225,5 @@ func quoteIdent(p model.NodeProtocol) func(string) string {
 		return func(s string) string {
 			return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 		}
-	}
-}
-
-// placeholder returns the per-driver parameter placeholder for the
-// given 1-based position. pgx/pq want $1 / $2; go-sql-driver wants ?
-// regardless of position.
-func placeholder(p model.NodeProtocol, n int) string {
-	switch p {
-	case FamilyPostgres:
-		return fmt.Sprintf("$%d", n)
-	default:
-		return "?"
 	}
 }

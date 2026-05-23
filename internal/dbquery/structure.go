@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
 // ForeignKeyInfo describes one FK constraint on a table. Direction

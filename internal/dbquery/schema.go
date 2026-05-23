@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
 // SchemaInfo groups what the UI needs to render the left-side schema

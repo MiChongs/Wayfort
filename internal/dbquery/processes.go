@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
 // ProcessInfo describes one server-side session / running query. Fields
@@ -153,7 +152,7 @@ func (s *Service) streamExport(ctx context.Context, nodeID, userID uint64,
 	if err != nil {
 		return err
 	}
-	q := quoteIdent(pl.protocol)
+	q := quoteIdent(pl.family())
 	sqlText := fmt.Sprintf("SELECT * FROM %s.%s", q(schema), q(table))
 	if limit > 0 {
 		sqlText += fmt.Sprintf(" LIMIT %d", limit)
