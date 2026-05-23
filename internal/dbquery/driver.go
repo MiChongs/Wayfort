@@ -151,6 +151,26 @@ func extrasQueryString(extras map[string]string) string {
 	return v.Encode()
 }
 
+// OpenPGX is the exported front for openWithPGXDriver. Native vendor
+// subpackages (internal/dbquery/native/kingbase, /vastbase, /highgo,
+// etc.) call this to obtain a *sql.DB wired to the gateway's proxy
+// chain — then run vendor-specific post-connect SQL on top.
+//
+// Parameters mirror the internal version; defaultDB and runtimeParams
+// let each vendor's native binding set its own bootstrap DB ("TEST"
+// for KingbaseES, "highgo" for Highgo) and the PG runtime parameters
+// it depends on (application_name, client_encoding, search_path, etc.).
+func OpenPGX(params ConnectionParams, dial DialFunc, defaultDB string, runtimeParams map[string]string) (*sql.DB, func(), error) {
+	return openWithPGXDriver(params, dial, defaultDB, runtimeParams)
+}
+
+// OpenMySQL is the exported front for openWithMySQLDriver. Native MySQL-
+// wire vendor packages (OceanBase tenant routing, etc.) call this so
+// the gateway's per-pool dial-context registration is uniform.
+func OpenMySQL(params ConnectionParams, dial DialFunc, dsnExtras string) (*sql.DB, func(), error) {
+	return openWithMySQLDriver(params, dial, dsnExtras)
+}
+
 // notSupportedDriver is returned by adapters whose engine binding isn't
 // bundled in the current build (e.g. Dameng without the gitee-hosted
 // driver). The error explains how to enable.

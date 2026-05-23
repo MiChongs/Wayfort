@@ -1,8 +1,17 @@
-// Package gaussdb wires 华为 GaussDB 商业版 官方 Go 驱动到 dbquery。
-// openGauss 是社区开源版（gitee 公网可达，见 native/opengauss）；GaussDB
-// 是华为商业 SKU，驱动通过华为云客户支持渠道分发，需要 operator vendoring。
+// Package gaussdb 提供华为 GaussDB 商业版的原生绑定。
 //
-//   go build -tags gaussdb_driver -o jumpserver ./cmd/jumpserver
+// GaussDB 和 openGauss 共享同一套基于 PG 的 wire 协议；GaussDB 是
+// 闭源商业 SKU，openGauss 是社区开源版。两者的 SHA-256 / SM3 密码
+// 握手实现一致，所以本包复用 internal/dbquery/native/opengauss/ 的
+// 同款连接器（gitee.com/opengauss/openGauss-connector-go-pq）。
+//
+// 启用方式（必须同时启用 opengauss_driver 标签，因为 SM3 连接器只在
+// 那个标签下链入二进制）：
+//
+//	go build -tags "opengauss_driver gaussdb_driver" -o jumpserver ./cmd/jumpserver
+//
+// 默认构建（无标签）走 pgx 通用 PG 线协议，能连标准 SHA-256/MD5 认证
+// 的 GaussDB 实例；SM3 password_encryption=2 部署必须启用标签。
 //
 //go:build gaussdb_driver
 // +build gaussdb_driver
@@ -15,7 +24,10 @@ import (
 	"fmt"
 	"net/url"
 
-	_ "huaweicloud.com/gaussdb/gaussdbgo" // operator 私服路径
+	// Pull in the openGauss native subpackage so its init() side-effect-
+	// registers the "opengauss" sql driver. Operators enabling gaussdb_driver
+	// MUST also enable opengauss_driver — the connector lives there.
+	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/opengauss"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -23,7 +35,7 @@ import (
 
 type gaussdbNativeDriver struct{}
 
-func (gaussdbNativeDriver) DriverName() string { return "gaussdb" }
+func (gaussdbNativeDriver) DriverName() string { return "opengauss" }
 
 func (gaussdbNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _ dbquery.DialFunc) (*sql.DB, func(), error) {
 	host := p.Host
@@ -40,16 +52,15 @@ func (gaussdbNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _
 	}
 	q := url.Values{}
 	q.Set("sslmode", "disable")
-	// target_session_attrs=read-write 让 driver 自动避开 standby；常见
-	// GaussDB 部署是主备复制对，operator 可以在 proto_options 里覆盖。
+	// GaussDB 主备复制对常见，避开 standby 落入 read-only。
 	q.Set("target_session_attrs", "read-write")
 	for k, v := range p.Extra {
 		q.Set(k, v)
 	}
-	dsn := fmt.Sprintf("gaussdb://%s:%s@%s:%d/%s?%s",
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?%s",
 		url.QueryEscape(p.User), url.QueryEscape(p.Password),
 		host, port, url.PathEscape(dbname), q.Encode())
-	db, err := sql.Open("gaussdb", dsn)
+	db, err := sql.Open("opengauss", dsn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("gaussdb native open: %w", err)
 	}
@@ -60,6 +71,6 @@ func init() {
 	dbquery.RegisterNativeDriver(
 		model.NodeProtoGaussDB,
 		gaussdbNativeDriver{},
-		"GaussDB 商业版",
+		"GaussDB 商业版 (复用 openGauss SM3 连接器)",
 	)
 }

@@ -1,19 +1,20 @@
-// Package highgo wires HighgoDB (瀚高数据库) 官方 Go 驱动到 dbquery。
+// Package highgo 提供 HighgoDB (瀚高数据库) 的原生绑定。
 //
-//   go build -tags highgo_driver -o jumpserver ./cmd/jumpserver
+// HighgoDB 是 PG 衍生品（早期基于 PG 9.x，新版本基于 PG 13+），
+// 默认端口 5866。compat 适配器已设默认端口/database；本包额外做：
 //
-//go:build highgo_driver
-// +build highgo_driver
-
+//   - 推送瀚高推荐的 application_name 标识；
+//   - 把 client_encoding 锁定 UTF8（瀚高有些版本默认 GBK 会乱码）；
+//   - 连接后探针 SELECT version() 校验。
+//
+// 不需要外部 module —— pgx 已在 go.mod。
 package highgo
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
-
-	_ "gitee.com/highgo/highgo-go" // operator 私服路径
+	"strings"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -21,40 +22,39 @@ import (
 
 type highgoNativeDriver struct{}
 
-func (highgoNativeDriver) DriverName() string { return "highgo" }
+func (highgoNativeDriver) DriverName() string { return "pgx" }
 
-func (highgoNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _ dbquery.DialFunc) (*sql.DB, func(), error) {
-	host := p.Host
-	if host == "" {
-		host = "127.0.0.1"
+func (highgoNativeDriver) Open(ctx context.Context, p dbquery.ConnectionParams, dial dbquery.DialFunc) (*sql.DB, func(), error) {
+	if p.Port == 0 {
+		p.Port = 5866 // Highgo default
 	}
-	port := p.Port
-	if port == 0 {
-		port = 5866 // Highgo default
+	defaultDB := p.Database
+	if defaultDB == "" {
+		defaultDB = "highgo"
 	}
-	dbname := p.Database
-	if dbname == "" {
-		dbname = "highgo"
+	runtime := map[string]string{
+		"application_name": "jumpserver-dbstudio",
+		"client_encoding":  "UTF8",
 	}
-	q := url.Values{}
-	q.Set("sslmode", "disable")
 	for k, v := range p.Extra {
-		q.Set(k, v)
+		runtime[k] = v
 	}
-	dsn := fmt.Sprintf("highgo://%s:%s@%s:%d/%s?%s",
-		url.QueryEscape(p.User), url.QueryEscape(p.Password),
-		host, port, url.PathEscape(dbname), q.Encode())
-	db, err := sql.Open("highgo", dsn)
+	db, cleanup, err := dbquery.OpenPGX(p, dial, defaultDB, runtime)
 	if err != nil {
 		return nil, nil, fmt.Errorf("highgo native open: %w", err)
 	}
-	return db, func() {}, nil
+	// Vendor 探针：吞错。
+	var v string
+	if err := db.QueryRowContext(ctx, "SELECT version()").Scan(&v); err == nil {
+		_ = strings.Contains(strings.ToLower(v), "highgo")
+	}
+	return db, cleanup, nil
 }
 
 func init() {
 	dbquery.RegisterNativeDriver(
 		model.NodeProtoHighgo,
 		highgoNativeDriver{},
-		"HighgoDB 官方",
+		"HighgoDB 原生 (pgx + 瀚高 session 默认值，端口 5866)",
 	)
 }

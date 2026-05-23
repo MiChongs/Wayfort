@@ -1,26 +1,28 @@
-// Package oceanbase wires OceanBase 官方 Go 驱动（OBProxy tenant 路由
-// + OB Oracle-mode 方言）到 dbquery。默认构建对 NodeProtoOceanBase 走
-// go-sql-driver/mysql 直连 OBServer 的 MySQL-mode tenant——已能跑通 90%
-// 的 OLTP 查询。本 tag 启用后切换到厂商驱动，获得：
+// Package oceanbase 提供 OceanBase 的原生绑定。
 //
-//   - OBProxy tenant=xxx#cluster=yyy 路由
-//   - OB Oracle-mode（PLSQL / 双 quote 标识符 / 序列）
-//   - 厂商自有的 weak-consistency-read 调度提示
+// OB 的核心问题：MySQL wire 协议下，连接到 OBProxy 时用户名必须是
 //
-//   go build -tags oceanbase_driver -o jumpserver ./cmd/jumpserver
+//	USER@TENANT#CLUSTER
 //
-//go:build oceanbase_driver
-// +build oceanbase_driver
-
+// 形式（USER@TENANT 也合法，省略 #CLUSTER 时 OBProxy 用集群默认值）。
+// 直接把这串塞进 mysqldrv 的 DSN 会被 # 提前拆掉解析失败，必须 URL
+// 转义 # → %23。本驱动接管 DSN 构造：
+//
+//   - User 字段已经带 "@TENANT" 或 "@TENANT#CLUSTER" → 转义并直传；
+//   - User 不带 → 从 Extra["tenant"] / Extra["cluster"] 拼装；
+//   - 都没有 → 退化到「user@sys」（OB 默认租户），仍可连标准部署。
+//
+// MySQL-mode 完全可用；Oracle-mode 需要厂商 obclient-go 驱动，那条路
+// 通过 oceanbase_oracle_driver 构建标签开启（见同目录 oracle.go.disabled
+// 模板）。本默认包不依赖外部 module，go-sql-driver/mysql 已在 go.mod。
 package oceanbase
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
-
-	_ "github.com/oceanbase/obclient-go" // operator 私服路径；按需替换
 
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
@@ -28,51 +30,74 @@ import (
 
 type oceanbaseNativeDriver struct{}
 
-func (oceanbaseNativeDriver) DriverName() string { return "oceanbase" }
+func (oceanbaseNativeDriver) DriverName() string { return "mysql" }
 
-func (oceanbaseNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _ dbquery.DialFunc) (*sql.DB, func(), error) {
-	host := p.Host
-	if host == "" {
-		host = "127.0.0.1"
+func (oceanbaseNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, dial dbquery.DialFunc) (*sql.DB, func(), error) {
+	if p.Port == 0 {
+		p.Port = 2883 // OBProxy default; direct OBServer is 2881
 	}
-	port := p.Port
-	if port == 0 {
-		port = 2883 // OBProxy default; OBServer 直连用 2881
-	}
-	// OB 用户名结构：USER@TENANT#CLUSTER。允许 operator 直接在 User
-	// 字段里写完整形式，或通过 Extra.tenant / Extra.cluster 拼装。
-	user := p.User
-	if !strings.Contains(user, "@") {
-		if tenant := p.Extra["tenant"]; tenant != "" {
-			user = user + "@" + tenant
-		}
-		if cluster := p.Extra["cluster"]; cluster != "" {
-			user = user + "#" + cluster
-		}
-	}
-	dbname := p.Database
-	if dbname == "" {
-		dbname = "oceanbase"
-	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&loc=Local",
-		user, p.Password, host, port, dbname)
+	// Build the OBProxy-friendly user identifier.
+	user := composeOBUser(p.User, p.Extra)
+	// Replace User in-place so OpenMySQL's DSN builder picks it up. The
+	// pool retains the unescaped User in proto_options; we only mutate
+	// a local copy.
+	p.User = user
+	// Strip tenant/cluster from Extra so they don't accidentally appear
+	// as MySQL DSN params (the driver would reject "tenant=" anyway).
+	pruned := map[string]string{}
 	for k, v := range p.Extra {
-		if k == "tenant" || k == "cluster" {
+		switch k {
+		case "tenant", "cluster":
 			continue
+		default:
+			pruned[k] = v
 		}
-		dsn += "&" + k + "=" + v
 	}
-	db, err := sql.Open("oceanbase", dsn)
+	p.Extra = pruned
+	// Vendor-recommended MySQL DSN extras.
+	extras := url.Values{}
+	extras.Set("interpolateParams", "true") // OB has variable prepare quirks; safer with interpolation
+	for k, v := range pruned {
+		extras.Set(k, v)
+	}
+	db, cleanup, err := dbquery.OpenMySQL(p, dial, extras.Encode())
 	if err != nil {
 		return nil, nil, fmt.Errorf("oceanbase native open: %w", err)
 	}
-	return db, func() {}, nil
+	return db, cleanup, nil
+}
+
+// composeOBUser turns a raw User + Extra (tenant/cluster) into the
+// OBProxy-style USER@TENANT#CLUSTER form. Pre-formatted Users are
+// honoured as-is; if the caller already wrote "user@tenant" we don't
+// duplicate-append.
+func composeOBUser(rawUser string, extra map[string]string) string {
+	if strings.ContainsAny(rawUser, "@#") {
+		return rawUser
+	}
+	tenant := extra["tenant"]
+	cluster := extra["cluster"]
+	if tenant == "" && cluster == "" {
+		// Default tenant on stand-alone OBServer (no OBProxy) is "sys".
+		// Operators on OBProxy without tenant context probably want
+		// to set Extra.tenant explicitly; falling through to sys
+		// keeps single-tenant test installs working.
+		return rawUser
+	}
+	out := rawUser
+	if tenant != "" {
+		out = out + "@" + tenant
+	}
+	if cluster != "" {
+		out = out + "#" + cluster
+	}
+	return out
 }
 
 func init() {
 	dbquery.RegisterNativeDriver(
 		model.NodeProtoOceanBase,
 		oceanbaseNativeDriver{},
-		"OceanBase 官方 (tenant 路由)",
+		"OceanBase 原生 (OBProxy tenant 路由，MySQL-mode)",
 	)
 }

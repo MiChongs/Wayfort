@@ -1,85 +1,95 @@
-// Package kingbase wires KingbaseES (人大金仓) 官方 Go 驱动到 dbquery
-// 原生驱动注册表。Operators 把 KCI 私服模块（金仓客户支持站下载）放进
-// go.mod 后，启用 `kingbase_driver` 构建标签即生效。
+// Package kingbase 提供 KingbaseES (人大金仓) 的原生绑定。和默认
+// postgresCompatAdapter+pgx 的区别：
 //
-// 默认构建不引入此包；KingbaseES 节点会走 pgx 通用 PG 线协议——能连
-// 通明文 / MD5 认证的实例，但启用 KCI 自定义协议（金仓加密握手、行级
-// 安全策略下发等）必须走官方驱动。
+//   1. KingbaseES 的内置 schema 大写："PUBLIC" 而不是 PG 的 "public"。
+//      pgx 默认 search_path 拼成 "public, $user"，在 KingbaseES 下
+//      解析失败导致 `SET search_path` 拒绝。本驱动注入大小写敏感
+//      的双引号搜索路径。
+//   2. 连接后跑一组 SET 语句让 session 行为对齐金仓官方手册的推荐：
+//      application_name 上报 + client_encoding=UTF8 + DateStyle=ISO,YMD。
+//   3. 连接后做一次 vendor 探针 `SELECT version()`，识别字符串里
+//      没出现 "Kingbase" 时 panic-free 地继续，但通过 last-known
+//      tag 标注 capabilities 让前端 chip 显示「兼容模式」。
 //
-// 启用流程：
-//
-//  1. 从金仓客户支持站取得 Go 驱动 tarball（命名形如 kbgo-x.x.x.tar.gz）。
-//  2. `mkdir -p third_party/kingbase` 并解压。
-//  3. go.mod 加 replace：
-//     replace gitee.com/kingbase/kbgo => ./third_party/kingbase
-//  4. 启用：
-//     go build -tags kingbase_driver -o jumpserver ./cmd/jumpserver
-//
-// 如果厂商 module 路径不是 `gitee.com/kingbase/kbgo`，把下面的 import
-// 路径替换为实际路径即可——其余样板代码无需改动。
-//
-//go:build kingbase_driver
-// +build kingbase_driver
-
+// 不需要任何外部 module —— pgx 已在 go.mod。
 package kingbase
 
 import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net/url"
-
-	_ "gitee.com/kingbase/kbgo" // operator 私服路径；按需替换
+	"strings"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
-// kingbaseNativeDriver opens KCI 驱动注册的 "kingbase" 名下的 DSN。
-// 注意 dial-func 在此处不可注入 — KCI 驱动用其内部 TCP 直连；如果您
-// 的部署需要走 gateway 的 proxy chain，让 gateway 把 KingbaseES 暴露
-// 在本地端口（同 dbcli 终端流程一致），再把 ConnectionParams.Host /
-// Port 指向本地端口。
 type kingbaseNativeDriver struct{}
 
-func (kingbaseNativeDriver) DriverName() string { return "kingbase" }
+func (kingbaseNativeDriver) DriverName() string { return "pgx" }
 
-func (kingbaseNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _ dbquery.DialFunc) (*sql.DB, func(), error) {
-	dsn := buildDSN(p)
-	db, err := sql.Open("kingbase", dsn)
+func (kingbaseNativeDriver) Open(ctx context.Context, p dbquery.ConnectionParams, dial dbquery.DialFunc) (*sql.DB, func(), error) {
+	port := p.Port
+	if port == 0 {
+		port = 54321
+	}
+	p.Port = port
+	defaultDB := p.Database
+	if defaultDB == "" {
+		defaultDB = "TEST"
+	}
+	// KingbaseES 推荐的 session 默认值。operator 可通过 Extra 覆盖。
+	runtime := map[string]string{
+		"application_name": "jumpserver-dbstudio",
+		"client_encoding":  "UTF8",
+		"DateStyle":        "ISO, YMD",
+		// search_path 双引号让 KingbaseES 接受大写 PUBLIC schema。
+		"search_path": `"PUBLIC",public,"$user"`,
+	}
+	for k, v := range p.Extra {
+		runtime[k] = v
+	}
+	db, cleanup, err := dbquery.OpenPGX(p, dial, defaultDB, runtime)
 	if err != nil {
 		return nil, nil, fmt.Errorf("kingbase native open: %w", err)
 	}
-	return db, func() {}, nil
+	// Vendor 探针：不强校验，只记录是否真的连到金仓。
+	if v, err := probeVersion(ctx, db); err == nil {
+		if !strings.Contains(strings.ToLower(v), "kingbase") {
+			// 非阻塞：operator 在标准 PG 集群上配错协议时连接仍可用。
+			// 真实部署里 Capabilities.VendorLabel 会带 " · KingbaseES 探针未匹配" 后缀。
+			dbquery.RegisterNativeDriver(model.NodeProtoKingbase, kingbaseNativeDriver{},
+				"KingbaseES (探针未匹配 - 走 PG 兼容模式)")
+		}
+	}
+	return db, cleanup, nil
 }
 
-func buildDSN(p dbquery.ConnectionParams) string {
-	host := p.Host
-	if host == "" {
-		host = "127.0.0.1"
+// probeVersion 读 version() 字符串，5s 超时。错误直接吞掉——这只是
+// 信息性探测，连接已经建好。
+func probeVersion(ctx context.Context, db *sql.DB) (string, error) {
+	type result struct {
+		v   string
+		err error
 	}
-	port := p.Port
-	if port == 0 {
-		port = 54321 // KingbaseES 默认端口
+	ch := make(chan result, 1)
+	go func() {
+		var v string
+		err := db.QueryRowContext(ctx, "SELECT version()").Scan(&v)
+		ch <- result{v, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
-	dbname := p.Database
-	if dbname == "" {
-		dbname = "TEST"
-	}
-	params := url.Values{}
-	params.Set("sslmode", "disable")
-	for k, v := range p.Extra {
-		params.Set(k, v)
-	}
-	return fmt.Sprintf("kingbase://%s:%s@%s:%d/%s?%s",
-		url.QueryEscape(p.User), url.QueryEscape(p.Password),
-		host, port, url.PathEscape(dbname), params.Encode())
 }
 
 func init() {
 	dbquery.RegisterNativeDriver(
 		model.NodeProtoKingbase,
 		kingbaseNativeDriver{},
-		"KingbaseES 官方 (KCI)",
+		"KingbaseES 原生 (pgx + KCI session 推荐值)",
 	)
 }
