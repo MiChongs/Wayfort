@@ -339,8 +339,56 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                 {selected ? (
                   <BrowseTab nodeId={nodeId} table={selected} database={database} caps={c} />
                 ) : (
-                  <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
-                    点左侧的表名开始浏览
+                  // Phase 30c — onboarding empty state. Replaces the
+                  // single-line placeholder with a discoverable card
+                  // surfacing the three primary actions: pick a table,
+                  // open SQL editor, scan running processes.
+                  <div className="flex-1 grid place-items-center p-8">
+                    <div className="max-w-md w-full">
+                      <div className="flex items-center justify-center w-12 h-12 rounded-full bg-primary/10 mx-auto mb-3">
+                        <Database className="w-6 h-6 text-primary" />
+                      </div>
+                      <h2 className="text-base font-semibold text-center mb-1">
+                        欢迎使用 DB Studio
+                      </h2>
+                      <p className="text-xs text-muted-foreground text-center mb-4">
+                        {node.data?.protocol && c?.vendor_label
+                          ? `已连接 ${c.vendor_label}`
+                          : "请选择一个表开始浏览"}
+                      </p>
+                      <div className="space-y-1.5 text-xs">
+                        <div className="flex items-start gap-2 px-3 py-2 rounded-md border bg-card/50">
+                          <Database className="w-3.5 h-3.5 mt-0.5 text-muted-foreground shrink-0" />
+                          <span>
+                            <span className="font-medium">左侧选表</span>
+                            <span className="text-muted-foreground"> · 单击浏览数据、双击插入到 SQL 编辑器</span>
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-2 px-3 py-2 rounded-md border bg-card/50">
+                          <Code2 className="w-3.5 h-3.5 mt-0.5 text-muted-foreground shrink-0" />
+                          <span>
+                            <span className="font-medium">切到 SQL Tab</span>
+                            <span className="text-muted-foreground"> · 写查询；Ctrl/⌘+Enter 执行；「执行脚本」拆分多条</span>
+                          </span>
+                        </div>
+                        {(c?.processes ?? true) && (
+                          <div className="flex items-start gap-2 px-3 py-2 rounded-md border bg-card/50">
+                            <Activity className="w-3.5 h-3.5 mt-0.5 text-muted-foreground shrink-0" />
+                            <span>
+                              <span className="font-medium">进程 Tab</span>
+                              <span className="text-muted-foreground"> · 看正在执行的查询并按需 Kill</span>
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex items-start gap-2 px-3 py-2 rounded-md border bg-card/50">
+                          <Terminal className="w-3.5 h-3.5 mt-0.5 text-muted-foreground shrink-0" />
+                          <span>
+                            <span className="font-medium">需要原生终端？</span>
+                            <span className="text-muted-foreground"> · 顶部「终端 CLI」入口；按 ? 查看键盘快捷键</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
               </TabsContent>

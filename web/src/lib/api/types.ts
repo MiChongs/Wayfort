@@ -781,6 +781,17 @@ export interface DBExecResult {
   elapsed: number
 }
 
+// Phase 30c — one trigger row per table-attached trigger. Empty array
+// when the table has none. Engines without programmable triggers
+// (StarRocks / Doris) always return [].
+export interface DBTriggerInfo {
+  name: string
+  timing: string  // BEFORE / AFTER / INSTEAD OF (PG); or MySQL ACTION_TIMING
+  event: string   // INSERT / UPDATE / DELETE / TRUNCATE
+  statement: string
+  enabled: boolean
+}
+
 // Phase 30 — per-database health snapshot for the DB Studio status
 // bar. Each engine fills the fields it can expose; missing values
 // come back as 0 / "".

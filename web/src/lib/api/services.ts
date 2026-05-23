@@ -627,6 +627,7 @@ import type {
   DBDatabaseStats,
   DBMultiQueryResult,
   DBQueryResult,
+  DBTriggerInfo,
   DBRowKey,
   DBSchemaInfo,
   DBTableStats,
@@ -759,6 +760,12 @@ export const dbService = {
   ) =>
     api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
       query: { schema, table, ...opts },
+    }),
+  // Phase 30c — per-table trigger list. Empty array when none exist
+  // or the engine has no programmable triggers.
+  triggers: (nodeId: number, schema: string, table: string, database?: string) =>
+    api<{ triggers: DBTriggerInfo[] }>("GET", `/nodes/${nodeId}/db/triggers`, {
+      query: { schema, table, database },
     }),
   // Phase 30 — per-database health snapshot. Cheap (one round-trip
   // per stat); the UI calls every 30s for a live status bar.

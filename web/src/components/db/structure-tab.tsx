@@ -3,7 +3,7 @@
 import * as React from "react"
 import dynamic from "next/dynamic"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRight, Database, FileCode, Hash, KeyRound, Link2, Loader2 } from "lucide-react"
+import { ArrowRight, Database, FileCode, Hash, KeyRound, Link2, Loader2, Zap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { dbService } from "@/lib/api/services"
@@ -67,6 +67,13 @@ export function StructureTab({ nodeId, database, table, caps }: Props) {
   const indexes = useQuery({
     queryKey: ["db.idx", nodeId, database, table.schema, table.name],
     queryFn: () => dbService.indexes(nodeId, table.schema, table.name, database),
+    staleTime: 60_000,
+  })
+  // Phase 30c — triggers section. Always-on (no caps gate); empty array
+  // when none exist or the engine has no triggers (OLAP).
+  const triggers = useQuery({
+    queryKey: ["db.triggers", nodeId, database, table.schema, table.name],
+    queryFn: () => dbService.triggers(nodeId, table.schema, table.name, database),
     staleTime: 60_000,
   })
 
@@ -200,6 +207,40 @@ export function StructureTab({ nodeId, database, table, caps }: Props) {
               <div className="text-[10px] text-muted-foreground">本引擎不支持/未启用外键</div>
             </Section>
           )}
+
+          {/* Phase 30c — triggers section. PG / MySQL / Dameng each
+              query their own catalog view; OLAP engines return []. */}
+          <Section title="触发器" icon={<Zap className="w-3.5 h-3.5" />}>
+            {(triggers.data?.triggers.length ?? 0) === 0 && <Empty />}
+            <ul className="space-y-1.5">
+              {triggers.data?.triggers.map((tr) => (
+                <li key={tr.name} className="text-xs">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="font-medium truncate">{tr.name}</span>
+                    <Badge variant="outline" className="text-[9px] px-1 py-0">
+                      {tr.timing}
+                    </Badge>
+                    <Badge variant="outline" className="text-[9px] px-1 py-0">
+                      {tr.event}
+                    </Badge>
+                    {!tr.enabled && (
+                      <Badge variant="destructive" className="text-[9px] px-1 py-0">
+                        DISABLED
+                      </Badge>
+                    )}
+                  </div>
+                  {tr.statement && (
+                    <div
+                      className="text-[10px] text-muted-foreground font-mono mt-0.5 line-clamp-2"
+                      title={tr.statement}
+                    >
+                      {tr.statement.length > 200 ? tr.statement.slice(0, 200) + "…" : tr.statement}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </Section>
         </ScrollArea>
       </div>
     </div>

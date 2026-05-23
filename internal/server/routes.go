@@ -423,6 +423,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.GET("/nodes/:id/db/ddl", rt.DB.TableDDL)
 			ops.GET("/nodes/:id/db/rows", rt.DB.Rows)
 			ops.GET("/nodes/:id/db/database_stats", rt.DB.DatabaseStats)
+			ops.GET("/nodes/:id/db/triggers", rt.DB.Triggers)
 			ops.GET("/nodes/:id/db/export", rt.DB.Export)
 			ops.POST("/nodes/:id/db/query", rt.DB.Query)
 			ops.POST("/nodes/:id/db/exec", rt.DB.Exec)

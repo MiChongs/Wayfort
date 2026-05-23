@@ -692,6 +692,27 @@ func (h *DBHandler) Exec(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// Triggers — GET /api/v1/nodes/:id/db/triggers?schema=...&table=...&database=...
+// Per-table trigger list. Empty array (not 404) when none exist.
+func (h *DBHandler) Triggers(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table := c.Query("schema"), c.Query("table")
+	if schema == "" || table == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema and table required"})
+		return
+	}
+	tr, err := h.Svc.LoadTriggers(c.Request.Context(), nodeID, claims.UserID,
+		c.Query("database"), schema, table)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"triggers": tr})
+}
+
 // DatabaseStats — GET /api/v1/nodes/:id/db/database_stats?database=...
 // Cheap one-shot for the DB Studio status bar: total size, table count,
 // connection count, server version, uptime. Each engine returns 0 / ""
