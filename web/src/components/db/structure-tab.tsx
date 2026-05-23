@@ -7,7 +7,7 @@ import { ArrowRight, Database, FileCode, Hash, KeyRound, Link2, Loader2 } from "
 import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { dbService } from "@/lib/api/services"
-import type { DBForeignKeyInfo, DBTableInfo } from "@/lib/api/types"
+import type { DBCapabilities, DBForeignKeyInfo, DBTableInfo } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 
 // Monaco for read-only DDL viewing. Same lazy-load pattern as the SQL editor.
@@ -24,26 +24,40 @@ type Props = {
   nodeId: number
   database?: string
   table: DBTableInfo
+  // Phase 25 — adapter Capabilities, propagated from DBStudio. When
+  // undefined (still loading) every section renders; once resolved each
+  // network call is gated so we don't fire requests the adapter would
+  // 4xx (e.g. DDL on an engine without DBMS_METADATA equivalent).
+  caps?: DBCapabilities
 }
 
 // StructureTab — the "what does this table look like" view. Stats up top,
 // then a 2-column body: CREATE statement on the left (Monaco read-only),
 // FKs / indexes / columns summary on the right.
-export function StructureTab({ nodeId, database, table }: Props) {
+export function StructureTab({ nodeId, database, table, caps }: Props) {
+  // Gates default to ON when caps still loading; that way the panes
+  // don't visibly flicker into existence after the first paint.
+  const canStats = caps ? caps.table_stats : true
+  const canDDL = caps ? caps.table_ddl : true
+  const canFK = caps ? caps.foreign_keys : true
+
   const stats = useQuery({
     queryKey: ["db.stats", nodeId, database, table.schema, table.name],
     queryFn: () => dbService.stats(nodeId, table.schema, table.name, database),
     staleTime: 30_000,
+    enabled: canStats,
   })
   const ddl = useQuery({
     queryKey: ["db.ddl", nodeId, database, table.schema, table.name],
     queryFn: () => dbService.ddl(nodeId, table.schema, table.name, database),
     staleTime: 30_000,
+    enabled: canDDL,
   })
   const fks = useQuery({
     queryKey: ["db.fk", nodeId, database, table.schema, table.name],
     queryFn: () => dbService.foreignKeys(nodeId, table.schema, table.name, database),
     staleTime: 30_000,
+    enabled: canFK,
   })
   const cols = useQuery({
     queryKey: ["db.cols", nodeId, database, table.schema, table.name],
@@ -62,7 +76,9 @@ export function StructureTab({ nodeId, database, table }: Props) {
   return (
     <div className="flex flex-col h-full">
       <div className="border-b px-3 py-2 flex items-center gap-2 text-xs">
-        {stats.data ? (
+        {!canStats ? (
+          <span className="text-muted-foreground">本引擎未暴露表统计</span>
+        ) : stats.data ? (
           <>
             <Badge variant="outline" className="font-mono">
               ≈{stats.data.rows_approx.toLocaleString()} 行
@@ -87,7 +103,13 @@ export function StructureTab({ nodeId, database, table }: Props) {
             <FileCode className="w-3.5 h-3.5" /> CREATE 语句
           </div>
           <div className="flex-1 min-h-0">
-            {ddl.isLoading ? (
+            {!canDDL ? (
+              <div className="h-full grid place-items-center text-xs text-muted-foreground p-4 text-center">
+                本引擎不支持 DDL 导出
+                <br />
+                <span className="text-[10px]">（无 DBMS_METADATA / SHOW CREATE 等价物）</span>
+              </div>
+            ) : ddl.isLoading ? (
               <div className="h-full grid place-items-center text-xs text-muted-foreground">
                 <Loader2 className="w-4 h-4 animate-spin" />
               </div>
@@ -152,23 +174,32 @@ export function StructureTab({ nodeId, database, table }: Props) {
             </ul>
           </Section>
 
-          <Section title="外键（出）" icon={<Link2 className="w-3.5 h-3.5" />} subtitle="本表 → 其它表">
-            {out.length === 0 && <Empty />}
-            <ul className="space-y-1.5">
-              {out.map((f) => (
-                <FKItem key={f.name} fk={f} side="from" />
-              ))}
-            </ul>
-          </Section>
+          {canFK && (
+            <>
+              <Section title="外键（出）" icon={<Link2 className="w-3.5 h-3.5" />} subtitle="本表 → 其它表">
+                {out.length === 0 && <Empty />}
+                <ul className="space-y-1.5">
+                  {out.map((f) => (
+                    <FKItem key={f.name} fk={f} side="from" />
+                  ))}
+                </ul>
+              </Section>
 
-          <Section title="外键（入）" icon={<Link2 className="w-3.5 h-3.5 rotate-180" />} subtitle="其它表 → 本表">
-            {inb.length === 0 && <Empty />}
-            <ul className="space-y-1.5">
-              {inb.map((f) => (
-                <FKItem key={f.name} fk={f} side="to" />
-              ))}
-            </ul>
-          </Section>
+              <Section title="外键（入）" icon={<Link2 className="w-3.5 h-3.5 rotate-180" />} subtitle="其它表 → 本表">
+                {inb.length === 0 && <Empty />}
+                <ul className="space-y-1.5">
+                  {inb.map((f) => (
+                    <FKItem key={f.name} fk={f} side="to" />
+                  ))}
+                </ul>
+              </Section>
+            </>
+          )}
+          {!canFK && (
+            <Section title="外键" icon={<Link2 className="w-3.5 h-3.5" />}>
+              <div className="text-[10px] text-muted-foreground">本引擎不支持/未启用外键</div>
+            </Section>
+          )}
         </ScrollArea>
       </div>
     </div>

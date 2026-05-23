@@ -251,31 +251,39 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
             setOrderDir(d)
             setPage(0)
           }}
-          rowActions={(rowIdx) => (
-            <span className="inline-flex items-center gap-0.5">
-              <button
-                type="button"
-                className="p-1 hover:text-primary"
-                title="编辑此行"
-                onClick={() => openEdit(rowIdx)}
-              >
-                <Edit className="w-3 h-3" />
-              </button>
-              <button
-                type="button"
-                className="p-1 hover:text-destructive"
-                title="删除此行"
-                onClick={() => doDelete(rowIdx)}
-              >
-                <Trash2 className="w-3 h-3" />
-              </button>
-            </span>
-          )}
+          rowActions={
+            // Phase 25 — per-row Edit/Delete only rendered when the
+            // adapter advertises row_edits. OLAP engines (StarRocks/
+            // Doris) and views without unique PKs hide the column
+            // entirely so the grid doesn't waste a slot for dead icons.
+            canEdit
+              ? (rowIdx) => (
+                  <span className="inline-flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="p-1 hover:text-primary"
+                      title="编辑此行"
+                      onClick={() => openEdit(rowIdx)}
+                    >
+                      <Edit className="w-3 h-3" />
+                    </button>
+                    <button
+                      type="button"
+                      className="p-1 hover:text-destructive"
+                      title="删除此行"
+                      onClick={() => doDelete(rowIdx)}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </span>
+                )
+              : undefined
+          }
         />
       </TabsContent>
 
       <TabsContent value="structure" className="flex-1 min-h-0 m-0">
-        <StructureTab nodeId={nodeId} database={database} table={table} />
+        <StructureTab nodeId={nodeId} database={database} table={table} caps={caps} />
       </TabsContent>
 
       {cols.data && (
