@@ -16,13 +16,18 @@ type Props = {
   nodeId: number
   database?: string
   className?: string
+  // Phase 22 — adapter Capabilities. canKill=false hides the per-row
+  // Kill button (some embedded / analytical engines surface processes
+  // but reject KILL). Undefined means "still loading" → render Kill
+  // until caps arrives.
+  canKill?: boolean
 }
 
 // ProcessesPanel — running-queries / sessions view. Polls pg_stat_activity
 // (PG) or information_schema.PROCESSLIST (MySQL) on a fixed interval.
 // Each row exposes a Kill button which routes through the approval
 // gate (sql_exec) the same way row edits do.
-export function ProcessesPanel({ nodeId, database, className }: Props) {
+export function ProcessesPanel({ nodeId, database, className, canKill = true }: Props) {
   const qc = useQueryClient()
   const [paused, setPaused] = React.useState(false)
   const [filter, setFilter] = React.useState("")
@@ -110,7 +115,7 @@ export function ProcessesPanel({ nodeId, database, className }: Props) {
           </thead>
           <tbody>
             {filtered.map((p) => (
-              <ProcessRow key={p.pid} p={p} onKill={() => kill.mutate(p.pid)} />
+              <ProcessRow key={p.pid} p={p} canKill={canKill} onKill={() => kill.mutate(p.pid)} />
             ))}
             {filtered.length === 0 && (
               <tr>
@@ -127,7 +132,7 @@ export function ProcessesPanel({ nodeId, database, className }: Props) {
   )
 }
 
-function ProcessRow({ p, onKill }: { p: DBProcessInfo; onKill: () => void }) {
+function ProcessRow({ p, canKill, onKill }: { p: DBProcessInfo; canKill: boolean; onKill: () => void }) {
   const stateTone =
     p.state === "active" || p.state === "Query"
       ? "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
@@ -158,18 +163,20 @@ function ProcessRow({ p, onKill }: { p: DBProcessInfo; onKill: () => void }) {
         )}
       </td>
       <td className="text-right opacity-0 group-hover:opacity-100 transition-opacity pr-1">
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2 gap-1 text-xs hover:text-destructive"
-          onClick={() => {
-            if (!confirm(`KILL PID ${p.pid}?`)) return
-            onKill()
-          }}
-        >
-          <Square className="w-3 h-3" /> Kill
-        </Button>
+        {canKill && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 gap-1 text-xs hover:text-destructive"
+            onClick={() => {
+              if (!confirm(`KILL PID ${p.pid}?`)) return
+              onKill()
+            }}
+          >
+            <Square className="w-3 h-3" /> Kill
+          </Button>
+        )}
       </td>
     </tr>
   )

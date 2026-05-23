@@ -285,7 +285,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
               </div>
               <TabsContent value="browse" className="flex-1 min-h-0 m-0 flex">
                 {selected ? (
-                  <BrowseTab nodeId={nodeId} table={selected} database={database} />
+                  <BrowseTab nodeId={nodeId} table={selected} database={database} caps={c} />
                 ) : (
                   <div className="flex-1 grid place-items-center text-sm text-muted-foreground">
                     点左侧的表名开始浏览
@@ -293,7 +293,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                 )}
               </TabsContent>
               <TabsContent value="processes" className="flex-1 min-h-0 m-0">
-                <ProcessesPanel nodeId={nodeId} database={database} />
+                <ProcessesPanel nodeId={nodeId} database={database} canKill={c?.kill_process ?? true} />
               </TabsContent>
               <TabsContent value="query" className="flex-1 min-h-0 m-0 flex flex-col">
                 <div className="flex-1 min-h-0 flex flex-col gap-2 p-3">
@@ -321,10 +321,12 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                             <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain")}>
                               EXPLAIN
                             </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain_analyze")}>
-                              EXPLAIN ANALYZE
-                              <span className="ml-2 text-[10px] text-muted-foreground">真的执行</span>
-                            </DropdownMenuItem>
+                            {(c?.explain_analyze ?? true) && (
+                              <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain_analyze")}>
+                                EXPLAIN ANALYZE
+                                <span className="ml-2 text-[10px] text-muted-foreground">真的执行</span>
+                              </DropdownMenuItem>
+                            )}
                           </DropdownMenuContent>
                         </DropdownMenu>
                       }

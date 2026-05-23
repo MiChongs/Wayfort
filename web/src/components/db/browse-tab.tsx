@@ -25,7 +25,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
-import type { DBTableInfo } from "@/lib/api/types"
+import type { DBCapabilities, DBTableInfo } from "@/lib/api/types"
 import { ResultGrid } from "./result-grid"
 import { RowEditor, deleteRow } from "./row-editor"
 import { StructureTab } from "./structure-tab"
@@ -48,13 +48,23 @@ type Props = {
   nodeId: number
   table: DBTableInfo
   database?: string
+  // Phase 22 — adapter Capabilities. When unset (still loading) all
+  // affordances render so the user doesn't see the UI flash from
+  // disabled to enabled. Once present the buttons / tabs gate.
+  caps?: DBCapabilities
 }
 
 // BrowseTab — sub-tabbed: Data (paginated rows + row edit) and
 // Structure (DDL + FKs + stats). The whole component reloads from
 // scratch when (database, schema, table) changes.
-export function BrowseTab({ nodeId, table, database }: Props) {
+export function BrowseTab({ nodeId, table, database, caps }: Props) {
   const [sub, setSub] = React.useState<"data" | "structure">("data")
+  // Capability flags default ON when caps still loading (avoids the
+  // "buttons appear then disable" flash). After caps arrives they
+  // strictly gate every write-class / metadata affordance.
+  const canEdit = caps ? caps.row_edits : true
+  const canExport = caps ? caps.export : true
+  const hasStructure = caps ? (caps.table_ddl || caps.foreign_keys || caps.table_stats) : true
 
   const [pageSize, setPageSize] = React.useState(100)
   const [page, setPage] = React.useState(0)
@@ -146,24 +156,29 @@ export function BrowseTab({ nodeId, table, database }: Props) {
             <TabsTrigger value="data" className="gap-1 text-xs">
               <Database className="w-3.5 h-3.5" /> 数据
             </TabsTrigger>
-            <TabsTrigger value="structure" className="gap-1 text-xs">
-              <FileCode className="w-3.5 h-3.5" /> 结构
-            </TabsTrigger>
+            {hasStructure && (
+              <TabsTrigger value="structure" className="gap-1 text-xs">
+                <FileCode className="w-3.5 h-3.5" /> 结构
+              </TabsTrigger>
+            )}
           </TabsList>
         </div>
         {sub === "data" && (
           <div className="flex items-center gap-1.5 text-xs">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="h-7 gap-1 text-xs"
-              onClick={openInsert}
-              disabled={!cols.data}
-              title={noPK ? "（无主键 — 后端会拒绝定位单行；写入仍可行）" : ""}
-            >
-              <Plus className="w-3.5 h-3.5" /> 新增
-            </Button>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={openInsert}
+                disabled={!cols.data}
+                title={noPK ? "（无主键 — 后端会拒绝定位单行；写入仍可行）" : ""}
+              >
+                <Plus className="w-3.5 h-3.5" /> 新增
+              </Button>
+            )}
+            {canExport && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button type="button" variant="outline" size="sm" className="h-7 gap-1 text-xs">
@@ -185,6 +200,7 @@ export function BrowseTab({ nodeId, table, database }: Props) {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            )}
             <Button
               type="button"
               variant="outline"
