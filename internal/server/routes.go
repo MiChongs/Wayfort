@@ -426,6 +426,11 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.POST("/nodes/:id/db/query", rt.DB.Query)
 			ops.POST("/nodes/:id/db/exec", rt.DB.Exec)
 			ops.POST("/nodes/:id/db/explain", rt.DB.Explain)
+			// Phase 30 — multi-statement script. Splits on top-level ;
+			// (quotes / dollar-quotes respected) and returns per-stmt
+			// results. Writes pass through the same approval gate as
+			// /db/exec; reads run straight through.
+			ops.POST("/nodes/:id/db/query-multi", rt.DB.QueryMulti)
 			// Phase 19 — row-level edits. Approval gate (sql_exec)
 			// inside each handler.
 			ops.POST("/nodes/:id/db/row/update", rt.DB.RowUpdate)

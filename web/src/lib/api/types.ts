@@ -781,6 +781,21 @@ export interface DBExecResult {
   elapsed: number
 }
 
+// Phase 30 — per-statement breakdown from POST /db/query-multi. Each
+// statement gets one entry in submission order; the first failure
+// halts the run (later statements aren't attempted).
+export interface DBMultiQueryResult {
+  index: number
+  statement: string
+  // "query" | "exec" | "error" — discriminator for which sibling field
+  // is populated.
+  kind: "query" | "exec" | "error"
+  result?: DBQueryResult
+  exec?: DBExecResult
+  error?: string
+  elapsed: number
+}
+
 export interface DBTableInfo {
   schema: string
   name: string

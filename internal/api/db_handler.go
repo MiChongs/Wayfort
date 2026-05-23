@@ -718,7 +718,13 @@ func (h *DBHandler) Rows(c *gin.Context) {
 	if orderDir != "ASC" && orderDir != "DESC" {
 		orderDir = ""
 	}
-	sqlText, err := h.Svc.BuildRowsSQL(c.Request.Context(), nodeID, claims.UserID, database, schema, table, orderBy, orderDir, limit, offset)
+	// Phase 30 — server-side text filter. Empty filter falls through to
+	// the legacy un-filtered path; non-empty applies a multi-column
+	// LIKE WHERE clause across text-shaped columns (see
+	// dbquery.BuildRowsSQLWithFilter for the column-selection rules).
+	filter := c.Query("filter")
+	sqlText, err := h.Svc.BuildRowsSQLWithFilter(c.Request.Context(), nodeID, claims.UserID,
+		database, schema, table, orderBy, orderDir, filter, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
@@ -730,6 +736,76 @@ func (h *DBHandler) Rows(c *gin.Context) {
 	}
 	h.logSQL(c, nodeID, claims, "rows", sqlText, "", nil)
 	c.JSON(http.StatusOK, out)
+}
+
+// QueryMulti — POST /api/v1/nodes/:id/db/query-multi
+// Body: { script: string, database?: string, reason?: string }
+//
+// Runs a SQL script with multiple statements separated by top-level
+// semicolons. Returns an array of per-statement results. First failure
+// halts the run (later statements untouched); successes and the final
+// error coexist in the response. The whole script counts as one audit
+// event because the gateway can't reliably attribute partial failures
+// to individual statements after a transactional rollback.
+func (h *DBHandler) QueryMulti(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Script   string `json:"script"`
+		Database string `json:"database"`
+		Reason   string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(req.Script) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "empty script"})
+		return
+	}
+	// Approval gate: if any statement is non-read-only we route through
+	// the approval service the same way single-statement /db/query does.
+	// We check the WHOLE script for any non-SELECT-y statement.
+	stmts := dbquery.SplitStatements(req.Script)
+	hasWrite := false
+	for _, s := range stmts {
+		if !isReadOnlySQL(s) {
+			hasWrite = true
+			break
+		}
+	}
+	if hasWrite && h.Approval != nil {
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
+			UserID:       claims.UserID,
+			BusinessType: model.ApprovalBizSQLExec,
+			ResourceType: "node",
+			ResourceID:   strconv.FormatUint(nodeID, 10),
+			Action:       "sql_exec",
+		})
+		if err != nil {
+			h.logSQL(c, nodeID, claims, "multi.gate_err", req.Script, req.Reason, err)
+			c.JSON(http.StatusForbidden, gin.H{"error": "approval check failed: " + err.Error()})
+			return
+		}
+		if !res.Allowed {
+			h.logSQL(c, nodeID, claims, "multi.gate_deny", req.Script, req.Reason, fmt.Errorf("%s", res.Reason))
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":             res.Reason,
+				"approval_required": true,
+			})
+			return
+		}
+	}
+	results, err := h.Svc.QueryMulti(c.Request.Context(), nodeID, claims.UserID,
+		req.Database, req.Script, 0)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	h.logSQL(c, nodeID, claims, "query-multi", req.Script, req.Reason, nil)
+	c.JSON(http.StatusOK, gin.H{"results": results, "count": len(results)})
 }
 
 // logSQL pushes the statement into the audit ring buffer. We trim long

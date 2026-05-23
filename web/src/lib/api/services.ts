@@ -624,6 +624,7 @@ import type {
   DBForeignKeyInfo,
   DBIndexInfo,
   DBProcessInfo,
+  DBMultiQueryResult,
   DBQueryResult,
   DBRowKey,
   DBSchemaInfo,
@@ -747,11 +748,31 @@ export const dbService = {
     nodeId: number,
     schema: string,
     table: string,
-    opts: { limit?: number; offset?: number; order_by?: string; order_dir?: "ASC" | "DESC"; database?: string } = {}
+    // Phase 30 — `filter` adds a server-side multi-column LIKE WHERE
+    // clause across text-shaped columns. Empty/omitted disables.
+    opts: {
+      limit?: number; offset?: number;
+      order_by?: string; order_dir?: "ASC" | "DESC";
+      database?: string; filter?: string;
+    } = {}
   ) =>
     api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
       query: { schema, table, ...opts },
     }),
+  // Phase 30 — multi-statement script execution. The server splits the
+  // script on top-level ; (string / dollar-quote aware) and runs each
+  // statement, returning per-statement results. The whole script gets
+  // one approval check if ANY statement is non-read-only.
+  queryMulti: (
+    nodeId: number,
+    script: string,
+    opts: { database?: string; reason?: string } = {}
+  ) =>
+    api<{ results: DBMultiQueryResult[]; count: number }>(
+      "POST",
+      `/nodes/${nodeId}/db/query-multi`,
+      { body: { script, database: opts.database, reason: opts.reason } }
+    ),
   query: (
     nodeId: number,
     sql: string,

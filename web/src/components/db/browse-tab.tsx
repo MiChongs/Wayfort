@@ -26,6 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
 import type { DBCapabilities, DBTableInfo } from "@/lib/api/types"
+import { Input } from "@/components/ui/input"
 import { ResultGrid } from "./result-grid"
 import { RowEditor, deleteRow, coerceCell } from "./row-editor"
 import { StructureTab } from "./structure-tab"
@@ -70,6 +71,17 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
   const [page, setPage] = React.useState(0)
   const [orderBy, setOrderBy] = React.useState<string | undefined>(undefined)
   const [orderDir, setOrderDir] = React.useState<"ASC" | "DESC">("ASC")
+  // Phase 30 — server-side text filter (LIKE across text columns).
+  // We debounce the input so each keystroke doesn't re-fetch.
+  const [filterDraft, setFilterDraft] = React.useState("")
+  const [filter, setFilter] = React.useState("")
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setFilter(filterDraft.trim())
+      setPage(0)
+    }, 350)
+    return () => clearTimeout(t)
+  }, [filterDraft])
 
   // Reset paging when switching tables.
   React.useEffect(() => {
@@ -85,7 +97,7 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
     staleTime: 60_000,
   })
   const rows = useQuery({
-    queryKey: ["db.rows", nodeId, database, table.schema, table.name, page, pageSize, orderBy, orderDir],
+    queryKey: ["db.rows", nodeId, database, table.schema, table.name, page, pageSize, orderBy, orderDir, filter],
     queryFn: () =>
       dbService.rows(nodeId, table.schema, table.name, {
         limit: pageSize,
@@ -93,6 +105,7 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
         order_by: orderBy,
         order_dir: orderBy ? orderDir : undefined,
         database,
+        filter: filter || undefined,
       }),
     placeholderData: (prev) => prev,
   })
@@ -205,6 +218,26 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
         </div>
         {sub === "data" && (
           <div className="flex items-center gap-1.5 text-xs">
+            {/* Phase 30 — server-side filter. Empty → unfiltered. Backend
+                builds a multi-column LIKE WHERE across text-shaped cols. */}
+            <div className="relative">
+              <Input
+                value={filterDraft}
+                onChange={(e) => setFilterDraft(e.target.value)}
+                placeholder="搜索（服务端 LIKE）"
+                className="h-7 text-xs w-48 pr-7"
+              />
+              {filterDraft && (
+                <button
+                  type="button"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-destructive"
+                  onClick={() => setFilterDraft("")}
+                  title="清空搜索"
+                >
+                  ×
+                </button>
+              )}
+            </div>
             {canEdit && (
               <Button
                 type="button"

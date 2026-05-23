@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Activity, Code2, Database, FileCode, RefreshCw, Telescope, Terminal, X } from "lucide-react"
+import { Activity, Code2, Database, FileCode, ListOrdered, RefreshCw, Telescope, Terminal, X } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -127,6 +127,55 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
         .catch((e: { message?: string }) => {
           upsertResult({ ...baseTab, pending: false, error: e.message || "未知错误" })
         })
+    },
+    [database, nodeId, upsertResult],
+  )
+
+  // Phase 30 — multi-statement script runner. The server splits on
+  // top-level ; (quote / dollar-quote aware) and runs each statement,
+  // returning per-stmt results. We expand the response into one
+  // ResultTab per statement so the UI mirrors what a SQL CLI would
+  // show: success row counts for DDL, full result grids for SELECTs,
+  // red error tabs at the first failure.
+  const runScript = React.useCallback(
+    async (script: string) => {
+      const trimmed = script.trim()
+      if (!trimmed) return
+      try {
+        const resp = await dbService.queryMulti(nodeId, trimmed, { database })
+        let firstId: number | null = null
+        for (const r of resp.results) {
+          const id = ++resultIdSeq
+          if (firstId === null) firstId = id
+          const baseTitle = `[${r.index + 1}] ${summariseSQL(r.statement)}`
+          if (r.kind === "query" && r.result) {
+            upsertResult({
+              id, title: baseTitle, sql: r.statement,
+              startedAt: Date.now(), pending: false, result: r.result, kind: "query",
+            })
+          } else if (r.kind === "exec" && r.exec) {
+            // Render exec result as a synthetic 1-row "affected" table.
+            upsertResult({
+              id, title: baseTitle, sql: r.statement,
+              startedAt: Date.now(), pending: false, kind: "query",
+              result: {
+                columns: [{ name: "affected", type: "BIGINT" }],
+                rows: [[r.exec.affected]],
+                truncated: false, elapsed: r.elapsed, row_count: 1,
+              },
+            })
+          } else {
+            upsertResult({
+              id, title: baseTitle, sql: r.statement,
+              startedAt: Date.now(), pending: false, error: r.error || "未知错误", kind: "query",
+            })
+          }
+        }
+        if (firstId !== null) setActiveResult(firstId)
+        toast.success(`脚本已执行 ${resp.count} 条语句`)
+      } catch (e) {
+        toast.error((e as Error).message ?? "脚本执行失败")
+      }
     },
     [database, nodeId, upsertResult],
   )
@@ -305,30 +354,46 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                       onRun={(s) => runStatement(s, "query")}
                       busy={runPending}
                       extraActions={
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-7 px-2 gap-1 text-xs"
-                              disabled={runPending || !sql.trim()}
-                            >
-                              <Telescope className="w-3.5 h-3.5" /> EXPLAIN
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain")}>
-                              EXPLAIN
-                            </DropdownMenuItem>
-                            {(c?.explain_analyze ?? true) && (
-                              <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain_analyze")}>
-                                EXPLAIN ANALYZE
-                                <span className="ml-2 text-[10px] text-muted-foreground">真的执行</span>
+                        <>
+                          {/* Phase 30 — Multi-statement script runner. The
+                              backend splits on top-level ; (quote-aware)
+                              and runs each, producing one tab per stmt. */}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 gap-1 text-xs"
+                            disabled={runPending || !sql.trim()}
+                            onClick={() => runScript(sql)}
+                            title="按分号拆分逐条执行；每条结果占一个 tab"
+                          >
+                            <ListOrdered className="w-3.5 h-3.5" /> 执行脚本
+                          </Button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 gap-1 text-xs"
+                                disabled={runPending || !sql.trim()}
+                              >
+                                <Telescope className="w-3.5 h-3.5" /> EXPLAIN
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain")}>
+                                EXPLAIN
                               </DropdownMenuItem>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                              {(c?.explain_analyze ?? true) && (
+                                <DropdownMenuItem onClick={() => runStatement(sql.trim(), "explain_analyze")}>
+                                  EXPLAIN ANALYZE
+                                  <span className="ml-2 text-[10px] text-muted-foreground">真的执行</span>
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </>
                       }
                     />
                   </div>

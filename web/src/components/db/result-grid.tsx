@@ -303,6 +303,19 @@ function Cell({
 }) {
   const text = formatCell(value)
   const isNull = value === null
+  // Phase 30 — humanised cell rendering.
+  //   booleans  → ✓ green / ✗ muted
+  //   null      → small muted "NULL" pill
+  //   JSON      → blue file icon + truncated preview (existing)
+  //   numbers   → right-aligned tabular nums for visual alignment in
+  //               numeric columns (caller wraps a `tabular-nums` class)
+  //   long text → truncate + native tooltip
+  const isBool = typeof value === "boolean" ||
+    (typeof value === "string" && (value === "true" || value === "false" || value === "TRUE" || value === "FALSE"))
+  const boolValue = typeof value === "boolean"
+    ? value
+    : value === "true" || value === "TRUE"
+  const isNumber = typeof value === "number" || typeof value === "bigint"
 
   if (editing) {
     return (
@@ -361,6 +374,7 @@ function Cell({
       className={cn(
         "px-2 py-1 max-w-xs truncate align-top",
         isNull && "text-muted-foreground italic",
+        isNumber && "tabular-nums text-right",
         editable && "cursor-text",
       )}
       title={isNull ? "NULL" : editable ? `${text}\n\n双击以编辑` : text}
@@ -372,7 +386,22 @@ function Cell({
         onStartEdit()
       }}
     >
-      {isNull ? "NULL" : looksLikeJSON(text) ? <FileJsonInline text={text} /> : text}
+      {isNull ? (
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/70 bg-muted/50 px-1 py-0.5 rounded font-mono">
+          null
+        </span>
+      ) : isBool ? (
+        <span className={cn(
+          "inline-flex items-center gap-1 font-mono text-[10px] uppercase",
+          boolValue ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500 dark:text-rose-400"
+        )}>
+          {boolValue ? "✓ true" : "✗ false"}
+        </span>
+      ) : looksLikeJSON(text) ? (
+        <FileJsonInline text={text} />
+      ) : (
+        text
+      )}
     </td>
   )
 }
