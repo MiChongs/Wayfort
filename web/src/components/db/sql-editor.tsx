@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { Clock, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react"
+import { Bookmark, BookmarkPlus, Clock, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -42,6 +42,21 @@ type HistoryEntry = {
 const HISTORY_KEY = (id: number) => `db.history.${id}`
 const HISTORY_MAX = 50
 
+// Phase 30e — saved queries. Per-node localStorage-backed snippet
+// library. Each entry is name + SQL; we deliberately don't persist
+// server-side yet to avoid coupling to a new DB model — operators
+// who switch browsers will rebuild their library, which is the same
+// trade-off the editor history makes.
+const SAVED_KEY = (id: number) => `db.saved.${id}`
+const SAVED_MAX = 50
+
+type SavedQuery = {
+  id: string
+  name: string
+  sql: string
+  at: number
+}
+
 // SQLEditor — Monaco editor + run button + local history.
 // Keybindings:
 //   Ctrl/Cmd+Enter   → execute selection if any, otherwise statement at cursor
@@ -53,16 +68,48 @@ const HISTORY_MAX = 50
 // is in. Good enough for ad-hoc queries; a real parser is overkill.
 export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extraActions }: Props) {
   const [history, setHistory] = React.useState<HistoryEntry[]>([])
+  const [saved, setSaved] = React.useState<SavedQuery[]>([])
   const editorRef = React.useRef<unknown>(null)
 
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(HISTORY_KEY(nodeId))
       if (raw) setHistory(JSON.parse(raw) as HistoryEntry[])
+      const sraw = localStorage.getItem(SAVED_KEY(nodeId))
+      if (sraw) setSaved(JSON.parse(sraw) as SavedQuery[])
     } catch {
       // ignore parse errors
     }
   }, [nodeId])
+
+  const persistSaved = React.useCallback((next: SavedQuery[]) => {
+    setSaved(next)
+    try { localStorage.setItem(SAVED_KEY(nodeId), JSON.stringify(next)) }
+    catch { /* quota — best-effort */ }
+  }, [nodeId])
+
+  const saveCurrent = React.useCallback(() => {
+    const sql = (value || "").trim()
+    if (!sql) {
+      toast.error("编辑器为空")
+      return
+    }
+    const name = prompt("起个名字（如：查活跃会话）", summariseSavedName(sql)) ?? ""
+    if (!name.trim()) return
+    const entry: SavedQuery = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name: name.trim(),
+      sql,
+      at: Date.now(),
+    }
+    const next = [entry, ...saved].slice(0, SAVED_MAX)
+    persistSaved(next)
+    toast.success("已保存到收藏")
+  }, [value, saved, persistSaved])
+
+  const removeSaved = React.useCallback((id: string) => {
+    persistSaved(saved.filter((s) => s.id !== id))
+  }, [saved, persistSaved])
 
   const runNow = React.useCallback(() => {
     if (busy) return
@@ -165,6 +212,18 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
           {extraActions}
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={saveCurrent}
+            disabled={busy || !value.trim()}
+            className="h-7 px-2 text-xs gap-1"
+            title="把当前 SQL 加入收藏（本机持久化）"
+          >
+            <BookmarkPlus className="w-3.5 h-3.5" /> 收藏
+          </Button>
+          <SavedButton saved={saved} onPick={(sql) => onChange(sql)} onRemove={removeSaved} />
           <HistoryButton history={history} onPick={(sql) => onChange(sql)} onClear={clearHistory} />
         </div>
       </div>
@@ -317,6 +376,89 @@ function statementAtOffset(text: string, offset: number): string {
     }
   }
   return text.trim()
+}
+
+function SavedButton({
+  saved,
+  onPick,
+  onRemove,
+}: {
+  saved: SavedQuery[]
+  onPick: (sql: string) => void
+  onRemove: (id: string) => void
+}) {
+  const [open, setOpen] = React.useState(false)
+  return (
+    <div className="relative">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => setOpen((v) => !v)}
+        className="h-7 px-2 text-xs gap-1"
+      >
+        <Bookmark className="w-3.5 h-3.5" /> 收藏 ({saved.length})
+      </Button>
+      {open && (
+        <div
+          className="absolute right-0 top-9 z-20 w-96 rounded-md border bg-popover shadow-lg"
+          onMouseLeave={() => setOpen(false)}
+        >
+          <div className="px-3 py-1.5 border-b text-xs font-medium">
+            收藏的查询
+          </div>
+          <ScrollArea className="max-h-80">
+            {saved.length === 0 && (
+              <div className="px-3 py-4 text-xs text-muted-foreground text-center">
+                还没有收藏 — 写好 SQL 后点「收藏」起个名字
+              </div>
+            )}
+            {saved.map((s) => (
+              <div
+                key={s.id}
+                className="group flex items-start gap-2 px-3 py-1.5 hover:bg-muted/60 border-b last:border-b-0"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    onPick(s.sql)
+                    setOpen(false)
+                  }}
+                  className="flex-1 min-w-0 text-left"
+                  title={s.sql}
+                >
+                  <div className="text-xs font-medium truncate">{s.name}</div>
+                  <div className="text-[10px] text-muted-foreground font-mono truncate">
+                    {s.sql.split("\n")[0]}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive shrink-0"
+                  onClick={() => onRemove(s.id)}
+                  title="移除"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            ))}
+          </ScrollArea>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// summariseSavedName picks a sensible default name for a saved query
+// from the first non-comment SQL line. Used as the prompt() default.
+function summariseSavedName(sql: string): string {
+  const stripped = sql
+    .replace(/--[^\n]*/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .trim()
+  const firstLine = stripped.split(/\r?\n/)[0] ?? ""
+  if (firstLine.length <= 40) return firstLine || "未命名"
+  return firstLine.slice(0, 37) + "…"
 }
 
 function lineColToOffset(text: string, line: number, col: number): number {
