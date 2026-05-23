@@ -2,10 +2,12 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { Clock, Loader2, Play, Save, Square, Trash2 } from "lucide-react"
+import { Clock, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
+import { formatSQL } from "@/lib/sql-format"
 
 // Monaco loads as a heavy ESM bundle; lazy-import to keep the route's
 // first-paint small. SSR is off because Monaco needs the browser
@@ -138,6 +140,28 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
           <kbd className="text-[10px] text-muted-foreground border rounded px-1 py-0.5">
             Ctrl/⌘ + Enter
           </kbd>
+          {/* Phase 30c — local SQL formatter. Keyword-based, no external
+              dep, idempotent (run twice = same output). */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              try {
+                const next = formatSQL(value)
+                onChange(next)
+                toast.success("已格式化", { duration: 900 })
+              } catch (e) {
+                toast.error("格式化失败：" + ((e as Error).message ?? ""))
+              }
+            }}
+            disabled={busy || !value.trim()}
+            className="h-7 px-2 gap-1 text-xs"
+            title="格式化（关键字大写、子句换行）"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            格式化
+          </Button>
           {extraActions}
         </div>
         <div className="flex items-center gap-1">

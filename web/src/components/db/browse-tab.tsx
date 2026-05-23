@@ -156,6 +156,58 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
 
   const noPK = (cols.data?.columns.filter((c) => c.is_primary_key).length ?? 0) === 0
 
+  // Phase 30c — multi-row selection for bulk delete. Set lives in the
+  // BrowseTab so it survives page changes (the new page resets it;
+  // selection across pages is intentionally NOT supported — too easy
+  // to mass-delete the wrong rows when you can't see them).
+  const [selected, setSelected] = React.useState<Set<number>>(new Set())
+  React.useEffect(() => { setSelected(new Set()) }, [page, table.schema, table.name, filter])
+  const toggleRow = React.useCallback((idx: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(idx)) next.delete(idx)
+      else next.add(idx)
+      return next
+    })
+  }, [])
+  const toggleAll = React.useCallback((on: boolean) => {
+    if (!rows.data) return
+    if (on) setSelected(new Set(rows.data.rows.map((_, i) => i)))
+    else setSelected(new Set())
+  }, [rows.data])
+  const doBulkDelete = React.useCallback(async () => {
+    if (!rows.data || !cols.data || selected.size === 0) return
+    const pkCols = cols.data.columns.filter((c) => c.is_primary_key)
+    if (pkCols.length === 0) {
+      toast.error("表没有主键，无法定位行")
+      return
+    }
+    if (!confirm(`确认删除选中的 ${selected.size} 行？\n（按主键 ${pkCols.map((c) => c.name).join(", ")} 逐行 DELETE，第一条失败即停止）`)) return
+    const rowsList = rows.data.rows
+    const colsList = rows.data.columns
+    let ok = 0
+    let failed: string | null = null
+    for (const idx of Array.from(selected).sort((a, b) => a - b)) {
+      const r = rowsList[idx]
+      const obj: Record<string, unknown> = {}
+      colsList.forEach((col, i) => { obj[col.name] = r[i] })
+      try {
+        await deleteRow(nodeId, database, table, cols.data.columns, obj)
+        ok++
+      } catch (e) {
+        failed = (e as Error).message ?? "未知错误"
+        break
+      }
+    }
+    if (failed) {
+      toast.error(`批量删除中止：已删除 ${ok} 行；最后一条失败 — ${failed}`)
+    } else {
+      toast.success(`已批量删除 ${ok} 行`)
+    }
+    setSelected(new Set())
+    await rows.refetch()
+  }, [rows, cols.data, nodeId, database, table, selected])
+
   // Phase 25 — inline cell edit. Non-PK columns are editable; PK cells
   // intentionally stay read-only (the back-end UpdateRow uses them as
   // the WHERE key, mutating them in-place would require a separate
@@ -251,6 +303,18 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
                 <Plus className="w-3.5 h-3.5" /> 新增
               </Button>
             )}
+            {canEdit && selected.size > 0 && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-7 gap-1 text-xs"
+                onClick={doBulkDelete}
+                title="逐行 DELETE 选中的所有行"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> 删除 {selected.size}
+              </Button>
+            )}
             {canExport && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -329,6 +393,13 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
           // anchor the UPDATE WHERE.
           onCellEdit={canEdit && !noPK ? saveCellEdit : undefined}
           editableColumns={canEdit && !noPK ? editableColumnSet : undefined}
+          // Phase 30c — multi-row selection for bulk delete. Off when
+          // the engine forbids row edits or the table has no PK to
+          // anchor each DELETE.
+          selectable={canEdit && !noPK}
+          selected={selected}
+          onToggleRow={toggleRow}
+          onToggleAll={toggleAll}
           rowActions={
             // Phase 25 — per-row Edit/Delete only rendered when the
             // adapter advertises row_edits. OLAP engines (StarRocks/

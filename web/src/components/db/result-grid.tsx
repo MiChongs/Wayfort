@@ -37,6 +37,15 @@ type Props = {
   // addressable. When undefined no cell is editable.
   onCellEdit?: (rowIdx: number, columnName: string, newRaw: string | null) => Promise<void>
   editableColumns?: Set<string>
+  // Phase 30c — multi-row selection. When `selectable` is true, a
+  // leading checkbox column is rendered; the caller controls the
+  // selection set externally so toolbar-level "Delete N" wiring stays
+  // in one place. `selected` is the row-index set; toggling fires
+  // `onToggleRow` (single) or `onToggleAll` (header).
+  selectable?: boolean
+  selected?: Set<number>
+  onToggleRow?: (rowIdx: number) => void
+  onToggleAll?: (next: boolean) => void
 }
 
 // ResultGrid — paginated/server-sortable result table. Handles JSON /
@@ -54,6 +63,10 @@ export function ResultGrid({
   rowActions,
   onCellEdit,
   editableColumns,
+  selectable,
+  selected,
+  onToggleRow,
+  onToggleAll,
 }: Props) {
   const [filter, setFilter] = React.useState("")
   const [inspect, setInspect] = React.useState<{ row: unknown[]; columns: { name: string; type: string }[] } | null>(null)
@@ -138,6 +151,17 @@ export function ResultGrid({
         <table className="w-full text-xs">
           <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur border-b">
             <tr>
+              {selectable && (
+                <th className="w-6 px-1.5 py-1.5">
+                  <input
+                    type="checkbox"
+                    aria-label="select all"
+                    className="h-3 w-3 cursor-pointer"
+                    checked={!!sorted && selected !== undefined && sorted.length > 0 && selected.size === sorted.length}
+                    onChange={(e) => onToggleAll?.(e.target.checked)}
+                  />
+                </th>
+              )}
               <th className="w-10 px-2 py-1.5 text-right text-muted-foreground font-normal">#</th>
               {result.columns.map((col, i) => {
                 const isPK = primaryKeys?.has(col.name)
@@ -178,7 +202,25 @@ export function ResultGrid({
           </thead>
           <tbody>
             {sorted?.map((row, r) => (
-              <tr key={r} className="border-b last:border-b-0 hover:bg-muted/40 group">
+              <tr
+                key={r}
+                className={cn(
+                  "border-b last:border-b-0 hover:bg-muted/40 group",
+                  selected?.has(r) && "bg-primary/5"
+                )}
+              >
+                {selectable && (
+                  <td className="px-1.5 py-1 align-top">
+                    <input
+                      type="checkbox"
+                      aria-label={`select row ${r + 1}`}
+                      className="h-3 w-3 cursor-pointer"
+                      checked={selected?.has(r) ?? false}
+                      onChange={() => onToggleRow?.(r)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                )}
                 <td className="px-2 py-1 text-right text-muted-foreground tabular-nums">{r + 1}</td>
                 {row.map((cell, c) => {
                   const colName = result.columns[c]?.name ?? ""
