@@ -51,6 +51,8 @@ func (s *Service) LoadForeignKeys(ctx context.Context, nodeID, userID uint64,
 		return loadPostgresForeignKeys(ctx, pl, schema, table)
 	case FamilyMySQL:
 		return loadMysqlForeignKeys(ctx, pl, schema, table)
+	case FamilyOracle:
+		return loadDamengForeignKeys(ctx, pl, schema, table)
 	}
 	return nil, nil
 }
@@ -67,6 +69,8 @@ func (s *Service) LoadTableStats(ctx context.Context, nodeID, userID uint64,
 		return loadPostgresStats(ctx, pl, schema, table)
 	case FamilyMySQL:
 		return loadMysqlStats(ctx, pl, schema, table)
+	case FamilyOracle:
+		return loadDamengStats(ctx, pl, schema, table)
 	}
 	return nil, fmt.Errorf("dbquery: stats not implemented for %q", pl.protocol)
 }
@@ -88,6 +92,8 @@ func (s *Service) LoadTableDDL(ctx context.Context, nodeID, userID uint64,
 		return synthesisePostgresDDL(ctx, pl, schema, table)
 	case FamilyMySQL:
 		return loadMysqlDDL(ctx, pl, schema, table)
+	case FamilyOracle:
+		return loadDamengDDL(ctx, pl, schema, table)
 	}
 	return "", fmt.Errorf("dbquery: DDL not implemented for %q", pl.protocol)
 }

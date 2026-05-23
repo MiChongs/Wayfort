@@ -41,6 +41,8 @@ func (s *Service) ListProcesses(ctx context.Context, nodeID, userID uint64, data
 		return listPostgresProcesses(ctx, pl)
 	case FamilyMySQL:
 		return listMysqlProcesses(ctx, pl)
+	case FamilyOracle:
+		return listDamengProcesses(ctx, pl)
 	}
 	return nil, fmt.Errorf("dbquery: processes not implemented for %q", pl.protocol)
 }
@@ -70,6 +72,8 @@ func (s *Service) CancelProcess(ctx context.Context, nodeID, userID uint64,
 			return false, err
 		}
 		return true, nil
+	case FamilyOracle:
+		return cancelDamengProcess(ctx, pl, pid)
 	}
 	return false, fmt.Errorf("dbquery: cancel not implemented for %q", pl.protocol)
 }

@@ -80,6 +80,8 @@ func (s *Service) ListDatabases(ctx context.Context, nodeID, userID uint64) ([]s
 		q = `SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname`
 	case FamilyMySQL:
 		q = `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY SCHEMA_NAME`
+	case FamilyOracle:
+		return listDamengDatabases(ctx, pl)
 	default:
 		return nil, fmt.Errorf("dbquery: protocol %q list databases not implemented", pl.protocol)
 	}
@@ -112,6 +114,8 @@ func (s *Service) LoadSchema(ctx context.Context, nodeID, userID uint64, databas
 		return loadPostgresSchema(ctx, pl)
 	case FamilyMySQL:
 		return loadMysqlSchema(ctx, pl)
+	case FamilyOracle:
+		return loadDamengSchema(ctx, pl)
 	}
 	return nil, fmt.Errorf("dbquery: protocol %q schema not implemented", pl.protocol)
 }
@@ -132,6 +136,8 @@ func loadColumnsForPool(ctx context.Context, pl *pool, schema, table string) ([]
 		return loadPostgresColumns(ctx, pl, schema, table)
 	case FamilyMySQL:
 		return loadMysqlColumns(ctx, pl, schema, table)
+	case FamilyOracle:
+		return loadDamengColumns(ctx, pl, schema, table)
 	}
 	return nil, fmt.Errorf("dbquery: protocol %q columns not implemented", pl.protocol)
 }
@@ -148,6 +154,8 @@ func (s *Service) LoadIndexes(ctx context.Context, nodeID, userID uint64,
 		return loadPostgresIndexes(ctx, pl, schema, table)
 	case FamilyMySQL:
 		return loadMysqlIndexes(ctx, pl, schema, table)
+	case FamilyOracle:
+		return loadDamengIndexes(ctx, pl, schema, table)
 	}
 	return nil, nil
 }

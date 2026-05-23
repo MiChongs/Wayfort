@@ -161,6 +161,8 @@ func (s *Service) Explain(ctx context.Context, nodeID, userID uint64,
 		} else {
 			q = "EXPLAIN FORMAT=TREE " + statement
 		}
+	case FamilyOracle:
+		q = damengExplainSQL(statement, analyze)
 	default:
 		return nil, fmt.Errorf("dbquery explain: protocol %q not supported", pl.protocol)
 	}
