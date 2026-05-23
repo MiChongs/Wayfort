@@ -26,6 +26,13 @@ func (damengAdapter) Protocol() model.NodeProtocol { return model.NodeProtoDamen
 func (damengAdapter) Family() Family               { return FamilyOracle }
 
 func (damengAdapter) Capabilities() Capabilities {
+	label := "达梦 DM8"
+	// Append the native-binding tag when gitee.com/chunanyong/dm is
+	// linked in (operator built with -tags dm_driver). Lets the DB
+	// Studio header chip show e.g. "达梦 DM8 · 达梦官方 (gitee.com/...)".
+	if extra := LookupNativeLabel(model.NodeProtoDameng); extra != "" {
+		label = label + " · " + extra
+	}
 	return Capabilities{
 		ListDatabases:  true,
 		Schemas:        true, // DM schemas == users
@@ -43,12 +50,24 @@ func (damengAdapter) Capabilities() Capabilities {
 		Functions:      true,
 		Transactions:   true,
 		DatabaseScope:  DatabaseScopeSchema, // DM connects to one DB, browses schemas
-		VendorLabel:    "达梦 DM8",
+		VendorLabel:    label,
 	}
 }
 
 func (damengAdapter) Dialect() Dialect { return damengDialect{} }
-func (damengAdapter) Driver() Driver   { return damengDriver{} }
+
+// Driver consults the native registry first — when an operator built
+// with `-tags dm_driver`, internal/dbquery/native/dameng/init() will
+// have registered the gitee.com/chunanyong/dm-backed driver and we
+// route through it. Otherwise the legacy damengDriver still tries
+// sql.Open("dm", ...) so a hand-side-effect-import in cmd/jumpserver
+// also works (back-compat with operators already using that pattern).
+func (damengAdapter) Driver() Driver {
+	if d, ok := LookupNativeDriver(model.NodeProtoDameng); ok {
+		return d
+	}
+	return damengDriver{}
+}
 
 func init() { register(damengAdapter{}) }
 

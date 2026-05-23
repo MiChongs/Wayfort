@@ -35,12 +35,24 @@ func (a mysqlCompatAdapter) Capabilities() Capabilities {
 	if caps.VendorLabel == "" {
 		caps.VendorLabel = a.vendorLabel
 	}
+	if extra := LookupNativeLabel(a.protocol); extra != "" {
+		caps.VendorLabel = caps.VendorLabel + " · " + extra
+	}
 	return caps
 }
 
-// Driver reuses the MySQL driver but feeds engine-specific DSN tail
-// extras (e.g. OceanBase Oracle-mode needs `tenant=...`).
-func (a mysqlCompatAdapter) Driver() Driver { return mysqlCompatDriver{extras: a.dsnExtras} }
+// Driver prefers a registered native (e.g. OceanBase's obclient-go-style
+// driver from an operator build) over the standard go-sql-driver/mysql
+// wire client. The default works for TiDB / OceanBase MySQL-mode /
+// StarRocks / Doris / GBase 8a out of the box because they all speak
+// vanilla MySQL 5.7+ wire protocol; native bindings layer in vendor-
+// specific affordances (tenant routing, OB Oracle-mode dialects, etc.).
+func (a mysqlCompatAdapter) Driver() Driver {
+	if d, ok := LookupNativeDriver(a.protocol); ok {
+		return d
+	}
+	return mysqlCompatDriver{extras: a.dsnExtras}
+}
 
 type mysqlCompatDriver struct{ extras string }
 

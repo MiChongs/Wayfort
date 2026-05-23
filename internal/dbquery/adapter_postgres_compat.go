@@ -35,10 +35,25 @@ func (a postgresCompatAdapter) Capabilities() Capabilities {
 	if caps.VendorLabel == "" {
 		caps.VendorLabel = a.vendorLabel
 	}
+	// Annotate the label with the native-binding tag when a vendor
+	// driver is registered. Operators see e.g. "openGauss · 官方驱动"
+	// in the DB Studio header instead of the unadorned "openGauss".
+	if extra := LookupNativeLabel(a.protocol); extra != "" {
+		caps.VendorLabel = caps.VendorLabel + " · " + extra
+	}
 	return caps
 }
 
+// Driver — registry-first lookup. Native vendor bindings (KingbaseES'
+// KCI, openGauss-connector-go-pq with SM3/SHA-256 auth, etc.) win;
+// otherwise we fall back to the family-canonical pgx wire driver
+// which speaks vanilla PG protocol — that's enough for normal queries
+// against any v3-protocol-conformant fork, but won't satisfy bespoke
+// auth modes.
 func (a postgresCompatAdapter) Driver() Driver {
+	if d, ok := LookupNativeDriver(a.protocol); ok {
+		return d
+	}
 	return postgresCompatDriver{defaultDB: a.defaultDB, runtime: a.runtime}
 }
 
