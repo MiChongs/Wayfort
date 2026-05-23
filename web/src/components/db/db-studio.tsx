@@ -282,6 +282,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
           activeKey={selected ? `${selected.schema}.${selected.name}` : undefined}
           onPickTable={handlePickTable}
           onInsertIdent={handleInsertIdent}
+          nodeId={nodeId}
         />
 
         <div className="flex-1 min-w-0 flex flex-col">

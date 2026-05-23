@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import {
-  ChevronRight, Database, Eye, FunctionSquare, Hash, Layers,
+  ChevronRight, Clock, Database, Eye, FunctionSquare, Hash, Layers,
   Search, Table as TableIcon, View,
 } from "lucide-react"
 import type { DBSchemaInfo, DBTableInfo } from "@/lib/api/types"
@@ -15,7 +15,17 @@ type Props = {
   activeKey?: string // `${schema}.${table}` of currently-browsed table
   onPickTable: (t: DBTableInfo) => void
   onInsertIdent?: (text: string) => void
+  // Phase 30h — per-node identity so recents persist independently
+  // across nodes. When omitted recents tracking is disabled (used in
+  // any place SchemaTree is rendered without node context — none
+  // today, but the prop is optional for future reuse).
+  nodeId?: number
 }
+
+const RECENTS_KEY = (id: number) => `db.recent_tables.${id}`
+const RECENTS_MAX = 5
+
+type RecentEntry = { schema: string; name: string; kind: string; at: number }
 
 // SchemaTree — left-side schema browser. Two-level expand/collapse:
 //   database (PostgreSQL schema / MySQL database)
@@ -27,9 +37,36 @@ type Props = {
 // box filters in-process; the rendered list virtualizes only when the
 // flat-filtered view exceeds 500 rows (which never happens for one
 // schema in practice).
-export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertIdent }: Props) {
+export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertIdent, nodeId }: Props) {
   const [query, setQuery] = React.useState("")
   const [open, setOpen] = React.useState<Record<string, boolean>>({})
+  // Phase 30h — recents. Loaded once per nodeId from localStorage,
+  // updated when the user picks a table. Cap RECENTS_MAX entries so
+  // the section stays a thumb-glance affordance.
+  const [recents, setRecents] = React.useState<RecentEntry[]>([])
+  React.useEffect(() => {
+    if (nodeId == null) return
+    try {
+      const raw = localStorage.getItem(RECENTS_KEY(nodeId))
+      if (raw) setRecents(JSON.parse(raw))
+    } catch { /* ignore */ }
+  }, [nodeId])
+  const pushRecent = React.useCallback((t: DBTableInfo) => {
+    if (nodeId == null) return
+    setRecents((prev) => {
+      const next: RecentEntry[] = [
+        { schema: t.schema, name: t.name, kind: t.kind, at: Date.now() },
+        ...prev.filter((r) => !(r.schema === t.schema && r.name === t.name)),
+      ].slice(0, RECENTS_MAX)
+      try { localStorage.setItem(RECENTS_KEY(nodeId), JSON.stringify(next)) }
+      catch { /* quota */ }
+      return next
+    })
+  }, [nodeId])
+  const handlePick = React.useCallback((t: DBTableInfo) => {
+    pushRecent(t)
+    onPickTable(t)
+  }, [pushRecent, onPickTable])
 
   // Auto-open the first schema once data arrives.
   React.useEffect(() => {
@@ -79,6 +116,35 @@ export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertId
             {q ? "没有匹配" : "没有表"}
           </div>
         )}
+        {!loading && recents.length > 0 && !q && (
+          <div className="border-b">
+            <div className="px-2 py-1 flex items-center gap-1.5 text-[10px] text-muted-foreground uppercase tracking-wider">
+              <Clock className="w-3 h-3" /> 最近
+            </div>
+            {recents.map((r) => {
+              const key = `${r.schema}.${r.name}`
+              const active = key === activeKey
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => handlePick({ schema: r.schema, name: r.name, kind: r.kind as DBTableInfo["kind"] })}
+                  className={cn(
+                    "w-full flex items-center gap-1.5 pl-7 pr-2 py-1 hover:bg-muted/60 text-left",
+                    active && "bg-primary/10 text-primary"
+                  )}
+                  title={`${r.schema}.${r.name}`}
+                >
+                  <ObjectIcon kind={r.kind} />
+                  <span className="truncate text-xs">{r.name}</span>
+                  <span className="ml-auto text-[9px] text-muted-foreground truncate max-w-[5rem]">
+                    {r.schema}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {filtered.map((db) => {
           const isOpen = open[db.name] ?? false
           return (
@@ -104,7 +170,7 @@ export function SchemaTree({ schema, loading, activeKey, onPickTable, onInsertId
                       <button
                         key={key}
                         type="button"
-                        onClick={() => onPickTable(t)}
+                        onClick={() => handlePick(t)}
                         onDoubleClick={() => onInsertIdent?.(qualifyIdent(t))}
                         className={cn(
                           "w-full flex items-center gap-1.5 pl-7 pr-2 py-1 hover:bg-muted/60 text-left transition-colors",
