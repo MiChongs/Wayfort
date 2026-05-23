@@ -24,6 +24,7 @@ import { BrowseTab } from "@/components/db/browse-tab"
 import { ProcessesPanel } from "@/components/db/processes-panel"
 import { KeyboardShortcuts } from "@/components/db/keyboard-shortcuts"
 import { StatusBar } from "@/components/db/status-bar"
+import { ExplainTree } from "@/components/db/explain-tree"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -456,11 +457,21 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                       onClose={closeResult}
                     />
                     <div className="flex-1 min-h-0">
-                      <ResultGrid
-                        result={activeTab?.result}
-                        loading={activeTab?.pending}
-                        error={activeTab?.error}
-                      />
+                      {/* Phase 30g — when the active tab is an EXPLAIN
+                          result and the rows look like PG TEXT plan
+                          output, render the visual tree instead of
+                          the flat row table. */}
+                      {activeTab?.result &&
+                        (activeTab.kind === "explain" || activeTab.kind === "explain_analyze") &&
+                        looksLikePGPlan(activeTab.result.rows) ? (
+                        <ExplainTree rows={activeTab.result.rows} className="h-full" />
+                      ) : (
+                        <ResultGrid
+                          result={activeTab?.result}
+                          loading={activeTab?.pending}
+                          error={activeTab?.error}
+                        />
+                      )}
                     </div>
                   </div>
                 </div>
@@ -537,6 +548,23 @@ function KindBadge({ kind }: { kind: ResultTab["kind"] }) {
     default:
       return <Badge variant="secondary" className="text-[9px] px-1 py-0">SQL</Badge>
   }
+}
+
+// looksLikePGPlan inspects the first few rows of an EXPLAIN response
+// to decide whether to render the visual tree (PG-style TEXT plan) or
+// fall back to the regular grid. We require at least one line that
+// matches the canonical `(cost=A..B rows=N width=K)` suffix — both PG
+// + KingbaseES + openGauss emit this consistently. MySQL EXPLAIN uses
+// a tabular format with different columns, so it falls through to
+// the grid.
+function looksLikePGPlan(rows: unknown[][]): boolean {
+  if (!rows || rows.length === 0) return false
+  const re = /\(cost=[\d.]+\.\.[\d.]+\s+rows=\d+\s+width=\d+\)/
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    const cell = rows[i]?.[0]
+    if (typeof cell === "string" && re.test(cell)) return true
+  }
+  return false
 }
 
 // summariseSQL truncates the SQL to a tab title. We strip leading
