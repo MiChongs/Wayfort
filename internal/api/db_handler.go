@@ -692,6 +692,23 @@ func (h *DBHandler) Exec(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// DatabaseStats — GET /api/v1/nodes/:id/db/database_stats?database=...
+// Cheap one-shot for the DB Studio status bar: total size, table count,
+// connection count, server version, uptime. Each engine returns 0 / ""
+// for fields it can't expose.
+func (h *DBHandler) DatabaseStats(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	stats, err := h.Svc.DatabaseStatsFor(c.Request.Context(), nodeID, claims.UserID, c.Query("database"))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
 // Rows — GET /api/v1/nodes/:id/db/rows?database=...&schema=...&table=...&limit=&offset=
 // Browse mode for "click a table, see N rows".
 func (h *DBHandler) Rows(c *gin.Context) {

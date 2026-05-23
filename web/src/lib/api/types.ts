@@ -781,6 +781,17 @@ export interface DBExecResult {
   elapsed: number
 }
 
+// Phase 30 — per-database health snapshot for the DB Studio status
+// bar. Each engine fills the fields it can expose; missing values
+// come back as 0 / "".
+export interface DBDatabaseStats {
+  size_bytes: number
+  table_count: number
+  connections: number
+  version: string
+  uptime_seconds: number
+}
+
 // Phase 30 — per-statement breakdown from POST /db/query-multi. Each
 // statement gets one entry in submission order; the first failure
 // halts the run (later statements aren't attempted).

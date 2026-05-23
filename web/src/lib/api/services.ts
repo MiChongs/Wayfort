@@ -624,6 +624,7 @@ import type {
   DBForeignKeyInfo,
   DBIndexInfo,
   DBProcessInfo,
+  DBDatabaseStats,
   DBMultiQueryResult,
   DBQueryResult,
   DBRowKey,
@@ -758,6 +759,12 @@ export const dbService = {
   ) =>
     api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
       query: { schema, table, ...opts },
+    }),
+  // Phase 30 — per-database health snapshot. Cheap (one round-trip
+  // per stat); the UI calls every 30s for a live status bar.
+  databaseStats: (nodeId: number, database?: string) =>
+    api<DBDatabaseStats>("GET", `/nodes/${nodeId}/db/database_stats`, {
+      query: { database },
     }),
   // Phase 30 — multi-statement script execution. The server splits the
   // script on top-level ; (string / dollar-quote aware) and runs each

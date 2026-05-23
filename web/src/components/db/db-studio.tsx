@@ -22,6 +22,8 @@ import { ResultGrid } from "@/components/db/result-grid"
 import { SQLEditor } from "@/components/db/sql-editor"
 import { BrowseTab } from "@/components/db/browse-tab"
 import { ProcessesPanel } from "@/components/db/processes-panel"
+import { KeyboardShortcuts } from "@/components/db/keyboard-shortcuts"
+import { StatusBar } from "@/components/db/status-bar"
 import { cn } from "@/lib/utils"
 
 type Props = {
@@ -251,6 +253,7 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
             >
               <Terminal className="w-3 h-3" /> 终端 CLI
             </Link>
+            <KeyboardShortcuts />
             <Button
               type="button"
               variant="ghost"
@@ -418,6 +421,9 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
           )}
         </div>
       </div>
+      {/* Phase 30b — live database status footer (size / objects /
+          connections / version / uptime). 30s poll. */}
+      <StatusBar nodeId={nodeId} database={database} />
     </div>
   )
 }
