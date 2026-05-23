@@ -27,6 +27,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
 import type { DBCapabilities, DBTableInfo } from "@/lib/api/types"
 import { Input } from "@/components/ui/input"
+import { ColumnStatsPopover } from "./column-stats-popover"
 import { ResultGrid } from "./result-grid"
 import { RowEditor, deleteRow, coerceCell } from "./row-editor"
 import { StructureTab } from "./structure-tab"
@@ -175,6 +176,13 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
     if (on) setSelected(new Set(rows.data.rows.map((_, i) => i)))
     else setSelected(new Set())
   }, [rows.data])
+  // Phase 30f — column stats popover. Anchored to the clicked column
+  // header element so it floats next to where the user invoked it.
+  const [colStats, setColStats] = React.useState<{ column: string; anchor: HTMLElement } | null>(null)
+  const openColumnStats = React.useCallback((column: string, anchor: HTMLElement) => {
+    setColStats({ column, anchor })
+  }, [])
+
   const doBulkDelete = React.useCallback(async () => {
     if (!rows.data || !cols.data || selected.size === 0) return
     const pkCols = cols.data.columns.filter((c) => c.is_primary_key)
@@ -400,6 +408,8 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
           selected={selected}
           onToggleRow={toggleRow}
           onToggleAll={toggleAll}
+          // Phase 30f — column header → stats popover.
+          onColumnStats={openColumnStats}
           rowActions={
             // Phase 25 — per-row Edit/Delete only rendered when the
             // adapter advertises row_edits. OLAP engines (StarRocks/
@@ -446,6 +456,17 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
           mode={editorMode}
           initial={editorRow}
           onSaved={() => rows.refetch()}
+        />
+      )}
+      {colStats && (
+        <ColumnStatsPopover
+          nodeId={nodeId}
+          database={database}
+          schema={table.schema}
+          table={table.name}
+          column={colStats.column}
+          anchorEl={colStats.anchor}
+          onClose={() => setColStats(null)}
         />
       )}
     </Tabs>

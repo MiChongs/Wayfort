@@ -692,6 +692,30 @@ func (h *DBHandler) Exec(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// ColumnStats — GET /api/v1/nodes/:id/db/column_stats?schema=...&table=...&column=...&database=...&top=10
+// Per-column summary used by the "click a column header → popover"
+// data-exploration affordance. Returns distinct / null / total counts,
+// min/max for orderable types, top-N value frequencies.
+func (h *DBHandler) ColumnStats(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table, column := c.Query("schema"), c.Query("table"), c.Query("column")
+	if schema == "" || table == "" || column == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema, table, column required"})
+		return
+	}
+	top, _ := strconv.Atoi(c.Query("top"))
+	stats, err := h.Svc.LoadColumnStats(c.Request.Context(), nodeID, claims.UserID,
+		c.Query("database"), schema, table, column, top)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
 // Triggers — GET /api/v1/nodes/:id/db/triggers?schema=...&table=...&database=...
 // Per-table trigger list. Empty array (not 404) when none exist.
 func (h *DBHandler) Triggers(c *gin.Context) {

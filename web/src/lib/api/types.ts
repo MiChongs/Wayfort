@@ -781,6 +781,21 @@ export interface DBExecResult {
   elapsed: number
 }
 
+// Phase 30f — per-column summary for the column-header popover.
+export interface DBColumnValueFreq {
+  value: string
+  frequency: number
+}
+export interface DBColumnStats {
+  column: string
+  distinct_count: number
+  null_count: number
+  total_count: number
+  min_value?: string
+  max_value?: string
+  top_values: DBColumnValueFreq[]
+}
+
 // Phase 30c — one trigger row per table-attached trigger. Empty array
 // when the table has none. Engines without programmable triggers
 // (StarRocks / Doris) always return [].

@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowDown, ArrowUp, Check, Copy, Download, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
+import { ArrowDown, ArrowUp, BarChart3, Check, Copy, Download, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
 import type { DBQueryResult } from "@/lib/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -46,6 +46,11 @@ type Props = {
   selected?: Set<number>
   onToggleRow?: (rowIdx: number) => void
   onToggleAll?: (next: boolean) => void
+  // Phase 30f — column header → stats popover. When provided, a small
+  // chart icon next to each header opens the popover with that column
+  // pre-selected. Alt-click on the header text also triggers it as a
+  // power-user keyboard-light path.
+  onColumnStats?: (columnName: string, anchor: HTMLElement) => void
 }
 
 // ResultGrid — paginated/server-sortable result table. Handles JSON /
@@ -67,6 +72,7 @@ export function ResultGrid({
   selected,
   onToggleRow,
   onToggleAll,
+  onColumnStats,
 }: Props) {
   const [filter, setFilter] = React.useState("")
   const [inspect, setInspect] = React.useState<{ row: unknown[]; columns: { name: string; type: string }[] } | null>(null)
@@ -194,6 +200,20 @@ export function ResultGrid({
                     <span className="ml-1 text-[10px] text-muted-foreground font-mono normal-case">
                       {col.type}
                     </span>
+                    {onColumnStats && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          onColumnStats(col.name, e.currentTarget)
+                        }}
+                        className="ml-1 inline-flex opacity-40 hover:opacity-100 text-muted-foreground hover:text-primary transition-opacity"
+                        title="列数据摘要：唯一值/NULL/最常见值"
+                      >
+                        <BarChart3 className="w-3 h-3" />
+                      </button>
+                    )}
                   </th>
                 )
               })}

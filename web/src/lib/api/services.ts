@@ -624,6 +624,7 @@ import type {
   DBForeignKeyInfo,
   DBIndexInfo,
   DBProcessInfo,
+  DBColumnStats,
   DBDatabaseStats,
   DBMultiQueryResult,
   DBQueryResult,
@@ -760,6 +761,15 @@ export const dbService = {
   ) =>
     api<DBQueryResult>("GET", `/nodes/${nodeId}/db/rows`, {
       query: { schema, table, ...opts },
+    }),
+  // Phase 30f — per-column data summary: distinct / null / total counts,
+  // min/max for orderable types, top-N value frequencies.
+  columnStats: (
+    nodeId: number, schema: string, table: string, column: string,
+    opts: { database?: string; top?: number } = {}
+  ) =>
+    api<DBColumnStats>("GET", `/nodes/${nodeId}/db/column_stats`, {
+      query: { schema, table, column, database: opts.database, top: opts.top },
     }),
   // Phase 30c — per-table trigger list. Empty array when none exist
   // or the engine has no programmable triggers.
