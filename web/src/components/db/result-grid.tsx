@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowDown, ArrowUp, Copy, Download, FileJson, KeyRound, Maximize2 } from "lucide-react"
+import { ArrowDown, ArrowUp, Check, Copy, Download, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
 import type { DBQueryResult } from "@/lib/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -27,6 +27,16 @@ type Props = {
   // result grid leaves it undefined so freeform query results stay
   // read-only.
   rowActions?: (rowIdx: number) => React.ReactNode
+  // Phase 25 — inline per-cell edit. When provided, double-click on a
+  // non-PK cell opens an in-place input. Enter saves; Escape / blur with
+  // unchanged value cancels. The handler must perform the UPDATE and
+  // reject on failure so the cell can revert visually.
+  //
+  // editableColumns gates which columns accept double-click; PKs are
+  // intentionally excluded by the caller (BrowseTab) so the row stays
+  // addressable. When undefined no cell is editable.
+  onCellEdit?: (rowIdx: number, columnName: string, newRaw: string | null) => Promise<void>
+  editableColumns?: Set<string>
 }
 
 // ResultGrid — paginated/server-sortable result table. Handles JSON /
@@ -42,9 +52,17 @@ export function ResultGrid({
   sortDir,
   onSort,
   rowActions,
+  onCellEdit,
+  editableColumns,
 }: Props) {
   const [filter, setFilter] = React.useState("")
   const [inspect, setInspect] = React.useState<{ row: unknown[]; columns: { name: string; type: string }[] } | null>(null)
+  // Inline cell edit. `editing` identifies the (row, col) currently in
+  // edit mode; `editValue` mirrors the input. `saving` blocks double-
+  // submit while the network request flies.
+  const [editing, setEditing] = React.useState<{ row: number; col: number } | null>(null)
+  const [editValue, setEditValue] = React.useState<string>("")
+  const [saving, setSaving] = React.useState(false)
 
   const filtered = React.useMemo(() => {
     if (!result) return null
@@ -162,9 +180,47 @@ export function ResultGrid({
             {sorted?.map((row, r) => (
               <tr key={r} className="border-b last:border-b-0 hover:bg-muted/40 group">
                 <td className="px-2 py-1 text-right text-muted-foreground tabular-nums">{r + 1}</td>
-                {row.map((cell, c) => (
-                  <Cell key={c} value={cell} />
-                ))}
+                {row.map((cell, c) => {
+                  const colName = result.columns[c]?.name ?? ""
+                  const isEditable = !!onCellEdit && (editableColumns?.has(colName) ?? false)
+                  const isEditing = !!editing && editing.row === r && editing.col === c
+                  return (
+                    <Cell
+                      key={c}
+                      value={cell}
+                      editable={isEditable}
+                      editing={isEditing}
+                      editValue={editValue}
+                      saving={isEditing && saving}
+                      onStartEdit={() => {
+                        setEditing({ row: r, col: c })
+                        setEditValue(cell === null || cell === undefined ? "" : formatCell(cell))
+                      }}
+                      onCancelEdit={() => { setEditing(null); setSaving(false) }}
+                      onChangeEdit={setEditValue}
+                      onCommitEdit={async (asNull) => {
+                        if (!onCellEdit) return
+                        const orig = cell === null || cell === undefined ? "" : formatCell(cell)
+                        const next = asNull ? null : editValue
+                        // Skip the network call when value didn't change.
+                        if ((next === null && cell === null) ||
+                            (next !== null && next === orig)) {
+                          setEditing(null)
+                          return
+                        }
+                        setSaving(true)
+                        try {
+                          await onCellEdit(r, colName, next)
+                          setEditing(null)
+                        } catch (e) {
+                          toast.error((e as Error)?.message ?? "保存失败")
+                        } finally {
+                          setSaving(false)
+                        }
+                      }}
+                    />
+                  )
+                })}
                 <td className="text-right opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pr-1">
                   {rowActions?.(r)}
                   <button
@@ -224,17 +280,97 @@ export function ResultGrid({
   )
 }
 
-function Cell({ value }: { value: unknown }) {
+function Cell({
+  value,
+  editable,
+  editing,
+  editValue,
+  saving,
+  onStartEdit,
+  onCancelEdit,
+  onChangeEdit,
+  onCommitEdit,
+}: {
+  value: unknown
+  editable: boolean
+  editing: boolean
+  editValue: string
+  saving: boolean
+  onStartEdit: () => void
+  onCancelEdit: () => void
+  onChangeEdit: (v: string) => void
+  onCommitEdit: (asNull: boolean) => void
+}) {
   const text = formatCell(value)
   const isNull = value === null
+
+  if (editing) {
+    return (
+      <td className="px-1 py-0.5 align-top">
+        <div className="flex items-center gap-1">
+          <Input
+            value={editValue}
+            onChange={(e) => onChangeEdit(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault()
+                onCommitEdit(false)
+              } else if (e.key === "Escape") {
+                e.preventDefault()
+                onCancelEdit()
+              }
+            }}
+            autoFocus
+            disabled={saving}
+            className="h-7 text-xs font-mono"
+          />
+          <button
+            type="button"
+            className="p-0.5 hover:text-emerald-600 disabled:opacity-40"
+            onClick={() => onCommitEdit(false)}
+            disabled={saving}
+            title="保存（回车）"
+          >
+            {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+          </button>
+          <button
+            type="button"
+            className="p-0.5 hover:text-amber-600 disabled:opacity-40"
+            onClick={() => onCommitEdit(true)}
+            disabled={saving}
+            title="设为 NULL"
+          >
+            <span className="text-[9px] font-mono">∅</span>
+          </button>
+          <button
+            type="button"
+            className="p-0.5 hover:text-destructive disabled:opacity-40"
+            onClick={onCancelEdit}
+            disabled={saving}
+            title="取消（Esc）"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      </td>
+    )
+  }
+
   return (
     <td
       className={cn(
         "px-2 py-1 max-w-xs truncate align-top",
-        isNull && "text-muted-foreground italic"
+        isNull && "text-muted-foreground italic",
+        editable && "cursor-text",
       )}
-      title={isNull ? "NULL" : text}
+      title={isNull ? "NULL" : editable ? `${text}\n\n双击以编辑` : text}
       onClick={() => copy(text)}
+      onDoubleClick={(e) => {
+        if (!editable) return
+        e.preventDefault()
+        e.stopPropagation()
+        onStartEdit()
+      }}
     >
       {isNull ? "NULL" : looksLikeJSON(text) ? <FileJsonInline text={text} /> : text}
     </td>

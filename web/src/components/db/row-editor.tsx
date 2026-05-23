@@ -271,6 +271,10 @@ function FieldRow({
 // number literals correctly when passed as bare types; we keep strings
 // for text-shaped columns so the DSN's parseTime / charset settings stay
 // authoritative.
+//
+// Re-exported as `coerceCell` for ResultGrid's inline-edit path so all
+// row-mutating UI shares the same coercion table.
+export const coerceCell = (raw: string, dbType: string) => coerce(raw, dbType)
 function coerce(raw: string, dbType: string): unknown {
   if (raw === "") {
     return ""

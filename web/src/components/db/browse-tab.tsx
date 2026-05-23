@@ -27,7 +27,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
 import type { DBCapabilities, DBTableInfo } from "@/lib/api/types"
 import { ResultGrid } from "./result-grid"
-import { RowEditor, deleteRow } from "./row-editor"
+import { RowEditor, deleteRow, coerceCell } from "./row-editor"
 import { StructureTab } from "./structure-tab"
 
 // downloadExport — open the streaming /db/export URL in a new tab. The
@@ -143,6 +143,46 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
 
   const noPK = (cols.data?.columns.filter((c) => c.is_primary_key).length ?? 0) === 0
 
+  // Phase 25 — inline cell edit. Non-PK columns are editable; PK cells
+  // intentionally stay read-only (the back-end UpdateRow uses them as
+  // the WHERE key, mutating them in-place would require a separate
+  // "update key" path).
+  const editableColumnSet = React.useMemo(
+    () => new Set((cols.data?.columns ?? [])
+      .filter((c) => !c.is_primary_key)
+      .map((c) => c.name)),
+    [cols.data],
+  )
+
+  // saveCellEdit handles double-click → Enter on a non-PK cell. It
+  // builds a single-column UPDATE keyed on the row's PKs and re-fetches
+  // the page on success so the new value lands in the grid.
+  const saveCellEdit = React.useCallback(
+    async (rowIdx: number, columnName: string, newRaw: string | null) => {
+      if (!rows.data || !cols.data) throw new Error("数据未就绪")
+      const r = rows.data.rows[rowIdx]
+      const obj: Record<string, unknown> = {}
+      rows.data.columns.forEach((col, i) => { obj[col.name] = r[i] })
+      const pkCols = cols.data.columns.filter((c) => c.is_primary_key)
+      if (pkCols.length === 0) {
+        toast.error("表没有主键，无法定位单行")
+        throw new Error("missing PK")
+      }
+      const colMeta = cols.data.columns.find((c) => c.name === columnName)
+      if (!colMeta) throw new Error(`column not found: ${columnName}`)
+      const coerced = newRaw === null ? null : coerceCell(newRaw, colMeta.type)
+      await dbService.rowUpdate(
+        nodeId, table.schema, table.name,
+        { columns: pkCols.map((c) => c.name), values: pkCols.map((c) => obj[c.name]) },
+        [columnName], [coerced],
+        { database },
+      )
+      toast.success(`已更新 ${columnName}`, { duration: 1500 })
+      await rows.refetch()
+    },
+    [rows, cols.data, nodeId, table.schema, table.name, database],
+  )
+
   return (
     <Tabs value={sub} onValueChange={(v) => setSub(v as "data" | "structure")} className="flex-1 min-h-0 flex flex-col">
       <div className="border-b px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
@@ -251,6 +291,11 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
             setOrderDir(d)
             setPage(0)
           }}
+          // Phase 25 — inline cell edit. Only enabled when the adapter
+          // advertises row_edits AND the table has at least one PK to
+          // anchor the UPDATE WHERE.
+          onCellEdit={canEdit && !noPK ? saveCellEdit : undefined}
+          editableColumns={canEdit && !noPK ? editableColumnSet : undefined}
           rowActions={
             // Phase 25 — per-row Edit/Delete only rendered when the
             // adapter advertises row_edits. OLAP engines (StarRocks/
