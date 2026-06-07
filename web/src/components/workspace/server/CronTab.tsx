@@ -103,7 +103,10 @@ export function CronTab({ nodeId, tabId, active }: Props) {
                 <tbody className="divide-y divide-border/40">
                   {d.user_cron.map((e) => (
                     <tr key={e.index} className="hover:bg-muted/50 group">
-                      <td className="px-3 py-1 font-mono text-primary whitespace-nowrap align-top">{e.schedule || "—"}</td>
+                      <td className="px-3 py-1 align-top whitespace-nowrap">
+                        <div className="font-mono text-primary">{e.schedule || "—"}</div>
+                        {describeCron(e.schedule) && <div className="text-[9px] text-muted-foreground">{describeCron(e.schedule)}</div>}
+                      </td>
                       <td className="px-2 py-1 font-mono align-top break-all">{e.command}</td>
                       <td className="px-2 py-1 text-right align-top w-8">
                         <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive opacity-0 group-hover:opacity-100" title="删除"
@@ -179,6 +182,7 @@ function AddCronDialog({ open, onClose, nodeId, onAdded }: { open: boolean; onCl
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">调度表达式</label>
             <Input value={schedule} onChange={(e) => setSchedule(e.target.value)} className="font-mono" placeholder="0 3 * * *  或  @reboot" />
+            {describeCron(schedule) && <div className="text-[11px] text-primary">≈ {describeCron(schedule)}</div>}
           </div>
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">命令</label>
@@ -192,4 +196,49 @@ function AddCronDialog({ open, onClose, nodeId, onAdded }: { open: boolean; onCl
       </DialogContent>
     </Dialog>
   )
+}
+
+// describeCron turns a crontab schedule into a short human-readable Chinese
+// phrase for the common shapes. Returns "" for anything it can't confidently
+// describe, so the UI never shows a misleading interpretation.
+export function describeCron(expr: string): string {
+  const s = (expr || "").trim()
+  if (!s) return ""
+  const macros: Record<string, string> = {
+    "@reboot": "开机时运行",
+    "@yearly": "每年 1 月 1 日 00:00",
+    "@annually": "每年 1 月 1 日 00:00",
+    "@monthly": "每月 1 日 00:00",
+    "@weekly": "每周日 00:00",
+    "@daily": "每天 00:00",
+    "@midnight": "每天 00:00",
+    "@hourly": "每小时整点",
+  }
+  const low = s.toLowerCase()
+  if (macros[low]) return macros[low]
+  const parts = s.split(/\s+/)
+  if (parts.length < 5) return ""
+  const [min, hr, dom, mon, dow] = parts
+  const dowNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+  const at = (): string => {
+    if (hr === "*" || min === "*") return ""
+    return `${hr.padStart(2, "0")}:${min.padStart(2, "0")}`
+  }
+  const stepMin = min.match(/^\*\/(\d+)$/)
+  const stepHr = hr.match(/^\*\/(\d+)$/)
+  const blank = dom === "*" && mon === "*" && dow === "*"
+  if (stepMin && hr === "*" && blank) return `每 ${stepMin[1]} 分钟`
+  if (min !== "*" && stepHr && blank) return `每 ${stepHr[1]} 小时（第 ${min} 分钟）`
+  const t = at()
+  if (blank) {
+    if (hr === "*" && min !== "*") return `每小时第 ${min} 分钟`
+    if (t) return `每天 ${t}`
+  }
+  if (dow !== "*" && dom === "*" && mon === "*") {
+    const idx = Number(dow)
+    const name = Number.isInteger(idx) && idx >= 0 && idx <= 7 ? dowNames[idx % 7] : `星期 ${dow}`
+    if (t) return `每${name} ${t}`
+  }
+  if (dom !== "*" && mon === "*" && dow === "*" && t) return `每月 ${dom} 日 ${t}`
+  return ""
 }
