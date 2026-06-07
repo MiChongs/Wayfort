@@ -814,6 +814,8 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		aiGroup.POST("/providers/:id/test", perm(auth.PermAIUse), rt.AI.Provider.Test)
 		aiGroup.GET("/providers/:id/models", perm(auth.PermAIUse), rt.AI.Provider.Models)
 
+		aiGroup.GET("/usage", perm(auth.PermAIUse), rt.AI.Usage.Summary)
+
 		aiGroup.GET("/agents", perm(auth.PermAIUse), rt.AI.Agent.List)
 		aiGroup.POST("/agents", perm(auth.PermAIAgentCreate), rt.AI.Agent.Create)
 		aiGroup.PATCH("/agents/:id", perm(auth.PermAIAgentCreate), rt.AI.Agent.Update)

@@ -1078,6 +1078,35 @@ export const aiConversationService = {
     api<{ title: string }>("POST", `/ai/conversations/${id}/autotitle`),
 }
 
+export interface AIUsageBucket {
+  day: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  cost_micros: number
+  messages: number
+}
+export interface AIUsageSummary {
+  buckets: AIUsageBucket[]
+  totals: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_write_tokens: number
+    cost_micros: number
+    messages: number
+  }
+  scope: "me" | "all"
+  can_admin: boolean
+  days: number
+}
+export const aiUsageService = {
+  summary: (days = 30, scope?: "me" | "all") =>
+    api<AIUsageSummary>("GET", "/ai/usage", { query: { days, scope } }),
+}
+
 // ----- insights (Plan 14) -----
 //
 // Lives behind /nodes/<id>/ssh and polls these endpoints on a

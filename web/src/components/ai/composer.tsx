@@ -7,11 +7,13 @@ import {
   Brain,
   Check,
   Command as CommandIcon,
+  LayoutTemplate,
   Loader2,
   Paperclip,
   SlashIcon,
   X,
 } from "lucide-react"
+import { TemplatePicker } from "./template-picker"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -269,6 +271,23 @@ export const Composer = React.forwardRef<
                   </TooltipTrigger>
                   <TooltipContent side="top">斜杠命令</TooltipContent>
                 </Tooltip>
+
+                <TemplatePicker
+                  onPick={(body) => {
+                    setDraft(draft.trim() ? `${draft}\n${body}` : body)
+                    requestAnimationFrame(() => innerRef.current?.focus())
+                  }}
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                    aria-label="提示词模板"
+                  >
+                    <LayoutTemplate className="h-4 w-4" />
+                  </Button>
+                </TemplatePicker>
 
                 {onSetThinkingBudget && (
                   <Popover open={thinkOpen} onOpenChange={setThinkOpen}>

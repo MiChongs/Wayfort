@@ -217,6 +217,39 @@ func escapeLike(q string) string {
 	return string(out)
 }
 
+// UsageBucket is one row of aggregated usage (per day + model).
+type UsageBucket struct {
+	Day              string `json:"day"`
+	Model            string `json:"model"`
+	InputTokens      uint64 `json:"input_tokens"`
+	OutputTokens     uint64 `json:"output_tokens"`
+	CacheReadTokens  uint64 `json:"cache_read_tokens"`
+	CacheWriteTokens uint64 `json:"cache_write_tokens"`
+	CostMicros       uint64 `json:"cost_micros"`
+	Messages         int    `json:"messages"`
+}
+
+// AggregateUsage sums assistant-turn token/cache/cost across the time window,
+// grouped by day + model. adminAll = true aggregates every user's usage;
+// otherwise it is scoped to userID.
+func (r *ConversationRepo) AggregateUsage(ctx context.Context, userID uint64, adminAll bool, from, to time.Time) ([]UsageBucket, error) {
+	q := r.db.WithContext(ctx).
+		Table("ai_messages AS m").
+		Select(`DATE(m.created_at) AS day, m.model AS model,
+			SUM(m.input_tokens) AS input_tokens, SUM(m.output_tokens) AS output_tokens,
+			SUM(m.cache_read_tokens) AS cache_read_tokens, SUM(m.cache_write_tokens) AS cache_write_tokens,
+			SUM(m.cost_micros) AS cost_micros, COUNT(*) AS messages`).
+		Where("m.role = ?", aimodel.RoleAssistant).
+		Where("m.created_at >= ? AND m.created_at < ?", from, to)
+	if !adminAll {
+		q = q.Joins("JOIN ai_conversations c ON c.id = m.conversation_id").
+			Where("c.user_id = ?", userID)
+	}
+	var out []UsageBucket
+	err := q.Group("day, m.model").Order("day DESC").Scan(&out).Error
+	return out, err
+}
+
 // PurgeOlderThan removes conversations + their messages/invocations older than
 // cutoff. Used by the janitor.
 func (r *ConversationRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {

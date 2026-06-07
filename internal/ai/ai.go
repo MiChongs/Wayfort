@@ -75,6 +75,7 @@ type Set struct {
 	Conversation *handler.ConversationHandler
 	SSE          *handler.SSEHandler
 	Invocation   *handler.InvocationHandler
+	Usage        *handler.UsageHandler
 
 	Factory      *runner.Factory
 	ProviderRepo *airepo.ProviderRepo
@@ -148,6 +149,10 @@ func New(cfg Config, deps Deps) *Set {
 	tdeps.AgentRunner = factory
 	tools.RegisterSubAgentTool(toolReg, tdeps)
 
+	// Pre-load tiktoken encoders off the request path (best-effort; degrades to
+	// the heuristic if the vocab can't be fetched).
+	go runner.WarmTokenizers()
+
 	// Seed the built-in global agents on first start. Idempotent — existing
 	// rows by the same name are left intact so operator edits stick.
 	if cfg.SeedDefaultAgents {
@@ -170,6 +175,7 @@ func New(cfg Config, deps Deps) *Set {
 		},
 		SSE:        &handler.SSEHandler{Conv: convRepo, Msg: msgRepo, Inv: invRepo, Factory: factory},
 		Invocation: &handler.InvocationHandler{Conv: convRepo, Inv: invRepo, Factory: factory},
+		Usage:      &handler.UsageHandler{Conv: convRepo},
 		Factory:    factory,
 		ProviderRepo: providerRepo,
 		AgentRepo:    agentRepo,

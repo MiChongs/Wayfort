@@ -31,6 +31,9 @@ type AIMessage struct {
 	CacheReadTokens  uint32    `json:"cache_read_tokens"`
 	CacheWriteTokens uint32    `json:"cache_write_tokens"`
 	CostMicros       uint64    `json:"cost_micros"`
+	// Model is denormalized onto assistant rows (the model can change mid-
+	// conversation) so usage can be aggregated per-model accurately.
+	Model            string    `gorm:"size:128;index" json:"model,omitempty"`
 	FinishReason   string      `gorm:"size:32" json:"finish_reason,omitempty"`
 	CreatedAt      time.Time   `gorm:"index" json:"created_at"`
 }

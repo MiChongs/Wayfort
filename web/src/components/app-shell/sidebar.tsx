@@ -79,6 +79,7 @@ const NAV: NavGroup[] = [
       { href: "/admin/oidc-clients", label: "OIDC 客户端", icon: ShieldCheck, minTier: "superadmin" },
       { href: "/admin/ai/providers", label: "AI 提供商", icon: Bot, minTier: "superadmin" },
       { href: "/admin/ai/agents", label: "AI Agent", icon: Bot, minTier: "superadmin" },
+      { href: "/admin/ai/usage", label: "AI 用量", icon: Activity, minTier: "superadmin" },
       { href: "/admin/audit", label: "审计日志", icon: ScrollText, minTier: "superadmin" },
       { href: "/admin/settings", label: "系统设置", icon: SlidersHorizontal, minTier: "superadmin" },
     ],

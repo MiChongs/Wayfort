@@ -34,6 +34,7 @@ require (
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.15
 	github.com/pkg/sftp v1.13.10
+	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/pquerna/otp v1.5.0
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/spf13/viper v1.21.0
@@ -89,6 +90,7 @@ require (
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/containerd/log v0.1.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
+	github.com/dlclark/regexp2 v1.10.0 // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect

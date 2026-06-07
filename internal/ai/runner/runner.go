@@ -94,8 +94,8 @@ type Factory struct {
 	mu      sync.Mutex
 	running map[string]*activeRun
 
-	capMu    sync.Mutex
-	toolCaps map[string]bool // model id → supports tool calling (best-effort, cached)
+	capMu     sync.Mutex
+	modelCaps map[string]provider.ModelCapabilities // "kind:model" → full capability descriptor
 }
 
 type activeRun struct {
@@ -113,8 +113,71 @@ func NewFactory(p *provider.Registry, tr *tools.Registry, conv *airepo.Conversat
 		Provider: p, Tools: tr, Conv: conv, Msg: msg, Inv: inv, Tasks: tasks,
 		Agents: agents, Audit: aud, Logger: logger,
 		Cfg: cfg.withDefaults(), running: map[string]*activeRun{},
-		toolCaps: map[string]bool{},
+		modelCaps: map[string]provider.ModelCapabilities{},
 	}
+}
+
+// Capabilities resolves (and caches) what a provider+model can do: per-kind
+// defaults, layered with model-substring rules and provider-reported flags.
+// Used by the runner to gate tools / vision / thinking / caching per turn.
+func (f *Factory) Capabilities(ctx context.Context, prov provider.Provider, model string) provider.ModelCapabilities {
+	key := string(prov.Kind()) + ":" + model
+	f.capMu.Lock()
+	if c, ok := f.modelCaps[key]; ok {
+		f.capMu.Unlock()
+		return c
+	}
+	f.capMu.Unlock()
+
+	caps := provider.DefaultCapabilities(prov.Kind())
+	lm := strings.ToLower(model)
+	if modelLacksTools(model) {
+		caps.Tools = false
+	}
+	if strings.Contains(lm, "reasoner") || strings.Contains(lm, "-r1") || strings.Contains(lm, "qwq") ||
+		strings.Contains(lm, "deepseek-r") || strings.Contains(lm, "thinking") {
+		caps.Reasoning = true
+	}
+	if strings.Contains(lm, "-vl") || strings.Contains(lm, "vision") || strings.Contains(lm, "llava") {
+		caps.Vision = true
+	}
+	if caps.Tokenizer == "tiktoken" && encodingForModel(model) == "" {
+		caps.Tokenizer = "heuristic"
+	}
+	// Provider-reported flags refine the guess when the gateway populates them.
+	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	models, err := prov.ListModels(lctx)
+	cancel()
+	if err == nil {
+		anyTool := false
+		for _, mi := range models {
+			if mi.Tools {
+				anyTool = true
+				break
+			}
+		}
+		for _, mi := range models {
+			if mi.ID == model {
+				if anyTool {
+					caps.Tools = mi.Tools
+				}
+				if mi.Vision {
+					caps.Vision = true
+				}
+				if mi.MaxOutput > 0 {
+					caps.MaxOutput = mi.MaxOutput
+				}
+				if mi.ContextWindow > 0 {
+					caps.ContextWindow = mi.ContextWindow
+				}
+				break
+			}
+		}
+	}
+	f.capMu.Lock()
+	f.modelCaps[key] = caps
+	f.capMu.Unlock()
+	return caps
 }
 
 // Cancel aborts the in-flight runner for convID, if any.
@@ -367,7 +430,7 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 	case aimodel.CtxStrategySummarize:
 		messages = f.applyRollingSummary(ctx, prov, conv, history, f.Cfg.HistoryTokenBudget)
 	default:
-		messages = condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
+		messages = condenseHistory(conv.Model, messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
 	}
 
 	allowedTools := parseStringList(agent.AllowedTools)
@@ -394,11 +457,15 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
 		allowedTools = stripTool(allowedTools, tools.UpdatePlanToolName)
 	}
+	// Resolve the model's capabilities once per turn and gate request features.
+	caps := f.Capabilities(ctx, prov, conv.Model)
 	toolSchemas := f.Tools.ProviderSchemas(allowedTools)
-	// Capability gating: don't send tool schemas to a model that can't do tool
-	// calling (wastes tokens / risks an API error).
-	if len(toolSchemas) > 0 && !f.modelSupportsTools(ctx, prov, conv.Model) {
+	if len(toolSchemas) > 0 && !caps.Tools {
 		toolSchemas = nil
+	}
+	// Strip image content for text-only models so the provider doesn't 400.
+	if !caps.Vision {
+		messages = stripImages(messages)
 	}
 
 	// Runtime system-prompt addendum teaching the model when to use the
@@ -457,7 +524,7 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		// already under budget). The strategy-aware condense ran once before the
 		// loop; this guards unbounded growth as tool results accumulate.
 		if iter > 0 {
-			messages = condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
+			messages = condenseHistory(conv.Model, messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
 		}
 		req := provider.Request{
 			Model:    conv.Model,
@@ -483,7 +550,7 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		if conv.MaxTokens != nil {
 			req.MaxTokens = *conv.MaxTokens
 		}
-		if conv.ThinkingBudget != nil && *conv.ThinkingBudget > 0 {
+		if conv.ThinkingBudget != nil && *conv.ThinkingBudget > 0 && caps.Reasoning {
 			req.ThinkingBudget = *conv.ThinkingBudget
 		}
 		stream, err := f.streamWithRetry(ctx, prov, req)
@@ -503,6 +570,7 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 			ToolCalls:     string(toolCallsJSON),
 			InputTokens:   usage.in, OutputTokens: usage.out,
 			CacheReadTokens: usage.cacheRead, CacheWriteTokens: usage.cacheWrite,
+			Model:        conv.Model,
 			FinishReason: finish,
 			CreatedAt:    time.Now(),
 		}
@@ -1179,6 +1247,35 @@ func jsonEncode(parts []provider.ContentPart) string {
 	return string(b)
 }
 
+// stripImages removes image content parts (used when the target model has no
+// vision capability, so a text-only endpoint doesn't reject the request).
+func stripImages(msgs []provider.Message) []provider.Message {
+	out := make([]provider.Message, len(msgs))
+	for i, m := range msgs {
+		hasImg := false
+		for _, p := range m.Content {
+			if p.Type == "image_url" || p.Type == "image" {
+				hasImg = true
+				break
+			}
+		}
+		if !hasImg {
+			out[i] = m
+			continue
+		}
+		filtered := make([]provider.ContentPart, 0, len(m.Content))
+		for _, p := range m.Content {
+			if p.Type == "image_url" || p.Type == "image" {
+				continue
+			}
+			filtered = append(filtered, p)
+		}
+		m.Content = filtered
+		out[i] = m
+	}
+	return out
+}
+
 // streamWithRetry establishes a provider stream, retrying transient setup
 // failures with a short linear backoff. Only the *establishment* is retried —
 // once events flow, an error is surfaced as-is (partial output may already be
@@ -1236,26 +1333,26 @@ func isTransientErr(err error) bool {
 // condenseHistory keeps the transcript within a token budget. truncate_oldest
 // (the default) drops the oldest turns, snapping the kept window to a user
 // message so a tool result never leads without its triggering assistant turn.
-// "summarize" currently behaves like truncate_oldest (a real summary would need
-// an extra model call); "none" disables trimming.
-func condenseHistory(msgs []provider.Message, strategy aimodel.ContextStrategy, budget int) []provider.Message {
+// "none" disables trimming. Token counts use the model's tokenizer (tiktoken for
+// OpenAI-family, heuristic otherwise).
+func condenseHistory(model string, msgs []provider.Message, strategy aimodel.ContextStrategy, budget int) []provider.Message {
 	if strategy == aimodel.CtxStrategyNone || budget <= 0 || len(msgs) == 0 {
 		return msgs
 	}
-	kept, _ := splitHistoryAtBudget(msgs, budget)
+	kept, _ := splitHistoryAtBudget(model, msgs, budget)
 	return kept
 }
 
 // splitHistoryAtBudget returns the newest suffix that fits the token budget
 // (snapped to a user-turn boundary so a tool result never leads) plus the older
 // messages it dropped. When everything fits, kept = msgs and dropped = nil.
-func splitHistoryAtBudget(msgs []provider.Message, budget int) (kept, dropped []provider.Message) {
+func splitHistoryAtBudget(model string, msgs []provider.Message, budget int) (kept, dropped []provider.Message) {
 	if budget <= 0 || len(msgs) == 0 {
 		return msgs, nil
 	}
 	total := 0
 	for i := range msgs {
-		total += estimateTokens(msgs[i])
+		total += countTokens(model, msgs[i])
 	}
 	if total <= budget {
 		return msgs, nil
@@ -1263,7 +1360,7 @@ func splitHistoryAtBudget(msgs []provider.Message, budget int) (kept, dropped []
 	acc := 0
 	start := len(msgs)
 	for i := len(msgs) - 1; i >= 0; i-- {
-		t := estimateTokens(msgs[i])
+		t := countTokens(model, msgs[i])
 		if acc+t > budget {
 			break
 		}
@@ -1298,12 +1395,12 @@ func (f *Factory) applyRollingSummary(ctx context.Context, prov provider.Provide
 	}
 	total := 0
 	for i := range messages {
-		total += estimateTokens(messages[i])
+		total += countTokens(conv.Model, messages[i])
 	}
 	if total <= budget {
 		return messages // everything fits — no drop, no summary needed
 	}
-	kept, dropped := splitHistoryAtBudget(messages, budget*3/4) // reserve room for the recap
+	kept, dropped := splitHistoryAtBudget(conv.Model, messages, budget*3/4) // reserve room for the recap
 	droppedCount := len(dropped)
 	if droppedCount == 0 || droppedCount > len(history) {
 		return kept
@@ -1327,7 +1424,7 @@ func (f *Factory) applyRollingSummary(ctx context.Context, prov provider.Provide
 			if f.Logger != nil && err != nil {
 				f.Logger.Warn("rolling summarize failed; truncating instead", zap.Error(err))
 			}
-			return condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, budget)
+			return condenseHistory(conv.Model, messages, aimodel.CtxStrategyTruncateOldest, budget)
 		}
 		summary = folded
 		conv.RunningSummary = summary
@@ -1561,62 +1658,6 @@ func modelLacksTools(model string) bool {
 	return false
 }
 
-// modelSupportsTools best-effort decides whether to send tool schemas. Defaults
-// to true unless the model is on the denylist or a capability-reporting
-// provider explicitly reports the model has no tools. Cached per model id.
-func (f *Factory) modelSupportsTools(ctx context.Context, prov provider.Provider, model string) bool {
-	if model == "" {
-		return true
-	}
-	if modelLacksTools(model) {
-		return false
-	}
-	f.capMu.Lock()
-	if v, ok := f.toolCaps[model]; ok {
-		f.capMu.Unlock()
-		return v
-	}
-	f.capMu.Unlock()
-
-	supported := true
-	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
-	models, err := prov.ListModels(lctx)
-	cancel()
-	if err == nil {
-		anyToolFlag, found := false, false
-		for _, m := range models {
-			if m.Tools {
-				anyToolFlag = true
-			}
-			if m.ID == model {
-				found = true
-				supported = m.Tools
-			}
-		}
-		// Only trust a negative when the provider reports tool flags for SOME
-		// model; otherwise it doesn't populate the field → assume yes.
-		if !found || !anyToolFlag {
-			supported = true
-		}
-	}
-	f.capMu.Lock()
-	f.toolCaps[model] = supported
-	f.capMu.Unlock()
-	return supported
-}
-
-// estimateTokens is a cheap ~4-chars-per-token heuristic plus per-message
-// overhead — good enough for budgeting without pulling a real tokenizer.
-func estimateTokens(m provider.Message) int {
-	n := 0
-	for _, p := range m.Content {
-		n += len(p.Text)
-	}
-	for _, tc := range m.ToolCalls {
-		n += len(tc.Name) + len(tc.Arguments)
-	}
-	return n/4 + 8
-}
 
 func parseStringList(raw string) []string {
 	if raw == "" {
