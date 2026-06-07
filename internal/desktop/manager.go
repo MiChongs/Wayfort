@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,9 +20,19 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/jumpserver-anonymous/internal/socks5"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"go.uber.org/zap"
+	"golang.org/x/net/proxy"
 )
+
+// DialChainFunc resolves a node's JumpServer proxy chain into a ContextDialer
+// that tunnels TCP to the target through every hop, plus a release func that
+// MUST be called exactly once when the session ends to decrement bastion
+// refcounts. Wired from main.go using the same webssh.Gateway ResolveHops +
+// BuildChain path guacamole and tcpfwd use. A nil DialChain (or a node with no
+// proxy_chain) means the worker dials the target directly.
+type DialChainFunc func(ctx context.Context, node *model.Node) (proxy.ContextDialer, func(), error)
 
 // Manager orchestrates Plan 17 desktop sessions: validates auth, picks a
 // worker backend, spawns it, and hands the WS handler a Session it can
@@ -48,8 +61,8 @@ type Manager struct {
 	// operator can debug "why isn't auto_install running?" without
 	// grepping logs. All three are accessed via atomic.Value to keep
 	// reader paths lock-free.
-	bootstrapErr     atomic.Value // string — empty when no error
-	bootstrapAt      atomic.Value // time.Time — last bootstrap attempt finish
+	bootstrapErr      atomic.Value // string — empty when no error
+	bootstrapAt       atomic.Value // time.Time — last bootstrap attempt finish
 	bootstrapInFlight atomic.Bool
 	// Resolved path to the worker binary, populated by EnsureWorker.
 	// Mirrored back into m.cfg.WorkerPath for backwards compat but
@@ -63,6 +76,11 @@ type Manager struct {
 	// AttachIronRDP() and never mutated thereafter.
 	jwtSigner  *JWTSigner
 	gatewaySup *GatewaySupervisor
+
+	// dialChain routes the freerdp worker's TCP connection through the node's
+	// JumpServer proxy chain via a per-session SOCKS5 listener. Nil = direct
+	// dial (matches pre-proxy-chain behaviour).
+	dialChain DialChainFunc
 }
 
 // PasswordOpener is the subset of pkgcrypto.Sealer we need (decrypt one blob).
@@ -78,6 +96,9 @@ type Deps struct {
 	Sealer   PasswordOpener
 	Audit    *audit.Writer
 	Sessions *repo.SessionRepo
+	// DialChain (optional) routes the freerdp worker through the node's proxy
+	// chain. Leave nil to keep direct-dial behaviour.
+	DialChain DialChainFunc
 }
 
 func NewManager(cfg config.DesktopConfig, deps Deps) *Manager {
@@ -86,20 +107,25 @@ func NewManager(cfg config.DesktopConfig, deps Deps) *Manager {
 		max = 64
 	}
 	return &Manager{
-		cfg:      cfg,
-		logger:   deps.Logger,
-		nodes:    deps.Nodes,
-		creds:    deps.Creds,
-		asset:    deps.Asset,
-		sealer:   deps.Sealer,
-		audit:    deps.Audit,
-		sessions: deps.Sessions,
-		live:     map[string]*Session{},
-		maxLive:  max,
+		cfg:       cfg,
+		logger:    deps.Logger,
+		nodes:     deps.Nodes,
+		creds:     deps.Creds,
+		asset:     deps.Asset,
+		sealer:    deps.Sealer,
+		audit:     deps.Audit,
+		sessions:  deps.Sessions,
+		dialChain: deps.DialChain,
+		live:      map[string]*Session{},
+		maxLive:   max,
 	}
 }
 
 func (m *Manager) Enabled() bool { return m.cfg.Enabled }
+
+// WebRTCConfig exposes the WebRTC video-path tuning to the WS handler so it can
+// build per-session Pion bridges with the operator's ICE / bitrate settings.
+func (m *Manager) WebRTCConfig() config.DesktopWebRTCConfig { return m.cfg.WebRTC }
 
 // AttachIronRDP wires in the JWT signer + Devolutions Gateway supervisor
 // that back the `ironrdp` desktop backend. Must be called before
@@ -180,19 +206,24 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	// Phase 16 — approval gate (asset_access). Same flag as webssh /
 	// dbcli / guacamole; the desktop backend is just another way to
 	// reach the same privileged target.
+	var grantDeadline time.Time
+	approvalCheck := approval.EnforcementCheck{
+		UserID:       claims.UserID,
+		BusinessType: model.ApprovalBizAssetAccess,
+		ResourceType: "node",
+		ResourceID:   strconv.FormatUint(req.NodeID, 10),
+		Action:       "connect",
+	}
 	if m.approval != nil {
-		res, err := m.approval.CheckEnforced(ctx, approval.EnforcementCheck{
-			UserID:       claims.UserID,
-			BusinessType: model.ApprovalBizAssetAccess,
-			ResourceType: "node",
-			ResourceID:   strconv.FormatUint(req.NodeID, 10),
-			Action:       "connect",
-		})
+		res, err := m.approval.CheckEnforced(ctx, approvalCheck)
 		if err != nil {
 			return nil, fmt.Errorf("approval check failed: %w", err)
 		}
 		if !res.Allowed {
 			return nil, errors.New(res.Reason)
+		}
+		if res.Required && !res.ExpiresAt.IsZero() {
+			grantDeadline = res.ExpiresAt
 		}
 	}
 	node, err := m.nodes.FindByID(ctx, req.NodeID)
@@ -221,6 +252,11 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	// is running underneath.
 	sessionID := uuid.NewString()
 	rdpOpts := ParseRdpOptions(node.ProtoOptions)
+	// Expand the network preset (lan/wan/mobile/…) into concrete connection-
+	// tuning fields BEFORE capability gating, so the worker only ever sees fully
+	// resolved values. The preset fills only the fields the operator left unset,
+	// so explicit per-field overrides survive.
+	rdpOpts = rdpOpts.ResolveNetworkPreset()
 	// Apply browser-side capability gating. The frontend probes
 	// WebCodecs.VideoDecoder + ImageDecoder via lib/desktop/capabilities.ts
 	// before this POST and sends the result in req.ClientCaps. If the
@@ -233,6 +269,14 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 			no := false
 			rdpOpts.EnableH264 = &no
 			rdpOpts.EnableGraphicsPipeline = &no
+		}
+		// The browser currently never ships an RFX decoder (ClientCaps.RFX is
+		// always false). If a node opted into RemoteFX, suppress it here so the
+		// worker can't negotiate a codec whose frames the browser would drop —
+		// which would otherwise leave a connected session on a blank screen.
+		if !req.ClientCaps.RFX {
+			no := false
+			rdpOpts.EnableRemoteFx = &no
 		}
 	}
 	keyboard := req.Keyboard
@@ -247,6 +291,30 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	}
 	if height == 0 {
 		height = 720
+	}
+
+	// High-DPI scale factor (percent). The browser sends its devicePixelRatio-
+	// derived scale in req.Scale; the node can disable it (rdp.high_dpi=false)
+	// or cap it (rdp.max_scale). Default ON. width/height above are the LOGICAL
+	// resolution; for the freerdp backend we multiply by scale below to get the
+	// physical render resolution and hand the worker the scale factor so Windows
+	// applies matching display scaling. ironrdp keeps the logical size (its Wasm
+	// client exposes no scale-factor API).
+	scale := int(req.Scale)
+	if scale <= 0 {
+		scale = 100
+	}
+	if rdpOpts.HighDPI != nil && !*rdpOpts.HighDPI {
+		scale = 100
+	}
+	if scale < 100 {
+		scale = 100
+	}
+	if scale > 500 {
+		scale = 500
+	}
+	if rdpOpts.MaxScale != nil && *rdpOpts.MaxScale >= 100 && scale > int(*rdpOpts.MaxScale) {
+		scale = int(*rdpOpts.MaxScale)
 	}
 
 	if backend == "ironrdp" {
@@ -290,43 +358,300 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	if err != nil {
 		return nil, fmt.Errorf("pick worker: %w", err)
 	}
+
+	// Route the worker's TCP connection through the node's JumpServer proxy
+	// chain (SSH bastion / SOCKS5 hops) when one is configured — mirrors how
+	// guacamole and tcpfwd reach the same targets. A per-session SOCKS5
+	// listener on 127.0.0.1 tunnels libfreerdp's connect through the resolved
+	// chain; libfreerdp still connects to node.Host:node.Port, just via the
+	// proxy. No chain configured (or no DialChain wired) = direct dial.
+	var socksHost string
+	var socksPort int
+	var socksClose func()
+	if m.dialChain != nil && strings.TrimSpace(node.ProxyChain) != "" {
+		dlr, release, derr := m.dialChain(ctx, node)
+		if derr != nil {
+			return nil, fmt.Errorf("build proxy chain for node %d: %w", req.NodeID, derr)
+		}
+		if dlr != nil {
+			target := fmt.Sprintf("%s:%d", node.Host, node.Port)
+			sl, lerr := socks5.New(context.Background(), "127.0.0.1", dlr, target, m.logger)
+			if lerr != nil {
+				if release != nil {
+					release()
+				}
+				return nil, fmt.Errorf("start socks listener: %w", lerr)
+			}
+			socksHost = sl.Host()
+			socksPort = sl.Port()
+			var once sync.Once
+			socksClose = func() {
+				once.Do(func() {
+					_ = sl.Close()
+					if release != nil {
+						release()
+					}
+				})
+			}
+		} else if release != nil {
+			release()
+		}
+	}
+
+	// Redirect the per-user file drive into the session (freerdp only). A
+	// failure here must never block the session — the desktop just comes up
+	// without the drive.
+	driveName, drivePath := "", ""
+	if backend == "freerdp" {
+		if dir, derr := m.ensureUserDrive(claims.UserID); derr != nil {
+			m.logger.Warn("desktop drive folder unavailable",
+				zap.Uint64("user", claims.UserID), zap.Error(derr))
+		} else if dir != "" {
+			drivePath = dir
+			driveName = m.cfg.Drive.Name
+			if driveName == "" {
+				driveName = "JumpServer"
+			}
+			m.logger.Info("desktop drive redirect prepared",
+				zap.Uint64("user", claims.UserID),
+				zap.String("drive_name", driveName),
+				zap.String("drive_path", drivePath))
+		}
+	} else {
+		m.logger.Debug("desktop drive redirect skipped (non-freerdp backend)",
+			zap.String("backend", backend))
+	}
+
+	// WebRTC video path. Only for the freerdp backend, only when the operator
+	// enabled it AND the browser advertised it can run an RTCPeerConnection +
+	// decode VP8 (req.ClientCaps.WebRTC). Otherwise the session uses the legacy
+	// WS bitmap path. The worker reads VideoMode at connect to disable the GFX
+	// pipeline and VP8-encode the composited framebuffer instead.
+	videoMode := ""
+	var iceServers []ICEServer
+	videoBitrate := m.cfg.WebRTC.BitrateKbps
+	if backend == "freerdp" {
+		videoMode = m.decideVideoMode(req)
+		if videoMode != "" {
+			iceServers = m.webrtcICEServers()
+			videoBitrate = m.videoBitrateForQuality(req.VideoQuality)
+			m.logger.Info("desktop webrtc video path enabled for session",
+				zap.String("session", sessionID),
+				zap.String("codec", videoMode),
+				zap.String("transport_pref", req.VideoTransport),
+				zap.String("quality", req.VideoQuality),
+				zap.Int("bitrate_kbps", videoBitrate),
+				zap.Int("fps", m.cfg.WebRTC.FPS),
+				zap.Int("ice_servers", len(iceServers)))
+		}
+	}
+
+	// RD Gateway (MS-TSGU): resolve the gateway config when the node is published
+	// only through a Microsoft Remote Desktop Gateway. Same-credentials (default)
+	// lets the worker reuse the target login for the gateway; otherwise a separate
+	// sealed credential supplies the gateway login (keeps its password out of
+	// proto_options). freerdp backend only.
+	var gw struct {
+		host, user, pass, domain, transport string
+		port                                int
+		useSame                             bool
+	}
+	if backend == "freerdp" && strings.TrimSpace(rdpOpts.GatewayHost) != "" {
+		gw.host = strings.TrimSpace(rdpOpts.GatewayHost)
+		gw.port = 443
+		if rdpOpts.GatewayPort != nil && *rdpOpts.GatewayPort > 0 && *rdpOpts.GatewayPort <= 65535 {
+			gw.port = int(*rdpOpts.GatewayPort)
+		}
+		gw.transport = rdpOpts.GatewayTransport
+		gw.domain = rdpOpts.GatewayDomain
+		gw.useSame = rdpOpts.GatewayUseSameCredentials == nil || *rdpOpts.GatewayUseSameCredentials
+		if gw.useSame {
+			if gw.domain == "" {
+				gw.domain = rdpOpts.Domain
+			}
+		} else if rdpOpts.GatewayCredentialID != nil {
+			if gwCred, gerr := m.creds.FindByID(ctx, *rdpOpts.GatewayCredentialID); gerr == nil && gwCred != nil && gwCred.Kind == model.CredentialPassword {
+				if gwpw, oerr := m.sealer.Open(gwCred.Secret); oerr == nil {
+					gw.user = gwCred.Username
+					gw.pass = string(gwpw)
+				} else {
+					m.logger.Warn("rd gateway credential decrypt failed",
+						zap.Uint64("credential", *rdpOpts.GatewayCredentialID), zap.Error(oerr))
+				}
+			} else {
+				m.logger.Warn("rd gateway credential lookup failed (gateway login may be incomplete)",
+					zap.Uint64("credential", *rdpOpts.GatewayCredentialID))
+			}
+		}
+		m.logger.Info("rd gateway enabled for session",
+			zap.String("session", sessionID),
+			zap.String("gateway_host", gw.host),
+			zap.Int("gateway_port", gw.port),
+			zap.Bool("same_credentials", gw.useSame),
+			zap.String("transport", gw.transport))
+	}
+
+	// freerdp path: scale the LOGICAL resolution up to the physical render
+	// resolution. The recorder + StartSessionResponse below then report the
+	// physical size, so the browser canvas backing store matches 1:1 with the
+	// client's physical pixels (crisp), while the worker's scale factor makes
+	// Windows render its UI at the right size rather than tiny.
+	if scale > 100 {
+		physW := uint32(int(width) * scale / 100)
+		physH := uint32(int(height) * scale / 100)
+		const maxDim = 8192 // FreeRDP / Windows desktop dimension ceiling
+		if physW > maxDim {
+			physW = maxDim
+		}
+		if physH > maxDim {
+			physH = maxDim
+		}
+		width, height = physW, physH
+	}
+
 	startParams := StartParams{
-		NodeID:   req.NodeID,
-		Host:     node.Host,
-		Port:     node.Port,
-		Username: username,
-		Password: string(pw),
-		Domain:   rdpOpts.Domain,
-		Width:    int(width),
-		Height:   int(height),
-		Keyboard: keyboard,
-		Quality:  req.Quality,
-		RDP:      rdpOpts,
+		NodeID:                    req.NodeID,
+		Host:                      node.Host,
+		Port:                      node.Port,
+		Username:                  username,
+		Password:                  string(pw),
+		Domain:                    rdpOpts.Domain,
+		Width:                     int(width),
+		Height:                    int(height),
+		Scale:                     scale,
+		Keyboard:                  keyboard,
+		Quality:                   req.Quality,
+		RDP:                       rdpOpts,
+		SOCKSHost:                 socksHost,
+		SOCKSPort:                 socksPort,
+		DriveName:                 driveName,
+		DrivePath:                 drivePath,
+		VideoMode:                 videoMode,
+		VideoBitrateKbps:          videoBitrate,
+		VideoFPS:                  m.cfg.WebRTC.FPS,
+		GatewayHost:               gw.host,
+		GatewayPort:               gw.port,
+		GatewayUseSameCredentials: gw.useSame,
+		GatewayUsername:           gw.user,
+		GatewayPassword:           gw.pass,
+		GatewayDomain:             gw.domain,
+		GatewayTransport:          gw.transport,
 	}
 	wctx, cancel := context.WithCancel(context.Background())
 	if err := worker.Start(wctx, startParams); err != nil {
 		cancel()
+		if socksClose != nil {
+			socksClose()
+		}
 		return nil, fmt.Errorf("worker start: %w", err)
 	}
 	sess := &Session{
-		ID:        sessionID,
-		Worker:    worker,
-		NodeID:    req.NodeID,
-		UserID:    claims.UserID,
-		Username:  claims.Username,
-		ClientIP:  clientIP,
-		StartedAt: time.Now(),
-		cancel:    cancel,
-		manager:   m,
+		ID:               sessionID,
+		Worker:           worker,
+		NodeID:           req.NodeID,
+		UserID:           claims.UserID,
+		Username:         claims.Username,
+		ClientIP:         clientIP,
+		StartedAt:        time.Now(),
+		VideoMode:        videoMode,
+		VideoBitrateKbps: videoBitrate,
+		cancel:           cancel,
+		manager:          m,
+		socksClose:       socksClose,
+	}
+	// Session recording (.dtr tape) — best-effort: a recorder failure must
+	// never block the live session, so we just log and carry on unrecorded.
+	if m.cfg.Recording.Enabled {
+		if rec, recPath, rerr := m.startRecorder(sessionID, uint16(width), uint16(height)); rerr != nil {
+			m.logger.Warn("desktop recording unavailable for session",
+				zap.String("session", sessionID), zap.Error(rerr))
+		} else {
+			sess.recorder = rec
+			sess.recordingPath = recPath
+			rec.WriteEvent(RecordingEvent{Type: "session-start", Width: uint32(width), Height: uint32(height)})
+		}
 	}
 	m.register(sess)
+	// Server-side hard cutoff (renewal-aware): end the session when the approval
+	// grant lapses; a renewal before expiry keeps it alive.
+	if m.approval != nil && !grantDeadline.IsZero() {
+		sess.expiryStop = m.approval.WatchGrant(wctx, approvalCheck, grantDeadline, func(reason string) {
+			_ = m.End(context.Background(), sessionID)
+		})
+	}
 	m.recordStart(ctx, sess, node)
 	return &StartSessionResponse{
 		SessionID:    sessionID,
 		RemoteWidth:  width,
 		RemoteHeight: height,
 		Backend:      backend,
+		VideoMode:    videoMode,
+		ICEServers:   iceServers,
 	}, nil
+}
+
+// decideVideoMode resolves the per-session video transport (and, for WebRTC,
+// the codec) from the user's explicit choice, the browser's advertised
+// capabilities, and the operator's config. Returns the codec ("vp8"/"vp9") for
+// the WebRTC path or "" for the legacy JS bitmap path.
+//
+//   - operator gate: desktop.webrtc.enabled = false → always "" (bitmap).
+//   - user "bitmap"  → "" (force JS).
+//   - user "webrtc"/"auto"/"" → WebRTC iff the browser advertised it can run a
+//     peer connection (ClientCaps.WebRTC); a browser that can't always falls to
+//     bitmap regardless of the choice.
+//   - codec: "vp9" when the operator prefers it (desktop.webrtc.codec) and the
+//     browser can decode VP9 (ClientCaps.WebRTCVP9); otherwise "vp8".
+func (m *Manager) decideVideoMode(req StartSessionRequest) string {
+	if !m.cfg.WebRTC.Enabled {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(req.VideoTransport), "bitmap") {
+		return ""
+	}
+	caps := req.ClientCaps
+	if caps == nil || !caps.WebRTC {
+		return "" // browser can't run a WebRTC peer connection
+	}
+	if strings.EqualFold(strings.TrimSpace(m.cfg.WebRTC.Codec), "vp9") && caps.WebRTCVP9 {
+		return "vp9"
+	}
+	return "vp8"
+}
+
+// videoBitrateForQuality maps the per-session quality choice onto a VP8/VP9
+// target bitrate, scaling the operator's configured "balanced" baseline.
+func (m *Manager) videoBitrateForQuality(quality string) int {
+	base := m.cfg.WebRTC.BitrateKbps
+	if base <= 0 {
+		base = 8000
+	}
+	switch strings.ToLower(strings.TrimSpace(quality)) {
+	case "smooth":
+		return base / 2
+	case "sharp":
+		return base * 2
+	default: // "balanced" / ""
+		return base
+	}
+}
+
+// webrtcICEServers builds the browser-facing ICE configuration from the WebRTC
+// config (STUN list + optional TURN). The same servers the gateway's own Pion
+// bridge uses, so both ends agree on the relay path.
+func (m *Manager) webrtcICEServers() []ICEServer {
+	var servers []ICEServer
+	if len(m.cfg.WebRTC.STUNURLs) > 0 {
+		servers = append(servers, ICEServer{URLs: m.cfg.WebRTC.STUNURLs})
+	}
+	if m.cfg.WebRTC.TURNURL != "" {
+		servers = append(servers, ICEServer{
+			URLs:       []string{m.cfg.WebRTC.TURNURL},
+			Username:   m.cfg.WebRTC.TURNUsername,
+			Credential: m.cfg.WebRTC.TURNPassword,
+		})
+	}
+	return servers
 }
 
 func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
@@ -353,14 +678,14 @@ func (m *Manager) pickWorker(backend string) (DesktopWorker, error) {
 // the /desktop/stats handler so operators can debug auto_install without
 // digging through logs.
 type BootstrapStatus struct {
-	Enabled       bool           `json:"enabled"`
-	Backend       string         `json:"default_backend"`
-	WorkerReady   bool           `json:"worker_ready"`
-	WorkerPath    string         `json:"worker_path"`
-	AutoInstall   bool           `json:"auto_install"`
-	InFlight      bool           `json:"bootstrap_in_flight"`
-	LastError     string         `json:"last_bootstrap_error,omitempty"`
-	LastAttemptAt time.Time      `json:"last_bootstrap_at,omitempty"`
+	Enabled       bool      `json:"enabled"`
+	Backend       string    `json:"default_backend"`
+	WorkerReady   bool      `json:"worker_ready"`
+	WorkerPath    string    `json:"worker_path"`
+	AutoInstall   bool      `json:"auto_install"`
+	InFlight      bool      `json:"bootstrap_in_flight"`
+	LastError     string    `json:"last_bootstrap_error,omitempty"`
+	LastAttemptAt time.Time `json:"last_bootstrap_at,omitempty"`
 	// Gateway is the Devolutions Gateway supervisor snapshot when the
 	// ironrdp backend is configured. Zero-value struct otherwise.
 	Gateway GatewayStatus `json:"devolutions_gateway"`
@@ -412,6 +737,9 @@ func (m *Manager) End(ctx context.Context, sessionID string) error {
 	}
 	delete(m.live, sessionID)
 	m.mu.Unlock()
+	if s.expiryStop != nil {
+		s.expiryStop()
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -423,8 +751,72 @@ func (m *Manager) End(ctx context.Context, sessionID string) error {
 			m.logger.Warn("worker close", zap.String("session", sessionID), zap.Error(err))
 		}
 	}
+	if s.socksClose != nil {
+		s.socksClose()
+	}
+	if s.recorder != nil {
+		s.recorder.WriteEvent(RecordingEvent{Type: "session-end"})
+		_ = s.recorder.Close()
+	}
 	m.recordEnd(ctx, s, nil)
 	return nil
+}
+
+// TerminateSession force-closes a live desktop session owned by this manager.
+// It reports whether the session was found so the API handler can fall back to
+// a direct row update for sessions it doesn't own.
+func (m *Manager) TerminateSession(ctx context.Context, sessionID string) bool {
+	m.mu.Lock()
+	s, ok := m.live[sessionID]
+	if ok {
+		s.terminated = true
+	}
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	_ = m.End(ctx, sessionID)
+	return true
+}
+
+// ensureUserDrive returns the per-user folder that gets redirected into RDP
+// sessions as a drive, creating it on first use. Returns "" (no error) when
+// drive redirection is disabled. The same folder is what the browser file
+// panel reads and writes, so uploads appear in the remote desktop instantly.
+func (m *Manager) ensureUserDrive(userID uint64) (string, error) {
+	if !m.cfg.Drive.Enabled || m.cfg.Drive.Dir == "" {
+		return "", nil
+	}
+	dir := filepath.Join(m.cfg.Drive.Dir, fmt.Sprintf("user-%d", userID))
+	// Always hand libfreerdp an absolute path. A relative drive path makes the
+	// drive subsystem resolve files against the worker's cwd, which the remote
+	// server's root enumeration can't follow — the drive then gets dropped.
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// startRecorder opens a .dtr tape for the session under the configured
+// recording dir (resolved to <sessions_dir>/desktop-recordings in main.go;
+// falls back to a relative dir otherwise).
+func (m *Manager) startRecorder(sessionID string, w, h uint16) (*Recorder, string, error) {
+	dir := m.cfg.Recording.Dir
+	if dir == "" {
+		dir = "desktop-recordings"
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, "", err
+	}
+	p := filepath.Join(dir, sessionID+".dtr")
+	rec, err := NewRecorder(p, w, h, m.cfg.Recording.IncludeInput, time.Now())
+	if err != nil {
+		return nil, "", err
+	}
+	return rec, p, nil
 }
 
 // Stats for ops visibility.
@@ -448,6 +840,10 @@ func (m *Manager) recordStart(ctx context.Context, s *Session, node *model.Node)
 		ClientIP:  s.ClientIP,
 		StartedAt: s.StartedAt,
 		Status:    model.SessionActive,
+	}
+	if s.recordingPath != "" {
+		row.RecordingPath = s.recordingPath
+		row.RecordingType = model.RecordingDesktop
 	}
 	if node != nil {
 		nid := node.ID
@@ -475,10 +871,14 @@ func (m *Manager) recordEnd(ctx context.Context, s *Session, runErr error) {
 	}
 	end := time.Now()
 	s.sessionRow.EndedAt = &end
-	if runErr != nil {
+	switch {
+	case s.terminated:
+		s.sessionRow.Status = model.SessionTerminated
+		s.sessionRow.Reason = "管理员强制下线"
+	case runErr != nil:
 		s.sessionRow.Status = model.SessionErrored
 		s.sessionRow.Reason = runErr.Error()
-	} else {
+	default:
 		s.sessionRow.Status = model.SessionClosed
 	}
 	if err := m.sessions.Update(ctx, s.sessionRow); err != nil {

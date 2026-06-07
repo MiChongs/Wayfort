@@ -62,9 +62,107 @@ func TestParseRdpOptions_Invalid(t *testing.T) {
 	}
 }
 
+func TestResolveNetworkPreset_Empty(t *testing.T) {
+	// No preset → unchanged.
+	in := RdpOptions{Security: SecTLS}
+	if got := in.ResolveNetworkPreset(); got != in {
+		t.Errorf("empty preset should be a no-op, got %+v", got)
+	}
+	// Unknown preset → unchanged (but keeps the preset string).
+	in = RdpOptions{NetworkPreset: "bogus"}
+	if got := in.ResolveNetworkPreset(); got != in {
+		t.Errorf("unknown preset should be a no-op, got %+v", got)
+	}
+}
+
+func TestResolveNetworkPreset_WAN(t *testing.T) {
+	got := RdpOptions{NetworkPreset: "wan"}.ResolveNetworkPreset()
+	if got.ConnectionTypeOrDefault() != ConnTypeWAN {
+		t.Errorf("connection_type: got %d want %d (WAN)", got.ConnectionTypeOrDefault(), ConnTypeWAN)
+	}
+	if got.ColorDepth == nil || *got.ColorDepth != 16 {
+		t.Errorf("color_depth: got %v want 16", got.ColorDepth)
+	}
+	if got.BulkCompression == nil || !*got.BulkCompression {
+		t.Errorf("bulk_compression: got %v want true", got.BulkCompression)
+	}
+	if got.DisableWallpaper == nil || !*got.DisableWallpaper {
+		t.Errorf("disable_wallpaper: got %v want true", got.DisableWallpaper)
+	}
+	if got.AllowDesktopComposition == nil || *got.AllowDesktopComposition {
+		t.Errorf("desktop_composition: got %v want false", got.AllowDesktopComposition)
+	}
+}
+
+func TestResolveNetworkPreset_LAN(t *testing.T) {
+	got := RdpOptions{NetworkPreset: "lan"}.ResolveNetworkPreset()
+	if got.ConnectionTypeOrDefault() != ConnTypeLAN {
+		t.Errorf("connection_type: got %d want %d (LAN)", got.ConnectionTypeOrDefault(), ConnTypeLAN)
+	}
+	if got.ColorDepth == nil || *got.ColorDepth != 32 {
+		t.Errorf("color_depth: got %v want 32", got.ColorDepth)
+	}
+	if got.BulkCompression == nil || *got.BulkCompression {
+		t.Errorf("bulk_compression: got %v want false", got.BulkCompression)
+	}
+	// Full visuals on a fast link.
+	if got.DisableWallpaper == nil || *got.DisableWallpaper {
+		t.Errorf("disable_wallpaper: got %v want false", got.DisableWallpaper)
+	}
+}
+
+func TestResolveNetworkPreset_ExplicitOverrideWins(t *testing.T) {
+	// Operator picked "wan" (which would default to 16bpp) but explicitly set
+	// 32bpp and forced wallpaper on — both explicit choices must survive.
+	cd := uint8(32)
+	got := RdpOptions{
+		NetworkPreset:    "wan",
+		ColorDepth:       &cd,
+		DisableWallpaper: boolPtr(false),
+	}.ResolveNetworkPreset()
+	if got.ColorDepth == nil || *got.ColorDepth != 32 {
+		t.Errorf("explicit color_depth lost: got %v want 32", got.ColorDepth)
+	}
+	if got.DisableWallpaper == nil || *got.DisableWallpaper {
+		t.Errorf("explicit disable_wallpaper=false lost: got %v", got.DisableWallpaper)
+	}
+	// Fields the operator left unset still come from the preset.
+	if got.BulkCompression == nil || !*got.BulkCompression {
+		t.Errorf("preset bulk_compression not applied: got %v", got.BulkCompression)
+	}
+}
+
+func TestConnectionTypeOrDefault(t *testing.T) {
+	if got := (RdpOptions{}).ConnectionTypeOrDefault(); got != ConnTypeBroadbandLow {
+		t.Errorf("unset: got %d want %d", got, ConnTypeBroadbandLow)
+	}
+	bad := uint8(99)
+	if got := (RdpOptions{ConnectionType: &bad}).ConnectionTypeOrDefault(); got != ConnTypeBroadbandLow {
+		t.Errorf("invalid: got %d want %d", got, ConnTypeBroadbandLow)
+	}
+	lan := ConnTypeLAN
+	if got := (RdpOptions{ConnectionType: &lan}).ConnectionTypeOrDefault(); got != ConnTypeLAN {
+		t.Errorf("valid: got %d want %d", got, ConnTypeLAN)
+	}
+}
+
+func TestCompressionLevelOrDefault(t *testing.T) {
+	if got := (RdpOptions{}).CompressionLevelOrDefault(); got != 2 {
+		t.Errorf("unset: got %d want 2", got)
+	}
+	bad := uint8(9)
+	if got := (RdpOptions{CompressionLevel: &bad}).CompressionLevelOrDefault(); got != 2 {
+		t.Errorf("invalid: got %d want 2", got)
+	}
+	zero := uint8(0)
+	if got := (RdpOptions{CompressionLevel: &zero}).CompressionLevelOrDefault(); got != 0 {
+		t.Errorf("zero (valid): got %d want 0", got)
+	}
+}
+
 func TestSecurityFlags(t *testing.T) {
 	cases := []struct {
-		in           RdpSecurity
+		in            RdpSecurity
 		nla, tls, rdp bool
 	}{
 		{SecAny, true, true, true},

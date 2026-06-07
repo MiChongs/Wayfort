@@ -10,15 +10,56 @@ export interface User {
   email?: string
   phone?: string
   avatar_url?: string
+  /** Denormalised primary department (first of department_ids). */
   department_id?: number | null
+  /** Full multi-department membership set. */
+  department_ids?: number[]
   is_admin?: boolean
   disabled?: boolean
   mfa_enforced?: boolean
   passkey_only?: boolean
+  /** 账号生命周期：active(在职) | suspended(停用) | departed(离职)。空串视同 active。 */
+  status?: string
+  /** 账号到期时刻；到点后拒绝登录。null / 缺省 = 永不过期。 */
+  expires_at?: string | null
+  /** 管理员备注（为什么开号、归属、注意事项）。 */
+  note?: string
+  /** 被打上的受管标签 ID（复用 asset_tags 标签定义）。 */
+  tag_ids?: number[]
   last_login_at?: string | null
   last_login_ip?: string
+  last_user_agent?: string
+  locked_until?: string | null
+  password_changed?: string | null
   created_at?: string
   updated_at?: string
+}
+
+/** 用户概览统计（GET /users/stats）。 */
+export interface UserStats {
+  total: number
+  /** 可登录人数：未禁用 / 停用 / 离职 / 过期。 */
+  active: number
+  disabled: number
+  admin: number
+  /** 当前被登录失败锁定的人数。 */
+  locked: number
+  /** 已过期的账号数。 */
+  expired: number
+  /** 近 7 天有登录的人数。 */
+  recent_7d: number
+  /** 近 N 天每日新增（用于趋势图）。 */
+  trend: { date: string; count: number }[]
+}
+
+/** 用户 360° 详情（GET /users/:id）。 */
+export interface UserDetail {
+  user: User
+  roles: Role[]
+  sessions: Session[]
+  session_total: number
+  login_history: LoginHistory[]
+  grants: AssetGrant[]
 }
 
 export type NodeProtocol =
@@ -47,6 +88,59 @@ export type NodeProtocol =
   | "doris"
   | "gbase8a"
   | "gbase8s"
+  // Object storage bastion (Aliyun OSS / Tencent COS / S3-compatible).
+  | "oss"
+
+// ----- OSS object storage -----
+
+export type OssProvider = "aliyun" | "tencent" | "s3"
+
+export interface OssBucket {
+  name: string
+  region?: string
+  creation_date?: string
+}
+
+// One listing row: an object (file) or a common-prefix (folder, is_dir=true).
+export interface OssEntry {
+  key: string
+  name: string
+  is_dir: boolean
+  size: number
+  last_modified?: string
+  etag?: string
+  storage_class?: string
+}
+
+export interface OssListResult {
+  bucket: string
+  prefix: string
+  delimiter: string
+  entries: OssEntry[] | null
+  next_token?: string
+  truncated: boolean
+}
+
+export interface OssObjectMeta {
+  key: string
+  size: number
+  content_type?: string
+  etag?: string
+  last_modified?: string
+  storage_class?: string
+}
+
+export interface OssStats {
+  bucket: string
+  prefix: string
+  object_count: number
+  total_size: number
+  scanned: number
+  truncated: boolean
+  storage_class: { class: string; count: number; size: number }[]
+  size_histogram: { label: string; count: number }[]
+  largest: { key: string; size: number }[]
+}
 
 // DBEngineFamily mirrors internal/dbquery.Family — a coarse
 // compatibility band the UI uses to render per-engine SQL hints.
@@ -100,11 +194,80 @@ export interface Node {
   // backend still parses both shapes.
   proto_options?: string
   tags?: string
+  // Unified icon token ("simple:postgresql" / "lucide:server" / "emoji:🐳" /
+  // "text:DB"). Empty → derived from protocol via lib/icons/protocol.
+  icon?: string
   region?: string
   description?: string
   disabled?: boolean
+  // Phase 16 approval gates — exposed in the node form now.
+  requires_approval_for_connect?: boolean
+  requires_approval_for_file_xfer?: boolean
+  // Resolved by the list/detail endpoints so the UI never shows a bare #id.
+  credential_name?: string
+  proxy_names?: string[]
+  // Managed colour tags resolved by the list/detail endpoints. The freetext
+  // `tags` string above is kept as a synced cache for search/facets.
+  tag_list?: AssetTag[]
   created_at?: string
   updated_at?: string
+}
+
+// Connectivity-probe result from POST /nodes/:id/test.
+export interface NodeTestResult {
+  ok: boolean
+  mode?: "ssh" | "tcp"
+  error?: string
+  latency_ms?: number
+  target?: string
+}
+
+// Server-side node list filter params (all optional).
+export interface NodeListParams {
+  q?: string
+  protocol?: string
+  tag?: string
+  enabled?: "true" | "false"
+  sort?: "name" | "protocol" | "host" | "created_at" | "updated_at"
+  order?: "asc" | "desc"
+}
+
+// --- access tier + dashboard (role-aware) ---
+
+export type AccessTier = "superadmin" | "admin" | "user"
+
+export interface AccessInfo {
+  tier: AccessTier
+  is_superadmin: boolean
+  is_admin: boolean
+  permissions: string[]
+}
+
+export interface DashKV {
+  name: string
+  value: number
+}
+export interface DashDay {
+  date: string
+  count: number
+}
+export interface DashSession {
+  id: string
+  username: string
+  node_name: string
+  kind: string
+  status: string
+  started_at: string
+}
+export interface DashboardSummary {
+  tier: AccessTier
+  scope: "system" | "personal"
+  stats: Record<string, number>
+  sessions_daily: DashDay[]
+  sessions_by_kind: DashKV[]
+  sessions_by_status?: DashKV[]
+  top_nodes?: DashKV[]
+  recent_sessions: DashSession[]
 }
 
 // RDP security negotiation mode persisted under proto_options.rdp.security.
@@ -125,10 +288,35 @@ export interface RdpProtoOptions {
   color_depth?: 16 | 24 | 32
   console_session?: boolean
 
+  // High-DPI scaling for this node. Unset = on (default): sessions render at the
+  // browser's physical-pixel resolution with matching Windows display scaling.
+  // Set false for legacy servers that mis-handle scale factors. max_scale caps
+  // the per-session scale factor in percent (0/unset = no cap). freerdp backend.
+  high_dpi?: boolean
+  max_scale?: number
+
+  // dynamic_resolution lets the remote desktop resolution track the browser
+  // window live (DRDYNVC `disp` display channel) instead of staying pinned to the
+  // connect-time size — a window resize reflows the remote at native 1:1 with no
+  // scaling blur. Off by default. freerdp backend only.
+  dynamic_resolution?: boolean
+
   enable_remote_fx?: boolean
   enable_nscodec?: boolean
   enable_h264?: boolean
   enable_graphics_pipeline?: boolean
+
+  // gfx_codec biases the RDPGFX codec negotiation for the legacy bitmap path,
+  // honoured only when the browser advertises the matching decode capability:
+  //   "auto"   — H.264/AVC420 when supported (current behaviour)
+  //   "avc444" — 4:4:4 full-chroma H.264 (sharpest coloured text; Phase 2 decoder)
+  //   "avc420" — single-stream H.264 (4:2:0)
+  //   "rfx"    — RemoteFX progressive   "nsc" — NSCodec   "none" — Planar only
+  gfx_codec?: "auto" | "avc444" | "avc420" | "rfx" | "nsc" | "none"
+  // prefer_av1 opts the session into AV1 when it can be negotiated (host-side
+  // RDPGFX passthrough or server-side encode), falling back to H.264/VP9. Off by
+  // default (browser AV1 decode support is still uneven). freerdp backend only.
+  prefer_av1?: boolean
 
   disable_wallpaper?: boolean
   disable_full_window_drag?: boolean
@@ -143,6 +331,41 @@ export interface RdpProtoOptions {
 
   tcp_connect_timeout_ms?: number
   tcp_ack_timeout_ms?: number
+
+  // ----- Network / bandwidth profile (Phase 1) -----
+  // network_preset is a one-shot link-class profile that fills the codec /
+  // compression / connection-type / visual-trim defaults below. The preset only
+  // fills fields left unset — explicit per-field choices always win. Mirrors
+  // FreeRDP's /network:<type>.
+  //   "lan"       — full visuals, 32bpp, no bulk compression
+  //   "broadband" — 32bpp, light trim
+  //   "wan"       — 16bpp, bulk compression, trim wallpaper/anims
+  //   "mobile"    — modem/cellular: 16bpp, aggressive trim, bulk compression
+  //   "auto"      — keep visuals, let the WebRTC ABR loop pace bitrate
+  network_preset?: "lan" | "broadband" | "wan" | "mobile" | "auto"
+  // connection_type overrides the RDP CONNECTION_TYPE hint advertised to the
+  // server: 1=modem 2=broadband-low 3=satellite 4=broadband-high 5=wan 6=lan
+  // 7=autodetect. Unset = worker default (broadband-low).
+  connection_type?: 1 | 2 | 3 | 4 | 5 | 6 | 7
+  // bulk_compression toggles MPPC/RDP6 bulk data compression — trades worker CPU
+  // for fewer bytes on the legacy bitmap/cache path (worthwhile on WAN/mobile,
+  // pointless on LAN, irrelevant to the already-compressed GFX/H.264/VP9 paths).
+  bulk_compression?: boolean
+  // compression_level selects the generation when bulk_compression is on:
+  // 0=RDP4(8K) 1=RDP5(64K) 2=RDP6 3=RDP6.1. Unset = 2.
+  compression_level?: 0 | 1 | 2 | 3
+
+  // RD Gateway (Microsoft Remote Desktop Gateway, MS-TSGU). gateway_host set =
+  // tunnel the RDP connection through the gateway (for hosts published only via
+  // an RD Gateway). gateway_use_same_credentials (default true) reuses the
+  // target login; otherwise gateway_credential_id supplies a dedicated gateway
+  // credential. gateway_transport: "auto" | "http" | "rpc".
+  gateway_host?: string
+  gateway_port?: number
+  gateway_domain?: string
+  gateway_use_same_credentials?: boolean
+  gateway_credential_id?: number
+  gateway_transport?: "auto" | "http" | "rpc"
 }
 
 // ProtoOptionsEnvelope is the structured shape persisted as a JSON string
@@ -152,13 +375,58 @@ export interface ProtoOptionsEnvelope {
   rdp?: RdpProtoOptions
 }
 
+export type CredentialKindT = "password" | "private_key" | "agent" | "access_key"
+
 export interface Credential {
   id: number
   name: string
-  kind: "password" | "private_key" | "agent"
+  kind: CredentialKindT
   username: string
+  description?: string
+  tags?: string
+  expires_at?: string | null
+  last_used_at?: string | null
+  last_tested_at?: string | null
+  last_test_ok?: boolean | null
+  requires_approval_for_use?: boolean
+  // Enriched by the list endpoint — reference tallies for "used by N / M".
+  usage_nodes?: number
+  usage_proxies?: number
   created_at?: string
   updated_at?: string
+}
+
+// Request shape for create/update. On update, an empty `secret` means "keep the
+// existing secret" (metadata-only edit); a `passphrase` of "-" clears it.
+export interface CredentialInput {
+  name: string
+  kind: CredentialKindT
+  username?: string
+  secret?: string
+  passphrase?: string
+  description?: string
+  tags?: string
+  expires_at?: string | null
+  requires_approval_for_use?: boolean
+}
+
+// A node or proxy that references a credential (from /credentials/:id/usage and
+// the 409 body returned by a blocked delete).
+export interface CredentialUsageRef {
+  id: number
+  name: string
+  host: string
+  kind?: string
+}
+export interface CredentialUsage {
+  nodes: CredentialUsageRef[]
+  proxies: CredentialUsageRef[]
+}
+export interface CredentialTestResult {
+  ok: boolean
+  error?: string
+  latency_ms?: number
+  target?: string
 }
 
 export type ProxyKind = "direct" | "socks5" | "bastion" | "http_connect"
@@ -226,9 +494,19 @@ export interface ProxyChainTemplate {
   issues?: ChainIssue[]
 }
 
+export type SessionKind =
+  | "interactive"
+  | "anonymous"
+  | "sftp"
+  | "graphical"
+  | "tcp_forward"
+  | "oss"
+
+export type SessionStatus = "active" | "closed" | "terminated" | "errored"
+
 export interface Session {
   id: string
-  kind: "interactive" | "anonymous" | "sftp" | "graphical" | "tcp_forward"
+  kind: SessionKind
   user_id: number
   username: string
   node_id?: number | null
@@ -236,12 +514,64 @@ export interface Session {
   client_ip?: string
   started_at: string
   ended_at?: string | null
-  status: "active" | "closed" | "terminated" | "errored"
+  status: SessionStatus
   recording_path?: string
-  recording_type?: "asciicast" | "guac" | ""
+  recording_type?: "asciicast" | "guac" | "desktop" | ""
   bytes_in?: number
   bytes_out?: number
   reason?: string
+}
+
+// AuditEvent is one row of the per-session timeline — a reconstructed command,
+// a file transfer, or a lifecycle marker.
+export interface AuditEvent {
+  id: number
+  kind: string
+  user_id: number
+  username: string
+  session_id?: string
+  node_id?: number | null
+  client_ip?: string
+  payload?: string
+  created_at: string
+}
+
+export interface SessionKeyCount {
+  key: string
+  count: number
+}
+
+export interface SessionDayCount {
+  date: string
+  count: number
+}
+
+export interface SessionStats {
+  total: number
+  active: number
+  today: number
+  recorded: number
+  by_kind: SessionKeyCount[]
+  by_status: SessionKeyCount[]
+  trend: SessionDayCount[]
+}
+
+// DriveInfo describes the per-user file drive redirected into RDP sessions.
+export interface DriveInfo {
+  enabled: boolean
+  name: string
+  allow_upload: boolean
+  allow_download: boolean
+  max_file_mb: number
+  max_total_mb: number
+  used_bytes: number
+}
+
+export interface DriveEntry {
+  name: string
+  is_dir: boolean
+  size: number
+  mod_time: string
 }
 
 export interface PortForward {
@@ -287,15 +617,25 @@ export interface Permission {
 export interface Department {
   id: number
   name: string
+  description?: string
+  icon?: string
   parent_id?: number | null
   path: string
   order_idx?: number
+  /** Directly-assigned member user IDs (populated by the list endpoint). */
+  member_ids?: number[]
 }
 
 export interface UserGroup {
   id: number
   name: string
   description?: string
+  icon?: string
+  parent_id?: number | null
+  path?: string
+  order_idx?: number
+  /** Member user IDs (populated by the list endpoint). */
+  member_ids?: number[]
 }
 
 export interface AssetGroup {
@@ -309,10 +649,31 @@ export interface AssetGroup {
   node_ids?: number[]
 }
 
+// A managed colour tag. `color` is a palette TOKEN ("coral"/"teal"/…) resolved
+// to design-system classes by lib/tags/palette.ts — legacy rows may carry a raw
+// "#rrggbb", which the resolver renders verbatim. `count` is the number of
+// nodes carrying the tag (present on the list endpoint only).
 export interface AssetTag {
   id: number
   name: string
   color?: string
+  icon?: string
+  description?: string
+  group_id?: number | null
+  count?: number
+  created_at?: string
+  updated_at?: string
+}
+
+// A namespace / category that organises tags (env, team, region…).
+export interface AssetTagGroup {
+  id: number
+  name: string
+  color?: string
+  icon?: string
+  sort_order?: number
+  created_at?: string
+  updated_at?: string
 }
 
 // ----- Workspace v2 — firewall + docker management -----
@@ -410,6 +771,36 @@ export interface AssetGrant {
   source?: string
 }
 
+export type GranteeKind = "user" | "role" | "group" | "department"
+export type SubjectKind = "node" | "group" | "tag" | "all"
+
+export interface GranteeRef {
+  type: GranteeKind
+  id: number
+}
+
+// 按人看：某主体（穿透用户组/角色/部门后）实际可访问的资产。
+export interface NodeAccess {
+  node_id: number
+  actions: string[]
+  sources: GranteeRef[]
+}
+export interface AccessExplanation {
+  all_actions: string[]
+  all_sources: GranteeRef[]
+  nodes: NodeAccess[]
+}
+
+// 按资产看：某节点谁能访问、经由什么、何时到期。
+export interface SubjectAccessRow {
+  grantee_type: GranteeKind
+  grantee_id: number
+  actions: string[]
+  via: SubjectKind
+  grant_id: number
+  valid_to?: string | null
+}
+
 export interface LoginHistory {
   id: number
   username: string
@@ -482,6 +873,9 @@ export interface AIAgent {
   id: number
   name: string
   description?: string
+  // Unified icon token for the agent avatar (lucide:* / simple:* / emoji:* /
+  // text:*). Empty → initials avatar.
+  icon?: string
   scope: AgentScope
   owner_id?: number | null
   system_prompt: string
@@ -508,6 +902,7 @@ export interface AIConversation {
   permission_mode: PermissionMode
   total_input_tokens?: number
   total_output_tokens?: number
+  total_cost_micros?: number
   message_count: number
   status: "active" | "running" | "idle" | "archived"
   archived?: boolean
@@ -517,6 +912,8 @@ export interface AIConversation {
   temperature?: number | null
   top_p?: number | null
   max_tokens?: number | null
+  // Extended-thinking budget (tokens); null/0 = off.
+  thinking_budget?: number | null
   created_at: string
   updated_at: string
 }
@@ -526,6 +923,7 @@ export interface AIMessage {
   conversation_id: string
   role: "system" | "user" | "assistant" | "tool"
   content: string  // JSON: ContentPart[]
+  reasoning?: string  // persisted extended-thinking trace (assistant turns)
   tool_call_id?: string
   tool_calls?: string  // JSON: ToolCall[]
   input_tokens?: number
@@ -538,6 +936,7 @@ export interface AIToolInvocation {
   id: string
   conversation_id: string
   message_id: number
+  tool_call_id?: string
   tool_name: string
   input: string
   permission_mode: PermissionMode
@@ -728,6 +1127,49 @@ export interface ChainVerifyResult {
   reason?: string
 }
 
+// Workspace connection gate: whether approval is required, already satisfied,
+// and any in-flight request to resume.
+export interface ApprovalPreflight {
+  required: boolean
+  allowed: boolean
+  grant_id?: string
+  expires_at?: string
+  pending_request_id?: string
+  reason?: string
+}
+
+// Realtime SSE envelope from /approvals/stream and /approvals/:id/stream.
+export interface ApprovalStreamEvent {
+  request_id: string
+  requester_id: number
+  kind: string
+  status: ApprovalRequestStatus
+  title: string
+  business_type: ApprovalBusinessType
+  resource_type: string
+  resource_id: string
+  risk_level: ApprovalRiskLevel
+  current_stage: number
+  total_stages: number
+  grant_id?: string
+  expires_at?: string
+  at: string
+}
+
+// In-app notification (notification center). Approval events are the first
+// source; the shape is deliberately generic so future sources can reuse it.
+export interface AppNotification {
+  id: string
+  kind: string
+  title: string
+  body?: string
+  href?: string
+  requestId?: string
+  status?: ApprovalRequestStatus
+  at: string
+  read: boolean
+}
+
 export interface ApprovalTemplate {
   id: number
   name: string
@@ -757,6 +1199,64 @@ export interface ApprovalSubscription {
   enabled: boolean
   created_at: string
   updated_at: string
+}
+
+// Per-user workspace summary strip.
+export interface ApprovalOverview {
+  pending_for_me: number
+  my_open_requests: number
+  decided_today: number
+  active_grants: number
+}
+
+// Lightweight parent-request context carried on each inbox item.
+export interface ApprovalRequestSummary {
+  id: string
+  business_type: ApprovalBusinessType
+  title: string
+  reason: string
+  requester_id: number
+  requester_name: string
+  resource_type?: string
+  resource_id?: string
+  risk_level: ApprovalRiskLevel
+  status: ApprovalRequestStatus
+  current_stage: number
+  total_stages: number
+  window_end: string
+  created_at: string
+}
+
+// Approver inbox row: pending task + its parent request, joined server-side.
+export interface ApprovalInboxItem {
+  task: ApprovalTask
+  request: ApprovalRequestSummary
+}
+
+// Grant joined with originating-request + beneficiary context for the
+// "我的授权" view and the governance console.
+export interface ApprovalGrantRow extends ApprovalGrant {
+  request_title: string
+  request_reason: string
+  beneficiary_name: string
+}
+
+// Admin governance snapshot.
+export interface ApprovalStats {
+  status_counts: Record<string, number>
+  risk_counts: Record<string, number>
+  business_counts: Record<string, number>
+  pending_total: number
+  created_today: number
+  resolved_today: number
+  active_grants: number
+  avg_decision_min: number
+}
+
+export interface ApprovalBulkDecideResult {
+  results: { task_id: number; ok: boolean; error?: string }[]
+  ok_count: number
+  total: number
 }
 
 // ---------------- Phase 17 — DB Studio ----------------
@@ -958,5 +1458,94 @@ export interface BulkRunResult {
   exit_code: number
   duration_ms: number
   error?: string
+  created_at: string
+}
+
+// ---------- System settings (super-admin runtime configuration) ----------
+// Mirrors internal/settings: a schema-driven config editor whose fields the UI
+// renders from metadata rather than hardcoding each knob.
+
+export type SettingFieldType =
+  | "bool"
+  | "int"
+  | "float"
+  | "string"
+  | "text"
+  | "duration"
+  | "enum"
+  | "stringlist"
+  | "stringmap"
+  | "secret"
+
+export interface SettingEnumOption {
+  value: string
+  label: string
+  help?: string
+}
+
+export interface SettingField {
+  key: string
+  group: string
+  type: SettingFieldType
+  label: string
+  help?: string
+  unit?: string
+  /** true = applies without a restart; false = "重启后生效". */
+  live: boolean
+  advanced: boolean
+  /** true = currently has a DB override (vs. the built-in default). */
+  overridden: boolean
+  placeholder?: string
+  integration?: string
+  depends_on?: string
+  /** "*" means "the dependency is non-empty"; otherwise an exact match. */
+  depends_value?: string
+  enum?: SettingEnumOption[]
+  min?: number
+  max?: number
+  step?: number
+  /** Present for every non-secret field. */
+  value?: unknown
+  /** Present only for secret fields — whether one is configured. */
+  secret_set?: boolean
+}
+
+export interface SettingsGroup {
+  id: string
+  title: string
+  subtitle?: string
+  icon: string
+  order: number
+  integrations?: string[]
+}
+
+export type IntegrationState = "disabled" | "unconfigured" | "configured" | "healthy" | "error"
+
+export interface IntegrationStatus {
+  id: string
+  title: string
+  group: string
+  state: IntegrationState
+  summary?: string
+  detail?: string
+  latency_ms?: number
+  tested_at?: string
+}
+
+export interface SettingsSchema {
+  ok: boolean
+  groups: SettingsGroup[]
+  fields: SettingField[]
+  integrations: IntegrationStatus[]
+}
+
+export interface SettingsAudit {
+  id: number
+  key: string
+  group: string
+  old_value: string
+  new_value: string
+  actor_id: number
+  actor_name: string
   created_at: string
 }

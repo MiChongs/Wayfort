@@ -1,9 +1,12 @@
 /// <reference lib="webworker" />
-import { decode as decodePng } from "fast-png"
-import { decompressSync } from "fflate"
-import { decode as decodeJpeg } from "jpeg-js"
+import { unzlibSync } from "fflate"
 import { probeH264Avc420, supportsImageDecoder, supportsVideoDecoder } from "./capabilities"
 import type { Encoding, FrameRect } from "./types"
+
+// The pure-JS image codecs (jpeg-js / fast-png) are the ultimate fallback, only
+// reached when BOTH ImageDecoder and createImageBitmap are unavailable. They're
+// heavy (hundreds of KB, big per-decode allocations), so they're dynamically
+// imported on first use instead of sitting in the worker's baseline memory.
 
 type FrameRectMeta = Omit<FrameRect, "payload">
 
@@ -23,11 +26,18 @@ interface DecodedFrameOutput {
   frame: FrameRectMeta
   bitmap?: ImageBitmap
   imageData?: ImageData
+  // bgra carries raw, un-swapped BGRA pixels (width*height*4) for the WebGPU
+  // surface fast path: it uploads them straight into a bgra8unorm texture, so we
+  // skip both the per-pixel BGRA→RGBA swap and the createImageBitmap copy the
+  // Canvas 2D path needs. Only produced when the decode request set gpu=true.
+  bgra?: Uint8Array
   decoderPath?: DecoderPath
 }
 
 type WorkerIn =
-  | { type: "decode"; id: number; frames: DecodeFrameInput[] }
+  // gpu=true means the renderer is on the WebGPU surface and wants raw BGRA bytes
+  // back for raw_bgra/zlib_bgra frames instead of a pre-swapped ImageBitmap.
+  | { type: "decode"; id: number; frames: DecodeFrameInput[]; gpu?: boolean }
   | { type: "close" }
 
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope
@@ -40,35 +50,40 @@ ctx.addEventListener("message", async (event: MessageEvent<WorkerIn>) => {
   }
   if (msg.type !== "decode") return
 
-  try {
-    const frames = await Promise.all(msg.frames.map(decodeFrame))
-    const transfer: Transferable[] = []
-    for (const frame of frames) {
-      if (frame.bitmap) transfer.push(frame.bitmap)
-      if (frame.imageData) transfer.push(frame.imageData.data.buffer)
+  // Decode sequentially with a per-frame guard. The gateway coalesces up to
+  // 32 mixed-encoding frames into one batch (ws_handler.coalesceFrameMessages),
+  // so a single throwing frame — an RFX frame with no decoder, an H.264 delta
+  // that arrived before its keyframe, or a truncated BGRA payload — must NOT
+  // discard the whole batch (which would also drop a keyframe coalesced
+  // alongside it and stall the H.264 stream). Sequential ordering also makes
+  // the keyframe set `hasSeenH264Keyframe` before any following delta in the
+  // same batch is checked, so a keyframe+delta batch decodes correctly.
+  const gpu = msg.gpu === true
+  const frames: DecodedFrameOutput[] = []
+  for (const input of msg.frames) {
+    try {
+      frames.push(await decodeFrame(input, gpu))
+    } catch (error) {
+      // Skip just this frame; report out-of-band so the rest still paint.
+      ctx.postMessage({ type: "warn", message: `frame decode skipped: ${String(error)}` })
     }
-    ctx.postMessage({ type: "decoded", id: msg.id, frames }, transfer)
-  } catch (error) {
-    ctx.postMessage({ type: "error", id: msg.id, message: String(error) })
   }
+  const transfer: Transferable[] = []
+  for (const frame of frames) {
+    if (frame.bitmap) transfer.push(frame.bitmap)
+    if (frame.imageData) transfer.push(frame.imageData.data.buffer)
+    if (frame.bgra) transfer.push(frame.bgra.buffer)
+  }
+  ctx.postMessage({ type: "decoded", id: msg.id, frames }, transfer)
 })
 
 let warnedRFX = false
 
-async function decodeFrame(input: DecodeFrameInput): Promise<DecodedFrameOutput> {
+async function decodeFrame(input: DecodeFrameInput, gpu: boolean): Promise<DecodedFrameOutput> {
   const { frame, payload } = input
   validateFrame(frame)
   if (frame.encoding === "raw_bgra" || frame.encoding === "zlib_bgra") {
-    const bgra = frame.encoding === "zlib_bgra" ? inflateBgraPayload(payload, frame.width, frame.height) : payload
-    return {
-      frame,
-      imageData: rawBgraToImageData(bgra, frame.width, frame.height),
-      // BGRA goes straight to ImageData via a hand-rolled byte swap.
-      // No native API in play, but the CPU cost is dwarfed by the fact
-      // we already have the pixels; the panel labels this path "js" so
-      // operators see they're not on a codec route.
-      decoderPath: "js",
-    }
+    return await decodeBgraFrame(frame, payload, gpu)
   }
   if (frame.encoding === "jpeg" || frame.encoding === "png") {
     return await decodeJpegOrPng(frame, payload)
@@ -175,7 +190,17 @@ async function deliverH264Frame(videoFrame: VideoFrame): Promise<void> {
   }
   pendingH264.delete(videoFrame.timestamp)
   try {
-    const bitmap = await createImageBitmap(videoFrame)
+    // The decoded VideoFrame's coded size is padded to 16-px macroblock
+    // multiples (e.g. a 1920×1080 surface decodes to 1920×1088). The renderer
+    // draws this into the surface-command rect (frame.width×frame.height) with
+    // drawImage, which would stretch the padded picture into the smaller rect
+    // and squash/garble it. Crop to the rect's top-left region so the bitmap
+    // is exactly frame.width×frame.height and paints 1:1.
+    const cw = videoFrame.codedWidth || pending.frame.width
+    const ch = videoFrame.codedHeight || pending.frame.height
+    const w = Math.max(1, Math.min(pending.frame.width, cw))
+    const h = Math.max(1, Math.min(pending.frame.height, ch))
+    const bitmap = await createImageBitmap(videoFrame, 0, 0, w, h)
     pending.resolve({ frame: pending.frame, bitmap, decoderPath: "videodecoder" })
   } catch (e) {
     pending.reject(e instanceof Error ? e : new Error(String(e)))
@@ -268,11 +293,11 @@ async function decodeJpegOrPng(
   try {
     return { frame, bitmap: await createImageBitmap(blob), decoderPath: "imagebitmap" }
   } catch {
-    // Final resort: JS decode. Reached only on stripped-down
-    // execution environments without ImageDecoder or
-    // createImageBitmap support — keeps display alive at a high CPU
-    // cost.
-    return { frame, imageData: decodeEncodedImage(payload, encoding), decoderPath: "js" }
+    // Final resort: JS decode (jpeg-js / fast-png, dynamically imported).
+    // Reached only on stripped-down execution environments without
+    // ImageDecoder or createImageBitmap support — keeps display alive at a
+    // high CPU cost.
+    return { frame, imageData: await decodeEncodedImage(payload, encoding), decoderPath: "js" }
   }
 }
 
@@ -282,33 +307,92 @@ function validateFrame(frame: FrameRectMeta) {
   if (frame.x < 0 || frame.y < 0 || frame.width <= 0 || frame.height <= 0) throw new Error("invalid frame bounds")
 }
 
-function inflateBgraPayload(bytes: Uint8Array, width: number, height: number) {
-  const out = decompressSync(bytes)
-  const expected = width * height * 4
-  if (out.length < expected) {
-    throw new Error(`zlib BGRA payload too small after inflate: got ${out.length}, need ${expected}`)
+// Reused zlib inflate output buffer. zlib_bgra frames decompress to a full
+// width×height×4 surface (~8 MB at 1080p); allocating that per frame churns the
+// GC hard on a busy desktop. We inflate into one reused buffer instead, grown
+// only when a bigger surface arrives. Safe because the worker decodes frames
+// strictly sequentially (the message handler awaits each decodeFrame).
+let inflateScratch: Uint8Array | null = null
+
+function ensureInflateScratch(byteLength: number): Uint8Array {
+  if (!inflateScratch || inflateScratch.byteLength < byteLength) {
+    inflateScratch = new Uint8Array(byteLength)
   }
-  return out
+  return inflateScratch
 }
 
-function rawBgraToImageData(bytes: Uint8Array, width: number, height: number): ImageData {
+// decodeBgraFrame turns a raw/zlib BGRA surface into an ImageBitmap (GPU-backed,
+// freed deterministically via .close() on the main thread) instead of a heap
+// ImageData that's transferred and left for the GC. The BGRA→RGBA channel swap
+// is done IN PLACE in a buffer we own — the transferred payload for raw_bgra, or
+// the reused inflate scratch for zlib_bgra — so no per-frame pixel buffer is
+// allocated. createImageBitmap copies the pixels, so the source is free to reuse
+// once its promise resolves (which we await before returning).
+async function decodeBgraFrame(
+  frame: FrameRectMeta,
+  payload: Uint8Array,
+  gpu: boolean,
+): Promise<DecodedFrameOutput> {
+  const { width, height } = frame
   const expected = width * height * 4
-  if (bytes.length < expected) {
-    throw new Error(`raw BGRA payload too small: got ${bytes.length}, need ${expected}`)
+  // WebGPU fast path: hand back raw BGRA with NO channel swap and NO
+  // createImageBitmap — the bgra8unorm texture consumes BGRA directly. raw_bgra
+  // can transfer its (owned) payload buffer back zero-copy; zlib_bgra must
+  // inflate into a fresh transferable buffer because the inflate scratch is
+  // reused across frames and can't be detached.
+  if (gpu) {
+    if (frame.encoding === "zlib_bgra") {
+      const out = new Uint8Array(expected)
+      const inflated = unzlibSync(payload, { out })
+      if (inflated.length < expected) {
+        throw new Error(`zlib BGRA payload too small after inflate: got ${inflated.length}, need ${expected}`)
+      }
+      return { frame, bgra: out, decoderPath: "imagebitmap" }
+    }
+    if (payload.length < expected) {
+      throw new Error(`raw BGRA payload too small: got ${payload.length}, need ${expected}`)
+    }
+    // Narrow to exactly `expected` bytes so writeTexture's row math is exact even
+    // if the wire payload carried trailing padding.
+    const exact = payload.byteLength === expected ? payload : payload.subarray(0, expected)
+    return { frame, bgra: exact, decoderPath: "imagebitmap" }
   }
-  const image = new ImageData(width, height)
-  const dst = image.data
-  for (let src = 0, i = 0; i < expected; src += 4, i += 4) {
-    dst[i] = bytes[src + 2]
-    dst[i + 1] = bytes[src + 1]
-    dst[i + 2] = bytes[src]
-    dst[i + 3] = 255
+  let bytes: Uint8Array
+  if (frame.encoding === "zlib_bgra") {
+    const scratch = ensureInflateScratch(expected)
+    const out = scratch.byteLength === expected ? scratch : new Uint8Array(scratch.buffer, 0, expected)
+    const inflated = unzlibSync(payload, { out })
+    if (inflated.length < expected) {
+      throw new Error(`zlib BGRA payload too small after inflate: got ${inflated.length}, need ${expected}`)
+    }
+    bytes = inflated
+  } else {
+    if (payload.length < expected) {
+      throw new Error(`raw BGRA payload too small: got ${payload.length}, need ${expected}`)
+    }
+    bytes = payload
   }
-  return image
+  // BGRA → RGBA in place: swap B/R, force opaque alpha.
+  for (let i = 0; i < expected; i += 4) {
+    const b = bytes[i]
+    bytes[i] = bytes[i + 2]
+    bytes[i + 2] = b
+    bytes[i + 3] = 255
+  }
+  // ImageData requires a Uint8ClampedArray backed by a plain ArrayBuffer. WS
+  // payloads always are (never SharedArrayBuffer); narrow the type so the view
+  // shares the buffer (no copy) instead of cloning the pixels.
+  const rgba = new Uint8ClampedArray(bytes.buffer as ArrayBuffer, bytes.byteOffset, expected)
+  const bitmap = await createImageBitmap(new ImageData(rgba, width, height))
+  return { frame, bitmap, decoderPath: "imagebitmap" }
 }
 
-function decodeEncodedImage(bytes: Uint8Array, encoding: Extract<Encoding, "jpeg" | "png">): ImageData {
+async function decodeEncodedImage(
+  bytes: Uint8Array,
+  encoding: Extract<Encoding, "jpeg" | "png">,
+): Promise<ImageData> {
   if (encoding === "jpeg") {
+    const { decode: decodeJpeg } = await import("jpeg-js")
     const jpeg = decodeJpeg(bytes, {
       colorTransform: true,
       formatAsRGBA: true,
@@ -320,6 +404,7 @@ function decodeEncodedImage(bytes: Uint8Array, encoding: Extract<Encoding, "jpeg
     return new ImageData(new Uint8ClampedArray(jpeg.data), jpeg.width, jpeg.height)
   }
 
+  const { decode: decodePng } = await import("fast-png")
   const png = decodePng(bytes)
   return new ImageData(
     normalizePngData(png.data, png.width, png.height, png.channels, png.depth),

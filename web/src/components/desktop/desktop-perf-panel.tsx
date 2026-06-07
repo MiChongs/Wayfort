@@ -127,6 +127,22 @@ export function DesktopPerfPanel({ open, onOpenChange, sessionKey, stats, nodeNa
               <span className="text-foreground/80 font-mono">{summary.avgFps ?? "—"}</span> 平均FPS
               <span className="mx-2 opacity-30">|</span>
               p95 <span className="text-foreground/80 font-mono">{summary.p95LatencyMs ?? "—"}</span>ms
+              {stats.renderSurface && (
+                <>
+                  <span className="mx-2 opacity-30">|</span>
+                  渲染{" "}
+                  <span
+                    className={cn(
+                      "font-mono",
+                      stats.renderSurface === "webgpu"
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-foreground/80",
+                    )}
+                  >
+                    {renderSurfaceLabel(stats.renderSurface)}
+                  </span>
+                </>
+              )}
             </div>
             <div>
               丢帧 <span className="text-foreground/80 font-mono">{current?.droppedFramesTotal ?? 0}</span>
@@ -364,6 +380,15 @@ function decoderPathTone(path: string | null | undefined): "good" | "warn" | "ba
   if (path === "imagebitmap") return "warn"
   if (path === "js") return "bad"
   return undefined
+}
+
+// Render-surface label for the meta strip. "webgpu" means the raw-BGRA GPU
+// fast path is live (skips the CPU channel swap + ImageBitmap copy); "canvas2d"
+// is the fallback. Only set on the legacy bitmap path.
+function renderSurfaceLabel(s: "webgpu" | "canvas2d" | null | undefined): string {
+  if (s === "webgpu") return "WebGPU"
+  if (s === "canvas2d") return "Canvas2D"
+  return "—"
 }
 
 // Chrome / Edge expose `performance.memory.usedJSHeapSize`; Safari /

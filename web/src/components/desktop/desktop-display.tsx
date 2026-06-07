@@ -8,8 +8,8 @@
 // workspace experience across protocols.
 
 import * as React from "react"
-import { useReducedMotion } from "motion/react"
-import { toast } from "sonner"
+import { motion, useReducedMotion } from "motion/react"
+import { toast } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import {
   Dialog,
@@ -24,6 +24,8 @@ import { createRenderer, type CanvasRendererHandle } from "@/lib/desktop/canvas-
 import { collectClientCapabilities } from "@/lib/desktop/capabilities"
 import { desktopControl } from "@/lib/desktop/control-client"
 import { FrameClient } from "@/lib/desktop/frame-client"
+import { WebRTCVideoClient } from "@/lib/desktop/webrtc-video"
+import { DesktopAudioPlayer } from "@/lib/desktop/audio-player"
 import { nodeService } from "@/lib/api/services"
 import { patchRdpProtoOptions } from "@/lib/desktop/proto-options"
 import { useWorkspaceStore } from "@/components/workspace/useWorkspaceStore"
@@ -38,17 +40,20 @@ import {
   type SessionStatus,
 } from "@/lib/desktop/types"
 import { cn } from "@/lib/utils"
+import { PortalContainerProvider } from "@/components/ui/portal-container"
 import { DesktopCommandPalette } from "./desktop-command-palette"
 import { DesktopContextMenu } from "./desktop-context-menu"
-import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
+import { DesktopConnectionStage } from "./desktop-connection-stage"
+import { useDesktopConnection } from "./desktop-connection"
 import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
-import { DesktopStatusBar } from "./desktop-status-bar"
+import { DesktopFilePanel } from "./desktop-file-panel"
 import { DesktopToolbar } from "./desktop-toolbar"
 import { IronRdpDesktopShell } from "./desktop-display-iron"
 import { bitmapCursorCss, rawBgraCursorCss, x11CursorToCss } from "./desktop-cursor-map"
-import { expandCombo, keysymForEvent } from "./desktop-key-map"
-import { useDesktopSettings } from "./use-desktop-settings"
+import { expandCombo, keysymForEvent, scancodeForCode } from "./desktop-key-map"
+import { useDesktopSettings, effectiveDpiScale } from "./use-desktop-settings"
+import { useDesktopChrome } from "./use-desktop-chrome"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
 
 export interface DesktopDisplayProps {
@@ -113,28 +118,51 @@ function LegacyDesktopDisplay({
   onLatencyChange,
 }: DesktopDisplayProps) {
   const { settings, update, reset } = useDesktopSettings()
-  useReducedMotion() // currently unused; reserved for future micro-animations
+  const reduceMotion = useReducedMotion()
 
-  const wrapRef = React.useRef<HTMLDivElement | null>(null)
   const hostRef = React.useRef<HTMLDivElement | null>(null)
+  const videoRef = React.useRef<HTMLVideoElement | null>(null)
+  // Hidden editable sink the OS input method composes into. Keyboard events
+  // ride window listeners (so they fire regardless of focus), but IME
+  // composition events only fire on a focused editable element — this textarea
+  // is it. carries data-desktop-passthrough so keysymForEvent still forwards
+  // real keys while it's focused.
+  const imeSinkRef = React.useRef<HTMLTextAreaElement | null>(null)
   const rendererRef = React.useRef<CanvasRendererHandle | null>(null)
   const clientRef = React.useRef<FrameClient | null>(null)
+  const webrtcRef = React.useRef<WebRTCVideoClient | null>(null)
+  const audioPlayerRef = React.useRef<DesktopAudioPlayer | null>(null)
   const sessionIdRef = React.useRef<string>("")
   const reconnectAttemptRef = React.useRef(0)
   const sessionEpochRef = React.useRef(0)
+  // Set once WebRTC negotiation fails so reconnects within this mount take the
+  // proven GFX bitmap path instead of stalling on a broken peer connection
+  // again. Reset on a manual reconnect (the effect re-runs on bumpKey).
+  const webrtcFailedRef = React.useRef(false)
+  // Tracks the last applied video transport/quality so a change to either can
+  // trigger a reconnect (the codec / GFX choice is fixed at connect time).
+  const videoCfgRef = React.useRef({ t: "", q: "", d: "" })
   const detachInputsRef = React.useRef<(() => void) | null>(null)
   const lastCursorRef = React.useRef<CursorUpdate | null>(null)
 
-  const [status, setStatus] = React.useState<DesktopStatus>("loading-script")
-  const [startedAt, setStartedAt] = React.useState<number>(() => Date.now())
-  const [errorInfo, setErrorInfo] = React.useState<{ message: string; code?: number } | undefined>()
-  const [, force] = React.useState(0)
+  // Connection state machine — owns status, the timed step timeline, reconnect
+  // countdown, link quality and error classification. `setStatus`/`fail`/`mark`
+  // etc. are stable callbacks safe to call from the long-lived connect effect.
+  const conn = useDesktopConnection()
+  const status = conn.status
+  const setStatus = conn.setStatus
   const [fullscreen, setFullscreen] = React.useState(false)
   const [settingsOpen, setSettingsOpen] = React.useState(false)
   const [paletteOpen, setPaletteOpen] = React.useState(false)
   const [perfOpen, setPerfOpen] = React.useState(false)
+  const [filesOpen, setFilesOpen] = React.useState(false)
   const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
-  const [pointer, setPointer] = React.useState({ x: 0, y: 0 })
+  // Pointer coords feed nothing visible now (the old status bar showed them);
+  // kept as a setter the input bridge can call without tracking the value.
+  const [, setPointer] = React.useState({ x: 0, y: 0 })
+  // True once the WebRTC <video> track is playing. Shows the GPU-decoded video
+  // over the canvas; cleared on fallback so the canvas/FrameClient path shows.
+  const [videoActive, setVideoActive] = React.useState(false)
   const [stats, setStats] = React.useState<SessionStats>({
     bytesIn: 0,
     bytesOut: 0,
@@ -144,19 +172,21 @@ function LegacyDesktopDisplay({
   const [pasteConfirm, setPasteConfirm] = React.useState<string | null>(null)
   const [bumpKey, setBumpKey] = React.useState(0)
 
+  // Single auto-hiding control bar (shared with the IronRDP shell). Owns the
+  // wrapper element (for the Fullscreen API + portal target) and the show/hide
+  // state machine.
+  const anyOverlayOpen = settingsOpen || filesOpen || paletteOpen || perfOpen
+  // Only auto-hide once connected — while connecting / reconnecting / errored the
+  // bar stays pinned so its status + reconnect controls are always reachable.
+  const { wrapRef, wrapEl, setWrap, chromeShown, revealChrome, onBarMouseEnter, onBarMouseLeave } =
+    useDesktopChrome(fullscreen && status === "connected", anyOverlayOpen)
+
   // Settings live in a ref so the WS connect effect (which depends on
   // nodeId / backend / bumpKey) doesn't re-fire on every checkbox toggle.
   const settingsRef = React.useRef(settings)
   React.useEffect(() => {
     settingsRef.current = settings
   }, [settings])
-
-  // Loading-elapsed counter — drives the "已用时 X.Xs" text in the overlay.
-  React.useEffect(() => {
-    if (status === "connected" || status === "error" || status === "closed") return
-    const t = window.setInterval(() => force((v) => v + 1), 250)
-    return () => window.clearInterval(t)
-  }, [status])
 
   // Fullscreen subscription.
   React.useEffect(() => {
@@ -217,10 +247,8 @@ function LegacyDesktopDisplay({
     let detachRendererMetrics: (() => void) | null = null
     let detachRendererRefresh: (() => void) | null = null
 
-    setStatus("loading-script")
-    setErrorInfo(undefined)
-    setStartedAt(Date.now())
     reconnectAttemptRef.current = 0
+    webrtcFailedRef.current = false // fresh mount / manual reconnect retries WebRTC
 
     const renderer = createRenderer(
       settingsRef.current.preferredWidth,
@@ -250,7 +278,7 @@ function LegacyDesktopDisplay({
     // 1 Hz performance snapshot. `framesPainted` collapses to FPS
     // since the renderer's window is exactly 1 s; `droppedFrames` is
     // monotonic so the panel charts cumulative drop count.
-    detachRendererMetrics = renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames, codec, decoderPath }) => {
+    detachRendererMetrics = renderer.onMetrics(({ avgDecodeMs, avgPaintMs, framesPainted, droppedFrames, codec, decoderPath, renderSurface }) => {
       if (cancelled) return
       setStats((prev) => ({
         ...prev,
@@ -260,6 +288,7 @@ function LegacyDesktopDisplay({
         droppedFrames,
         codec,
         decoderPath,
+        renderSurface,
       }))
     })
     // VideoDecoder error → ask gateway to send a full-screen RDP
@@ -274,8 +303,13 @@ function LegacyDesktopDisplay({
     function closeCurrentSession(endRemote: boolean) {
       detachInputsRef.current?.()
       detachInputsRef.current = null
+      webrtcRef.current?.close()
+      webrtcRef.current = null
+      if (!cancelled) setVideoActive(false)
       clientRef.current?.close()
       clientRef.current = null
+      audioPlayerRef.current?.close()
+      audioPlayerRef.current = null
       const sid = sessionIdRef.current
       sessionIdRef.current = ""
       if (endRemote && sid) {
@@ -293,20 +327,20 @@ function LegacyDesktopDisplay({
       if (reconnectTimer != null) return
       const attempt = reconnectAttemptRef.current
       if (attempt >= RECONNECT_BACKOFFS_MS.length) {
-        setStatus("error")
-        setErrorInfo({ message: "多次重连失败,请检查网络或手动重试" })
+        conn.fail("多次重连失败,请检查网络或手动重试")
         return
       }
       const delay = RECONNECT_BACKOFFS_MS[attempt]
       reconnectAttemptRef.current = attempt + 1
-      setStatus("reconnecting")
+      // Surface the attempt + countdown on the stage so the user sees a live
+      // "Xs 后重试 / 立即重试" instead of a frozen spinner.
+      conn.beginReconnect(attempt + 1, delay)
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null
         if (!isCurrentSession()) return
         connect().catch((e) => {
           if (!isCurrentSession()) return
-          setStatus("error")
-          setErrorInfo({ message: (e as Error).message })
+          conn.fail((e as Error).message)
         })
       }, delay)
     }
@@ -314,26 +348,52 @@ function LegacyDesktopDisplay({
     async function connect() {
       if (!isCurrentSession()) return
       closeCurrentSession(true)
+      // Fresh attempt: reset the timeline + clocks (keeps the reconnect attempt
+      // badge). Covers both the initial mount and reconnect, which calls
+      // connect() directly without re-running the effect.
+      conn.restart()
       // Probe the browser's decoder support before posting the session
       // start so the gateway can suppress GFX/H.264 on browsers that
       // can't render it. `collectClientCapabilities` is async but fast
       // (~10 ms on Chromium, single-frame round-trip on Safari).
       const clientCaps = await collectClientCapabilities()
+      // After a WebRTC failure this mount sticks to the GFX bitmap path so a
+      // broken peer connection doesn't stall every reconnect.
+      if (webrtcFailedRef.current) clientCaps.webrtc = false
       if (!isCurrentSession()) return
+      conn.mark("prepare") // renderer + decoder probe done
       const start = await desktopControl.startSession({
         node_id: nodeId,
         width: settingsRef.current.preferredWidth,
         height: settingsRef.current.preferredHeight,
         dpi: 96,
+        // High-DPI scale (percent). The gateway multiplies width/height by it to
+        // get the physical render resolution and tells the worker to apply
+        // matching Windows display scaling, so HiDPI screens render crisply.
+        scale: effectiveDpiScale(settingsRef.current),
         quality: "auto",
         backend,
         client_caps: clientCaps,
+        video_transport: settingsRef.current.videoTransport,
+        video_quality: settingsRef.current.videoQuality,
       })
       if (!isCurrentSession()) {
         desktopControl.endSession(start.session_id).catch(() => {})
         return
       }
       sessionIdRef.current = start.session_id
+      conn.mark("session") // gateway accepted the session
+
+      // WebRTC video path: when the gateway started the session in a WebRTC
+      // codec (vp8/vp9) it streams the desktop over a Pion track. We render it in
+      // the <video> overlay (GPU decode) and fall back to the canvas/FrameClient
+      // bitmap path if negotiation fails. videoMode carries the codec.
+      const videoMode = start.video_mode || ""
+      const webrtcOn = videoMode === "vp8" || videoMode === "vp9"
+      const iceServers = start.ice_servers || []
+      // Surface the active transport in the status bar immediately; onConnected
+      // upgrades the WebRTC label once the track is actually playing.
+      setStats((prev) => ({ ...prev, transport: webrtcOn ? "WebRTC…" : "JS 位图" }))
 
       const remoteW = start.remote_width || settingsRef.current.preferredWidth
       const remoteH = start.remote_height || settingsRef.current.preferredHeight
@@ -348,8 +408,52 @@ function LegacyDesktopDisplay({
         applySmoothScaling(renderer.canvas, settingsRef.current.smoothScaling)
       }
 
+      // Stand up the WebRTC peer connection once the WS is open (signaling
+      // needs an open socket). On any failure, switch the worker back to the WS
+      // bitmap path and reveal the canvas — the session keeps running.
+      function startWebRTC() {
+        if (!isCurrentSession()) return
+        const video = videoRef.current
+        const client = clientRef.current
+        if (!video || !client) return
+        webrtcRef.current?.close()
+        const rtc = new WebRTCVideoClient({
+          video,
+          iceServers,
+          send: (sig) => client.send({ webrtc: sig }),
+          onConnected: () => {
+            if (!isCurrentSession()) return
+            setVideoActive(true)
+            setStats((prev) => ({ ...prev, transport: `WebRTC · ${videoMode.toUpperCase()}` }))
+          },
+          onFailed: () => {
+            if (!isCurrentSession()) return
+            // "webrtc" forced → keep retrying WebRTC on reconnect; "auto" →
+            // stick to the proven bitmap path so we don't stall every reconnect.
+            if (settingsRef.current.videoTransport !== "webrtc") {
+              webrtcFailedRef.current = true
+            }
+            setVideoActive(false)
+            setStats((prev) => ({ ...prev, transport: "JS 位图" }))
+            // Tell the worker to resume WS bitmap frames; the canvas renders them.
+            clientRef.current?.send({ video_mode: "bitmap" })
+            webrtcRef.current?.close()
+            webrtcRef.current = null
+          },
+        })
+        webrtcRef.current = rtc
+        void rtc.start()
+      }
+
       const client = new FrameClient({
         sessionId: start.session_id,
+        onOpen: () => {
+          conn.mark("channel") // WS data channel established
+          if (webrtcOn) startWebRTC()
+        },
+        onWebRTC: (sig) => {
+          void webrtcRef.current?.handleSignal(sig)
+        },
         onFrame: (frame) => renderer.paintFrame(frame),
         onFrameBytes: (frame, payload) => renderer.paintFrameBytes(frame, payload),
         onFrameBatch: (frames) => renderer.paintFrameBatchBytes(frames),
@@ -357,18 +461,14 @@ function LegacyDesktopDisplay({
         onStatus: (s: SessionStatus) => {
           if (!isCurrentSession()) return
           const next = phaseToStatus(s.phase)
-          setStatus(next)
-          if (next === "connected") {
-            reconnectAttemptRef.current = 0
-            setErrorInfo(undefined)
-          }
           if (next === "error") {
-            setErrorInfo({ message: s.message || "未知错误", code: s.code })
+            conn.fail(s.message || "未知错误", s.code)
             toast.error(s.message || "桌面会话错误")
+            return
           }
-          if (next === "closed") {
-            scheduleReconnect()
-          }
+          conn.setStatus(next)
+          if (next === "connected") reconnectAttemptRef.current = 0
+          if (next === "closed") scheduleReconnect()
         },
         onError: (msg) => {
           if (!isCurrentSession()) return
@@ -376,12 +476,16 @@ function LegacyDesktopDisplay({
             scheduleReconnect()
             return
           }
-          setStatus("error")
-          setErrorInfo({ message: msg })
+          conn.fail(msg)
         },
         onStats: (s) => {
           if (!isCurrentSession()) return
           setStats((prev) => ({ ...prev, bytesIn: s.bytesIn, bytesOut: s.bytesOut }))
+        },
+        onLatency: (ms) => {
+          if (!isCurrentSession()) return
+          conn.pushLatency(ms)
+          setStats((prev) => ({ ...prev, latencyMs: ms }))
         },
         onClipboard: (data) => {
           if (!isCurrentSession()) return
@@ -410,6 +514,12 @@ function LegacyDesktopDisplay({
             }
           }
         },
+        onAudio: (data) => {
+          if (!isCurrentSession()) return
+          if (!settingsRef.current.audioPlayback) return
+          if (!audioPlayerRef.current) audioPlayerRef.current = new DesktopAudioPlayer()
+          audioPlayerRef.current.push(data)
+        },
       })
       client.connect()
       clientRef.current = client
@@ -434,7 +544,7 @@ function LegacyDesktopDisplay({
       }
       host.addEventListener("paste", onPaste)
 
-      detachInputsRef.current = attachInputs(host, renderer.canvas, client, () => settingsRef.current, setPointer)
+      detachInputsRef.current = attachInputs(host, renderer.canvas, client, () => settingsRef.current, setPointer, imeSinkRef.current)
 
       // Stitch the cleanup helpers into the same teardown closure.
       const detach = detachInputsRef.current
@@ -446,8 +556,7 @@ function LegacyDesktopDisplay({
 
     connect().catch((e) => {
       if (!isCurrentSession()) return
-      setStatus("error")
-      setErrorInfo({ message: (e as Error).message || "无法建立桌面会话" })
+      conn.fail((e as Error).message || "无法建立桌面会话")
     })
 
     return () => {
@@ -492,7 +601,7 @@ function LegacyDesktopDisplay({
       return
     }
     for (const f of frames) {
-      client.send({ key: { keysym: f.keysym, pressed: f.pressed } })
+      client.send({ key: { scancode: f.scancode, extended: f.extended, pressed: f.pressed } })
     }
   }
 
@@ -511,6 +620,9 @@ function LegacyDesktopDisplay({
     sessionEpochRef.current += 1
     detachInputsRef.current?.()
     detachInputsRef.current = null
+    webrtcRef.current?.close()
+    webrtcRef.current = null
+    setVideoActive(false)
     clientRef.current?.close()
     clientRef.current = null
     if (sessionIdRef.current) {
@@ -578,32 +690,86 @@ function LegacyDesktopDisplay({
     if (c) applySmoothScaling(c, settings.smoothScaling)
   }, [settings.smoothScaling])
 
+  // Changing the video transport or quality reconnects to apply it — the codec
+  // and GFX pipeline choice are fixed at connect time. The ref skips the first
+  // run (initial mount already connects with the current settings).
+  React.useEffect(() => {
+    const prev = videoCfgRef.current
+    const next = {
+      t: settings.videoTransport,
+      q: settings.videoQuality,
+      // High-DPI changes the negotiated resolution, fixed at connect time, so a
+      // change here reconnects too.
+      d: `${settings.highDpi ? settings.dpiScale : "off"}`,
+    }
+    if (prev.t === "" && prev.q === "" && prev.d === "") {
+      videoCfgRef.current = next // record initial; don't reconnect on mount
+      return
+    }
+    if (prev.t === next.t && prev.q === next.q && prev.d === next.d) return
+    videoCfgRef.current = next
+    handleReconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.videoTransport, settings.videoQuality, settings.highDpi, settings.dpiScale])
+
   return (
     <TooltipProvider delayDuration={300}>
       <div
-        ref={wrapRef}
+        ref={setWrap}
+        onMouseMove={fullscreen ? revealChrome : undefined}
         className={cn(
-          "flex flex-col h-full w-full bg-background isolate",
+          "relative flex flex-col h-full w-full bg-background isolate",
           fullscreen && "fixed inset-0 z-[60]",
         )}
       >
-        <DesktopToolbar
-          status={status}
-          nodeName={nodeName}
-          nodeId={nodeId}
-          nodeHost={nodeHost}
-          nodePort={nodePort}
-          remoteWidth={remote.w}
-          remoteHeight={remote.h}
-          fullscreen={fullscreen}
-          onSendCombo={sendCombo}
-          onSendCtrlAltDel={() => sendCombo("Control+Alt+Delete")}
-          onSettings={() => setSettingsOpen(true)}
-          onPalette={() => setPaletteOpen(true)}
-          onFullscreen={toggleFullscreen}
-          onReconnect={handleReconnect}
-          onDisconnect={handleDisconnect}
-        />
+        <PortalContainerProvider value={fullscreen ? wrapEl : undefined}>
+        {/* Single control bar. In fullscreen it overlays the canvas and slides
+            away when idle; in windowed mode it's pinned in normal flow. */}
+        <motion.div
+          className={cn(fullscreen ? "absolute inset-x-0 top-0 z-[70] p-2.5" : "relative z-10 shrink-0")}
+          initial={false}
+          animate={{ y: chromeShown ? 0 : "-100%", opacity: chromeShown ? 1 : 0 }}
+          transition={{ duration: reduceMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
+          style={{ pointerEvents: chromeShown ? "auto" : "none" }}
+          onMouseEnter={onBarMouseEnter}
+          onMouseLeave={onBarMouseLeave}
+        >
+          <DesktopToolbar
+            status={status}
+            nodeName={nodeName}
+            nodeId={nodeId}
+            nodeHost={nodeHost}
+            nodePort={nodePort}
+            remoteWidth={remote.w}
+            remoteHeight={remote.h}
+            fullscreen={fullscreen}
+            backendLabel={backend === "dummy" ? "Dummy" : "FreeRDP"}
+            quality={conn.quality}
+            stats={stats}
+            sessionMs={conn.sessionMs}
+            latencyHistory={conn.latencyHistory}
+            keyboardLayout={settings.keyboardLayout}
+            onOpenPerfPanel={() => setPerfOpen(true)}
+            onSendCombo={sendCombo}
+            onSendCtrlAltDel={() => sendCombo("Control+Alt+Delete")}
+            onFiles={() => setFilesOpen(true)}
+            onSettings={() => setSettingsOpen(true)}
+            onPalette={() => setPaletteOpen(true)}
+            onFullscreen={toggleFullscreen}
+            onReconnect={handleReconnect}
+            onDisconnect={handleDisconnect}
+          />
+        </motion.div>
+
+        {/* Top reveal strip — in fullscreen, nudging the pointer to the very top
+            brings the auto-hidden bar back even without a wider mouse move. */}
+        {fullscreen && !chromeShown && (
+          <div
+            className="absolute inset-x-0 top-0 z-[69] h-2.5"
+            onMouseEnter={revealChrome}
+            aria-hidden
+          />
+        )}
 
         <DesktopContextMenu
           connected={status === "connected"}
@@ -614,35 +780,58 @@ function LegacyDesktopDisplay({
           onReconnect={handleReconnect}
           onDisconnect={handleDisconnect}
         >
-          <div className={cn("relative flex-1 min-h-0 bg-black", scaleContainerClass(settings.scaleMode))}>
+          <div className={cn("desktop-stage relative flex-1 min-h-0", scaleContainerClass(settings.scaleMode))}>
             <div
               ref={hostRef}
               className={cn("absolute inset-0 flex", scaleHostClass(settings.scaleMode))}
               tabIndex={0}
             />
-            <DesktopLoadingOverlay
-              status={status}
-              errorMessage={errorInfo?.message}
-              errorCode={errorInfo?.code}
-              elapsedMs={Date.now() - startedAt}
+            {/* WebRTC video overlay. object-contain matches the canvas's
+               letterbox geometry (same aspect), so the host's input mapping
+               still lines up; pointer-events-none lets mouse/keys reach it. */}
+            <video
+              ref={videoRef}
+              className={cn(
+                "pointer-events-none absolute inset-0 h-full w-full bg-black",
+                settings.scaleMode === "stretch" ? "object-fill" : "object-contain",
+                videoActive ? "" : "hidden",
+              )}
+              playsInline
+              muted
+              autoPlay
+              tabIndex={-1}
+            />
+            {/* IME sink: the OS input method composes here. Invisible
+               (opacity-0) and click-through (pointer-events-none); moved to the
+               last click so the candidate window pops near the cursor. The
+               data-desktop-passthrough flag keeps keysymForEvent forwarding real
+               keys while it holds focus. */}
+            <textarea
+              ref={imeSinkRef}
+              data-desktop-passthrough
+              aria-hidden
+              tabIndex={-1}
+              autoCapitalize="off"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              className="pointer-events-none absolute z-10 h-5 w-40 resize-none overflow-hidden border-0 bg-transparent p-0 opacity-0 outline-none"
+              style={{ left: 0, top: 0, color: "transparent", caretColor: "transparent" }}
+            />
+            <DesktopConnectionStage
+              conn={conn}
               nodeName={nodeName}
+              nodeHost={nodeHost}
+              nodePort={nodePort}
+              backendLabel={backend === "dummy" ? "Dummy" : "FreeRDP"}
               onRetry={handleReconnect}
+              onRetryNow={handleReconnect}
               onForceTlsOnly={handleForceTlsOnly}
               onSwitchToGuacamole={handleSwitchToGuacamole}
+              onDisconnect={handleDisconnect}
             />
           </div>
         </DesktopContextMenu>
-
-        <DesktopStatusBar
-          status={status}
-          remoteWidth={remote.w}
-          remoteHeight={remote.h}
-          pointerX={pointer.x}
-          pointerY={pointer.y}
-          stats={stats}
-          keyboardLayout={settings.keyboardLayout}
-          onOpenPerfPanel={() => setPerfOpen(true)}
-        />
 
         <DesktopPerfPanel
           open={perfOpen}
@@ -660,12 +849,15 @@ function LegacyDesktopDisplay({
           onReset={reset}
         />
 
+        <DesktopFilePanel open={filesOpen} onOpenChange={setFilesOpen} />
+
         <DesktopCommandPalette
           open={paletteOpen}
           onOpenChange={setPaletteOpen}
           actions={{
             onSendCombo: sendCombo,
             onFullscreen: toggleFullscreen,
+            onFiles: () => setFilesOpen(true),
             onSettings: () => setSettingsOpen(true),
             onReconnect: handleReconnect,
             onDisconnect: handleDisconnect,
@@ -677,6 +869,7 @@ function LegacyDesktopDisplay({
           onConfirm={confirmPaste}
           onCancel={() => setPasteConfirm(null)}
         />
+        </PortalContainerProvider>
       </div>
     </TooltipProvider>
   )
@@ -688,18 +881,48 @@ function attachInputs(
   client: FrameClient,
   getSettings: () => ReturnType<typeof useDesktopSettings>["settings"],
   setPointer: (p: { x: number; y: number }) => void,
+  imeSink: HTMLTextAreaElement | null,
 ): () => void {
   let pressedButtons = 0
+  // IME state. While the OS input method is composing, raw keydowns are
+  // suppressed (keysymForEvent returns 0 for isComposing / keyCode 229); the
+  // committed string arrives via compositionend and is sent as ClientMessage
+  // .text. suppressKeyup eats the single keyup of the commit key (Space/Enter/
+  // digit) that fires after compositionend with isComposing already false —
+  // otherwise a stray keyup would leak to the remote after the text.
+  let suppressKeyup = false
+
+  function focusIme() {
+    imeSink?.focus({ preventScroll: true })
+  }
+  // Keep the candidate window near where the user is working: move the sink to
+  // the last click (its caret is what the IME anchors the popup to).
+  function moveImeTo(clientX: number, clientY: number) {
+    if (!imeSink) return
+    const rect = host.getBoundingClientRect()
+    imeSink.style.left = `${Math.round(clientX - rect.left)}px`
+    imeSink.style.top = `${Math.round(clientY - rect.top)}px`
+  }
 
   function toRemote(e: { clientX: number; clientY: number }): { x: number; y: number } {
-    const rect = host.getBoundingClientRect()
-    const w = canvas.width || rect.width || 1
-    const h = canvas.height || rect.height || 1
-    const sx = rect.width > 0 ? w / rect.width : 1
-    const sy = rect.height > 0 ? h / rect.height : 1
+    // Map against the CANVAS's on-screen rect, not the host container. The
+    // canvas is centered/letterboxed inside the host (maxWidth/maxHeight:100%,
+    // no object-fit), so in fit/center/actual modes its painted box is offset
+    // from and usually smaller than the host. Using the host rect made clicks
+    // drift further off-target toward the bottom-right. canvas.width/height are
+    // the remote pixel dimensions; getBoundingClientRect() is the displayed box.
+    const rect = canvas.getBoundingClientRect()
+    const rw = canvas.width || rect.width || 1
+    const rh = canvas.height || rect.height || 1
+    const sx = rect.width > 0 ? rw / rect.width : 1
+    const sy = rect.height > 0 ? rh / rect.height : 1
+    const x = Math.round((e.clientX - rect.left) * sx)
+    const y = Math.round((e.clientY - rect.top) * sy)
+    // Clamp into remote bounds so clicks in the letterbox margin land on the
+    // nearest edge instead of negative / overflow coordinates.
     return {
-      x: Math.max(0, Math.round((e.clientX - rect.left) * sx)),
-      y: Math.max(0, Math.round((e.clientY - rect.top) * sy)),
+      x: Math.max(0, Math.min(rw - 1, x)),
+      y: Math.max(0, Math.min(rh - 1, y)),
     }
   }
 
@@ -717,6 +940,11 @@ function attachInputs(
     client.send({ mouse: { x, y, buttons: pressedButtons, wheel: 0 } })
   }
   const onDown = (e: MouseEvent) => {
+    // Anchor + focus the IME sink at the click so the candidate window appears
+    // here and composition events fire (the sink must hold focus). Programmatic
+    // focus survives the preventDefault below.
+    moveImeTo(e.clientX, e.clientY)
+    focusIme()
     pressedButtons |= buttonMask(e.button)
     const { x, y } = toRemote(e)
     client.send({ mouse: { x, y, buttons: pressedButtons, wheel: 0 } })
@@ -733,19 +961,93 @@ function attachInputs(
     e.preventDefault()
   }
   const onContext = (e: MouseEvent) => e.preventDefault()
-  const onKeyDown = (e: KeyboardEvent) => {
+
+  // Scancodes held down on the remote, so we can release them if focus leaves
+  // (Alt+Tab / tab switch) and the keyup never arrives — otherwise a modifier
+  // stays stuck "down" and the keyboard becomes unusable. Packed: scancode |
+  // (extended ? 0x100 : 0).
+  const heldScancodes = new Set<number>()
+
+  // Whether this key event should reach the remote at all: skip while an IME is
+  // composing (the committed text comes via compositionend) and skip when the
+  // user is typing into a real dialog input. The IME sink itself is always
+  // allowed (compared by reference, so it works even if the passthrough
+  // attribute didn't render — otherwise focusing the sink would swallow every
+  // key and the keyboard would go dead).
+  function shouldForwardKey(e: KeyboardEvent): boolean {
+    if (e.isComposing || e.key === "Process" || e.keyCode === 229) return false
+    const active = document.activeElement
+    if (
+      active &&
+      active !== imeSink &&
+      (active.tagName === "INPUT" ||
+        active.tagName === "TEXTAREA" ||
+        (active as HTMLElement).isContentEditable) &&
+      !(active as HTMLElement).hasAttribute("data-desktop-passthrough")
+    ) {
+      return false
+    }
+    return true
+  }
+
+  // Send a physical key as an RDP scancode (composes with modifiers → shortcuts
+  // work). Falls back to the keysym/Unicode path for keys without a scancode
+  // mapping. Down/up stay symmetric (same scancode) so nothing gets stuck.
+  function sendKey(e: KeyboardEvent, pressed: boolean) {
+    const scan = scancodeForCode(e.code)
+    if (scan) {
+      const packed = scan.scancode | (scan.extended ? 0x100 : 0)
+      if (pressed) heldScancodes.add(packed)
+      else heldScancodes.delete(packed)
+      // keysym is carried only for the audit timeline (the worker ignores it
+      // when a scancode is present) so recorded keystrokes stay human-readable.
+      const ks = keysymForEvent(e, { activeElement: document.activeElement })
+      client.send({
+        key: { scancode: scan.scancode, extended: scan.extended, keysym: ks > 0 ? ks : undefined, pressed },
+      } satisfies ClientMessage)
+      e.preventDefault()
+      return
+    }
     const ks = keysymForEvent(e, { activeElement: document.activeElement })
     if (ks > 0) {
-      client.send({ key: { keysym: ks, pressed: true } } satisfies ClientMessage)
+      client.send({ key: { keysym: ks, pressed } } satisfies ClientMessage)
       e.preventDefault()
     }
   }
-  const onKeyUp = (e: KeyboardEvent) => {
-    const ks = keysymForEvent(e, { activeElement: document.activeElement })
-    if (ks > 0) {
-      client.send({ key: { keysym: ks, pressed: false } } satisfies ClientMessage)
-      e.preventDefault()
+
+  function releaseHeldKeys() {
+    for (const packed of heldScancodes) {
+      client.send({ key: { scancode: packed & 0xff, extended: (packed & 0x100) !== 0, pressed: false } })
     }
+    heldScancodes.clear()
+  }
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    suppressKeyup = false // a real keydown means we're past any IME commit
+    if (!shouldForwardKey(e)) return
+    sendKey(e, true)
+  }
+  const onKeyUp = (e: KeyboardEvent) => {
+    if (suppressKeyup) {
+      suppressKeyup = false
+      e.preventDefault()
+      return
+    }
+    if (!shouldForwardKey(e)) return
+    sendKey(e, false)
+  }
+  // Releasing held keys on focus loss is what keeps modifiers from sticking.
+  const onWindowBlur = () => releaseHeldKeys()
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") releaseHeldKeys()
+  }
+
+  // IME composition: the committed phrase ("你好") arrives here, not as keydowns.
+  const onCompositionEnd = (e: CompositionEvent) => {
+    const text = e.data
+    if (imeSink) imeSink.value = "" // keep the sink empty for the next round
+    suppressKeyup = true // eat the commit key's trailing keyup
+    if (text) client.send({ text } satisfies ClientMessage)
   }
 
   host.addEventListener("mousemove", onMove)
@@ -755,8 +1057,14 @@ function attachInputs(
   host.addEventListener("contextmenu", onContext)
   window.addEventListener("keydown", onKeyDown)
   window.addEventListener("keyup", onKeyUp)
+  window.addEventListener("blur", onWindowBlur)
+  document.addEventListener("visibilitychange", onVisibility)
+  imeSink?.addEventListener("compositionend", onCompositionEnd)
+  // Focus the sink up front so the input method works before the first click.
+  focusIme()
 
   return () => {
+    releaseHeldKeys()
     host.removeEventListener("mousemove", onMove)
     host.removeEventListener("mousedown", onDown)
     host.removeEventListener("mouseup", onUp)
@@ -764,6 +1072,9 @@ function attachInputs(
     host.removeEventListener("contextmenu", onContext)
     window.removeEventListener("keydown", onKeyDown)
     window.removeEventListener("keyup", onKeyUp)
+    window.removeEventListener("blur", onWindowBlur)
+    document.removeEventListener("visibilitychange", onVisibility)
+    imeSink?.removeEventListener("compositionend", onCompositionEnd)
   }
 }
 

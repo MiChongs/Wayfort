@@ -17,16 +17,35 @@ export type DesktopStatus =
 
 export type ScaleMode = "fit" | "actual" | "center" | "stretch"
 export type ClipboardDirection = "both" | "in-only" | "out-only" | "off"
+// Video transport choice. "auto" lets the server pick WebRTC when available;
+// "webrtc" forces the hardware-decoded video track; "bitmap" forces the legacy
+// JS/canvas path. VideoQuality biases the WebRTC bitrate.
+export type VideoTransport = "auto" | "webrtc" | "bitmap"
+export type VideoQuality = "smooth" | "balanced" | "sharp"
+// High-DPI scale factor. "auto" follows the browser's devicePixelRatio; the
+// numeric values force a fixed Windows display-scale percentage. freerdp backend
+// only (the remote renders at physical-pixel resolution with matching scaling).
+export type DpiScale = "auto" | "100" | "125" | "150" | "175" | "200" | "250" | "300"
 
 export interface DesktopSettings {
   // Display
   scaleMode: ScaleMode
+  // Video transport + WebRTC quality. Changing either reconnects (the codec /
+  // GFX choice is fixed at connect time).
+  videoTransport: VideoTransport
+  videoQuality: VideoQuality
   // Server-side resolution preference. Server may not honour exactly —
   // worker reports the negotiated value back via `desktop_resize` event.
   preferredWidth: number
   preferredHeight: number
   colorDepth: 16 | 24 | 32
   smoothScaling: boolean
+  // High-DPI: render the remote at physical-pixel resolution (logical ×
+  // scale) with matching Windows display scaling, so text/UI stay crisp on
+  // HiDPI screens. On by default. dpiScale "auto" follows devicePixelRatio.
+  // Changing either reconnects (the resolution is fixed at connect time).
+  highDpi: boolean
+  dpiScale: DpiScale
   // Input
   keyboardLayout: string  // e.g. "us", "de", "fr", "zh"
   // Sync lock-state keys (CapsLock / NumLock / ScrollLock) with the
@@ -66,4 +85,12 @@ export interface SessionStats {
   // means GPU H.264; "imagedecoder" / "imagebitmap" are native image
   // paths; "js" is the fast-png / jpeg-js / BGRA byte-swap path.
   decoderPath?: DecoderPath | null
+  // Which compositing surface the bitmap path resolved to: "webgpu" (raw-BGRA
+  // GPU fast path) or "canvas2d" (fallback). null on the WebRTC/IronRDP paths
+  // and until the renderer picks one.
+  renderSurface?: "webgpu" | "canvas2d" | null
+  // Active video transport label for the status bar, e.g. "WebRTC · VP9" when
+  // the hardware-decoded track is playing or "JS 位图" on the canvas path.
+  // null until decided.
+  transport?: string | null
 }

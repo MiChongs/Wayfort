@@ -45,6 +45,8 @@ extern const char*  wErrorStr(rdpContext* ctx);
 extern UINT32       wGetRequestedProtocols(rdpContext* ctx);
 extern UINT32       wGetSelectedProtocol(rdpContext* ctx);
 extern UINT32       wGetNegotiationFlags(rdpContext* ctx);
+extern BOOL         wAddDriveRedirect(rdpSettings* settings, const char* name, const char* path);
+extern UINT32       wDeviceCount(rdpSettings* settings);
 extern UINT32       wStaticChannelCount(rdpSettings* settings);
 extern UINT32       wDynamicChannelCount(rdpSettings* settings);
 extern const char*  wStaticChannelName(rdpSettings* settings, UINT32 index);
@@ -62,6 +64,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -198,6 +201,24 @@ type Client struct {
 
 	reconnectBurst      int
 	reconnectBurstStart time.Time
+
+	// WebRTC video path: when webrtcMode is set, the run loop encodes the GDI
+	// framebuffer to VP8/VP9 (videoEnc) instead of emitting dirty-bitmap frames,
+	// and the gateway feeds those access units to a Pion track. videoDirty is set
+	// by the paint/gfx callbacks; forceKeyframe is set on a gateway PLI. The
+	// video* fields are touched only on the run-loop thread.
+	webrtcMode    atomic.Bool
+	videoDirty    atomic.Bool
+	forceKeyframe atomic.Bool
+	videoEnc      *videoEncoder
+	videoW        int
+	videoH        int
+	lastVideoAt   time.Time
+	// videoTargetKbps is the live CBR target, driven by the gateway's GCC
+	// bandwidth estimate (ClientMessage.SetBitrateKbps). 0 until the first
+	// estimate lands; the encode loop then falls back to the quality-tier
+	// bitrate. Read/written from multiple goroutines → atomic.
+	videoTargetKbps atomic.Int64
 }
 
 type rdpgfxSurfaceState struct {
@@ -291,7 +312,8 @@ func (c *Client) Start(ctx context.Context, p desktop.StartParams) error {
 		zap.Bool("ignore_cert", c.params.RDP.IgnoreCert == nil || *c.params.RDP.IgnoreCert),
 		zap.String("domain", c.params.RDP.Domain),
 		zap.Uint32("width", c.width),
-		zap.Uint32("height", c.height))
+		zap.Uint32("height", c.height),
+		zap.Int("scale", c.params.Scale))
 
 	// Spawn the event loop. Browser input is queued on c.in by Send and
 	// drained from the FreeRDP owner thread inside runLoop.
@@ -306,7 +328,13 @@ func (c *Client) applySettings() error {
 	s := C.wContextSettings(rctx)
 	host := C.CString(c.params.Host)
 	defer C.free(unsafe.Pointer(host))
-	user := C.CString(c.params.Username)
+	// Normalize the logon name. Operators commonly store "DOMAIN\\user" (or a
+	// "user@domain" UPN) in the username field while leaving the domain field
+	// empty; some Windows NLA/CredSSP stacks then reject the logon
+	// (ERRCONNECT_LOGON_FAILURE 0x00020014) because the down-level prefix isn't
+	// parsed out. Split it so FreeRDP gets a clean Username + Domain.
+	loginUser, loginDomain := splitUserDomain(c.params.Username, c.params.Domain)
+	user := C.CString(loginUser)
 	defer C.free(unsafe.Pointer(user))
 	pass := C.CString(c.params.Password)
 	defer C.free(unsafe.Pointer(pass))
@@ -327,17 +355,49 @@ func (c *Client) applySettings() error {
 	if !goBool(C.freerdp_settings_set_string(s, C.FreeRDP_Password, pass)) {
 		return errors.New("set password")
 	}
-	if c.params.Domain != "" {
-		dom := C.CString(c.params.Domain)
+	if loginDomain != "" {
+		dom := C.CString(loginDomain)
 		defer C.free(unsafe.Pointer(dom))
 		C.freerdp_settings_set_string(s, C.FreeRDP_Domain, dom)
 	}
+	// Diagnostic for logon failures. The password is never logged — only its
+	// length, which surfaces a stored credential accidentally carrying a
+	// trailing newline / whitespace (a common cause of "Logon failed" when the
+	// same password works from mstsc).
+	c.logger.Info("freerdp logon identity",
+		zap.String("username", loginUser),
+		zap.String("domain", loginDomain),
+		zap.Bool("username_had_domain_prefix", loginUser != c.params.Username),
+		zap.Bool("password_present", c.params.Password != ""),
+		zap.Int("password_len", len(c.params.Password)))
 	autoLogon := c.params.Username != "" || c.params.Password != ""
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AutoLogonEnabled, cBool(autoLogon))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_LogonNotify, C.TRUE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_LogonErrors, C.TRUE)
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopWidth, C.UINT32(c.width))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopHeight, C.UINT32(c.height))
+
+	// High-DPI: advertise the desktop + device scale factors in the GCC client
+	// core data (MS-RDPBCGR §2.2.1.3.2 desktopScaleFactor / deviceScaleFactor)
+	// so the remote Windows applies display scaling at our physical
+	// DesktopWidth/Height. Without this, the high-resolution physical desktop
+	// renders with tiny 100%-scaled UI; with it, text/UI come out crisp and
+	// correctly sized. DesktopScaleFactor is valid 100..500; DeviceScaleFactor
+	// is restricted by the spec to exactly {100,140,180} — libfreerdp drops
+	// out-of-range values, so snap to the nearest legal step. scale<=100 leaves
+	// both unset (default 100% behaviour).
+	if scale := c.params.Scale; scale >= 100 && scale <= 500 {
+		dev := C.UINT32(100)
+		if scale >= 160 {
+			dev = 180
+		} else if scale >= 120 {
+			dev = 140
+		}
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_DesktopScaleFactor, C.UINT32(scale))
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_DeviceScaleFactor, dev)
+		// Carry the scale factors in the monitor layout the server reads back.
+		C.freerdp_settings_set_bool(s, C.FreeRDP_SupportMonitorLayoutPdu, C.TRUE)
+	}
 
 	// ----- GCC ConferenceCreateRequest core data (MS-RDPBCGR §2.2.1.3.2) -----
 	// Win11 / Server 2022 RDS silently drop MCS Connect Initial when these
@@ -394,9 +454,27 @@ func (c *Client) applySettings() error {
 	earlyCapabilityFlags := uint32(0x0001 | 0x0020 | 0x0080)
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_EarlyCapabilityFlags, C.UINT32(earlyCapabilityFlags))
 
-	// ConnectionType = CONNECTION_TYPE_BROADBAND_LOW (2). Tunnelled
-	// gateway → RDS link is RTT-bounded, not LAN.
-	C.freerdp_settings_set_uint32(s, C.FreeRDP_ConnectionType, 2)
+	// ConnectionType hint (MS-RDPBCGR TS_UD_CS_CORE.connectionType). Resolved
+	// by the gateway from the node's network preset (lan/wan/mobile/…) or an
+	// explicit operator override; defaults to BROADBAND_LOW (2) — the historical
+	// value, safe for the RTT-bounded tunnelled gateway → RDS link. Higher hints
+	// (LAN/BROADBAND_HIGH) let the server lean on richer visuals; lower ones
+	// (MODEM/WAN) make it trim aggressively. RNS_UD_CS_VALID_CONNECTION_TYPE is
+	// already set in EarlyCapabilityFlags above so the server honours this.
+	connectionType := opts.ConnectionTypeOrDefault()
+	C.freerdp_settings_set_uint32(s, C.FreeRDP_ConnectionType, C.UINT32(connectionType))
+
+	// Bulk data compression (MPPC / RDP6, MS-RDPBCGR §3.1.8). Resolved from the
+	// network preset / operator override: trades worker CPU for fewer bytes on
+	// the legacy bitmap + order/cache path (worth it on WAN/mobile; pointless on
+	// LAN and irrelevant to the already-compressed GFX/H.264/VP9 paths). Off by
+	// default. CompressionLevel selects the window/codec generation (0=8K, 1=64K,
+	// 2=RDP6, 3=RDP6.1) and is only meaningful when compression is enabled.
+	bulkCompression := goBool(cBoolDefault(opts.BulkCompression, false))
+	C.freerdp_settings_set_bool(s, C.FreeRDP_CompressionEnabled, cBool(bulkCompression))
+	if bulkCompression {
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_CompressionLevel, C.UINT32(opts.CompressionLevelOrDefault()))
+	}
 
 	// Multitransport / network autodetect / heartbeat / batched channel join:
 	// off. The gateway has no UDP sidechannel, some Server 2022 builds
@@ -489,6 +567,84 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpConnectTimeout, C.UINT32(tcpConnectTimeout))
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_TcpAckTimeout, C.UINT32(tcpAckTimeout))
 
+	// Proxy chain forwarding. When the gateway stood up a per-session SOCKS5
+	// listener (manager.StartSession resolved node.ProxyChain), route
+	// libfreerdp's transport through it so the connect to
+	// ServerHostname:ServerPort is tunnelled through JumpServer's bastion /
+	// SOCKS5 hops instead of dialed directly — the same way guacd reaches
+	// these targets. The listener is localhost + no-auth, so we leave
+	// ProxyUsername / ProxyPassword empty.
+	if c.params.SOCKSHost != "" && c.params.SOCKSPort > 0 {
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_ProxyType, C.PROXY_TYPE_SOCKS)
+		phost := C.CString(c.params.SOCKSHost)
+		C.freerdp_settings_set_string(s, C.FreeRDP_ProxyHostname, phost)
+		C.free(unsafe.Pointer(phost))
+		C.freerdp_settings_set_uint16(s, C.FreeRDP_ProxyPort, C.UINT16(uint16(c.params.SOCKSPort)))
+		c.logger.Info("freerdp transport routed through gateway SOCKS5 proxy chain",
+			zap.String("proxy_host", c.params.SOCKSHost),
+			zap.Int("proxy_port", c.params.SOCKSPort),
+			zap.String("target", fmt.Sprintf("%s:%d", c.params.Host, c.params.Port)))
+	}
+
+	// RD Gateway (MS-TSGU): tunnel the RDP connection through a Microsoft Remote
+	// Desktop Gateway when the node is only reachable that way. GatewayUsageMethod
+	// DIRECT forces the gateway for the target; the transport choice decides
+	// HTTP/WebSocket (modern) vs RPC-over-HTTP (legacy 2008/2012). Independent of
+	// the SOCKS proxy chain above — FreeRDP routes the gateway's own TCP through
+	// the proxy if both are set.
+	if c.params.GatewayHost != "" {
+		gwPort := uint32(443)
+		if c.params.GatewayPort > 0 && c.params.GatewayPort <= 65535 {
+			gwPort = uint32(c.params.GatewayPort)
+		}
+		C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayEnabled, C.TRUE)
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_GatewayUsageMethod, C.TSC_PROXY_MODE_DIRECT)
+		ghost := C.CString(c.params.GatewayHost)
+		C.freerdp_settings_set_string(s, C.FreeRDP_GatewayHostname, ghost)
+		C.free(unsafe.Pointer(ghost))
+		C.freerdp_settings_set_uint32(s, C.FreeRDP_GatewayPort, C.UINT32(gwPort))
+		// Transport: default "auto" tries HTTP/WebSocket then RPC.
+		httpT, rpcT := true, true
+		switch c.params.GatewayTransport {
+		case "http":
+			rpcT = false
+		case "rpc":
+			httpT = false
+		}
+		C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayHttpTransport, cBool(httpT))
+		C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayRpcTransport, cBool(rpcT))
+		C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayHttpUseWebsockets, cBool(httpT))
+		C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayUdpTransport, C.FALSE)
+		if c.params.GatewayUseSameCredentials {
+			C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayUseSameCredentials, C.TRUE)
+		} else {
+			C.freerdp_settings_set_bool(s, C.FreeRDP_GatewayUseSameCredentials, C.FALSE)
+			if c.params.GatewayUsername != "" {
+				gwUser, gwDom := splitUserDomain(c.params.GatewayUsername, c.params.GatewayDomain)
+				cu := C.CString(gwUser)
+				C.freerdp_settings_set_string(s, C.FreeRDP_GatewayUsername, cu)
+				C.free(unsafe.Pointer(cu))
+				if gwDom != "" {
+					cd := C.CString(gwDom)
+					C.freerdp_settings_set_string(s, C.FreeRDP_GatewayDomain, cd)
+					C.free(unsafe.Pointer(cd))
+				}
+			}
+			if c.params.GatewayPassword != "" {
+				cp := C.CString(c.params.GatewayPassword)
+				C.freerdp_settings_set_string(s, C.FreeRDP_GatewayPassword, cp)
+				C.free(unsafe.Pointer(cp))
+			}
+		}
+		c.logger.Info("freerdp routed through RD Gateway (MS-TSGU)",
+			zap.String("gateway_host", c.params.GatewayHost),
+			zap.Uint32("gateway_port", gwPort),
+			zap.Bool("same_credentials", c.params.GatewayUseSameCredentials),
+			zap.Bool("http_transport", httpT),
+			zap.Bool("rpc_transport", rpcT),
+			zap.String("target", fmt.Sprintf("%s:%d", c.params.Host, c.params.Port)))
+	}
+
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AutoReconnectionEnabled, C.TRUE)
 	C.freerdp_settings_set_uint32(s, C.FreeRDP_AutoReconnectMaxRetries, 3)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_BitmapCacheEnabled, cBool(!c.safeGraphicsProfile))
@@ -519,7 +675,22 @@ func (c *Client) applySettings() error {
 	// default because the browser pipeline only decodes AVC420's single H.264
 	// stream; AVC444/v2 can arrive as multi-stream payloads that WebCodecs cannot
 	// consume directly.
-	enableGFX := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
+	// WebRTC video path: the run loop VP8/VP9-encodes the GDI primary_buffer, so
+	// it must hold the full composite. The RDPGFX H.264 path is forwarded raw
+	// (not decoded into primary_buffer) and this build has no server-side H.264
+	// decoder, so we DISABLE the graphics pipeline in WebRTC mode and let the
+	// legacy bitmap/NSCodec/surface path — which FreeRDP's GDI always composites
+	// into primary_buffer — drive the framebuffer. webrtcMode is decided at
+	// connect (the gateway sets StartParams.VideoMode to the codec from the
+	// browser's WebRTC support) because this GFX choice can't change mid-session.
+	webrtc := isWebRTCVideoMode(c.params.VideoMode)
+	c.webrtcMode.Store(webrtc)
+	if webrtc {
+		c.forceKeyframe.Store(true)
+		c.videoDirty.Store(true)
+	}
+
+	enableGFX := !webrtc && !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
 	enableH264 := enableGFX && !c.gfxCompatProfile && goBool(cBoolDefault(opts.EnableH264, true))
 	enableAVC444 := false
 	enableRFX := enableGFX && goBool(cBoolDefault(opts.EnableRemoteFx, false))
@@ -553,11 +724,9 @@ func (c *Client) applySettings() error {
 	// honoured (see the GFX/H.264 toggle section above) so only the
 	// truly-still-unwired channels remain here.
 	unsupportedAudio := opts.AudioPlayback != nil && *opts.AudioPlayback
-	unsupportedDevice := opts.DeviceRedirection != nil && *opts.DeviceRedirection
-	if unsupportedAudio || unsupportedDevice {
+	if unsupportedAudio {
 		c.logger.Warn("unsupported RDP channel options ignored until browser protocol supports them",
-			zap.Bool("audio_playback", unsupportedAudio),
-			zap.Bool("device_redirection", unsupportedDevice))
+			zap.Bool("audio_playback", unsupportedAudio))
 	}
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectClipboard, cBoolDefault(opts.RedirectClipboard, true))
 	C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, C.FALSE)
@@ -565,6 +734,47 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectDrives, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectPrinters, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_RedirectSmartCards, C.FALSE)
+
+	// Drive redirection: mount the gateway-provided per-user folder as a
+	// drive so files move between the browser host and the remote desktop.
+	// Empty DrivePath leaves device redirection off entirely.
+	if c.params.DrivePath != "" {
+		name := c.params.DriveName
+		if name == "" {
+			name = "JumpServer"
+		}
+		// Defensive: the gateway creates this folder, but the device is
+		// dropped outright if the path is missing when libfreerdp registers
+		// it — so make sure it exists from the worker's own view first.
+		if err := os.MkdirAll(c.params.DrivePath, 0o750); err != nil {
+			c.logger.Warn("rdp drive folder could not be ensured",
+				zap.String("drive_path", c.params.DrivePath), zap.Error(err))
+		}
+		_, statErr := os.Stat(c.params.DrivePath)
+		cName := C.CString(name)
+		cPath := C.CString(c.params.DrivePath)
+		okDrive := goBool(C.wAddDriveRedirect(s, cName, cPath))
+		C.free(unsafe.Pointer(cName))
+		C.free(unsafe.Pointer(cPath))
+		devCount := uint32(C.wDeviceCount(s))
+		if okDrive {
+			// Enable audio playback so wLoadChannels brings up rdpsnd (routed to
+			// our jsaudio device). rdpsnd's presence is also what makes Windows
+			// initialise its RDPDR subsystem — i.e. it's the dependency that
+			// makes the redirected drive actually appear.
+			C.freerdp_settings_set_bool(s, C.FreeRDP_AudioPlayback, C.TRUE)
+			c.logger.Info("rdp drive redirection registered",
+				zap.String("drive_name", name),
+				zap.String("drive_path", c.params.DrivePath),
+				zap.Bool("path_exists", statErr == nil),
+				zap.Uint32("device_count", devCount),
+				zap.Bool("device_redirection", goBool(C.freerdp_settings_get_bool(s, C.FreeRDP_DeviceRedirection))))
+		} else {
+			c.logger.Warn("rdp drive redirection failed to attach",
+				zap.String("drive_path", c.params.DrivePath),
+				zap.Bool("path_exists", statErr == nil))
+		}
+	}
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SupportDynamicChannels, C.FALSE)
 	C.freerdp_settings_set_bool(s, C.FreeRDP_SynchronousDynamicChannels, C.FALSE)
 	c.logger.Info("freerdp channel settings",
@@ -607,7 +817,10 @@ func (c *Client) applySettings() error {
 		zap.Uint32("keyboard_layout", kbdLayout),
 		zap.String("keyboard_string", c.params.Keyboard),
 		zap.Uint32("os_major_type", 4),
-		zap.Uint32("connection_type", 2))
+		zap.String("network_preset", opts.NetworkPreset),
+		zap.Uint8("connection_type", connectionType),
+		zap.Bool("bulk_compression", bulkCompression),
+		zap.Uint8("compression_level", opts.CompressionLevelOrDefault()))
 	return nil
 }
 
@@ -623,6 +836,24 @@ func cBoolDefault(p *bool, dflt bool) C.BOOL {
 		return cBool(dflt)
 	}
 	return cBool(*p)
+}
+
+// splitUserDomain normalizes an RDP logon name. A down-level "DOMAIN\\user"
+// becomes (user, DOMAIN) so FreeRDP's NLA/CredSSP gets the parts it expects; a
+// "user@domain" UPN is left intact in the username field (CredSSP handles UPNs
+// natively) with no separate domain. An explicitly configured domain always
+// wins over one parsed from the username. Surrounding whitespace is trimmed
+// from the username (a stored "user\n" otherwise fails NLA).
+func splitUserDomain(username, domain string) (user, dom string) {
+	user = strings.TrimSpace(username)
+	dom = domain
+	if i := strings.IndexByte(user, '\\'); i >= 0 {
+		if dom == "" {
+			dom = user[:i]
+		}
+		user = user[i+1:]
+	}
+	return user, dom
 }
 
 func (c *Client) logChannelCollections(s *C.rdpSettings, stage string) {
@@ -692,6 +923,7 @@ func (c *Client) runLoop(ctx context.Context) {
 		c.drainInput(128)
 		c.emitPendingFrameResync("queued frame recovery")
 		c.sendPendingFocusIn()
+		c.maybeEncodeVideo(rctx)
 		if now := time.Now(); !now.Before(nextStats) {
 			c.emitFrameStats()
 			nextStats = now.Add(5 * time.Second)
@@ -729,7 +961,13 @@ func (c *Client) runLoop(ctx context.Context) {
 		// WinPR reports one is signaled; calling check_event_handles after a
 		// timeout can force a transport read with no data ready and trip
 		// BIO_read retry limits.
-		waitStatus := C.WaitForMultipleObjects(count, &handles[0], C.FALSE, 100)
+		// In WebRTC mode tick faster so the VP8 capture loop hits its target
+		// frame rate even when the server sends sparse update events.
+		waitMS := C.DWORD(100)
+		if c.webrtcMode.Load() {
+			waitMS = 15
+		}
+		waitStatus := C.WaitForMultipleObjects(count, &handles[0], C.FALSE, waitMS)
 		if waitStatus == C.WAIT_TIMEOUT {
 			continue
 		}
@@ -1251,6 +1489,7 @@ func shouldAutoRetryWithNla(code, requested, selected uint32) bool {
 
 func (c *Client) teardown() {
 	c.closeFrameEncoder()
+	c.teardownVideo()
 	if c.instance == nil {
 		return
 	}

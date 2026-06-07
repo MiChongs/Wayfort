@@ -6,6 +6,7 @@
 // in the component tree and exposes explicit frame-paint methods used by
 // FrameClient's wire decoder.
 import { base64ToBytes, type CursorUpdate, type Encoding, type FrameRect } from "./types"
+import { createWebGPUSurface, type DesktopSurface } from "./webgpu-surface"
 
 export type FrameRectMeta = Omit<FrameRect, "payload">
 
@@ -23,6 +24,9 @@ interface DecodedFrame {
   frame: FrameRectMeta
   bitmap?: ImageBitmap
   imageData?: ImageData
+  // Raw un-swapped BGRA pixels — only present on the WebGPU surface path (the
+  // worker is told gpu=true and returns these instead of an ImageBitmap).
+  bgra?: Uint8Array
   decoderPath?: DecoderPath
 }
 
@@ -41,6 +45,12 @@ interface DecodeRequest {
 const MAX_CANVAS_EDGE = 8192
 const MAX_CANVAS_PIXELS = 8192 * 8192
 const MAX_PENDING_PAINT_FRAMES = 128
+// Hard cap on the bytes held in the pending-paint queue. A busy desktop on the
+// bitmap fallback can flood raw_bgra rects (~8 MB each at 1080p) faster than the
+// canvas can paint; without a byte cap the queue grows to MAX_PENDING_PAINT_FRAMES
+// × frame-size (≈1 GB) and the tab OOMs. 96 MB absorbs a healthy burst while
+// keeping the ceiling far below where a browser tab dies.
+const MAX_PENDING_PAINT_BYTES = 96 * 1024 * 1024
 const METRICS_INTERVAL_MS = 1000
 
 // RenderMetrics is the 1 Hz snapshot the renderer emits for the perf
@@ -59,6 +69,11 @@ export interface RenderMetrics {
   droppedFrames: number
   codec: Encoding | null
   decoderPath: DecoderPath | null
+  // Which compositing surface the session resolved to: "webgpu" (raw-BGRA
+  // GPU-texture fast path) or "canvas2d" (fallback). null until the async
+  // surface selection completes. Lets the perf panel confirm the GPU path is
+  // actually live in the operator's browser.
+  renderSurface: "webgpu" | "canvas2d" | null
 }
 
 export interface CanvasRendererHandle {
@@ -92,7 +107,14 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   canvas.style.imageRendering = "auto"
   canvas.style.touchAction = "none"
 
-  const g2d = canvas.getContext("2d", { alpha: false })
+  // Rendering surface. Chosen once, asynchronously: WebGPU when available (skips
+  // the per-pixel BGRA→RGBA swap and the createImageBitmap copy by uploading raw
+  // BGRA into a bgra8unorm texture), otherwise the proven Canvas 2D path. Frames
+  // that arrive before the surface resolves wait in pendingFrames and flush once
+  // `surfaceReady` flips. A canvas can hold only one context kind, so this never
+  // switches mid-session.
+  let surface: DesktopSurface | null = null
+  let surfaceReady = false
 
   const resizeCbs: Array<(w: number, h: number) => void> = []
   const cursorCbs: Array<(cursor: CursorUpdate) => void> = []
@@ -100,8 +122,9 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   const metricsCbs: Array<(m: RenderMetrics) => void> = []
   const refreshCbs: Array<() => void> = []
 
-  let paintQueue = Promise.resolve()
   let pendingFrames: FrameBytes[] = []
+  let pendingBytes = 0
+  let painting = false
   let paintRaf = 0
   let destroyed = false
   let decodeSeq = 0
@@ -114,6 +137,31 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       for (const cb of refreshCbs) cb()
     },
   )
+
+  // Kick off async surface selection. createWebGPUSurface validates WebGPU on a
+  // throwaway canvas before claiming this one, so a failure leaves the canvas
+  // pristine for the Canvas 2D fallback (zero regression). Until it resolves,
+  // schedulePaintFlush short-circuits on !surfaceReady and frames queue.
+  void (async () => {
+    let chosen: DesktopSurface | null = null
+    try {
+      chosen = await createWebGPUSurface(canvas, canvas.width, canvas.height, (m) =>
+        emitError(`desktop webgpu: ${m}`),
+      )
+    } catch (error) {
+      emitError(`desktop webgpu init threw, using canvas2d: ${String(error)}`)
+      chosen = null
+    }
+    if (!chosen) chosen = createCanvas2DSurface(canvas, emitError)
+    if (destroyed) {
+      chosen.destroy()
+      return
+    }
+    surface = chosen
+    surfaceReady = true
+    // Drain anything that queued while we were probing the GPU.
+    schedulePaintFlush()
+  })()
 
   // Perf-panel accumulators. Times are summed across the 1 s window and
   // divided by `framesPainted` on emit. `droppedFrames` is the total
@@ -148,6 +196,7 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
       droppedFrames: droppedFramesTotal,
       codec: dominantCodec,
       decoderPath: dominantPath,
+      renderSurface: surface?.kind ?? null,
     }
     for (const cb of metricsCbs) cb(snapshot)
     decodeAccumMs = 0
@@ -178,6 +227,11 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
     if (canvas.width === nextW && canvas.height === nextH) return
     canvas.width = nextW
     canvas.height = nextH
+    // The WebGPU surface accumulates into an offscreen framebuffer that must be
+    // resized to match (it preserves the overlap so unchanged regions survive).
+    // Canvas 2D's surface.resize is a no-op — its backing store follows the
+    // canvas element directly.
+    surface?.resize(nextW, nextH)
     emitResize(nextW, nextH)
   }
 
@@ -200,88 +254,129 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
 
   function paintFrameBatchBytes(frames: FrameBytes[]) {
     if (destroyed) return
-    if (!g2d) {
-      emitError("Canvas 2D context unavailable")
-      return
-    }
     if (frames.length === 0) return
     if (frames.some((item) => isNearFullCanvasFrame(canvas, item.frame))) {
       // Full-canvas update obsoletes everything queued — count the lot
       // as dropped so the perf panel can chart the burst.
       droppedFramesTotal += pendingFrames.length
       pendingFrames = []
+      pendingBytes = 0
     }
-    pendingFrames.push(...frames)
+    for (const item of frames) {
+      pendingFrames.push(item)
+      pendingBytes += item.payload.byteLength
+    }
     trimPendingPaintFrames()
     schedulePaintFlush()
   }
 
+  // Keep the pending queue within both the frame-count and byte budgets so a
+  // raw_bgra flood can't grow it without bound (the OOM path). Preference order:
+  // (1) collapse to the newest full-canvas frame if one is queued — it
+  // obsoletes everything before it for free; (2) otherwise drop the oldest
+  // partial rects (last-writer-wins makes stale partials safe-ish, and the
+  // server's periodic repaints heal any gap — not OOMing matters more).
   function trimPendingPaintFrames() {
-    if (pendingFrames.length <= MAX_PENDING_PAINT_FRAMES) return
+    if (pendingFrames.length <= MAX_PENDING_PAINT_FRAMES && pendingBytes <= MAX_PENDING_PAINT_BYTES) {
+      return
+    }
     for (let i = pendingFrames.length - 1; i >= 0; i--) {
       if (isNearFullCanvasFrame(canvas, pendingFrames[i].frame)) {
-        // Drop everything before the most recent full-canvas frame.
         droppedFramesTotal += i
         pendingFrames = pendingFrames.slice(i)
-        return
+        pendingBytes = sumPayloadBytes(pendingFrames)
+        break
       }
+    }
+    while (
+      pendingFrames.length > 1 &&
+      (pendingFrames.length > MAX_PENDING_PAINT_FRAMES || pendingBytes > MAX_PENDING_PAINT_BYTES)
+    ) {
+      const dropped = pendingFrames.shift()
+      if (!dropped) break
+      pendingBytes -= dropped.payload.byteLength
+      droppedFramesTotal += 1
     }
   }
 
   function schedulePaintFlush() {
-    if (paintRaf !== 0 || destroyed) return
+    if (paintRaf !== 0 || painting || destroyed || !surfaceReady) return
     paintRaf = requestAnimationFrame(() => {
       paintRaf = 0
-      const batch = pendingFrames
-      pendingFrames = []
-      if (batch.length === 0 || destroyed) return
-      const ctx = g2d
-      if (!ctx) {
-        emitError("Canvas 2D context unavailable")
-        return
-      }
+      void runPaintFlush()
+    })
+  }
+
+  // One decode+paint in flight at a time. The previous design chained every
+  // rAF onto a promise (`paintQueue = paintQueue.then(...)`); when decode ran
+  // slower than the rAF cadence the chain — and the frame batches it captured —
+  // grew without bound. A single in-flight guard + reschedule keeps exactly one
+  // batch's worth of decoded bitmaps live at once.
+  async function runPaintFlush() {
+    if (destroyed || painting) return
+    const surf = surface
+    if (!surf) return // surface still resolving; schedulePaintFlush will retry
+    const batch = pendingFrames
+    pendingFrames = []
+    pendingBytes = 0
+    if (batch.length === 0) return
+    painting = true
+    try {
       // Time-box the decode (worker round-trip) and paint (drawImage /
       // putImageData) phases separately so the perf panel can split
-      // "GPU upload" cost from "decode" cost — the latter is what
-      // hurts on JPEG-heavy sessions, the former on huge raw frames.
-      paintQueue = paintQueue
-        .then(async () => {
-          const decodeStart = performance.now()
-          const decoded = await decodeBatch(batch)
-          const paintStart = performance.now()
-          for (const item of decoded) if (item) ensureRectFits(item.frame)
-          for (const item of decoded) {
-            if (!item) continue
-            if (item.bitmap) {
-              ctx.drawImage(item.bitmap, item.frame.x, item.frame.y, item.frame.width, item.frame.height)
-              item.bitmap.close()
-            } else if (item.imageData) {
-              ctx.putImageData(item.imageData, item.frame.x, item.frame.y)
-            }
-          }
-          const paintEnd = performance.now()
-          const decodedCount = decoded.filter(Boolean).length
-          if (decodedCount > 0) {
-            decodeAccumMs += paintStart - decodeStart
-            paintAccumMs += paintEnd - paintStart
-            framesPaintedWindow += decodedCount
-            for (const item of decoded) {
-              if (!item) continue
-              const enc = item.frame.encoding
-              codecCounts.set(enc, (codecCounts.get(enc) ?? 0) + 1)
-              if (item.decoderPath) {
-                decoderPathCounts.set(
-                  item.decoderPath,
-                  (decoderPathCounts.get(item.decoderPath) ?? 0) + 1,
-                )
-              }
-            }
-          }
+      // "GPU upload" cost from "decode" cost.
+      const decodeStart = performance.now()
+      const decoded = await decodeBatch(batch)
+      const paintStart = performance.now()
+      if (destroyed) {
+        // Torn down mid-decode — release the GPU bitmaps we'll never paint.
+        for (const item of decoded) item?.bitmap?.close()
+        return
+      }
+      for (const item of decoded) if (item) ensureRectFits(item.frame)
+      for (const item of decoded) {
+        if (!item) continue
+        // The surface consumes whichever representation the decode produced:
+        // raw bgra (WebGPU fast path), an ImageBitmap, or ImageData. It owns the
+        // bitmap lifecycle from here (closes it after upload).
+        surf.paint({
+          x: item.frame.x,
+          y: item.frame.y,
+          width: item.frame.width,
+          height: item.frame.height,
+          bgra: item.bgra,
+          bitmap: item.bitmap,
+          imageData: item.imageData,
         })
-        .catch((error) => {
-          if (!destroyed) emitError(`frame paint failed: ${String(error)}`)
-        })
-    })
+      }
+      // Present the whole batch once (WebGPU: a single copyTextureToTexture from
+      // the accumulated framebuffer to the swapchain; Canvas 2D: a no-op).
+      surf.present()
+      const paintEnd = performance.now()
+      const decodedCount = decoded.filter(Boolean).length
+      if (decodedCount > 0) {
+        decodeAccumMs += paintStart - decodeStart
+        paintAccumMs += paintEnd - paintStart
+        framesPaintedWindow += decodedCount
+        for (const item of decoded) {
+          if (!item) continue
+          const enc = item.frame.encoding
+          codecCounts.set(enc, (codecCounts.get(enc) ?? 0) + 1)
+          if (item.decoderPath) {
+            decoderPathCounts.set(
+              item.decoderPath,
+              (decoderPathCounts.get(item.decoderPath) ?? 0) + 1,
+            )
+          }
+        }
+      }
+    } catch (error) {
+      if (!destroyed) emitError(`frame paint failed: ${String(error)}`)
+    } finally {
+      painting = false
+      // Frames that arrived while painting wait in pendingFrames — drain them.
+      if (!destroyed && pendingFrames.length > 0) schedulePaintFlush()
+    }
   }
 
   function decodeBatch(batch: FrameBytes[]) {
@@ -290,10 +385,14 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
     }
     const id = ++decodeSeq
     const transfer = uniquePayloadTransferList(batch)
+    // On the WebGPU surface, ask the worker for raw BGRA bytes (no swap, no
+    // ImageBitmap) for raw_bgra/zlib_bgra frames; Canvas 2D wants the swapped
+    // ImageBitmap as before.
+    const gpu = surface?.wantsRawBGRA === true
     return new Promise<DecodedFrame[]>((resolve, reject) => {
       decodeRequests.set(id, { resolve, reject })
       try {
-        decodeWorker.postMessage({ type: "decode", id, frames: batch }, transfer)
+        decodeWorker.postMessage({ type: "decode", id, frames: batch, gpu }, transfer)
       } catch (error) {
         decodeRequests.delete(id)
         reject(error instanceof Error ? error : new Error(String(error)))
@@ -353,7 +452,11 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
         cancelAnimationFrame(paintRaf)
         paintRaf = 0
       }
+      surface?.destroy()
+      surface = null
+      surfaceReady = false
       pendingFrames = []
+      pendingBytes = 0
       for (const request of decodeRequests.values()) {
         request.reject(new Error("renderer destroyed"))
       }
@@ -396,6 +499,12 @@ function mostCommon<K>(counts: Map<K, number>): K | null {
   return bestKey
 }
 
+function sumPayloadBytes(frames: FrameBytes[]): number {
+  let total = 0
+  for (const item of frames) total += item.payload.byteLength
+  return total
+}
+
 function isSafeFrame(frame: FrameRectMeta) {
   if (!Number.isFinite(frame.x) || !Number.isFinite(frame.y)) return false
   if (!Number.isFinite(frame.width) || !Number.isFinite(frame.height)) return false
@@ -414,6 +523,42 @@ function isNearFullCanvasFrame(canvas: HTMLCanvasElement, frame: FrameRectMeta) 
   if (frame.x !== 0 || frame.y !== 0) return false
   if (canvas.width <= 0 || canvas.height <= 0) return false
   return frame.width * 100 >= canvas.width * 95 && frame.height * 100 >= canvas.height * 95
+}
+
+// createCanvas2DSurface wraps the original Canvas 2D paint path behind the
+// DesktopSurface interface so the renderer can treat it interchangeably with the
+// WebGPU surface. Behaviour is byte-for-byte the pre-WebGPU path: drawImage for
+// bitmaps (closing them after), putImageData for the JS-fallback ImageData. It
+// never receives `bgra` because wantsRawBGRA is false, so the decode worker keeps
+// returning swapped ImageBitmaps for this surface.
+function createCanvas2DSurface(
+  canvas: HTMLCanvasElement,
+  emitError: (message: string) => void,
+): DesktopSurface {
+  const ctx = canvas.getContext("2d", { alpha: false })
+  if (!ctx) emitError("Canvas 2D context unavailable")
+  return {
+    kind: "canvas2d",
+    wantsRawBGRA: false,
+    resize() {
+      /* 2D backing store follows the canvas element; nothing to do here. */
+    },
+    paint(item) {
+      if (!ctx) return
+      if (item.bitmap) {
+        ctx.drawImage(item.bitmap, item.x, item.y, item.width, item.height)
+        item.bitmap.close()
+      } else if (item.imageData) {
+        ctx.putImageData(item.imageData, item.x, item.y)
+      }
+    },
+    present() {
+      /* immediate-mode canvas — each drawImage already shows; nothing to flush. */
+    },
+    destroy() {
+      /* the 2D context is released when the canvas element is removed. */
+    },
+  }
 }
 
 function createDecodeWorker(
