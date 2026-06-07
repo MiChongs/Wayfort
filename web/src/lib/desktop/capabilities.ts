@@ -56,6 +56,70 @@ export async function probeH264Avc420(): Promise<boolean> {
 }
 
 /**
+ * Synchronous check for the WebRTC video path: an RTCPeerConnection must exist
+ * and the receiver must list VP8 among its decodable codecs. VP8 is WebRTC's
+ * mandatory-to-implement codec, so any browser with RTCPeerConnection decodes
+ * it — the getCapabilities check is just a stronger guarantee where available.
+ */
+export function supportsWebRTCVP8(): boolean {
+  const g = globalThis as unknown as {
+    RTCPeerConnection?: unknown
+    RTCRtpReceiver?: { getCapabilities?: (kind: string) => { codecs?: { mimeType?: string }[] } | null }
+  }
+  if (typeof g === "undefined" || typeof g.RTCPeerConnection === "undefined") return false
+  try {
+    const caps = g.RTCRtpReceiver?.getCapabilities?.("video")
+    if (!caps || !Array.isArray(caps.codecs)) return true // PC exists; assume VP8
+    return caps.codecs.some((c) => (c.mimeType ?? "").toLowerCase() === "video/vp8")
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Whether the browser can decode a VP9 WebRTC track. Unlike VP8 (assumed when a
+ * PeerConnection exists), VP9 is only reported when `getCapabilities` explicitly
+ * lists it — VP9's screen-content decode is what makes the sharper desktop codec
+ * worth selecting, so we don't guess. The gateway uses this to pick VP9 over VP8.
+ */
+export function supportsWebRTCVP9(): boolean {
+  const g = globalThis as unknown as {
+    RTCPeerConnection?: unknown
+    RTCRtpReceiver?: { getCapabilities?: (kind: string) => { codecs?: { mimeType?: string }[] } | null }
+  }
+  if (typeof g === "undefined" || typeof g.RTCPeerConnection === "undefined") return false
+  if (typeof g.RTCRtpReceiver?.getCapabilities !== "function") return false
+  try {
+    const caps = g.RTCRtpReceiver.getCapabilities("video")
+    return !!caps?.codecs?.some((c) => (c.mimeType ?? "").toLowerCase() === "video/vp9")
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether the browser can decode an AV1 WebRTC track. Only reported when
+ * `getCapabilities` explicitly lists AV1 — AV1's screen-content coding is the
+ * most bandwidth-efficient option, but it's only worth selecting when the
+ * receiver can actually decode it (and the node opted in). The gateway uses this
+ * to pick AV1 over VP9/VP8.
+ */
+export function supportsWebRTCAV1(): boolean {
+  const g = globalThis as unknown as {
+    RTCPeerConnection?: unknown
+    RTCRtpReceiver?: { getCapabilities?: (kind: string) => { codecs?: { mimeType?: string }[] } | null }
+  }
+  if (typeof g === "undefined" || typeof g.RTCPeerConnection === "undefined") return false
+  if (typeof g.RTCRtpReceiver?.getCapabilities !== "function") return false
+  try {
+    const caps = g.RTCRtpReceiver.getCapabilities("video")
+    return !!caps?.codecs?.some((c) => (c.mimeType ?? "").toLowerCase() === "video/av1")
+  } catch {
+    return false
+  }
+}
+
+/**
  * Browser-side capability bag we serialise into the client_caps frame
  * so the worker can decide whether to negotiate GFX/H264 on the RDP
  * channel. `h264` is the async-probed truth; the rest are sync
@@ -68,6 +132,15 @@ export interface ClientCapabilities {
   // The server currently negotiates RFX when GFX is on, so we tell
   // the server "no" so it picks something we can render.
   rfx: boolean
+  // webrtc enables the gateway's hardware-decoded video path. When false,
+  // the session uses the legacy WS bitmap path.
+  webrtc: boolean
+  // webrtcVP9 lets the gateway pick VP9's screen-content codec (sharper desktop
+  // text/UI) over VP8. False → VP8.
+  webrtcVP9: boolean
+  // webrtcAV1 lets the gateway pick AV1 (most bandwidth-efficient) when the node
+  // opted in (rdp.prefer_av1). False → VP9/VP8.
+  webrtcAV1: boolean
 }
 
 export async function collectClientCapabilities(): Promise<ClientCapabilities> {
@@ -76,5 +149,8 @@ export async function collectClientCapabilities(): Promise<ClientCapabilities> {
     h264,
     imageDecoder: supportsImageDecoder(),
     rfx: false,
+    webrtc: supportsWebRTCVP8(),
+    webrtcVP9: supportsWebRTCVP9(),
+    webrtcAV1: supportsWebRTCAV1(),
   }
 }

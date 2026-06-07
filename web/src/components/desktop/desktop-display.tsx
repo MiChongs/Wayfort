@@ -385,11 +385,11 @@ function LegacyDesktopDisplay({
       conn.mark("session") // gateway accepted the session
 
       // WebRTC video path: when the gateway started the session in a WebRTC
-      // codec (vp8/vp9) it streams the desktop over a Pion track. We render it in
-      // the <video> overlay (GPU decode) and fall back to the canvas/FrameClient
+      // codec (vp8/vp9/av1) it streams the desktop over a Pion track. We render it
+      // in the <video> overlay (GPU decode) and fall back to the canvas/FrameClient
       // bitmap path if negotiation fails. videoMode carries the codec.
       const videoMode = start.video_mode || ""
-      const webrtcOn = videoMode === "vp8" || videoMode === "vp9"
+      const webrtcOn = videoMode === "vp8" || videoMode === "vp9" || videoMode === "av1"
       const iceServers = start.ice_servers || []
       // Surface the active transport in the status bar immediately; onConnected
       // upgrades the WebRTC label once the track is actually playing.

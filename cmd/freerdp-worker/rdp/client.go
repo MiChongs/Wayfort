@@ -203,14 +203,14 @@ type Client struct {
 	reconnectBurstStart time.Time
 
 	// WebRTC video path: when webrtcMode is set, the run loop encodes the GDI
-	// framebuffer to VP8/VP9 (videoEnc) instead of emitting dirty-bitmap frames,
-	// and the gateway feeds those access units to a Pion track. videoDirty is set
-	// by the paint/gfx callbacks; forceKeyframe is set on a gateway PLI. The
-	// video* fields are touched only on the run-loop thread.
+	// framebuffer to VP8/VP9/AV1 (videoEnc) instead of emitting dirty-bitmap
+	// frames, and the gateway feeds those access units to a Pion track. videoDirty
+	// is set by the paint/gfx callbacks; forceKeyframe is set on a gateway PLI.
+	// The video* fields are touched only on the run-loop thread.
 	webrtcMode    atomic.Bool
 	videoDirty    atomic.Bool
 	forceKeyframe atomic.Bool
-	videoEnc      *videoEncoder
+	videoEnc      videoEncoder
 	videoW        int
 	videoH        int
 	lastVideoAt   time.Time

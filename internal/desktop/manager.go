@@ -431,7 +431,7 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 	var iceServers []ICEServer
 	videoBitrate := m.cfg.WebRTC.BitrateKbps
 	if backend == "freerdp" {
-		videoMode = m.decideVideoMode(req)
+		videoMode = m.decideVideoMode(req, rdpOpts.PreferAV1 != nil && *rdpOpts.PreferAV1)
 		if videoMode != "" {
 			iceServers = m.webrtcICEServers()
 			videoBitrate = m.videoBitrateForQuality(req.VideoQuality)
@@ -602,7 +602,7 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 //     bitmap regardless of the choice.
 //   - codec: "vp9" when the operator prefers it (desktop.webrtc.codec) and the
 //     browser can decode VP9 (ClientCaps.WebRTCVP9); otherwise "vp8".
-func (m *Manager) decideVideoMode(req StartSessionRequest) string {
+func (m *Manager) decideVideoMode(req StartSessionRequest, preferAV1 bool) string {
 	if !m.cfg.WebRTC.Enabled {
 		return ""
 	}
@@ -612,6 +612,12 @@ func (m *Manager) decideVideoMode(req StartSessionRequest) string {
 	caps := req.ClientCaps
 	if caps == nil || !caps.WebRTC {
 		return "" // browser can't run a WebRTC peer connection
+	}
+	// AV1 first when the node opted in (rdp.prefer_av1) and the browser advertised
+	// it can decode an AV1 WebRTC track — most bandwidth-efficient at equal
+	// quality. Falls through to VP9/VP8 when either side can't do AV1.
+	if preferAV1 && caps.WebRTCAV1 {
+		return "av1"
 	}
 	if strings.EqualFold(strings.TrimSpace(m.cfg.WebRTC.Codec), "vp9") && caps.WebRTCVP9 {
 		return "vp9"

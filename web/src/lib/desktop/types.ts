@@ -24,9 +24,16 @@ export type Phase =
 
 export interface StartSessionRequest {
   node_id: number
+  // width/height are the LOGICAL desktop resolution; with scale>100 the gateway
+  // multiplies them to the physical render resolution.
   width: number
   height: number
   dpi?: number
+  // High-DPI desktop scale factor in percent (100 = none, 150, 200, …). Derived
+  // from devicePixelRatio (or the user's explicit choice) so the remote renders
+  // at physical-pixel resolution with matching Windows display scaling — crisp
+  // on HiDPI screens. freerdp backend only.
+  scale?: number
   keyboard?: string
   quality?: Quality
   backend?: DesktopBackend
@@ -36,6 +43,12 @@ export interface StartSessionRequest {
   // client that can't render it. Populate via
   // `collectClientCapabilities()` from lib/desktop/capabilities.ts.
   client_caps?: ClientCaps
+  // video_transport is the user's explicit choice: "" / "auto" (manager picks),
+  // "webrtc" (force the WebRTC track), or "bitmap" (force the legacy JS/canvas
+  // path). video_quality biases the WebRTC bitrate: "smooth" | "balanced" |
+  // "sharp". Both come from the desktop settings sheet.
+  video_transport?: string
+  video_quality?: string
 }
 
 /**
@@ -63,6 +76,13 @@ export interface StartSessionResponse {
   remote_width: number
   remote_height: number
   backend?: DesktopBackend
+
+  // WebRTC video path. `video_mode === "vp8"` means the browser must set up an
+  // RTCPeerConnection and render the desktop in a <video> element (GPU decode)
+  // instead of the canvas/FrameClient bitmap path. `ice_servers` is the STUN /
+  // TURN config to feed the peer connection. Both absent on the legacy path.
+  video_mode?: string
+  ice_servers?: RTCIceServer[]
 
   // ironrdp-only fields. Present iff backend === "ironrdp".
   gateway_url?: string
@@ -123,6 +143,27 @@ export interface ClipboardData {
   payload: string // base64
 }
 
+// AudioData is one chunk of redirected remote audio (rdpsnd). pcm is base64
+// raw interleaved little-endian signed PCM at sample_rate / channels / bits.
+export interface AudioData {
+  sample_rate: number
+  channels: number
+  bits: number
+  pcm: string
+}
+
+// WebRTCSignal is one signaling message on the desktop WS for the WebRTC video
+// path. The browser offers; the gateway answers; both trickle ICE. Field names
+// mirror RTCSessionDescription / RTCIceCandidateInit so each can be passed
+// straight to the WebRTC stack.
+export interface WebRTCSignal {
+  type: "offer" | "answer" | "candidate"
+  sdp?: string
+  candidate?: string
+  sdpMid?: string | null
+  sdpMLineIndex?: number | null
+}
+
 export interface ServerMessage {
   frame?: FrameRect
   frame_batch?: FrameBatch
@@ -130,9 +171,19 @@ export interface ServerMessage {
   status?: SessionStatus
   bell?: Record<string, never>
   clipboard?: ClipboardData
+  audio?: AudioData
+  // Gateway → browser SDP answer / ICE candidate for the WebRTC video track.
+  webrtc?: WebRTCSignal
+  // Heartbeat-ack echoed by the gateway — carries the ts_ms the client sent so
+  // the round-trip latency is `Date.now() - hb.ts_ms`.
+  hb?: Heartbeat
 }
 
-export interface InputKey { keysym: number; pressed: boolean }
+// InputKey: a physical key event. `scancode` (RDP set-1 make code) + `extended`
+// is the primary path — it composes with modifiers so shortcuts work. `keysym`
+// is the legacy/fallback path for keys without a scancode mapping. Send whichever
+// the browser resolved; the worker prefers scancode.
+export interface InputKey { keysym?: number; scancode?: number; extended?: boolean; pressed: boolean }
 export interface InputMouse { x: number; y: number; buttons: number; wheel: number }
 export interface ResizeHint { width: number; height: number }
 export interface Heartbeat { ts_ms: number }
@@ -149,6 +200,17 @@ export interface ClientCaps {
   h264: boolean
   rfx: boolean
   imageDecoder: boolean
+  // webrtc reports that the browser can run an RTCPeerConnection and decode the
+  // VP8 video track. When true (and the server enabled it), the gateway streams
+  // video over WebRTC instead of WS bitmap frames.
+  webrtc: boolean
+  // webrtcVP9 reports VP9 decode support so the gateway can pick the sharper
+  // screen-content codec.
+  webrtcVP9: boolean
+  // webrtcAV1 reports AV1 WebRTC decode support. The gateway selects AV1 (most
+  // bandwidth-efficient at equal quality) only when this is true AND the node
+  // opted in (rdp.prefer_av1); otherwise it falls back to VP9/VP8.
+  webrtcAV1: boolean
 }
 
 /** Region the client wants the server to redraw immediately. All-zero
@@ -168,6 +230,17 @@ export interface ClientMessage {
   resize?: ResizeHint
   caps?: ClientCaps
   refresh?: RefreshRect
+  // text is IME-composed (or committed) Unicode text — the final string an
+  // input method assembled ("你好"), sent on compositionend. The worker replays
+  // it as per-character Unicode keyboard events on the remote.
+  text?: string
+  // WebRTC video path. `webrtc` carries the browser's SDP offer / ICE
+  // candidates to the gateway bridge. `video_mode: "bitmap"` switches the
+  // worker back to WS frames when WebRTC fails (the fallback). `request_keyframe`
+  // is gateway-internal (set on PLI) but typed here for completeness.
+  webrtc?: WebRTCSignal
+  video_mode?: string
+  request_keyframe?: boolean
 }
 
 // ----- Bit layouts (kept in lockstep with renderer.worker.ts + worker_dummy.go) -----

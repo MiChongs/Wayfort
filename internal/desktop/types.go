@@ -31,10 +31,20 @@ const (
 )
 
 type StartSessionRequest struct {
-	NodeID   uint64  `json:"node_id"`
-	Width    uint32  `json:"width"`
-	Height   uint32  `json:"height"`
-	DPI      uint32  `json:"dpi"`
+	NodeID uint64 `json:"node_id"`
+	// Width / Height are the LOGICAL desktop resolution the user wants (the
+	// "期望分辨率" the remote desktop behaves as). When Scale > 100 the gateway
+	// multiplies them by Scale/100 to get the physical render resolution.
+	Width  uint32 `json:"width"`
+	Height uint32 `json:"height"`
+	DPI    uint32 `json:"dpi"`
+	// Scale is the high-DPI desktop scale factor in percent (100 = none, 150,
+	// 200, …). The browser derives it from devicePixelRatio (or the user's
+	// explicit choice) so the remote renders at physical-pixel resolution with
+	// matching Windows display scaling — crisp text/UI on HiDPI screens. 0 is
+	// treated as 100. freerdp backend only (ironrdp's Wasm client has no
+	// scale-factor API and renders at the logical resolution).
+	Scale    uint32  `json:"scale,omitempty"`
 	Keyboard string  `json:"keyboard"`
 	Quality  Quality `json:"quality"`
 	// Plan 17 M1: "dummy" runs the test-pattern worker.
@@ -50,6 +60,18 @@ type StartSessionRequest struct {
 	// before POSTing the start request. Nil = legacy / unknown client;
 	// the manager assumes full support to keep older builds working.
 	ClientCaps *ClientCaps `json:"client_caps,omitempty"`
+	// VideoTransport is the user's explicit choice of video path:
+	//   "" / "auto"  → manager decides (WebRTC when the browser + operator
+	//                  both allow it, else the JS bitmap path);
+	//   "webrtc"     → force the WebRTC video track (still needs the operator's
+	//                  desktop.webrtc.enabled; ignored on non-freerdp backends);
+	//   "bitmap"     → force the legacy JS/canvas path (never WebRTC).
+	// Surfaced in the desktop settings sheet; changing it reconnects.
+	VideoTransport string `json:"video_transport,omitempty"`
+	// VideoQuality biases the WebRTC encoder bitrate: "smooth" (lower bitrate,
+	// best on slow links), "balanced" (default), "sharp" (high bitrate, crisp
+	// text). Empty = balanced. Only affects the WebRTC path.
+	VideoQuality string `json:"video_quality,omitempty"`
 }
 
 type StartSessionResponse struct {
@@ -60,6 +82,17 @@ type StartSessionResponse struct {
 	// this against their build to decide whether to attach FrameClient
 	// (legacy freerdp/dummy) or instantiate iron-remote-desktop (ironrdp).
 	Backend string `json:"backend,omitempty"`
+	// VideoMode tells the browser which video transport the worker is producing:
+	// "vp8" means it must set up the WebRTC <video> path (and the WS carries no
+	// bitmap frames unless it falls back); "" / "bitmap" means the legacy
+	// canvas/FrameClient path. Only ever "vp8" for the freerdp backend with a
+	// WebRTC-capable browser and desktop.webrtc.enabled.
+	VideoMode string `json:"video_mode,omitempty"`
+	// ICEServers is the WebRTC ICE configuration (STUN / TURN) the browser feeds
+	// to its RTCPeerConnection. Populated only when VideoMode=="vp8". TURN
+	// credentials are meant for the client, so handing them over here is by
+	// design — without them the browser can't authenticate to the relay.
+	ICEServers []ICEServer `json:"ice_servers,omitempty"`
 
 	// ----- ironrdp backend only -----
 	// IronRDP is the Devolutions Wasm RDP client running inside the
@@ -73,6 +106,15 @@ type StartSessionResponse struct {
 	Username    string `json:"username,omitempty"`
 	Password    string `json:"password,omitempty"`
 	Domain      string `json:"domain,omitempty"`
+}
+
+// ICEServer mirrors the browser's RTCIceServer so the gateway can hand the
+// operator-configured STUN/TURN servers to the client's RTCPeerConnection in
+// StartSessionResponse.
+type ICEServer struct {
+	URLs       []string `json:"urls"`
+	Username   string   `json:"username,omitempty"`
+	Credential string   `json:"credential,omitempty"`
 }
 
 type ResizeRequest struct {
@@ -138,6 +180,62 @@ type ServerMessage struct {
 	Status     *SessionStatus `json:"status,omitempty"`
 	Bell       *struct{}      `json:"bell,omitempty"`
 	Clipboard  *ClipboardData `json:"clipboard,omitempty"`
+	// Audio carries a chunk of redirected PCM from the remote desktop
+	// (rdpsnd). Travels over the binary wire's JSON-fallback frame; the browser
+	// plays it via Web Audio. High-volume + best-effort (dropped under
+	// backpressure), so it is never written to the session recording.
+	Audio *AudioData `json:"audio,omitempty"`
+	// Video is one VP8 access unit for the WebRTC video path. The worker emits
+	// it in VideoMode "vp8"; the gateway intercepts it (never forwarded to the
+	// browser WS) and writes it to the Pion video track. The browser sees the
+	// frames via WebRTC <video>, not here.
+	Video *VideoData `json:"video,omitempty"`
+	// WebRTC carries SDP answer / ICE candidates from the gateway's Pion peer
+	// connection back to the browser. Gateway-originated; never reaches the
+	// worker. Present only on the browser hop.
+	WebRTC *WebRTCSignal `json:"webrtc,omitempty"`
+	// HB echoes a client heartbeat straight back so the browser can measure
+	// round-trip latency (ts_ms is the client's send time; RTT = now - ts_ms).
+	// Gateway-originated on the browser hop — the worker never sees it.
+	HB *Heartbeat `json:"hb,omitempty"`
+}
+
+// WebRTCSignal is one signaling message on the desktop WS for the WebRTC video
+// path. The browser offers (Type "offer"); the gateway answers (Type "answer");
+// both trickle ICE (Type "candidate"). Mirrors RTCSessionDescription /
+// RTCIceCandidateInit so each side can hand the payload straight to its WebRTC
+// stack. The signal rides the existing desktop WS — no extra socket.
+type WebRTCSignal struct {
+	Type string `json:"type"` // "offer" | "answer" | "candidate"
+	// SDP is set for "offer" / "answer".
+	SDP string `json:"sdp,omitempty"`
+	// Candidate fields are set for "candidate" (trickle ICE), mirroring
+	// RTCIceCandidateInit. SDPMLineIndex is a pointer so a literal 0 survives
+	// JSON (browsers reject a candidate with a missing/!=offer mline index).
+	Candidate     string  `json:"candidate,omitempty"`
+	SDPMid        *string `json:"sdpMid,omitempty"`
+	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
+}
+
+// VideoData is one encoded video access unit for the WebRTC track. Data is
+// base64 (worker→gateway hop only); the gateway decodes it once and feeds raw
+// bytes to Pion. Codec is "vp8" today.
+type VideoData struct {
+	Codec    string `json:"codec"`
+	Keyframe bool   `json:"keyframe"`
+	Width    uint32 `json:"width"`
+	Height   uint32 `json:"height"`
+	Data     string `json:"data"`
+}
+
+// AudioData is one chunk of redirected audio. PCM is base64 raw little-endian
+// signed PCM at SampleRate/Channels/Bits (always WAVE_FORMAT_PCM — the worker's
+// rdpsnd device advertises PCM only so no codec decode is needed).
+type AudioData struct {
+	SampleRate uint32 `json:"sample_rate"`
+	Channels   uint32 `json:"channels"`
+	Bits       uint32 `json:"bits"`
+	PCM        string `json:"pcm"`
 }
 
 type FrameBatch struct {
@@ -212,6 +310,31 @@ type ClientMessage struct {
 	// keyframe to restart decoding — without it, the screen stays
 	// frozen until the server emits the next natural keyframe.
 	Refresh *RefreshRect `json:"refresh,omitempty"`
+	// Text is IME-composed (or otherwise committed) Unicode text from the
+	// browser — e.g. a Chinese/Japanese/Korean phrase the local input method
+	// assembled ("你好"). The browser sends the final string on `compositionend`
+	// (raw keystrokes are suppressed while composing); the worker replays it as
+	// per-character Unicode keyboard events so it lands on the remote regardless
+	// of the server keyboard layout. Recorded to the input-audit tape.
+	Text string `json:"text,omitempty"`
+	// VideoMode switches the worker's video production: "vp8" makes the run
+	// loop encode the framebuffer to VP8 for the WebRTC track (and stop dirty-
+	// bitmap frames); "bitmap" (or empty) restores the legacy WebSocket frame
+	// path. Driven by the gateway from the Pion connection state.
+	VideoMode string `json:"video_mode,omitempty"`
+	// RequestKeyframe forces the next VP8 frame to be a keyframe. The gateway
+	// sets it on a WebRTC PLI (browser lost the stream) and on (re)connect.
+	RequestKeyframe bool `json:"request_keyframe,omitempty"`
+	// SetBitrateKbps live-retunes the WebRTC video encoder's target bitrate
+	// (kbps). The gateway drives it from the GCC bandwidth estimate so the
+	// stream tracks available capacity: it climbs toward the quality-tier
+	// ceiling on a fat link (sharp text) and backs off under congestion (low
+	// latency, bounded flow). 0 = leave unchanged.
+	SetBitrateKbps int `json:"set_bitrate_kbps,omitempty"`
+	// WebRTC carries the browser's SDP offer / ICE candidates to the gateway's
+	// Pion peer connection. The gateway consumes these (they never reach the
+	// worker) and replies via ServerMessage.WebRTC.
+	WebRTC *WebRTCSignal `json:"webrtc,omitempty"`
 }
 
 // RefreshRect mirrors the area carried by an RDP MS-RDPBCGR 2.2.11.2.2
@@ -230,11 +353,34 @@ type ClientCaps struct {
 	H264         bool `json:"h264"`
 	RFX          bool `json:"rfx"`
 	ImageDecoder bool `json:"imageDecoder"`
+	// WebRTC reports that the browser can run an RTCPeerConnection and decode
+	// the VP8 video track. When true (and desktop.webrtc.enabled), the manager
+	// starts the worker in VP8 video mode and the gateway streams video over a
+	// Pion track instead of WS bitmap frames. False/absent keeps the legacy
+	// path, so older browsers keep working.
+	WebRTC bool `json:"webrtc"`
+	// WebRTCVP9 reports the browser can decode a VP9 WebRTC track. VP9's
+	// screen-content mode is markedly sharper than VP8 for desktop UI/text, so
+	// the manager prefers it when the browser supports it and the operator
+	// configured desktop.webrtc.codec = vp9. Falls back to VP8 otherwise.
+	WebRTCVP9 bool `json:"webrtcVP9"`
+	// WebRTCAV1 reports the browser can decode an AV1 WebRTC track. AV1 is the
+	// most bandwidth-efficient codec at equal quality (~30-50% less than VP9 on
+	// screen content) but the heaviest to encode; the manager selects it only
+	// when the browser advertises it AND the node opted in (rdp.prefer_av1).
+	// Falls back to VP9/VP8 otherwise.
+	WebRTCAV1 bool `json:"webrtcAV1"`
 }
 
 type InputKey struct {
-	Keysym  uint32 `json:"keysym"`
-	Pressed bool   `json:"pressed"`
+	// Scancode (RDP set-1 make code) + Extended is the primary path: it composes
+	// with modifier keys on the server, so shortcuts (Ctrl+C, Alt+Tab, Win+L …)
+	// work. Keysym is the legacy/fallback path for keys the browser couldn't map
+	// to a scancode. The worker prefers Scancode when non-zero.
+	Keysym   uint32 `json:"keysym,omitempty"`
+	Scancode uint32 `json:"scancode,omitempty"`
+	Extended bool   `json:"extended,omitempty"`
+	Pressed  bool   `json:"pressed"`
 }
 
 type InputMouse struct {
@@ -276,6 +422,13 @@ type StartParams struct {
 	Domain   string
 	Width    int
 	Height   int
+	// Scale is the RDP desktop scale factor in percent (100 = none). Width /
+	// Height are already the PHYSICAL render resolution (logical × Scale/100);
+	// the worker additionally writes Scale to FreeRDP_DesktopScaleFactor /
+	// FreeRDP_DeviceScaleFactor so the remote Windows applies display scaling —
+	// giving crisp, correctly-sized UI on HiDPI clients instead of a tiny or
+	// upscaled-blurry desktop. 0 / 100 = no scaling.
+	Scale    int
 	Keyboard string
 	Quality  Quality
 	// RDP carries per-node connection-tuning knobs sourced from
@@ -283,6 +436,46 @@ type StartParams struct {
 	// worker defaults" — backward-compatible with nodes authored before
 	// this field existed.
 	RDP RdpOptions
+	// SOCKSHost / SOCKSPort point the worker's libfreerdp transport at a
+	// gateway-local SOCKS5 listener that tunnels the TCP connection through
+	// the node's JumpServer proxy chain (SSH bastion / SOCKS5 hops). Empty
+	// host = direct dial to Host:Port (no proxy chain configured for the node).
+	// The worker still connects to Host:Port — it just routes via the proxy.
+	SOCKSHost string
+	SOCKSPort int
+	// DriveName / DrivePath redirect a gateway-side folder into the session as
+	// a mounted drive (rdpdr filesystem redirection) so the user can move files
+	// between the browser host and the remote desktop. Empty DrivePath leaves
+	// device redirection off. DriveName is the share label shown in the remote
+	// "This PC" (ASCII; defaults to "JumpServer" when blank).
+	DriveName string
+	DrivePath string
+	// VideoMode selects the worker's video transport at connect AND, for the
+	// WebRTC path, the codec: "vp8" or "vp9" makes the worker disable the RDPGFX
+	// pipeline and encode the composited framebuffer with that codec for the
+	// gateway's WebRTC track; "" / "bitmap" keeps the legacy dirty-bitmap path.
+	// Decided by the manager from the user's transport choice, browser support,
+	// and desktop.webrtc.{enabled,codec}; can't change mid-session (GFX choice).
+	VideoMode string
+	// WebRTC video path tuning. VideoBitrateKbps / VideoFPS configure the VP8
+	// encoder when the gateway switches the worker into "vp8" video mode. Zero
+	// means worker defaults (8000 kbps / 30 fps).
+	VideoBitrateKbps int
+	VideoFPS         int
+
+	// RD Gateway (MS-TSGU) — resolved by the manager from the node's RdpOptions.
+	// GatewayHost empty = no gateway (direct / proxy-chain dial). When set, the
+	// worker tunnels the RDP connection through this Microsoft RD Gateway.
+	GatewayHost string
+	GatewayPort int
+	// GatewayUseSameCredentials makes the gateway reuse the target's credentials;
+	// otherwise GatewayUsername/Password/Domain carry a dedicated gateway login.
+	GatewayUseSameCredentials bool
+	GatewayUsername           string
+	GatewayPassword           string
+	GatewayDomain             string
+	// GatewayTransport: "auto" | "http" | "rpc".
+	GatewayTransport string
 }
 
 // DesktopWorker is the contract every worker implementation satisfies.
