@@ -16,6 +16,7 @@ type Janitor struct {
 	cache    *cache.Cache
 	logger   *zap.Logger
 	interval time.Duration
+	failures int
 }
 
 func NewJanitor(l *DockerLauncher, c *cache.Cache, logger *zap.Logger, interval time.Duration) *Janitor {
@@ -41,8 +42,18 @@ func (j *Janitor) Run(ctx context.Context) error {
 func (j *Janitor) sweep(ctx context.Context) {
 	cl, err := j.launcher.ListManaged(ctx)
 	if err != nil {
-		j.logger.Warn("anonymous janitor list failed", zap.Error(err))
+		// Rate-limit: an unreachable / incompatible Docker daemon would
+		// otherwise log this every interval. Warn on the first failure and
+		// then only periodically so the signal survives without the spam.
+		j.failures++
+		if j.failures == 1 || j.failures%20 == 0 {
+			j.logger.Warn("anonymous janitor list failed", zap.Error(err), zap.Int("consecutive", j.failures))
+		}
 		return
+	}
+	if j.failures > 0 {
+		j.logger.Info("anonymous janitor recovered", zap.Int("after_failures", j.failures))
+		j.failures = 0
 	}
 	live, _ := j.cache.ListAnonymous(ctx)
 	liveSet := make(map[string]struct{}, len(live))

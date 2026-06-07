@@ -5,12 +5,14 @@ import { motion, useReducedMotion } from "motion/react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { Bot, Plus, Sparkles, ArrowRight, Loader2 } from "lucide-react"
-import { toast } from "sonner"
+import { ArrowRight, ArrowUp, Bot, Loader2, Plus, Sparkles } from "lucide-react"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Textarea } from "@/components/ui/textarea"
+import { useAutosizeTextarea } from "@/lib/hooks/use-autosize-textarea"
 import { aiAgentService, aiConversationService } from "@/lib/api/services"
 import { NewConversationDialog } from "@/components/ai/new-conversation-dialog"
 import { cn } from "@/lib/utils"
@@ -41,15 +43,26 @@ export default function AIHomePage() {
   }, [agents.data])
 
   const quickStart = useMutation({
-    mutationFn: (agentId: number) =>
+    mutationFn: ({ agentId }: { agentId: number; draft?: string }) =>
       aiConversationService.create({ agent_id: agentId }),
-    onSuccess: (c) => {
+    onSuccess: (c, vars) => {
       qc.invalidateQueries({ queryKey: ["ai", "convs"] })
-      router.push(`/ai/conversations/${c.id}` as Parameters<typeof router.push>[0])
+      const q = vars.draft ? `?draft=${encodeURIComponent(vars.draft)}` : ""
+      router.push(`/ai/conversations/${c.id}${q}` as Parameters<typeof router.push>[0])
     },
     onError: (e: unknown) =>
       toast.error("创建失败", { description: (e as Error).message }),
   })
+
+  // Start a conversation seeded with the user's first message. Uses the top
+  // featured agent as the default; if none exist yet, fall back to the picker.
+  const startWith = React.useCallback(
+    (draft: string) => {
+      if (featured.length > 0) quickStart.mutate({ agentId: featured[0].id, draft })
+      else setOpen(true)
+    },
+    [featured, quickStart],
+  )
 
   const noAgents = !agents.isLoading && featured.length === 0
 
@@ -92,6 +105,15 @@ export default function AIHomePage() {
               <Bot className="w-4 h-4" /> 管理 Agent
             </Button>
           </div>
+        </motion.div>
+
+        <motion.div
+          initial={reduce ? false : { opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={reduce ? { duration: 0 } : { duration: 0.4, delay: 0.05, ease: "easeOut" }}
+          className="mx-auto w-full max-w-2xl"
+        >
+          <HomeComposer onSubmit={startWith} disabled={quickStart.isPending || noAgents} />
         </motion.div>
 
         {noAgents && (
@@ -142,9 +164,9 @@ export default function AIHomePage() {
                   agent={a}
                   index={i}
                   loading={
-                    quickStart.isPending && quickStart.variables === a.id
+                    quickStart.isPending && quickStart.variables?.agentId === a.id
                   }
-                  onStart={() => quickStart.mutate(a.id)}
+                  onStart={() => quickStart.mutate({ agentId: a.id })}
                 />
               ))}
             </div>
@@ -159,7 +181,7 @@ export default function AIHomePage() {
                 key={s}
                 text={s}
                 index={i}
-                onClick={() => setOpen(true)}
+                onClick={() => startWith(s)}
               />
             ))}
           </div>
@@ -168,6 +190,53 @@ export default function AIHomePage() {
 
       <NewConversationDialog open={open} onOpenChange={setOpen} />
     </ScrollArea>
+  )
+}
+
+// A lightweight Claude-web-style input on the home page: type a first message
+// and start a conversation with the default agent (no streaming controls).
+function HomeComposer({ onSubmit, disabled }: { onSubmit: (text: string) => void; disabled?: boolean }) {
+  const [v, setV] = React.useState("")
+  const ref = React.useRef<HTMLTextAreaElement | null>(null)
+  useAutosizeTextarea(ref, v, 160)
+  const can = v.trim().length > 0 && !disabled
+  const submit = () => {
+    if (!can) return
+    onSubmit(v.trim())
+    setV("")
+  }
+  return (
+    <div className="relative rounded-[28px] border border-border/70 bg-background shadow-sm transition-all focus-within:border-ring/40 focus-within:shadow-md">
+      <Textarea
+        ref={ref}
+        value={v}
+        onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault()
+            submit()
+          }
+        }}
+        placeholder="给 Agent 下达指令，直接开始…"
+        rows={1}
+        disabled={disabled}
+        className="max-h-[160px] resize-none border-none bg-transparent px-5 pt-4 pb-1 text-[15px] leading-relaxed shadow-none outline-none placeholder:text-muted-foreground/60 focus-visible:border-transparent focus-visible:ring-0 focus-visible:ring-offset-0"
+      />
+      <div className="flex items-center justify-end px-2.5 pb-2.5 pt-0.5">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={!can}
+          aria-label="开始对话"
+          className={cn(
+            "flex h-9 w-9 items-center justify-center rounded-full transition-colors",
+            can ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-muted text-muted-foreground",
+          )}
+        >
+          {disabled ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUp className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
   )
 }
 

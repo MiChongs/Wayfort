@@ -6,7 +6,7 @@
 // toolbar above it.
 
 import * as React from "react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { useRDP } from "@/lib/hooks/use-rdp"
 import { GuacLoader } from "@/components/guacamole/guac-loader"
 import { RDPToolbar } from "./rdp-toolbar"

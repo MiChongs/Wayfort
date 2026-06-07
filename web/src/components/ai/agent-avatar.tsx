@@ -4,6 +4,7 @@ import * as React from "react"
 import { Bot } from "lucide-react"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
+import { AppIcon } from "@/components/icons/app-icon"
 import type { AIAgent } from "@/lib/api/types"
 
 const PALETTE = [
@@ -35,10 +36,11 @@ export function AgentAvatar({
   size = "md",
   className,
 }: {
-  agent?: Pick<AIAgent, "name"> | null
+  agent?: Pick<AIAgent, "name" | "icon"> | null
   size?: "sm" | "md"
   className?: string
 }) {
+  const icon = agent?.icon?.trim()
   const initial = initialOf(agent?.name)
   const colors = agent?.name ? paletteFor(agent.name) : "bg-card text-foreground border"
   const sizeCls = size === "sm" ? "w-6 h-6 text-[10px]" : "w-7 h-7 text-xs"
@@ -46,11 +48,17 @@ export function AgentAvatar({
     <Avatar className={cn(sizeCls, "shrink-0 shadow-sm", className)}>
       <AvatarFallback
         className={cn(
-          "font-semibold rounded-full border",
-          initial ? colors : "bg-card",
+          "rounded-full border font-semibold",
+          // A chosen icon sits on a neutral surface so brand colours read true;
+          // otherwise fall back to the deterministic initials tint.
+          icon ? "bg-card" : initial ? colors : "bg-card",
         )}
       >
-        {initial ?? <Bot className={cn(size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5")} />}
+        {icon ? (
+          <AppIcon icon={icon} size={size === "sm" ? 14 : 16} />
+        ) : (
+          initial ?? <Bot className={cn(size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5")} />
+        )}
       </AvatarFallback>
     </Avatar>
   )

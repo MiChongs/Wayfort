@@ -13,9 +13,14 @@ const OPTIONS: {
   hint: string
   icon: typeof Zap
 }[] = [
-  { value: "plan", label: "Plan", hint: "仅规划，所有写操作走 dry-run", icon: ShieldCheck },
-  { value: "normal", label: "Normal", hint: "写操作前请求你的确认", icon: ShieldAlert },
-  { value: "bypass", label: "Bypass", hint: "直接执行，无需确认（仍受 RBAC 限制）", icon: Zap },
+  {
+    value: "plan",
+    label: "Plan",
+    hint: "只读规划：仅用只读工具调研，禁止写操作；调研完成后呈现完整计划给你批准，批准后自动切到 Normal 执行。",
+    icon: ShieldCheck,
+  },
+  { value: "normal", label: "Normal", hint: "执行模式：写/高危操作前逐项请求你的确认。", icon: ShieldAlert },
+  { value: "bypass", label: "Bypass", hint: "直接执行，无需逐项确认（仍受 RBAC 与资产授权限制）。", icon: Zap },
 ]
 
 export function ModeSwitcher({

@@ -3,7 +3,7 @@
 import * as React from "react"
 import dynamic from "next/dynamic"
 import { Loader2, Save, X } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { sftpService, type SftpEntry } from "@/lib/api/services"
+import { useConfirm } from "@/components/admin/use-confirm"
 import { fmtBytes } from "@/lib/format"
 import { basename, extension } from "./pathUtil"
 
@@ -156,10 +157,18 @@ export function SftpEditorModal({ nodeId, entry, onClose, onSaved }: Props) {
     }
   }, [content, entry, nodeId, onSaved, saving, truncated])
 
-  const onRequestClose = () => {
-    if (dirty && !confirm("有未保存的改动，确认放弃吗？")) return
+  const { confirm: confirmDiscard, dialog: discardDialog } = useConfirm()
+  const onRequestClose = React.useCallback(async () => {
+    if (dirty) {
+      const ok = await confirmDiscard({
+        title: "放弃未保存的修改？",
+        description: "关闭后本次编辑不会保存。",
+        confirmLabel: "放弃",
+      })
+      if (!ok) return
+    }
     onClose()
-  }
+  }, [dirty, confirmDiscard, onClose])
 
   // Save shortcut. Listen on capture so Monaco doesn't swallow it.
   React.useEffect(() => {
@@ -175,7 +184,8 @@ export function SftpEditorModal({ nodeId, entry, onClose, onSaved }: Props) {
   }, [entry, onSave])
 
   return (
-    <Dialog open={!!entry} onOpenChange={(v) => !v && onRequestClose()}>
+    <>
+    <Dialog open={!!entry} onOpenChange={(v) => !v && void onRequestClose()}>
       <DialogContent className="max-w-5xl w-[min(1100px,calc(100vw-2rem))] h-[85vh] flex flex-col gap-0 p-0">
         <DialogHeader className="px-4 py-3 border-b flex-row items-center justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -237,5 +247,7 @@ export function SftpEditorModal({ nodeId, entry, onClose, onSaved }: Props) {
         </div>
       </DialogContent>
     </Dialog>
+    {discardDialog}
+    </>
   )
 }

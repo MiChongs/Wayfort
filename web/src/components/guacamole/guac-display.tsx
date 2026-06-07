@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { useGuacamole } from "@/lib/hooks/use-guacamole"
 import type { GuacQuality } from "@/lib/ws/guacamole-client"
 import { GuacLoader } from "./guac-loader"

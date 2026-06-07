@@ -4,7 +4,7 @@ import * as React from "react"
 import { useRouter } from "next/navigation"
 import { useTheme } from "next-themes"
 import { LayoutGrid, LogOut, Moon, Sun, SunMoon } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import {
   Menubar,
   MenubarContent,
@@ -37,6 +37,8 @@ export function WorkspaceMenubar({ onNewTab, onShowShortcuts }: Props) {
   const duplicate = useWorkspaceStore((s) => s.duplicate)
   const cycleTab = useWorkspaceStore((s) => s.cycleTab)
   const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar)
+  const toggleSplit = useWorkspaceStore((s) => s.toggleSplit)
+  const splitId = useWorkspaceStore((s) => s.splitId)
 
   const onLogout = async () => {
     try {
@@ -57,12 +59,14 @@ export function WorkspaceMenubar({ onNewTab, onShowShortcuts }: Props) {
   }
 
   return (
-    <div className="flex items-center justify-between gap-3 px-2 py-1.5 border-b bg-background shrink-0">
-      <div className="flex items-center gap-2 shrink-0">
-        <LayoutGrid className="w-5 h-5 text-primary" />
-        <span className="text-sm font-semibold tracking-tight">工作台</span>
+    <div className="flex shrink-0 items-center justify-between gap-3 border-b bg-card/50 px-2.5 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-card/30">
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="grid h-6 w-6 place-items-center rounded-md bg-primary/12 text-primary">
+          <LayoutGrid className="h-3.5 w-3.5" />
+        </span>
+        <span className="text-sm font-medium tracking-tight">工作台</span>
       </div>
-      <Menubar className="border-0 shadow-none">
+      <Menubar className="border-0 bg-transparent shadow-none">
         <MenubarMenu>
           <MenubarTrigger>文件</MenubarTrigger>
           <MenubarContent>
@@ -99,6 +103,10 @@ export function WorkspaceMenubar({ onNewTab, onShowShortcuts }: Props) {
             <MenubarItem onSelect={toggleSidebar}>
               切换侧边栏
               <MenubarShortcut>Ctrl+B</MenubarShortcut>
+            </MenubarItem>
+            <MenubarItem onSelect={toggleSplit} disabled={tabs.length < 2 && !splitId}>
+              {splitId ? "取消分屏" : "分屏并排"}
+              <MenubarShortcut>Ctrl+\</MenubarShortcut>
             </MenubarItem>
             <MenubarSeparator />
             <MenubarItem onSelect={() => cycleTab(1)} disabled={tabs.length < 2}>

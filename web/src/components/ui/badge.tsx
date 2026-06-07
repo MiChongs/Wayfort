@@ -9,10 +9,16 @@ const badgeVariants = cva(
       variant: {
         default: "border-transparent bg-primary text-primary-foreground",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
-        destructive: "border-transparent bg-destructive text-white",
-        outline: "text-foreground",
+        destructive: "border-transparent bg-destructive text-destructive-foreground",
+        outline: "border-border text-foreground",
         success: "border-transparent bg-emerald-600/15 text-emerald-700 dark:text-emerald-300",
         warning: "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300",
+        // Cream pill — quiet metadata chips (DESIGN badge-pill). Pairs with
+        // `rounded-full` at the call site for the pill silhouette.
+        soft: "border-transparent bg-accent text-accent-foreground",
+        // Coral-tinted — credential "in use" / brand-emphasis chips.
+        coral: "border-transparent bg-primary/12 text-primary",
+        info: "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300",
       },
     },
     defaultVariants: { variant: "default" },

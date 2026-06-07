@@ -6,54 +6,33 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  ArrowRight, Database, FolderOpen, Heart, LayoutGrid, Monitor, Play,
-  Server, Share2, Table as TableIcon, Terminal as TerminalIcon,
+  ArrowRight, FolderOpen, Heart, LayoutGrid, Monitor, Play,
+  Share2, Table as TableIcon, Terminal as TerminalIcon,
 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { meService, nodeService, sessionService, tagService } from "@/lib/api/services"
+import { Pencil } from "lucide-react"
+import { meService, nodeService, sessionService } from "@/lib/api/services"
 import { CopyButton } from "@/components/common/copy-button"
-import type { NodeProtocol } from "@/lib/api/types"
+import { TagBadge } from "@/components/tags/tag-badge"
+import { AppIcon } from "@/components/icons/app-icon"
+import { nodeIcon } from "@/lib/icons/protocol"
+import { useAccess } from "@/lib/hooks/use-access"
 import { fullTime, relTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import { useWorkspaceStore, type Protocol } from "@/components/workspace/useWorkspaceStore"
-
-const PROTOCOL_ICON: Record<NodeProtocol, React.ComponentType<{ className?: string }>> = {
-  ssh: TerminalIcon,
-  telnet: TerminalIcon,
-  rdp: Monitor,
-  vnc: Monitor,
-  mysql: Database,
-  postgres: Database,
-  redis: Database,
-  mongo: Database,
-  tcp: Server,
-  // Phase 22+ — 国产数据库.
-  dameng: Database,
-  kingbase: Database,
-  vastbase: Database,
-  highgo: Database,
-  opengauss: Database,
-  gaussdb: Database,
-  tidb: Database,
-  oceanbase: Database,
-  starrocks: Database,
-  doris: Database,
-  gbase8a: Database,
-  gbase8s: Database,
-}
 
 export default function NodeDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const nodeId = Number(id)
   const qc = useQueryClient()
+  const { isAdmin } = useAccess()
 
   const node = useQuery({ queryKey: ["node", nodeId], queryFn: () => nodeService.get(nodeId) })
   const fav = useQuery({ queryKey: ["me", "favorites"], queryFn: meService.favorites })
   const sessions = useQuery({ queryKey: ["sessions", "node", nodeId], queryFn: () => sessionService.list({ limit: 200 }) })
-  const tags = useQuery({ queryKey: ["admin", "tags"], queryFn: tagService.list })
 
   const toggleFav = useMutation({
     mutationFn: async ({ current }: { current: boolean }) =>
@@ -67,11 +46,11 @@ export default function NodeDetail({ params }: { params: Promise<{ id: string }>
 
   const n = node.data
   const isFav = (fav.data?.node_ids || []).includes(nodeId)
-  const Icon = PROTOCOL_ICON[n.protocol] || Server
   const recentNodeSessions = (sessions.data?.sessions || []).filter((s) => s.node_id === nodeId).slice(0, 10)
   const actions = actionList(n.protocol)
 
-  const tagList = (n.tags || "").split(",").map((t) => t.trim()).filter(Boolean)
+  const managedTags = n.tag_list || []
+  const freetextTags = (n.tags || "").split(",").map((t) => t.trim()).filter(Boolean)
 
   return (
     <div className="p-6 space-y-6">
@@ -79,18 +58,27 @@ export default function NodeDetail({ params }: { params: Promise<{ id: string }>
         <CardHeader>
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <CardTitle className="flex items-center gap-2">
-              <Icon className="w-5 h-5" />
+              <AppIcon icon={nodeIcon(n)} size={20} />
               {n.name}
               {n.disabled && <Badge variant="destructive">已禁用</Badge>}
             </CardTitle>
-            <Button
-              variant={isFav ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => toggleFav.mutate({ current: isFav })}
-            >
-              <Heart className={cn("w-4 h-4", isFav && "fill-current text-red-500")} />
-              {isFav ? "已收藏" : "收藏"}
-            </Button>
+            <div className="flex items-center gap-2">
+              {isAdmin && (
+                <Button variant="outline" size="sm" asChild>
+                  <Link href={"/admin/nodes" as Parameters<typeof Link>[0]["href"]}>
+                    <Pencil className="h-4 w-4" /> 编辑
+                  </Link>
+                </Button>
+              )}
+              <Button
+                variant={isFav ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => toggleFav.mutate({ current: isFav })}
+              >
+                <Heart className={cn("w-4 h-4", isFav && "fill-current text-red-500")} />
+                {isFav ? "已收藏" : "收藏"}
+              </Button>
+            </div>
           </div>
           <CardDescription className="flex items-center gap-2 flex-wrap">
             <Badge variant="secondary">{n.protocol.toUpperCase()}</Badge>
@@ -99,14 +87,35 @@ export default function NodeDetail({ params }: { params: Promise<{ id: string }>
               <CopyButton value={`${n.host}:${n.port}`} className="ml-1 h-6 w-6" />
             </span>
             {n.region && <Badge variant="outline">{n.region}</Badge>}
-            {tagList.map((t) => <Badge key={t} variant="outline">#{t}</Badge>)}
+            {managedTags.length > 0
+              ? managedTags.map((t) => <TagBadge key={t.id} tag={t} size="sm" showDot />)
+              : freetextTags.map((t) => <Badge key={t} variant="outline">#{t}</Badge>)}
           </CardDescription>
         </CardHeader>
         <CardContent className="pb-6 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <Field label="用户名" value={n.username || "—"} />
-          <Field label="代理链" value={n.proxy_chain || "直连"} />
-          <Field label="凭据 ID" value={n.credential_id ? `#${n.credential_id}` : "—"} />
-          <Field label="可用标签" value={tags.data?.tags.length ? <span className="text-xs text-muted-foreground">{tags.data.tags.length} 个已定义，admin 可在「标签管理」绑定到节点</span> : "—"} />
+          <Field label="凭据" value={n.credential_name || (n.credential_id ? `#${n.credential_id}` : "—")} />
+          <Field
+            label="代理链"
+            value={n.proxy_names && n.proxy_names.length ? n.proxy_names.join(" → ") : n.proxy_chain || "直连"}
+          />
+          <Field
+            label="访问控制"
+            value={
+              n.requires_approval_for_connect || n.requires_approval_for_file_xfer ? (
+                <span className="flex flex-wrap gap-1.5">
+                  {n.requires_approval_for_connect && (
+                    <Badge variant="warning" className="font-normal">连接需审批</Badge>
+                  )}
+                  {n.requires_approval_for_file_xfer && (
+                    <Badge variant="warning" className="font-normal">文件传输需审批</Badge>
+                  )}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">无需审批</span>
+              )
+            }
+          />
           {n.proto_options && (
             <div className="md:col-span-2">
               <Field label="协议参数" value={<pre className="text-xs font-mono bg-muted p-2 rounded overflow-auto">{prettyJson(n.proto_options)}</pre>} />

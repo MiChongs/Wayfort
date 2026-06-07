@@ -11,9 +11,14 @@ export type Protocol =
   | "rdp_next"
   | "vnc"
   | "sftp"
+  | "oss"
   | "tcp_forward"
 
-export type TabStatus = "fresh" | "connecting" | "connected" | "closed" | "error"
+export type TabStatus = "fresh" | "connecting" | "connected" | "closed" | "error" | "approval"
+
+// ExpiryInfo is the per-tab approval-grant countdown the ExpiryGuard publishes
+// for the status bar to render. Ephemeral (not persisted).
+export type ExpiryInfo = { ms: number; deadline: string; low: boolean }
 
 // SideDock sub-tab key — which server-management panel is open inside a
 // connection tab. Persisted per-tab so refresh restores the user's last view.
@@ -132,6 +137,19 @@ type State = {
   treeView: TreeView
   // Not persisted — kept in memory so Ctrl+Shift+T works within a session.
   recentlyClosed: WorkspaceTab[]
+  // Ephemeral per-tab approval-grant countdown (published by ExpiryGuard, read
+  // by the status bar). Not persisted.
+  expiry: Record<string, ExpiryInfo>
+  // tabId whose renewal dialog should open — set by the status bar's "续期"
+  // button, consumed by that tab's ExpiryGuard. Not persisted.
+  renewTarget: string | null
+  // Split view — when splitId names a (different) live tab, the content area
+  // shows the active tab and splitId side by side. splitDir picks the axis;
+  // splitRatio is the primary pane's fraction (0.2–0.8). Kept at the top level
+  // (not in prefs) so dragging the divider doesn't churn prefs subscribers.
+  splitId: string | null
+  splitDir: "row" | "col"
+  splitRatio: number
 }
 
 type Actions = {
@@ -145,6 +163,8 @@ type Actions = {
   setActive: (id: string) => void
   reorder: (from: number, to: number) => void
   setStatus: (id: string, status: TabStatus) => void
+  setExpiry: (id: string, info: ExpiryInfo | null) => void
+  requestRenew: (id: string | null) => void
   // Live latency badge on the tab strip. `null` = unmeasurable
   // (renders as "—" so the user knows the channel is up but RTT isn't
   // available for this transport).
@@ -171,6 +191,12 @@ type Actions = {
   setPoppedOut: (id: string, popped: boolean) => void
   markUnread: (id: string, unread: boolean) => void
   setPrefs: (patch: Partial<WorkspacePrefs>) => void
+  // Split view.
+  setSplit: (id: string | null) => void
+  toggleSplit: () => void
+  swapSplit: () => void
+  setSplitDir: (dir: "row" | "col") => void
+  setSplitRatio: (ratio: number) => void
 }
 
 export type WorkspaceStore = State & Actions
@@ -218,6 +244,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       sidebarOpen: true,
       treeView: "favorites",
       recentlyClosed: [],
+      expiry: {},
+      renewTarget: null,
+      splitId: null,
+      splitDir: "row",
+      splitRatio: 0.5,
 
       open: ({ nodeId, protocol, rdpBackend, title, host, port, groupId, pinned }) => {
         const id = genId()
@@ -254,11 +285,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         // Pinned tabs ignore plain close — the user has to unpin first.
         if (removed.pinned) return
         const remaining = tabs.filter((t) => t.id !== id)
-        set({
+        const nextActive = findNextActive(remaining, idx, activeId, id)
+        set((s) => ({
           tabs: remaining,
-          activeId: findNextActive(remaining, idx, activeId, id),
+          activeId: nextActive,
+          // Drop the split if its secondary pane (or the new primary) just closed.
+          splitId: s.splitId === id || s.splitId === nextActive ? null : s.splitId,
           recentlyClosed: [removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
-        })
+        }))
       },
 
       closeOthers: (id) => {
@@ -326,6 +360,9 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       setActive: (id) =>
         set((s) => ({
           activeId: id,
+          // Clicking the secondary pane's tab promotes it to primary and demotes
+          // the old primary to the split pane — i.e. the two panes swap.
+          splitId: s.splitId === id ? s.activeId : s.splitId,
           // Activating a tab clears its unread / activity dot.
           tabs: s.tabs.map((t) => (t.id === id ? { ...t, unread: false } : t)),
         })),
@@ -340,9 +377,23 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         }),
 
       setStatus: (id, status) =>
-        set((s) => ({
-          tabs: s.tabs.map((t) => (t.id === id ? { ...t, status } : t)),
-        })),
+        set((s) => {
+          // Idempotent: skip the update (return the same state) when the status
+          // is unchanged, so repeated setStatus calls can't drive a render loop.
+          const cur = s.tabs.find((t) => t.id === id)
+          if (!cur || cur.status === status) return s
+          return { tabs: s.tabs.map((t) => (t.id === id ? { ...t, status } : t)) }
+        }),
+
+      setExpiry: (id, info) =>
+        set((s) => {
+          const next = { ...s.expiry }
+          if (info == null) delete next[id]
+          else next[id] = info
+          return { expiry: next }
+        }),
+
+      requestRenew: (id) => set({ renewTarget: id }),
 
       setLatency: (id, latencyMs) =>
         set((s) => ({
@@ -478,6 +529,28 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         set((s) => ({
           prefs: { ...s.prefs, ...patch },
         })),
+
+      setSplit: (id) =>
+        set((s) => {
+          if (!id || id === s.activeId || !s.tabs.find((t) => t.id === id)) return { splitId: null }
+          return { splitId: id }
+        }),
+
+      toggleSplit: () =>
+        set((s) => {
+          if (s.splitId) return { splitId: null }
+          // Split the active tab with the most-recently-created other tab.
+          const other = [...s.tabs].reverse().find((t) => t.id !== s.activeId)
+          return { splitId: other ? other.id : null }
+        }),
+
+      swapSplit: () =>
+        set((s) => (s.splitId ? { activeId: s.splitId, splitId: s.activeId } : s)),
+
+      setSplitDir: (dir) => set({ splitDir: dir }),
+
+      setSplitRatio: (ratio) =>
+        set({ splitRatio: Math.max(0.2, Math.min(0.8, ratio)) }),
     }),
     {
       name: "workspace:v1",
@@ -501,6 +574,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         activeId: s.activeId,
         sidebarOpen: s.sidebarOpen,
         treeView: s.treeView,
+        // Remember the split axis + ratio; the split pairing itself resets to
+        // single on reload (both sessions are dead anyway).
+        splitDir: s.splitDir,
+        splitRatio: s.splitRatio,
       }),
       // Older payloads (Phase 6 and earlier) lack the new fields. Fill in
       // defaults so consumers can rely on the new shape without runtime
@@ -535,6 +612,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           activeId: cast.activeId ?? null,
           sidebarOpen: cast.sidebarOpen ?? true,
           treeView: cast.treeView ?? "favorites",
+          splitDir: cast.splitDir ?? "row",
+          splitRatio: typeof cast.splitRatio === "number" ? cast.splitRatio : 0.5,
         }
       },
       version: 2,

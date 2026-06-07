@@ -34,6 +34,12 @@ const (
 	NodeProtoDoris     NodeProtocol = "doris"     // Apache Doris (MySQL-兼容)
 	NodeProtoGBase8a   NodeProtocol = "gbase8a"   // 南大通用 GBase 8a (MySQL-兼容)
 	NodeProtoGBase8s   NodeProtocol = "gbase8s"   // 南大通用 GBase 8s (PG-兼容)
+
+	// Object storage bastion. One node = one account/endpoint (credentials +
+	// endpoint + region); the workspace browses every bucket the credential can
+	// see. Provider-specific config (provider/endpoint/region/default bucket)
+	// lives in Node.ProtoOptions as JSON. See internal/protocols/oss.
+	NodeProtoOSS NodeProtocol = "oss" // 对象存储（阿里云 OSS / 腾讯 COS / S3 等）
 )
 
 // Node is a target host the user wants to reach. ProxyChain is an ordered
@@ -52,6 +58,9 @@ type Node struct {
 	// VNC color depth, RDP security mode, etc.). Empty == use protocol defaults.
 	ProtoOptions string    `gorm:"type:text" json:"proto_options,omitempty"`
 	Tags         string    `gorm:"size:255" json:"tags"`
+	// Icon is an optional unified icon token ("simple:postgresql", "lucide:server",
+	// "emoji:🐳", "text:DB"). Empty == derive from protocol on the client.
+	Icon         string    `gorm:"size:48" json:"icon,omitempty"`
 	Region       string    `gorm:"size:64" json:"region"`
 	Description  string    `gorm:"size:512" json:"description"`
 	Disabled     bool      `gorm:"default:false" json:"disabled"`

@@ -19,6 +19,10 @@ type AIMessage struct {
 	ParentID       *uint64     `gorm:"index" json:"parent_id,omitempty"`
 	Role           MessageRole `gorm:"size:16;not null" json:"role"`
 	Content        string      `gorm:"type:text" json:"content"`
+	// Reasoning holds the model's extended-thinking text for assistant turns so
+	// it survives a reload (it is streamed live, but was previously discarded).
+	// Not replayed back to the model — purely for the transcript UI.
+	Reasoning      string      `gorm:"type:text" json:"reasoning,omitempty"`
 	ToolCallID     string      `gorm:"size:64" json:"tool_call_id,omitempty"`
 	ToolCalls      string      `gorm:"type:text" json:"tool_calls,omitempty"`
 	InputTokens    uint32      `json:"input_tokens"`

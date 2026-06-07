@@ -77,7 +77,7 @@ func RegisterSSHTools(reg *Registry, deps Deps, readonlyAllow []string, readonly
 				"echo '== ss_listen =='", "ss -tunlp 2>/dev/null | head -20",
 				"echo '== failed_units =='", "systemctl --failed --no-legend 2>/dev/null",
 			}, " && ")
-			out, errOut, exit, err := deps.NodeRunner.Exec(ctx, tctx.UserID, a.NodeID, cmd, 30)
+			out, errOut, exit, err := deps.NodeRunner.ExecStream(ctx, tctx.UserID, a.NodeID, cmd, 30, tctx.Stream)
 			if err != nil {
 				return "", err
 			}
@@ -108,7 +108,7 @@ func sshExecRunner(deps Deps, readonly bool, allow []string) RunFn {
 		if a.Timeout <= 0 {
 			a.Timeout = 30
 		}
-		out, errOut, exit, err := deps.NodeRunner.Exec(ctx, tctx.UserID, a.NodeID, a.Command, a.Timeout)
+		out, errOut, exit, err := deps.NodeRunner.ExecStream(ctx, tctx.UserID, a.NodeID, a.Command, a.Timeout, tctx.Stream)
 		if err != nil {
 			return "", err
 		}

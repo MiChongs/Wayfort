@@ -10,6 +10,7 @@ import (
 	dockertypes "github.com/docker/docker/api/types"
 	dclient "github.com/docker/docker/client"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/dockerx"
 )
 
 // Launcher creates a one-shot container preloaded with a database CLI client
@@ -21,7 +22,7 @@ type Launcher struct {
 }
 
 func New(cfg config.DBCLIConfig) (*Launcher, error) {
-	cli, err := dclient.NewClientWithOpts(dclient.FromEnv, dclient.WithAPIVersionNegotiation())
+	cli, err := dockerx.NewClient()
 	if err != nil {
 		return nil, err
 	}

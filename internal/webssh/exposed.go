@@ -89,6 +89,44 @@ func (g *Gateway) BeginSession(ctx context.Context, sessionID string, kind model
 	return row
 }
 
+// CommandAuditor returns an OnCommand callback that reconstructs whole command
+// lines from the keystroke stream and writes one audit row per command. Sibling
+// protocol packages (dbcli, telnet) pass the result to Session.OnCommand so DB
+// CLI / Telnet input is audited the same way SSH is.
+func (g *Gateway) CommandAuditor(sessionID string, claims *auth.Claims, clientIP string, node *model.Node) func(string) {
+	var nodeID *uint64
+	if node != nil {
+		id := node.ID
+		nodeID = &id
+	}
+	tracker := newCmdTracker(func(cmd string) {
+		g.audit.Log(model.AuditLog{
+			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
+			SessionID: sessionID, NodeID: nodeID, ClientIP: clientIP, Payload: cmd,
+		})
+	})
+	return tracker.feed
+}
+
+// RegisterLive binds a session id to the cancel func that tears its run loop
+// down, so an admin can force the session off from the audit page. The returned
+// func unregisters it; call it after EndSession so the teardown can still read
+// the terminated flag. Sibling protocol packages (telnet, dbcli, guacamole)
+// reuse this to get force-off support without their own registry.
+func (g *Gateway) RegisterLive(sessionID string, cancel context.CancelFunc) func() {
+	g.registerLive(sessionID, cancel)
+	return func() { g.unregisterLive(sessionID) }
+}
+
+// WasTerminated reports whether TerminateSession was invoked against a session
+// that is still registered as live.
+func (g *Gateway) WasTerminated(sessionID string) bool {
+	g.liveMu.Lock()
+	ls, ok := g.live[sessionID]
+	g.liveMu.Unlock()
+	return ok && ls.terminated.Load()
+}
+
 // EndSession finalises a session row with byte counters and the terminal
 // error (if any), unregisters from Redis, and emits the end audit event.
 func (g *Gateway) EndSession(ctx context.Context, row *model.Session, claims *auth.Claims, bytesIn, bytesOut uint64, runErr error) {
@@ -96,10 +134,14 @@ func (g *Gateway) EndSession(ctx context.Context, row *model.Session, claims *au
 	row.EndedAt = &end
 	row.BytesIn = bytesIn
 	row.BytesOut = bytesOut
-	if runErr != nil {
+	switch {
+	case g.WasTerminated(row.ID):
+		row.Status = model.SessionTerminated
+		row.Reason = "管理员强制下线"
+	case runErr != nil:
 		row.Status = model.SessionErrored
 		row.Reason = truncate(runErr.Error(), 250)
-	} else {
+	default:
 		row.Status = model.SessionClosed
 	}
 	if err := g.sessions.Update(ctx, row); err != nil {

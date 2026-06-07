@@ -2,7 +2,9 @@
 
 import * as React from "react"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
-import { ChevronDown, ChevronRight, FileText, Folder } from "lucide-react"
+import { Check, ChevronDown, ChevronRight, Copy, FileText, Folder } from "lucide-react"
+import { toast } from "@/components/ui/sonner"
+import { Button } from "@/components/ui/button"
 import {
   Collapsible,
   CollapsibleContent,
@@ -40,45 +42,78 @@ export function ToolOutputView({ raw, danger }: { raw: string; danger?: boolean 
   const [expanded, setExpanded] = React.useState(false)
   const longText = raw.length > 1200
 
-  if (parsed && typeof parsed === "object" && parsed !== null) {
-    return <JsonValue value={parsed} />
-  }
+  const content =
+    parsed && typeof parsed === "object" && parsed !== null ? (
+      <JsonValue value={parsed} />
+    ) : (
+      <ScrollArea
+        className={cn(
+          "rounded-md border max-h-[24rem]",
+          danger
+            ? "bg-zinc-900 text-zinc-50 border-zinc-700"
+            : "bg-muted text-foreground border-border/60",
+        )}
+      >
+        <pre className="p-3 text-xs font-mono whitespace-pre-wrap break-words">
+          {longText && !expanded ? (
+            <>
+              {raw.slice(0, 1200)}
+              <button
+                onClick={() => setExpanded(true)}
+                className="block mt-2 text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded font-sans"
+              >
+                <ChevronDown className="inline w-3 h-3 mr-1" /> 展开剩余{" "}
+                {raw.length - 1200} 字符
+              </button>
+            </>
+          ) : (
+            <AnimatePresence mode="wait">
+              <motion.span
+                key={expanded ? "full" : "preview"}
+                initial={reduce ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={reduce ? { duration: 0 } : { duration: 0.18 }}
+              >
+                {raw}
+              </motion.span>
+            </AnimatePresence>
+          )}
+        </pre>
+      </ScrollArea>
+    )
 
   return (
-    <ScrollArea
-      className={cn(
-        "rounded-md border max-h-[24rem]",
-        danger
-          ? "bg-zinc-900 text-zinc-50 border-zinc-700"
-          : "bg-muted text-foreground border-border/60",
-      )}
+    <div className="group/toolout relative">
+      {raw.trim().length > 0 && <CopyOutputButton value={raw} />}
+      {content}
+    </div>
+  )
+}
+
+// CopyOutputButton — a hover-revealed copy affordance for any tool result, so
+// operators can grab command output without hand-selecting from a <pre>.
+function CopyOutputButton({ value }: { value: string }) {
+  const [done, setDone] = React.useState(false)
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="absolute right-1.5 top-1.5 z-10 h-6 w-6 rounded-md border bg-background/90 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/toolout:opacity-100 focus-visible:opacity-100"
+      aria-label="复制输出"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value)
+          setDone(true)
+          toast.success("已复制工具输出")
+          setTimeout(() => setDone(false), 1500)
+        } catch {
+          toast.error("复制失败")
+        }
+      }}
     >
-      <pre className="p-3 text-xs font-mono whitespace-pre-wrap break-words">
-        {longText && !expanded ? (
-          <>
-            {raw.slice(0, 1200)}
-            <button
-              onClick={() => setExpanded(true)}
-              className="block mt-2 text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 rounded font-sans"
-            >
-              <ChevronDown className="inline w-3 h-3 mr-1" /> 展开剩余{" "}
-              {raw.length - 1200} 字符
-            </button>
-          </>
-        ) : (
-          <AnimatePresence mode="wait">
-            <motion.span
-              key={expanded ? "full" : "preview"}
-              initial={reduce ? false : { opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={reduce ? { duration: 0 } : { duration: 0.18 }}
-            >
-              {raw}
-            </motion.span>
-          </AnimatePresence>
-        )}
-      </pre>
-    </ScrollArea>
+      {done ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </Button>
   )
 }
 

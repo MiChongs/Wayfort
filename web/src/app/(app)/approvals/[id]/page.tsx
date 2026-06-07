@@ -3,97 +3,131 @@
 import * as React from "react"
 import Link from "next/link"
 import { useParams } from "next/navigation"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import {
   ArrowLeft,
-  CheckCircle2,
-  Clock,
   FileText,
   Hash,
-  KeyRound,
-  RefreshCw,
+  Loader2,
   ShieldCheck,
-  ShieldOff,
   UserCheck,
-  UserX,
-  XCircle,
 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Textarea } from "@/components/ui/textarea"
-import { Label } from "@/components/ui/label"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
+import { confirmDialog } from "@/components/common/confirm-dialog"
+import { CopyButton } from "@/components/common/copy-button"
 import { approvalService } from "@/lib/api/services"
+import { useApprovalStream } from "@/lib/hooks/use-approval-stream"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
+import { useAccess } from "@/lib/hooks/use-access"
 import { fullTime, relTime } from "@/lib/format"
-import type { ApprovalTask } from "@/lib/api/types"
+import { cn } from "@/lib/utils"
+import {
+  BIZ_ICONS,
+  bizLabel,
+  eventLabel,
+  riskMeta,
+  statusMeta,
+  resourceTypeLabel,
+} from "@/lib/approvals/meta"
+import { DecisionPanel } from "@/components/approvals/decision"
+import { GrantCard } from "@/components/approvals/grant-card"
+import { StageStepper } from "@/components/approvals/stage-stepper"
+import type { ApprovalGrantRow } from "@/lib/api/types"
 
 export default function ApprovalDetailPage() {
   const { id } = useParams<{ id: string }>()
   const qc = useQueryClient()
   const me = useCurrentUser()
+  const access = useAccess()
 
-  const detail = useQuery({
-    queryKey: ["approval.detail", id],
-    queryFn: () => approvalService.get(id),
-    refetchInterval: 8000,
-  })
+  // The stream hook keeps the detail live (SSE + slow poll) and invalidates
+  // the same ["approval", id] key the query below reads.
+  const detailQ = useApprovalStream(id)
+  const detail = detailQ.data
 
   const verify = useMutation({
     mutationFn: () => approvalService.verifyChain(id),
     onSuccess: (r) => {
-      if (r.ok) toast.success(`审计链校验通过 (${r.total_events} 条事件)`)
-      else toast.error(`审计链断裂！事件 #${r.first_bad_event_id} — ${r.reason}`)
+      if (r.ok) toast.success(`审计链完整，共 ${r.total_events} 条事件`)
+      else toast.error(`审计链异常：事件 #${r.first_bad_event_id} — ${r.reason}`)
     },
+    onError: (e: { message?: string }) => toast.error(e.message || "校验失败"),
   })
 
   const cancelMut = useMutation({
-    mutationFn: (reason: string) => approvalService.cancel(id, reason),
+    mutationFn: () => approvalService.cancel(id, "申请人撤销"),
     onSuccess: () => {
-      toast.success("已撤销")
-      qc.invalidateQueries({ queryKey: ["approval.detail", id] })
+      toast.success("已撤销申请")
+      qc.invalidateQueries({ queryKey: ["approval", id] })
     },
     onError: (e: { message?: string }) => toast.error(e.message || "撤销失败"),
   })
 
-  if (detail.isLoading) {
-    return <div className="p-6 text-sm text-muted-foreground">加载中...</div>
-  }
-  if (!detail.data) {
+  if (detailQ.isLoading && !detail) {
     return (
-      <div className="p-6">
-        <Link href="/approvals" className="text-sm text-primary hover:underline">
-          <ArrowLeft className="w-3 h-3 inline" /> 返回列表
-        </Link>
-        <div className="mt-4 rounded-lg border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
-          审批请求不存在或你无权查看。
+      <div className="mx-auto w-full max-w-3xl p-6">
+        <div className="h-40 animate-pulse rounded-xl border bg-muted/40" />
+      </div>
+    )
+  }
+  if (!detail) {
+    return (
+      <div className="mx-auto w-full max-w-3xl space-y-4 p-6">
+        <BackLink />
+        <div className="rounded-xl border bg-muted/30 p-10 text-center text-sm text-muted-foreground">
+          审批请求不存在，或你无权查看。
         </div>
       </div>
     )
   }
 
-  const { request: r, tasks, events, grant } = detail.data
+  const { request: r, tasks, events, grant } = detail
+  const Icon = BIZ_ICONS[r.business_type] ?? ShieldCheck
+  const sm = statusMeta(r.status)
+  const risk = riskMeta(r.risk_level)
   const myTasks = tasks.filter((t) => t.approver_id === me?.uid && t.state === "pending")
   const canCancel = me?.uid === r.requester_id && r.status === "pending"
 
-  return (
-    <div className="p-6 space-y-4 max-w-4xl">
-      <div className="flex items-center gap-2 text-sm">
-        <Link href="/approvals" className="text-primary hover:underline">
-          <ArrowLeft className="w-3 h-3 inline" /> 返回审批中心
-        </Link>
-      </div>
+  const onCancel = async () => {
+    const ok = await confirmDialog({
+      title: "撤销这条申请？",
+      description: "撤销后流程立即结束，如仍需访问请重新发起。",
+      destructive: true,
+      confirmLabel: "撤销申请",
+    })
+    if (ok) cancelMut.mutate()
+  }
 
-      <div className="rounded-lg border p-4 space-y-2">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="min-w-0">
-            <h1 className="text-xl font-semibold truncate">{r.title || `${r.business_type} 申请`}</h1>
-            <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2 flex-wrap">
-              <span>{r.requester_name}</span>
+  return (
+    <div className="mx-auto w-full max-w-3xl space-y-4 p-6">
+      <BackLink />
+
+      {/* header */}
+      <div className="rounded-xl border bg-card p-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+            <Icon className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate text-lg font-semibold">{r.title || `${bizLabel(r.business_type)}申请`}</h1>
+              <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium", sm.badge)}>
+                <sm.icon className="h-3 w-3" /> {sm.label}
+              </span>
+              <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium", risk.badge)}>
+                <risk.icon className="h-3 w-3" /> {risk.label}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+              <span className="text-foreground/80">{r.requester_name}</span>
               <span>·</span>
-              <span>创建于 {fullTime(r.created_at)}</span>
+              <span>{bizLabel(r.business_type)}</span>
+              <span>·</span>
+              <span>提交于 {fullTime(r.created_at)}</span>
               {r.resolved_at && (
                 <>
                   <span>·</span>
@@ -102,165 +136,137 @@ export default function ApprovalDetailPage() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline">{r.business_type}</Badge>
-            <Badge>{r.status}</Badge>
-            <Badge variant="secondary">风险：{r.risk_level}</Badge>
-          </div>
+          {canCancel && (
+            <Button variant="outline" size="sm" className="shrink-0" disabled={cancelMut.isPending} onClick={onCancel}>
+              {cancelMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "撤销申请"}
+            </Button>
+          )}
         </div>
 
-        <Separator />
+        <Separator className="my-3" />
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-          <div>
-            <div className="text-xs text-muted-foreground">资源</div>
-            <div className="font-mono">{r.resource_type || "-"}:{r.resource_id || "-"}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">阶段进度</div>
-            <div>{r.current_stage < 0 ? "已结束" : `${r.current_stage + 1} / ${r.total_stages}`}</div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">访问窗口</div>
-            <div className="text-xs">
+        <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+          <Field label="资源">
+            {r.resource_type ? (
+              <span>
+                {resourceTypeLabel(r.resource_type)} <span className="font-mono text-xs">{r.resource_id}</span>
+              </span>
+            ) : (
+              "—"
+            )}
+          </Field>
+          <Field label="阶段进度">
+            {r.current_stage < 0 ? "已结束" : `第 ${r.current_stage + 1} / ${r.total_stages} 级`}
+          </Field>
+          <Field label="客户端 IP">
+            <span className="font-mono text-xs">{r.client_ip || "—"}</span>
+          </Field>
+          <Field label="申请窗口" className="col-span-2 sm:col-span-3">
+            <span className="text-xs">
               {fullTime(r.window_start)} → {fullTime(r.window_end)}
               {r.effective_window_end && r.effective_window_end !== r.window_end && (
-                <span className="text-amber-600 ml-1">（实际到 {fullTime(r.effective_window_end)}）</span>
+                <span className="ml-1 text-amber-600 dark:text-amber-400">（实际到 {fullTime(r.effective_window_end)}）</span>
               )}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-muted-foreground">客户端 IP</div>
-            <div className="font-mono text-xs">{r.client_ip || "-"}</div>
-          </div>
+            </span>
+          </Field>
         </div>
 
         {r.reason && (
           <>
-            <Separator />
+            <Separator className="my-3" />
             <div>
-              <div className="text-xs text-muted-foreground mb-1 flex items-center gap-1">
-                <FileText className="w-3 h-3" /> 理由
+              <div className="mb-1 flex items-center gap-1 text-xs text-muted-foreground">
+                <FileText className="h-3 w-3" /> 申请事由
               </div>
-              <div className="text-sm whitespace-pre-wrap">{r.reason}</div>
+              <p className="whitespace-pre-wrap text-sm">{r.reason}</p>
             </div>
           </>
         )}
-
-        {canCancel && (
-          <div className="pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                const reason = prompt("撤销原因：")
-                if (reason !== null) cancelMut.mutate(reason)
-              }}
-            >
-              撤销申请
-            </Button>
-          </div>
-        )}
       </div>
 
-      {grant && (
-        <div className="rounded-lg border p-4 bg-emerald-50 dark:bg-emerald-900/20 space-y-2">
-          <div className="flex items-center gap-2 font-medium">
-            <KeyRound className="w-4 h-4" />
-            已发放 Grant
-            <Badge variant="outline" className="ml-auto">{grant.status}</Badge>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-            <div>
-              <div className="text-xs text-muted-foreground">Grant ID</div>
-              <div className="font-mono text-xs">{grant.id}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">Actions</div>
-              <div className="font-mono text-xs">{grant.actions}</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">有效至</div>
-              <div className="text-xs">{fullTime(grant.not_after)} ({relTime(grant.not_after)})</div>
-            </div>
-            <div>
-              <div className="text-xs text-muted-foreground">已使用</div>
-              <div className="text-xs">{grant.used_count} {grant.max_uses > 0 && ` / ${grant.max_uses}`}</div>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {/* my decision */}
       {myTasks.length > 0 && (
-        <div className="rounded-lg border p-4 space-y-3 bg-primary/5">
-          <div className="font-medium flex items-center gap-2">
-            <UserCheck className="w-4 h-4" /> 等待你处理（{myTasks.length}）
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <UserCheck className="h-4 w-4 text-primary" /> 等待你处理
           </div>
-          {myTasks.map((t) => <DecideForm key={t.id} task={t} onDone={() => detail.refetch()} />)}
+          {myTasks.map((t) => (
+            <DecisionPanel key={t.id} task={t} onDone={() => detailQ.refetch()} />
+          ))}
         </div>
       )}
 
-      <Tabs defaultValue="tasks">
+      {/* grant */}
+      {grant && (
+        <div className="space-y-2">
+          <div className="eyebrow">已发放授权</div>
+          <GrantCard
+            grant={
+              {
+                ...grant,
+                request_title: r.title,
+                request_reason: r.reason,
+                beneficiary_name: r.requester_name,
+              } as ApprovalGrantRow
+            }
+            mode={me?.uid === grant.beneficiary_id ? "self" : "admin"}
+            readOnly={!(me?.uid === grant.beneficiary_id || access.isAdmin)}
+            onChanged={() => detailQ.refetch()}
+          />
+        </div>
+      )}
+
+      {/* flow + ledger */}
+      <Tabs defaultValue="flow">
         <TabsList>
-          <TabsTrigger value="tasks">审批流（{tasks.length}）</TabsTrigger>
-          <TabsTrigger value="events">审计账本（{events.length}）</TabsTrigger>
+          <TabsTrigger value="flow">审批流</TabsTrigger>
+          <TabsTrigger value="ledger">审计账本（{events.length}）</TabsTrigger>
         </TabsList>
-        <TabsContent value="tasks" className="mt-3 space-y-2">
-          {tasks.map((t) => (
-            <div key={t.id} className="rounded-lg border p-3 flex items-center justify-between text-sm">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline">阶段 {t.stage + 1}</Badge>
-                <Badge variant="outline">{t.stage_mode}</Badge>
-                <span>审批人：<code className="text-xs">#{t.approver_id}</code></span>
-                {t.approver_role && <span className="text-xs text-muted-foreground">(角色 {t.approver_role})</span>}
-              </div>
-              <div className="flex items-center gap-2">
-                <TaskStateIcon state={t.state} />
-                <span className="text-xs">
-                  {t.decided_at ? relTime(t.decided_at) : t.expires_at ? `到期 ${relTime(t.expires_at)}` : ""}
-                </span>
-              </div>
-              {t.comment && (
-                <div className="w-full text-xs text-muted-foreground mt-1 pl-1">{t.comment}</div>
-              )}
-            </div>
-          ))}
+        <TabsContent value="flow" className="mt-3 rounded-xl border bg-card p-4">
+          <StageStepper tasks={tasks} totalStages={r.total_stages} meUid={me?.uid} />
         </TabsContent>
-        <TabsContent value="events" className="mt-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="text-xs text-muted-foreground">
-              SHA-256 哈希链 — 每条事件 PrevHash 指向上一条 Hash，篡改单条会让后续整条链失效。
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => verify.mutate()}
-              disabled={verify.isPending}
-            >
-              <ShieldCheck className="w-4 h-4" />
-              {verify.isPending ? "校验中..." : "校验链完整性"}
+        <TabsContent value="ledger" className="mt-3 space-y-2">
+          <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 p-2.5">
+            <p className="text-xs text-muted-foreground">
+              每条事件用 SHA-256 串联上一条，任意改动都会让后续整条链失效。
+            </p>
+            <Button variant="outline" size="sm" className="shrink-0 gap-1.5" onClick={() => verify.mutate()} disabled={verify.isPending}>
+              {verify.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              校验完整性
             </Button>
           </div>
-          {events.map((e) => (
-            <div key={e.id} className="rounded-lg border p-2 text-xs font-mono space-y-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge variant="outline" className="text-[10px]">#{e.id}</Badge>
-                <span className="font-semibold">{e.kind}</span>
-                <span className="text-muted-foreground">{relTime(e.created_at)}</span>
-                {e.actor_name && <span>by {e.actor_name}</span>}
-                {e.signature && (
-                  <Badge variant="secondary" className="text-[10px] gap-1">
-                    <Hash className="w-3 h-3" /> KMS 签名
-                  </Badge>
-                )}
-              </div>
-              {e.payload && (
-                <div className="text-muted-foreground text-[11px] truncate">{e.payload}</div>
-              )}
+          {events.length === 0 ? (
+            <div className="py-6 text-center text-xs text-muted-foreground">尚无事件</div>
+          ) : (
+            <ol className="space-y-1.5">
+              {events.map((e) => (
+                <li key={e.id} className="flex items-start gap-2.5 rounded-lg border bg-card px-3 py-2 text-sm">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-border" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="font-medium">{eventLabel(e.kind)}</span>
+                      {e.actor_name && <span className="text-xs text-muted-foreground">by {e.actor_name}</span>}
+                      {e.signature && (
+                        <Badge variant="secondary" className="gap-1 text-[10px]">
+                          <Hash className="h-3 w-3" /> KMS 签名
+                        </Badge>
+                      )}
+                    </div>
+                    {e.payload && <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{e.payload}</p>}
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground" title={fullTime(e.created_at)}>
+                    {relTime(e.created_at)}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )}
+          {grant && (
+            <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-xs text-muted-foreground">
+              <span>Grant ID</span>
+              <code className="font-mono">{grant.id}</code>
+              <CopyButton value={grant.id} />
             </div>
-          ))}
-          {events.length === 0 && (
-            <div className="text-xs text-muted-foreground py-4 text-center">尚无事件</div>
           )}
         </TabsContent>
       </Tabs>
@@ -268,74 +274,27 @@ export default function ApprovalDetailPage() {
   )
 }
 
-function TaskStateIcon({ state }: { state: string }) {
-  switch (state) {
-    case "approved":
-      return <Badge variant="secondary" className="gap-1"><CheckCircle2 className="w-3 h-3" /> 通过</Badge>
-    case "rejected":
-      return <Badge variant="destructive" className="gap-1"><XCircle className="w-3 h-3" /> 驳回</Badge>
-    case "delegated":
-      return <Badge variant="outline" className="gap-1"><UserX className="w-3 h-3" /> 已委托</Badge>
-    case "expired":
-      return <Badge variant="outline" className="gap-1"><Clock className="w-3 h-3" /> 已过期</Badge>
-    case "skipped":
-      return <Badge variant="outline" className="gap-1"><ShieldOff className="w-3 h-3" /> 跳过</Badge>
-    case "pending":
-      return <Badge variant="default" className="gap-1"><Clock className="w-3 h-3" /> 待处理</Badge>
-  }
-  return <Badge variant="outline">{state}</Badge>
+function BackLink() {
+  return (
+    <Link href="/approvals" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <ArrowLeft className="h-3.5 w-3.5" /> 返回审批中心
+    </Link>
+  )
 }
 
-function DecideForm({ task, onDone }: { task: ApprovalTask; onDone: () => void }) {
-  const [comment, setComment] = React.useState("")
-  const approveMut = useMutation({
-    mutationFn: () => approvalService.approve(task.id, comment),
-    onSuccess: () => { toast.success("已批准"); onDone() },
-    onError: (e: { message?: string }) => toast.error(e.message || "批准失败"),
-  })
-  const rejectMut = useMutation({
-    mutationFn: () => approvalService.reject(task.id, comment),
-    onSuccess: () => { toast.success("已驳回"); onDone() },
-    onError: (e: { message?: string }) => toast.error(e.message || "驳回失败"),
-  })
-
+function Field({
+  label,
+  children,
+  className,
+}: {
+  label: string
+  children: React.ReactNode
+  className?: string
+}) {
   return (
-    <div className="space-y-2 bg-background rounded-md p-3 border">
-      <div className="flex items-center gap-2 text-sm">
-        <Badge variant="outline">阶段 {task.stage + 1}</Badge>
-        <span className="text-xs text-muted-foreground">收到 {relTime(task.created_at)}</span>
-        {task.expires_at && (
-          <span className="text-xs text-amber-600 ml-auto">
-            <Clock className="w-3 h-3 inline" /> 到期 {relTime(task.expires_at)}
-          </span>
-        )}
-      </div>
-      <div>
-        <Label className="text-xs">审批意见</Label>
-        <Textarea
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          rows={3}
-          placeholder="（可选）说明决策理由 — 写明上下文，方便日后审计"
-        />
-      </div>
-      <div className="flex gap-2 justify-end">
-        <Button
-          variant="destructive"
-          size="sm"
-          disabled={rejectMut.isPending}
-          onClick={() => rejectMut.mutate()}
-        >
-          <XCircle className="w-4 h-4" /> 驳回
-        </Button>
-        <Button
-          size="sm"
-          disabled={approveMut.isPending}
-          onClick={() => approveMut.mutate()}
-        >
-          <CheckCircle2 className="w-4 h-4" /> 批准
-        </Button>
-      </div>
+    <div className={className}>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-0.5">{children}</div>
     </div>
   )
 }

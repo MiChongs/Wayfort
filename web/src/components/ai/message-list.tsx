@@ -3,7 +3,6 @@
 import * as React from "react"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { ArrowDown, Sparkles } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { EmptyState } from "@/components/common/empty-state"
 import { UserBubble } from "./message-user"
@@ -18,12 +17,14 @@ import { isDangerName } from "./tool-icons"
 import { ReasoningBlock } from "./reasoning-block"
 import { ToolGroupCard } from "./tool-group-card"
 import { AgentInfoCard } from "./agent-info-card"
+import { AskUserCard } from "./ask-user-card"
+import { PlanCard } from "./plan-card"
 import { groupTools, type ToolLike } from "@/lib/ai/group-tools"
 import type { AIAgent, AIMessage, AIToolInvocation } from "@/lib/api/types"
 
 export type LiveBubble =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; chunks: string[]; streaming: boolean }
+  | { kind: "user"; id: string; text: string; images?: string[] }
+  | { kind: "assistant"; id: string; chunks: string[]; streaming: boolean }
   | {
       kind: "tool"
       id: string
@@ -65,6 +66,15 @@ export type LiveBubble =
       startedAt: number
       endedAt?: number
     }
+  | {
+      kind: "ask"
+      invocationId: string
+      question: string
+      options: { label: string; description?: string }[]
+      allowMultiple: boolean
+      allowText: boolean
+    }
+  | { kind: "plan"; invocationId: string; plan: string }
 
 interface MessageListProps {
   messages: AIMessage[]
@@ -76,6 +86,7 @@ interface MessageListProps {
   agent?: AIAgent
   onApprove: (id: string) => void
   onReject: (id: string) => void
+  onAnswer?: (id: string, text: string) => void
   onRetry?: () => void
   onRegenerateFrom?: (msg: AIMessage) => void
   onEditUser?: (msg: AIMessage, newText: string) => void
@@ -91,40 +102,71 @@ export function MessageList({
   agent,
   onApprove,
   onReject,
+  onAnswer,
   onRetry,
   onRegenerateFrom,
   onEditUser,
 }: MessageListProps) {
   const scrollRef = React.useRef<HTMLDivElement | null>(null)
+  const contentRef = React.useRef<HTMLDivElement | null>(null)
   const reduce = useReducedMotion()
   const [autoFollow, setAutoFollow] = React.useState(true)
+  // Mirror of `autoFollow` we can read synchronously inside observers/handlers
+  // without waiting for a React re-render — prevents the pin loop from lagging
+  // a frame behind the user's scroll.
+  const pinnedRef = React.useRef(true)
 
-  // Auto-scroll to bottom when content grows, but only if user hasn't scrolled
-  // up (so we don't yank them away from history they're reading).
-  React.useEffect(() => {
-    if (!autoFollow) return
+  const pin = React.useCallback((smooth = false) => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [messages, live, running, autoFollow])
+    if (!el) return
+    if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    else el.scrollTop = el.scrollHeight
+  }, [])
 
-  // scroll events don't bubble; attach the listener directly on the viewport.
+  // Bottom-pinning. A one-shot effect keyed on `messages`/`live` lands BEFORE
+  // the `layout` springs finish animating height and BEFORE the streamed-text
+  // throttle paints, so it always falls short of the true bottom. Instead we
+  // observe the content element's size: every time it grows (spring tick,
+  // token arrival, image load) we re-glue to the bottom — but only while the
+  // user is following. This is the same "stick to bottom" mechanic Claude.ai
+  // uses and it stays smooth because the growth itself is gradual.
+  React.useEffect(() => {
+    const content = contentRef.current
+    if (!content || typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(() => {
+      if (pinnedRef.current) pin(false)
+    })
+    ro.observe(content)
+    return () => ro.disconnect()
+  }, [pin])
+
+  // Track whether the user sits at the bottom; drives follow-state + the
+  // floating "jump to latest" affordance. rAF-debounced so a burst of scroll
+  // events (momentum / programmatic pin) collapses to one state update.
   React.useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    function handle() {
-      if (!el) return
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-      setAutoFollow(atBottom)
+    let raf = 0
+    const handle = () => {
+      cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(() => {
+        const atBottom =
+          el.scrollHeight - el.scrollTop - el.clientHeight < 120
+        pinnedRef.current = atBottom
+        setAutoFollow((prev) => (prev === atBottom ? prev : atBottom))
+      })
     }
     el.addEventListener("scroll", handle, { passive: true })
-    return () => el.removeEventListener("scroll", handle)
+    return () => {
+      el.removeEventListener("scroll", handle)
+      cancelAnimationFrame(raf)
+    }
   }, [])
 
   function jumpLatest() {
-    const el = scrollRef.current
-    if (!el) return
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
+    pinnedRef.current = true
     setAutoFollow(true)
+    pin(true)
   }
 
   const historyBubbles = React.useMemo(
@@ -167,12 +209,15 @@ export function MessageList({
     // can position over it; everything else is plain flex so Radix's
     // Viewport gets a fully-determined height and its internal scroll
     // engages reliably.
-    <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-muted/20">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <ScrollArea
         viewportRef={scrollRef}
-        className="flex-1 min-h-0 w-full"
+        className="min-h-0 w-full flex-1"
       >
-        <div className="px-3 md:px-6 py-6 space-y-4 min-w-0">
+        <div
+          ref={contentRef}
+          className="mx-auto w-full min-w-0 max-w-3xl space-y-6 px-4 py-8 md:px-6"
+        >
         {showSkeleton && <MessageSkeleton />}
 
         {emptyState && (
@@ -191,10 +236,15 @@ export function MessageList({
 
         <AnimatePresence initial={false}>
           {historyBubbles.map((b) => (
+            // History bubbles are the settled state — they must NOT replay an
+            // entrance animation. Without `initial={false}` a message that just
+            // finished streaming (live key `l-…`) re-mounts as history (key
+            // `h-…`) and animates in a SECOND time. We keep only `layout` so
+            // positions still ease when the list above changes.
             <motion.div
               key={`h-${b.key}`}
               layout={reduce ? false : "position"}
-              initial={reduce ? false : { opacity: 0, y: 6 }}
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
               transition={
                 reduce
@@ -208,6 +258,15 @@ export function MessageList({
           ))}
 
           {liveGrouped.map((entry, i) => {
+            // Skip the eagerly-pushed empty assistant placeholders so they don't
+            // occupy a (gap-producing) motion.div slot before any text arrives.
+            if (
+              !isGroup(entry) &&
+              (entry as LiveBubble).kind === "assistant" &&
+              (entry as Extract<LiveBubble, { kind: "assistant" }>).chunks.length === 0
+            ) {
+              return null
+            }
             const key = entryKey(entry, i)
             return (
               <motion.div
@@ -215,7 +274,10 @@ export function MessageList({
                 layout={reduce ? false : "position"}
                 initial={reduce ? false : { opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+                // Plain opacity exit: a live bubble that just settled is about to
+                // re-mount as an identical history bubble. A scale/translate exit
+                // would make that seamless handoff flicker — a quiet fade doesn't.
+                exit={{ opacity: 0, transition: { duration: 0.12 } }}
                 transition={
                   reduce
                     ? { duration: 0 }
@@ -228,9 +290,11 @@ export function MessageList({
                 ) : (
                   <LiveBubbleView
                     b={entry as LiveBubble}
+                    lead={liveLead(liveGrouped, i)}
                     agent={agent}
                     onApprove={onApprove}
                     onReject={onReject}
+                    onAnswer={onAnswer}
                     onRetry={onRetry}
                   />
                 )}
@@ -264,16 +328,16 @@ export function MessageList({
                 ? { duration: 0 }
                 : { type: "spring", stiffness: 380, damping: 28 }
             }
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10"
+            className="absolute bottom-5 left-1/2 z-10 -translate-x-1/2"
           >
-            <Button
-              size="sm"
-              variant="secondary"
+            <button
+              type="button"
               onClick={jumpLatest}
-              className="shadow-lg backdrop-blur"
+              aria-label="返回最新"
+              className="group flex h-9 w-9 items-center justify-center rounded-full border border-border/70 bg-background/90 text-muted-foreground shadow-lg backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
             >
-              <ArrowDown className="w-3.5 h-3.5" /> 返回最新
-            </Button>
+              <ArrowDown className="h-4 w-4 transition-transform group-hover:translate-y-0.5" />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -283,24 +347,30 @@ export function MessageList({
 
 function LiveBubbleView({
   b,
+  lead = true,
   agent,
   onApprove,
   onReject,
+  onAnswer,
   onRetry,
 }: {
   b: LiveBubble
+  lead?: boolean
   agent?: AIAgent
   onApprove: (id: string) => void
   onReject: (id: string) => void
+  onAnswer?: (id: string, text: string) => void
   onRetry?: () => void
 }) {
-  if (b.kind === "user") return <UserBubble text={b.text} />
+  if (b.kind === "user") return <UserBubble text={b.text} images={b.images} />
   if (b.kind === "assistant") {
     // Hide totally empty assistant bubbles (we eagerly push one after every
     // tool_output to anticipate the continuation; if none arrives we don't
     // want a blank card sitting there).
     if (b.chunks.length === 0) return null
-    return <AssistantBubble chunks={b.chunks} streaming={b.streaming} agent={agent} />
+    return (
+      <AssistantBubble chunks={b.chunks} streaming={b.streaming} agent={agent} lead={lead} />
+    )
   }
   if (b.kind === "tool")
     return (
@@ -347,20 +417,44 @@ function LiveBubbleView({
       Math.round(((b.endedAt ?? Date.now()) - b.startedAt) / 1000),
     )
     return b.streaming ? (
-      <ReasoningBlock state="thinking" chunks={b.chunks} />
+      <ReasoningBlock state="thinking" chunks={b.chunks} lead={lead} agent={agent} />
     ) : (
-      <ReasoningBlock state="thought" chunks={b.chunks} durationSec={seconds} />
+      <ReasoningBlock
+        state="thought"
+        chunks={b.chunks}
+        durationSec={seconds}
+        lead={lead}
+        agent={agent}
+      />
     )
   }
+  if (b.kind === "ask")
+    return (
+      <AskUserCard
+        question={b.question}
+        options={b.options}
+        allowMultiple={b.allowMultiple}
+        allowText={b.allowText}
+        onSubmit={(text) => onAnswer?.(b.invocationId, text)}
+      />
+    )
+  if (b.kind === "plan")
+    return (
+      <PlanCard
+        plan={b.plan}
+        onApprove={() => onApprove(b.invocationId)}
+        onReject={() => onReject(b.invocationId)}
+      />
+    )
   return null
 }
 
-function liveKey(b: LiveBubble, i: number): string {
+function liveKey(b: LiveBubble, _i: number): string {
   switch (b.kind) {
     case "user":
-      return `u-${i}`
+      return `u-${b.id}`
     case "assistant":
-      return `a-${i}`
+      return `a-${b.id}`
     case "tool":
       return `t-${b.id}`
     case "permission":
@@ -371,6 +465,10 @@ function liveKey(b: LiveBubble, i: number): string {
       return `s-${b.id}`
     case "reasoning":
       return `r-${b.id}`
+    case "ask":
+      return `ask-${b.invocationId}`
+    case "plan":
+      return `plan-${b.invocationId}`
   }
 }
 
@@ -387,6 +485,26 @@ function entryKey(
 ): string {
   if (isGroup(e)) return `g-${e.groupKey}`
   return liveKey(e, i)
+}
+
+// An assistant bubble "leads" a turn (and so shows the avatar) when the nearest
+// rendered bubble before it is a user message — or there is none. Continuations
+// after a tool / reasoning / group align under the gutter instead. Empty
+// assistant placeholders are skipped so they never count as the predecessor.
+function liveLead(
+  entries: Array<
+    LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] }
+  >,
+  i: number,
+): boolean {
+  for (let k = i - 1; k >= 0; k--) {
+    const e = entries[k]
+    if (isGroup(e)) return false
+    const b = e as LiveBubble
+    if (b.kind === "assistant" && b.chunks.length === 0) continue // skipped placeholder
+    return b.kind === "user"
+  }
+  return true
 }
 
 // ---------- Persisted history rendering ----------
@@ -436,7 +554,12 @@ function renderHistory(
                 break
               }
             }
-            const inv = invocations.find((iv) => iv.tool_name === tc.name)
+            // Correlate by the exact tool_call id (a tool called N times in one
+            // turn has N distinct ids). Fall back to message_id + name for
+            // rows persisted before tool_call_id existed.
+            const inv =
+              invocations.find((iv) => iv.tool_call_id && iv.tool_call_id === tc.id) ??
+              invocations.find((iv) => iv.message_id === m.id && iv.tool_name === tc.name)
             const status: ToolStatus =
               inv?.status === "failed" || inv?.status === "rejected"
                 ? "error"
@@ -475,6 +598,9 @@ function renderHistory(
   )
 
   const out: RenderedBubble[] = []
+  // Track the previously emitted bubble kind so an assistant block can tell
+  // whether it leads a turn (avatar) or continues one (gutter spacer).
+  let prevKind: "user" | "assistant" | "tool" | undefined
   for (const entry of grouped) {
     if ((entry as { __kind?: string }).__kind === "group") {
       const g = entry as {
@@ -487,6 +613,7 @@ function renderHistory(
         key: `tg-${g.groupKey}`,
         node: <ToolGroupCard name={g.name} items={g.items} />,
       })
+      prevKind = "tool"
       continue
     }
     const it = entry as HistoryItem
@@ -496,12 +623,15 @@ function renderHistory(
         node: (
           <UserBubble
             text={it.text}
+            images={parseContentImages(it.msg.content)}
             message={it.msg}
             onEdit={onEditUser}
           />
         ),
       })
+      prevKind = "user"
     } else if (it.kind === "assistant") {
+      const lead = prevKind === undefined || prevKind === "user"
       out.push({
         key: `a-${it.msg.id}`,
         node: (
@@ -510,9 +640,11 @@ function renderHistory(
             agent={agent}
             message={it.msg}
             onRegenerateFrom={onRegenerateFrom}
+            lead={lead}
           />
         ),
       })
+      prevKind = "assistant"
     } else {
       out.push({
         key: it.key,
@@ -527,6 +659,7 @@ function renderHistory(
           />
         ),
       })
+      prevKind = "tool"
     }
   }
   return out
@@ -534,9 +667,23 @@ function renderHistory(
 
 function parseContentText(s: string): string {
   try {
-    const parts = JSON.parse(s) as { text?: string }[]
-    return parts.map((p) => p.text || "").join("")
+    const parts = JSON.parse(s) as { type?: string; text?: string }[]
+    return parts
+      .filter((p) => p.type === "text" || p.type === undefined)
+      .map((p) => p.text || "")
+      .join("")
   } catch {
     return s || ""
+  }
+}
+
+function parseContentImages(s: string): string[] {
+  try {
+    const parts = JSON.parse(s) as { type?: string; image_url?: string }[]
+    return parts
+      .filter((p) => (p.type === "image_url" || p.type === "image") && !!p.image_url)
+      .map((p) => p.image_url as string)
+  } catch {
+    return []
   }
 }

@@ -35,8 +35,13 @@ type FreeRDPWorker struct {
 	out        chan ServerMessage
 	closeOnce  sync.Once
 	done       chan struct{}
-	closing    atomic.Bool
-	mu         sync.Mutex // guards writes to stdin
+	// pumpDone is closed when pumpStdout has fully returned. Close waits on
+	// it before close(out) so a frame in flight on the pumpStdout select can
+	// never be sent on a closed channel (which would panic the whole gateway
+	// process and tear down every concurrent session).
+	pumpDone chan struct{}
+	closing  atomic.Bool
+	mu       sync.Mutex // guards writes to stdin
 }
 
 // WorkerOption tweaks NewFreeRDPWorker without exploding the constructor's
@@ -55,6 +60,7 @@ func NewFreeRDPWorker(logger *zap.Logger, workerPath string, opts ...WorkerOptio
 		workerPath: workerPath,
 		out:        make(chan ServerMessage, 256),
 		done:       make(chan struct{}),
+		pumpDone:   make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(w)
@@ -68,9 +74,11 @@ func (w *FreeRDPWorker) Start(ctx context.Context, p StartParams) error {
 	}
 	w.cmd = exec.CommandContext(ctx, w.workerPath)
 	// libfreerdp reads WLOG_LEVEL natively at WLog init; setting it on the
-	// child's env is enough to enable DEBUG / TRACE logging without any
-	// cgo bridge from our side. When debugLog is false we inherit the
-	// gateway's env unchanged (default level INFO).
+	// child's env is enough to enable DEBUG / TRACE logging without any cgo
+	// bridge from our side. (The rdpdr + drive channels are always bumped to
+	// DEBUG by the worker itself via EnableChannelDebug, since env-based
+	// WLOG_FILTER is ignored on the MSYS2 build.) When debugLog is false we
+	// inherit the gateway's env unchanged (default level INFO).
 	if w.debugLog {
 		w.cmd.Env = append(os.Environ(), "WLOG_LEVEL=DEBUG")
 	}
@@ -156,6 +164,17 @@ func (w *FreeRDPWorker) Close() error {
 		} else {
 			<-w.done
 		}
+		// w.done is closed (process reaped). pumpStdout, once w.done is
+		// closed, can always unblock its select on the <-w.done case and
+		// return; wait for it so no send on w.out is in flight when we close
+		// the channel. The timeout is a defensive backstop for the case where
+		// the pump goroutine was never started (Start failed before launching
+		// it) — pumpDone stays open there but no sender exists, so closing is
+		// safe regardless.
+		select {
+		case <-w.pumpDone:
+		case <-time.After(2 * time.Second):
+		}
 		close(w.out)
 	})
 	return nil
@@ -188,12 +207,26 @@ func (w *FreeRDPWorker) sendCloseFrameWithTimeout() {
 // onto the out channel. Hot frame/cursor payloads use the same binary header
 // as the browser WS hop so raw pixels never need JSON/base64 on stdout.
 func (w *FreeRDPWorker) pumpStdout() {
+	defer close(w.pumpDone)
 	br := bufio.NewReaderSize(w.stdout, 128*1024)
 	for {
 		body, err := readFrame(br)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				w.logger.Warn("freerdp worker stdout read", zap.Error(err))
+				// A non-EOF read error (e.g. an oversize frame that trips the
+				// 64 MB framing cap, or a corrupt length prefix) otherwise ends
+				// the pump silently — the browser keeps showing "connected" on a
+				// frozen screen. Surface it as a terminal error so the WS layer
+				// tears the session down with a real reason. Guarded by w.done
+				// so this never blocks shutdown.
+				select {
+				case w.out <- ServerMessage{Status: &SessionStatus{
+					Phase:   PhaseError,
+					Message: "桌面数据流中断: " + err.Error(),
+				}}:
+				case <-w.done:
+				}
 			}
 			return
 		}
@@ -238,9 +271,17 @@ func (w *FreeRDPWorker) watchProcess() {
 		status.Phase = PhaseError
 		status.Message = err.Error()
 	}
+	// Deliver the terminal status best-effort but bounded: a non-blocking
+	// send used to silently drop CLOSED/ERROR when the out buffer was full,
+	// leaving the browser with a generic disconnect instead of the real
+	// reason (auth failed, cert rejected, …). Give the WS drain up to 1s to
+	// take it; log if it still can't be delivered.
 	select {
 	case w.out <- ServerMessage{Status: &status}:
-	default:
+	case <-time.After(time.Second):
+		w.logger.Warn("freerdp worker terminal status dropped (out channel full)",
+			zap.String("phase", string(status.Phase)),
+			zap.String("message", status.Message))
 	}
 	close(w.done)
 }

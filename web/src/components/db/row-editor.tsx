@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Database, KeyRound, Loader2, Save, Trash2 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,

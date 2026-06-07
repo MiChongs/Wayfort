@@ -23,11 +23,35 @@ type AssetGroupNode struct {
 
 func (AssetGroupNode) TableName() string { return "asset_group_nodes" }
 
-type AssetTag struct {
+// AssetTagGroup is a namespace / category that organises tags (e.g. "env",
+// "team", "region"). Tags inherit the group's colour unless they override it,
+// so a whole family of tags reads as one palette. Groups are optional — a tag
+// with GroupID == nil is "ungrouped".
+type AssetTagGroup struct {
 	ID        uint64    `gorm:"primaryKey" json:"id"`
 	Name      string    `gorm:"size:64;uniqueIndex;not null" json:"name"`
-	Color     string    `gorm:"size:16" json:"color"`
+	Color     string    `gorm:"size:24" json:"color"` // palette token, e.g. "coral"
+	Icon      string    `gorm:"size:48" json:"icon"`  // unified icon token (emoji / lucide:* / simple:*)
+	SortOrder int       `gorm:"default:0" json:"sort_order"`
 	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (AssetTagGroup) TableName() string { return "asset_tag_groups" }
+
+// AssetTag is a managed, colourful label. Color is a semantic palette TOKEN
+// ("coral"/"teal"/"amber"/…) resolved to design-system classes on the client —
+// not a raw hex string — so every tag stays on-palette in light & dark. Legacy
+// rows may still carry a "#rrggbb" value; the client renders those verbatim.
+type AssetTag struct {
+	ID          uint64    `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"size:64;uniqueIndex;not null" json:"name"`
+	Color       string    `gorm:"size:24" json:"color"`
+	Icon        string    `gorm:"size:48" json:"icon"`         // unified icon token (emoji / lucide:* / simple:*)
+	Description string    `gorm:"size:255" json:"description"` // one-line meaning
+	GroupID     *uint64   `gorm:"index" json:"group_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func (AssetTag) TableName() string { return "asset_tags" }

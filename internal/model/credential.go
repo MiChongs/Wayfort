@@ -9,6 +9,9 @@ const (
 	CredentialPassword   CredentialKind = "password"
 	CredentialPrivateKey CredentialKind = "private_key"
 	CredentialAgent      CredentialKind = "agent"
+	// CredentialAccessKey holds an object-storage AccessKey pair: Username is the
+	// AccessKey ID, Secret is the (KMS-encrypted) SecretKey. Used by OSS nodes.
+	CredentialAccessKey CredentialKind = "access_key"
 )
 
 // Credential holds an encrypted secret blob. Starting with Phase 14, the
@@ -34,8 +37,26 @@ type Credential struct {
 	// no behavior change.
 	RequiresApprovalForUse bool `gorm:"default:false" json:"requires_approval_for_use"`
 
-	CreatedAt  time.Time      `json:"created_at"`
-	UpdatedAt  time.Time      `json:"updated_at"`
+	// --- Operator-facing lifecycle metadata (credential redesign) ---
+	// Description is a free-form note ("what account is this, who owns it").
+	Description string `gorm:"size:512" json:"description,omitempty"`
+	// Tags is a comma-separated grouping string (e.g. "prod,linux,shared").
+	// Mirrors Node.Tags / Proxy.Tags so the same filter UI applies everywhere.
+	Tags string `gorm:"size:256" json:"tags,omitempty"`
+	// ExpiresAt lets operators flag rotation deadlines. The UI surfaces an
+	// amber "expiring" / red "expired" badge; nothing enforces it server-side
+	// yet (no silent connection breakage on expiry).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// LastUsedAt is best-effort touched when the credential is resolved for a
+	// live session (see CredentialRepo.TouchLastUsed). Helps spot stale creds.
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	// LastTestedAt / LastTestOK record the most recent connectivity test from
+	// the admin "test" endpoint so the list can show a freshness signal.
+	LastTestedAt *time.Time `json:"last_tested_at,omitempty"`
+	LastTestOK   *bool      `json:"last_test_ok,omitempty"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func (Credential) TableName() string { return "credentials" }

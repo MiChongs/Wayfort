@@ -1,11 +1,10 @@
 "use client"
 
 import * as React from "react"
-import { ChevronRight, Star } from "lucide-react"
-import { toast } from "sonner"
+import { Star } from "lucide-react"
+import { toast } from "@/components/ui/sonner"
 import type { Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -19,8 +18,12 @@ import {
 } from "@/components/ui/context-menu"
 import { cn } from "@/lib/utils"
 import { metaOf, protocolChoicesForNode, PROTOCOL_META, type ProtocolChoice } from "./protocolMeta"
-import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
+import { type Protocol } from "./useWorkspaceStore"
+import { useWorkspaceStore } from "./useWorkspaceStore"
 
+// The workspace tree's data model. Rendering is now done by the shared
+// <TreeList> (indent / chevron / keyboard); this file only provides the
+// per-row CONTENT renderers (folder header, leaf with context menu).
 export type TreeFolder = {
   type: "folder"
   id: string
@@ -38,77 +41,23 @@ export type TreeLeaf = {
 }
 export type TreeItem = TreeFolder | TreeLeaf
 
-type Props = {
-  item: TreeItem
-  depth?: number
-  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
-  onToggleFavorite?: (node: Node) => void
-}
-
-export function AssetTreeNode({ item, depth = 0, onOpenTab, onToggleFavorite }: Props) {
-  if (item.type === "folder") {
-    return <FolderRow folder={item} depth={depth} onOpenTab={onOpenTab} onToggleFavorite={onToggleFavorite} />
-  }
-  return <LeafRow leaf={item} depth={depth} onOpenTab={onOpenTab} onToggleFavorite={onToggleFavorite} />
-}
-
-function FolderRow({
-  folder,
-  depth,
-  onOpenTab,
-  onToggleFavorite,
-}: {
-  folder: TreeFolder
-  depth: number
-  onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
-  onToggleFavorite?: (node: Node) => void
-}) {
+export function FolderContent({ folder }: { folder: TreeFolder }) {
   const Icon = folder.icon
   return (
-    <Collapsible defaultOpen={folder.defaultOpen ?? depth === 0}>
-      <CollapsibleTrigger
-        className={cn(
-          "group/folder w-full flex items-center gap-1 px-2 py-1 rounded-sm text-sm",
-          "hover:bg-accent/60 transition-colors",
-        )}
-        style={{ paddingLeft: 8 + depth * 12 }}
-      >
-        <ChevronRight className="w-3.5 h-3.5 text-muted-foreground transition-transform shrink-0 group-data-[state=open]/folder:rotate-90" />
-        {Icon && <Icon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
-        <span className="truncate flex-1 text-left font-medium">{folder.label}</span>
-        <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">{folder.count}</span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        {folder.children.map((c) => (
-          <AssetTreeNode
-            key={c.id}
-            item={c}
-            depth={depth + 1}
-            onOpenTab={onOpenTab}
-            onToggleFavorite={onToggleFavorite}
-          />
-        ))}
-        {folder.children.length === 0 && (
-          <div
-            className="text-xs text-muted-foreground py-1 italic"
-            style={{ paddingLeft: 8 + (depth + 1) * 12 + 16 }}
-          >
-            （空）
-          </div>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
+    <div className="flex items-center gap-1.5 py-1 pr-1 text-sm">
+      {Icon && <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+      <span className="flex-1 truncate text-left font-medium">{folder.label}</span>
+      <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{folder.count}</span>
+    </div>
   )
 }
 
-function LeafRow({
+export function LeafContent({
   leaf,
-  depth,
   onOpenTab,
   onToggleFavorite,
 }: {
   leaf: TreeLeaf
-  depth: number
   onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
   onToggleFavorite?: (node: Node) => void
 }) {
@@ -120,9 +69,6 @@ function LeafRow({
   const open = useWorkspaceStore((s) => s.open)
   const setSubTab = useWorkspaceStore((s) => s.setSubTab)
 
-  // Open the default protocol AND flip the dock straight to 节点信息 so the
-  // user lands on the metadata tab — replaces the old "节点详情(新页面)"
-  // jump-out without leaving the workspace.
   const openWithInfo = () => {
     const id = open({
       nodeId: leaf.node.id,
@@ -149,18 +95,14 @@ function LeafRow({
           onDoubleClick={() => onOpenTab(leaf.node, defaultProto, defaultChoice?.rdpBackend)}
           title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接`}
           className={cn(
-            "group/leaf w-full flex items-center gap-2 px-2 py-1 rounded-sm text-sm",
-            "hover:bg-accent/60 active:bg-accent transition-colors",
+            "group/leaf flex w-full items-center gap-2 py-1 pr-1 text-sm",
             leaf.node.disabled && "opacity-50",
           )}
-          style={{ paddingLeft: 8 + depth * 12 + 16 }}
         >
-          <Icon className={cn("w-3.5 h-3.5 shrink-0", meta.tint)} />
-          <span className="truncate flex-1 text-left">{leaf.node.name}</span>
-          {leaf.isFavorite && <Star className="w-3 h-3 fill-amber-400 text-amber-400 shrink-0" />}
-          <span className="text-[10px] text-muted-foreground uppercase shrink-0">
-            {leaf.node.protocol}
-          </span>
+          <Icon className={cn("h-3.5 w-3.5 shrink-0", meta.tint)} />
+          <span className="flex-1 truncate text-left">{leaf.node.name}</span>
+          {leaf.isFavorite && <Star className="h-3 w-3 shrink-0 fill-[#e8a55a] text-[#e8a55a]" />}
+          <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{leaf.node.protocol}</span>
         </button>
       </ContextMenuTrigger>
       <ContextMenuContent className="w-56">
@@ -168,13 +110,13 @@ function LeafRow({
         <ContextMenuSeparator />
         {choices.length === 1 ? (
           <ContextMenuItem onSelect={() => openChoice(onOpenTab, leaf.node, choices[0])}>
-            <Icon className={cn("w-4 h-4", meta.tint)} />
+            <Icon className={cn("h-4 w-4", meta.tint)} />
             <span>打开 · {choices[0].label}</span>
           </ContextMenuItem>
         ) : (
           <ContextMenuSub>
             <ContextMenuSubTrigger>
-              <Icon className={cn("w-4 h-4", meta.tint)} />
+              <Icon className={cn("h-4 w-4", meta.tint)} />
               <span>在工作台打开</span>
             </ContextMenuSubTrigger>
             <ContextMenuSubContent>
@@ -183,7 +125,7 @@ function LeafRow({
                 const PIcon = m.icon
                 return (
                   <ContextMenuItem key={choice.value} onSelect={() => openChoice(onOpenTab, leaf.node, choice)}>
-                    <PIcon className={cn("w-4 h-4", m.tint)} />
+                    <PIcon className={cn("h-4 w-4", m.tint)} />
                     <span>{choice.label}</span>
                   </ContextMenuItem>
                 )
@@ -197,7 +139,7 @@ function LeafRow({
         <ContextMenuSeparator />
         {onToggleFavorite && (
           <ContextMenuItem onSelect={() => onToggleFavorite(leaf.node)}>
-            <Star className="w-4 h-4" />
+            <Star className="h-4 w-4" />
             <span>{leaf.isFavorite ? "取消收藏" : "加入收藏"}</span>
           </ContextMenuItem>
         )}

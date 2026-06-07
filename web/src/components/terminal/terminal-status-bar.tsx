@@ -1,6 +1,9 @@
 "use client"
 
+import { ArrowDown, ArrowUp, Clock } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { formatClock, type LinkQuality } from "@/components/desktop/desktop-connection"
+import { LatencySparkline } from "@/components/desktop/desktop-signal"
 import type { Status } from "./terminal-types"
 
 type Props = {
@@ -12,18 +15,24 @@ type Props = {
   bytesIn: number
   bytesOut: number
   latencyMs: number | null
+  sessionMs?: number | null
+  latencyHistory?: number[]
+  quality?: LinkQuality
 }
 
-const STATUS_TINT: Record<Status, string> = {
-  connecting: "bg-amber-500",
-  open: "bg-emerald-500",
-  closed: "bg-red-500",
+const STATUS_UI: Record<Status, { label: string; dot: string }> = {
+  connecting: { label: "连接中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  reconnecting: { label: "重连中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  open: { label: "已连接", dot: "bg-[#5db872]" },
+  closed: { label: "已断开", dot: "bg-muted-foreground" },
+  error: { label: "连接失败", dot: "bg-destructive" },
 }
 
-const STATUS_LABEL: Record<Status, string> = {
-  connecting: "连接中",
-  open: "已连接",
-  closed: "已断开",
+const TONE_TEXT: Record<LinkQuality["tone"], string> = {
+  good: "text-[#4c9b62] dark:text-[#5db872]",
+  fair: "text-[#c08a2e] dark:text-[#e3b84e]",
+  poor: "text-destructive",
+  muted: "text-muted-foreground",
 }
 
 export function TerminalStatusBar({
@@ -35,52 +44,76 @@ export function TerminalStatusBar({
   bytesIn,
   bytesOut,
   latencyMs,
+  sessionMs,
+  latencyHistory,
+  quality,
 }: Props) {
+  const ui = STATUS_UI[status]
+  const transient = status === "connecting" || status === "reconnecting"
+  const tone = quality?.tone ?? "muted"
+
   return (
     <footer
       className={cn(
-        "h-6 shrink-0 px-2 inline-flex items-center gap-3 select-none",
-        "border-t border-border/50",
-        "bg-card/60 backdrop-blur supports-[backdrop-filter]:bg-card/40",
-        "text-[10px] font-mono text-muted-foreground",
+        "flex h-7 shrink-0 select-none items-center gap-2.5 px-2.5",
+        "border-t border-border/50 bg-card/60 backdrop-blur supports-[backdrop-filter]:bg-card/40",
+        "text-[11px] text-muted-foreground",
       )}
-      aria-label="terminal status"
+      aria-label="终端状态栏"
     >
       <span className="inline-flex items-center gap-1.5">
-        <span className={cn("inline-block w-1.5 h-1.5 rounded-full", STATUS_TINT[status])} />
-        {STATUS_LABEL[status]}
+        <span className="relative inline-flex h-1.5 w-1.5">
+          <span className={cn("inline-block h-1.5 w-1.5 rounded-full", ui.dot)} />
+          {transient && <span className={cn("absolute inset-0 animate-ping rounded-full", ui.dot)} />}
+        </span>
+        <span className="text-foreground/70">{ui.label}</span>
       </span>
-      <Pipe />
-      <span>
+
+      {sessionMs != null && (
+        <>
+          <Sep />
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Clock className="h-3 w-3 text-muted-foreground/60" />
+            <span className="font-mono">{formatClock(sessionMs)}</span>
+          </span>
+        </>
+      )}
+
+      <Sep />
+      <span className="font-mono tabular-nums">
         {cols}×{rows}
       </span>
-      <Pipe />
-      <span>
-        cursor {cursorY + 1}:{cursorX + 1}
+
+      <Sep className="hidden xl:inline-block" />
+      <span className="hidden font-mono tabular-nums xl:inline">
+        {cursorY + 1}:{cursorX + 1}
       </span>
-      <Pipe />
-      <span>
-        <ArrowDown /> {formatBytes(bytesIn)}
-        <span className="mx-1 text-muted-foreground/50">·</span>
-        <ArrowUp /> {formatBytes(bytesOut)}
+
+      <Sep className="hidden sm:inline-block" />
+      <span className="hidden items-center gap-1.5 font-mono tabular-nums sm:inline-flex">
+        <ArrowDown className="h-3 w-3 text-[#5db872]/80" />
+        {formatBytes(bytesIn)}
+        <ArrowUp className="ml-1 h-3 w-3 text-muted-foreground/70" />
+        {formatBytes(bytesOut)}
       </span>
-      <Pipe />
-      <span>{latencyMs == null ? "— ms" : `${latencyMs} ms`}</span>
-      <span className="ml-auto opacity-70">UTF-8</span>
+
+      <Sep />
+      <span className={cn("inline-flex items-center gap-1.5 font-mono tabular-nums", TONE_TEXT[tone])}>
+        {latencyMs == null ? "— ms" : `${latencyMs} ms`}
+        {latencyHistory && latencyHistory.length >= 2 && (
+          <span className={TONE_TEXT[tone]}>
+            <LatencySparkline points={latencyHistory} tone={tone} />
+          </span>
+        )}
+      </span>
+
+      <span className="ml-auto font-mono text-muted-foreground/70">UTF-8</span>
     </footer>
   )
 }
 
-function Pipe() {
-  return <span className="opacity-30">|</span>
-}
-
-function ArrowDown() {
-  return <span className="text-emerald-500/80">↓</span>
-}
-
-function ArrowUp() {
-  return <span className="text-blue-500/80">↑</span>
+function Sep({ className }: { className?: string }) {
+  return <span className={cn("inline-block h-3 w-px bg-border", className)} aria-hidden />
 }
 
 function formatBytes(n: number): string {

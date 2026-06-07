@@ -36,10 +36,13 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/passkey"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/secrets"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
+	"github.com/michongs/jumpserver-anonymous/internal/settings"
+	"github.com/michongs/jumpserver-anonymous/internal/office"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
@@ -85,6 +88,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if err := repo.AutoMigrate(db); err != nil {
 		return fmt.Errorf("automigrate: %w", err)
 	}
+	// Make pre-existing org data consistent with the tree + multi-department
+	// model (self-paths for groups, legacy department_id → user_departments).
+	if err := repo.BackfillOrg(rootCtx, db); err != nil {
+		return fmt.Errorf("backfill org: %w", err)
+	}
 
 	// Phase 14 — bootstrap the envelope-encryption layer. This:
 	//   * reads (or mints) the bootstrap passphrase from
@@ -112,6 +120,19 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		zap.String("primary_kms", string(secretsBoot.PrimaryRow.Kind)),
 		zap.String("primary_kms_name", secretsBoot.PrimaryRow.Name),
 		zap.Bool("fresh_install", secretsBoot.FreshInstall))
+
+	// System settings center — overlay DB-persisted overrides onto the YAML
+	// defaults and republish the effective config. From here on `cfg` is the
+	// effective snapshot, so every subsystem below wires from the runtime
+	// values a super-admin set in the UI (not the raw YAML). Bootstrap-only
+	// keys (server/db/redis/jwt/crypto/listeners) are never managed here.
+	settingsRepo := repo.NewSystemSettingRepo(db)
+	settingsCenter, err := settings.New(rootCtx, cfg, settingsRepo, secretsBoot.Unsealer, logger)
+	if err != nil {
+		return fmt.Errorf("settings center: %w", err)
+	}
+	cfg = settingsCenter.Snapshot()
+	settingsProber := settings.NewProber(settingsCenter)
 
 	// One pkg/crypto.Vault per call-site OwnerType. Each adapter
 	// records its own envelope rows so audit + rotation can target
@@ -177,6 +198,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	oidcRepo := repo.NewOIDCClientRepo(db)
 	assetGroupRepo := repo.NewAssetGroupRepo(db)
 	tagRepo := repo.NewTagRepo(db)
+	tagGroupRepo := repo.NewTagGroupRepo(db)
 	grantRepo := repo.NewGrantRepo(db)
 	favoriteRepo := repo.NewFavoriteRepo(db)
 	recentRepo := repo.NewRecentRepo(db)
@@ -187,6 +209,14 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	if err := seedRBAC(rootCtx, roleRepo, userRepo, cfg.Auth.BootstrapAdmin); err != nil {
 		return fmt.Errorf("seed rbac: %w", err)
+	}
+	// One-time, idempotent: lift legacy freetext node tags into the managed
+	// colour-tag system so every node's labels become first-class, filterable,
+	// grant-aware tags. Only touches nodes that have no managed tags yet.
+	if migrated, err := tagRepo.MigrateFreetextNodeTags(rootCtx); err != nil {
+		logger.Warn("freetext tag migration failed", zap.Error(err))
+	} else if migrated > 0 {
+		logger.Info("migrated freetext node tags to managed tags", zap.Int("nodes", migrated))
 	}
 
 	issuer := auth.NewIssuer(cfg.Auth.JWTSecret, cfg.Auth.AccessTTL, cfg.Auth.RefreshTTL)
@@ -234,7 +264,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if cfg.Auth.Anomaly.Enabled {
 		anomalyDetector = anomaly.New(historyRepo, mailer, logger, cfg.Auth.Anomaly.NotifyEmail)
 	}
-	assetResolver := asset.NewResolver(grantRepo, groupRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, rc.Client())
+	assetResolver := asset.NewResolver(grantRepo, groupRepo, deptRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, rc.Client())
 
 	resolver := pkgssh.NewResolver(sealer)
 	hostKeyChecker, err := pkgssh.NewHostKeyChecker("", false)
@@ -260,6 +290,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		} else {
 			anonService = anonymous.NewService(launcher, rc, logger)
 			anonJanitor = anonymous.NewJanitor(launcher, rc, logger, 30*time.Second)
+			// Live-tune the sandbox image / resource caps from the settings
+			// center; new containers pick the values up on next launch.
+			settingsCenter.OnReload(func(c *config.Config) { launcher.ApplyConfig(c.Anonymous) })
 		}
 	}
 
@@ -287,7 +320,21 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
 		Resolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
 	}
-	sftpHandler := &sftp.Handler{Conn: sftpConn, Audit: auditWriter, Logger: logger}
+	officeSvc := office.New(office.Config{
+		Enabled:           cfg.Office.Enabled,
+		DocumentServerURL: cfg.Office.DocumentServerURL,
+		JWTSecret:         cfg.Office.JWTSecret,
+		CallbackBaseURL:   cfg.Office.CallbackBaseURL,
+	})
+	sftpHandler := &sftp.Handler{Conn: sftpConn, Audit: auditWriter, Logger: logger, Office: officeSvc}
+
+	// Object-storage bastion (OSS): reaches Aliyun OSS / Tencent COS / S3
+	// through the same credential pool + proxy chain as every other protocol.
+	ossConn := &oss.Connector{
+		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Chain: chain, Vault: sealer,
+	}
+	ossHandler := &oss.Handler{Conn: ossConn, Asset: assetResolver, Audit: auditWriter, Logger: logger, Office: officeSvc}
 
 	// Optional protocol handlers
 	var guacHandler *guacamole.Handler
@@ -321,6 +368,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			return pkgssh.AddrOf(node.Host, node.Port), dlr, rel, nil
 		}
 		pfManager = tcpfwd.NewManager(cfg.Protocols.TCPFwd, pfRepo, nodeRepo, rc, auditWriter, logger, factory)
+		settingsCenter.OnReload(func(c *config.Config) { pfManager.ApplyConfig(c.Protocols.TCPFwd) })
 		pfHandler = &tcpfwd.Handler{Manager: pfManager, Nodes: nodeRepo, Repo: pfRepo}
 		pfRelay = &tcpfwd.WSRelay{GW: wsGateway, Nodes: nodeRepo}
 		pfEvents = &tcpfwd.WSEvents{Manager: pfManager}
@@ -341,12 +389,14 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Anomaly: anomalyDetector, Mailer: mailer,
 			AnonEna: anonService != nil,
 		},
-		Node:          &api.NodeHandler{Repo: nodeRepo},
+		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver},
 		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Builder: chain},
 		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
-		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault},
-		Session:       &api.SessionHandler{Repo: sessionRepo},
+		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault, Resolver: resolver, Nodes: nodeRepo},
+		Dashboard:     &api.DashboardHandler{DB: db, RBAC: rbacResolver, Asset: assetResolver},
+		Session:       &api.SessionHandler{Repo: sessionRepo, Audit: auditRepo, Writer: auditWriter, Terminators: []api.SessionTerminator{wsGateway}},
 		SFTP:          sftpHandler,
+		OSS:           ossHandler,
 		WS:            wsGateway,
 		Guacamole:     guacHandler,
 		DBCLI:         dbcliHandler,
@@ -358,20 +408,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Blocklist:     blocklist,
 		Resolver:      rbacResolver,
 		User: &api.UserHandler{
-			Repo: userRepo, Roles: roleRepo, Lockout: lockout,
+			Repo: userRepo, Roles: roleRepo, Depts: deptRepo, Lockout: lockout,
 			Blocklist: blocklist, Resolver: rbacResolver,
+			Sessions: sessionRepo, History: historyRepo, Grants: grantRepo,
 		},
 		Role:       &api.RoleHandler{Repo: roleRepo, Resolver: rbacResolver},
-		Dept:       &api.DepartmentHandler{Repo: deptRepo},
-		Group:      &api.GroupHandler{Repo: groupRepo},
+		Dept:       &api.DepartmentHandler{Repo: deptRepo, Resolver: assetResolver},
+		Group:      &api.GroupHandler{Repo: groupRepo, Resolver: assetResolver},
 		AssetGroup: &api.AssetGroupHandler{Repo: assetGroupRepo, Resolver: assetResolver},
-		Tag:        &api.TagHandler{Repo: tagRepo, Resolver: assetResolver},
+		Tag:        &api.TagHandler{Repo: tagRepo, Groups: tagGroupRepo, Resolver: assetResolver},
+		TagGroup:   &api.TagGroupHandler{Repo: tagGroupRepo},
 		Grant:      &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
 		Me: &api.MeHandler{
 			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,
 			Email: emailOTP, Recovery: recoverySvc,
 			Favorites: favoriteRepo, Recent: recentRepo,
-			History: historyRepo, Nodes: nodeRepo, Resolver: assetResolver,
+			History: historyRepo, Nodes: nodeRepo, Tags: tagRepo, Resolver: assetResolver,
 		},
 		// Phase 14 switched OIDC client storage to the per-owner
 		// envelope adapter (oidcVault) so its secrets get rewrapped on
@@ -393,6 +445,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Service:   secretsBoot.Service,
 			Unsealer:  secretsBoot.Unsealer,
 		},
+
+		// System settings center — super-admin runtime configuration.
+		Settings: &api.SettingsHandler{Center: settingsCenter, Prober: settingsProber},
 		// (Phase 12 cherry-pick brought a duplicate OIDCClient line back —
 		// dropped; the canonical wiring with Sealer: oidcVault sits earlier
 		// in this struct literal.)
@@ -502,6 +557,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	approvalSvc := approvalBoot.Service
 	wsGateway.SetApproval(approvalSvc)
 	sftpHandler.Approval = approvalSvc
+	ossHandler.Approval = approvalSvc
 	if guacHandler != nil {
 		guacHandler.Approval = approvalSvc
 	}
@@ -547,21 +603,29 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		return nil
 	})
 
-	// Plan 14 — wire the live system-insights service. Disabled by default;
-	// turn on with `insights.enabled: true` in config.
-	if cfg.Insights.Enabled {
-		insightsMgr := insights.NewManager(insights.Config{
-			Enabled:      true,
-			CacheTTL:     cfg.Insights.CacheTTL,
-			SSHTimeout:   cfg.Insights.SSHTimeout,
-			ProcessLimit: cfg.Insights.ProcessLimit,
-		}, insights.Deps{
-			Logger: logger, Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
-			Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(),
-			Asset: assetResolver,
+	// Plan 14 — wire the live system-insights service. Always constructed so a
+	// super-admin can enable/disable + retune it live from the settings center;
+	// the manager's own Enabled() gate (read from the hot-swappable config)
+	// decides whether requests serve data or a 503.
+	insightsMgr := insights.NewManager(insights.Config{
+		Enabled:      cfg.Insights.Enabled,
+		CacheTTL:     cfg.Insights.CacheTTL,
+		SSHTimeout:   cfg.Insights.SSHTimeout,
+		ProcessLimit: cfg.Insights.ProcessLimit,
+	}, insights.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(),
+		Asset: assetResolver,
+	})
+	routes.Insights = insights.NewHandler(insightsMgr)
+	settingsCenter.OnReload(func(c *config.Config) {
+		insightsMgr.ApplyConfig(insights.Config{
+			Enabled:      c.Insights.Enabled,
+			CacheTTL:     c.Insights.CacheTTL,
+			SSHTimeout:   c.Insights.SSHTimeout,
+			ProcessLimit: c.Insights.ProcessLimit,
 		})
-		routes.Insights = insights.NewHandler(insightsMgr)
-	}
+	})
 
 	// Plan 17 — wire the new desktop subsystem (FreeRDP worker abstraction
 	// + browser viewer). The default backend is "freerdp"; Plan 18 added
@@ -571,6 +635,16 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// completes return a clean 503.
 	var desktopMgr *desktop.Manager
 	if cfg.Desktop.Enabled {
+		// Resolve the recording dir default relative to the sessions root so
+		// freerdp .dtr tapes land next to the other session recordings.
+		if cfg.Desktop.Recording.Enabled && cfg.Desktop.Recording.Dir == "" {
+			cfg.Desktop.Recording.Dir = filepath.Join(cfg.Storage.SessionsDir, "desktop-recordings")
+		}
+		// Resolve the per-user drive base relative to the sessions root too, so
+		// redirected drive folders live alongside the recordings.
+		if cfg.Desktop.Drive.Enabled && cfg.Desktop.Drive.Dir == "" {
+			cfg.Desktop.Drive.Dir = filepath.Join(cfg.Storage.SessionsDir, "desktop-drives")
+		}
 		desktopMgr = desktop.NewManager(cfg.Desktop, desktop.Deps{
 			Logger:   logger,
 			Nodes:    nodeRepo,
@@ -579,10 +653,25 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Sealer:   sealer,
 			Audit:    auditWriter,
 			Sessions: sessionRepo,
+			// Route the freerdp worker through the node's proxy chain (SSH
+			// bastion / SOCKS5 hops) — same ResolveHops + BuildChain path
+			// guacamole and tcpfwd use — so WebRDP reaches bastion-only nodes.
+			DialChain: func(ctx context.Context, node *model.Node) (proxy.ContextDialer, func(), error) {
+				hops, err := wsGateway.ResolveHops(ctx, node.ProxyChain)
+				if err != nil {
+					return nil, nil, err
+				}
+				return wsGateway.BuildChain(ctx, hops)
+			},
 		})
 		desktopMgr.SetApproval(approvalSvc)
 		routes.DesktopControl = desktop.NewControlHandler(desktopMgr)
 		routes.DesktopWS = desktop.NewWSHandler(desktopMgr, logger)
+		if cfg.Desktop.Drive.Enabled {
+			routes.DesktopDrive = desktop.NewDriveHandler(cfg.Desktop.Drive, auditWriter, logger)
+		}
+		// Let the sessions audit page force graphical sessions off too.
+		routes.Session.Terminators = append(routes.Session.Terminators, desktopMgr)
 
 		// Plan 29 — ironrdp backend via Devolutions Gateway. JWT signer
 		// + supervisor are attached to the manager; the gateway

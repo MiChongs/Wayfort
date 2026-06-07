@@ -46,7 +46,7 @@ import {
   X,
   Zap,
 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -174,8 +174,8 @@ export function ProxyChainBuilder({
     onSuccess: (r) => {
       setTestResults(r.results || [])
       setTestOK(r.ok)
-      if (r.ok) toast.success("代理链测试通过", { description: target ? `目标 ${target} 可达` : "所有 hop 建链成功" })
-      else toast.error("代理链测试失败", { description: r.results?.find((x) => !x.ok)?.error || "请查看每跳详情" })
+      if (r.ok) toast.success("链路连通", { description: target ? `已到达 ${target}` : "每个中转都连上了" })
+      else toast.error("链路不通", { description: r.results?.find((x) => !x.ok)?.error || "看下每个节点的失败原因" })
     },
     onError: (e: Error) => toast.error("测试请求失败", { description: e.message }),
   })
@@ -209,7 +209,7 @@ export function ProxyChainBuilder({
 
   const addHop = (id: number) => {
     if (ids.includes(id)) {
-      toast.warning("该代理已在链中,跳过添加")
+      toast.warning("这个代理已经在链里了")
       return
     }
     updateIds([...ids, id])
@@ -247,7 +247,7 @@ export function ProxyChainBuilder({
                 <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" aria-label="校验中" />
               )}
             </div>
-            <p className="text-xs text-muted-foreground">按顺序经过每跳,直至到达目标节点。</p>
+            <p className="text-xs text-muted-foreground">依次经过每个中转，最后到达目标节点。</p>
           </div>
           <div className="flex items-center gap-1.5">
             <ChainTemplatesPopover
@@ -278,7 +278,7 @@ export function ProxyChainBuilder({
                   测试
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>对当前链发起真实 dial 探测</TooltipContent>
+              <TooltipContent>对当前链路做一次真实连通测试</TooltipContent>
             </Tooltip>
           </div>
         </div>
@@ -295,7 +295,7 @@ export function ProxyChainBuilder({
                     className="rounded-md border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground"
                   >
                     <CircleSlash className="mx-auto mb-2 h-5 w-5" />
-                    暂无 hop。下方添加代理或套用模板,留空即为直连。
+                    还没有中转。下面添加代理或套用模板；留空就是直连。
                   </motion.div>
                 ) : (
                   <ol className="space-y-1.5">
@@ -351,7 +351,7 @@ export function ProxyChainBuilder({
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
           <div className="flex items-center gap-2 text-muted-foreground">
             {ids.length === 0 ? (
-              <span>未设置代理链:网关将直接 dial 目标节点。</span>
+              <span>没有设置代理链：网关直接连接目标节点。</span>
             ) : errorCount > 0 ? (
               <span className="inline-flex items-center gap-1 text-destructive">
                 <AlertCircle className="h-3.5 w-3.5" /> {errorCount} 项错误,无法连接
@@ -362,7 +362,7 @@ export function ProxyChainBuilder({
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-                <CheckCircle2 className="h-3.5 w-3.5" /> 链路结构有效
+                <CheckCircle2 className="h-3.5 w-3.5" /> 链路结构正常
               </span>
             )}
           </div>
@@ -377,7 +377,7 @@ export function ProxyChainBuilder({
               )}
             >
               {testOK ? <Check className="mr-1 h-3 w-3" /> : <X className="mr-1 h-3 w-3" />}
-              {testOK ? "探测通过" : "探测失败"}
+              {testOK ? "连通" : "不通"}
             </Badge>
           )}
         </div>
@@ -448,7 +448,7 @@ function HopRow({
               <AlertCircle className="h-3.5 w-3.5" />
               代理 #{id} 已不存在
             </div>
-            <p className="text-xs text-muted-foreground">移除该 hop 或重新选择。</p>
+            <p className="text-xs text-muted-foreground">移除这个节点，或重新选一个代理。</p>
           </div>
         ) : (
           <div className="space-y-0.5">
@@ -571,7 +571,7 @@ function AddHopRow({
         disabled={disabled || candidates.length === 0}
       >
         <SelectTrigger className="h-8 flex-1">
-          <SelectValue placeholder={candidates.length === 0 ? "无可用代理" : "+ 添加 hop…"} />
+          <SelectValue placeholder={candidates.length === 0 ? "没有可用代理" : "+ 添加中转…"} />
         </SelectTrigger>
         <SelectContent>
           {candidates.map((p) => (
@@ -730,7 +730,7 @@ function SaveTemplateDialog({
             <Save className="h-4 w-4" /> 保存为代理链模板
           </AlertDialogTitle>
           <AlertDialogDescription>
-            将当前链 <span className="font-mono">{chain || "(空)"}</span> 持久化为模板,后续可在任意节点上一键应用。
+            把当前链路 <span className="font-mono">{chain || "(空)"}</span> 存成模板，以后在任意节点上一键套用。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="space-y-3">

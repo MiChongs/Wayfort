@@ -105,6 +105,8 @@ type updateConvReq struct {
 	Temperature    *float64 `json:"temperature"`
 	TopP           *float64 `json:"top_p"`
 	MaxTokens      *int     `json:"max_tokens"`
+	// ThinkingBudget toggles extended thinking. <=0 turns it off.
+	ThinkingBudget *int `json:"thinking_budget"`
 	// Sentinel: pass {"reset_overrides": true} to clear temp/top_p/max_tokens.
 	ResetOverrides bool `json:"reset_overrides"`
 }
@@ -141,6 +143,7 @@ func (h *ConversationHandler) Update(c *gin.Context) {
 		conv.Temperature = nil
 		conv.TopP = nil
 		conv.MaxTokens = nil
+		conv.ThinkingBudget = nil
 	} else {
 		if req.Temperature != nil {
 			conv.Temperature = req.Temperature
@@ -150,6 +153,13 @@ func (h *ConversationHandler) Update(c *gin.Context) {
 		}
 		if req.MaxTokens != nil {
 			conv.MaxTokens = req.MaxTokens
+		}
+		if req.ThinkingBudget != nil {
+			if *req.ThinkingBudget > 0 {
+				conv.ThinkingBudget = req.ThinkingBudget
+			} else {
+				conv.ThinkingBudget = nil
+			}
 		}
 	}
 	if err := h.Repo.Update(c.Request.Context(), conv); err != nil {

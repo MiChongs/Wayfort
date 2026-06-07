@@ -19,6 +19,7 @@ export function WorkspaceShortcuts({ onNewTab }: Props) {
   const activateAt = useWorkspaceStore((s) => s.activateAt)
   const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar)
   const reopenLastClosed = useWorkspaceStore((s) => s.reopenLastClosed)
+  const toggleSplit = useWorkspaceStore((s) => s.toggleSplit)
 
   useHotkeys(
     "mod+t",
@@ -53,6 +54,15 @@ export function WorkspaceShortcuts({ onNewTab }: Props) {
     (e) => {
       e.preventDefault()
       toggleSidebar()
+    },
+    { enableOnFormTags: true, enableOnContentEditable: true },
+  )
+
+  useHotkeys(
+    "mod+backslash",
+    (e) => {
+      e.preventDefault()
+      toggleSplit()
     },
     { enableOnFormTags: true, enableOnContentEditable: true },
   )

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
+	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/passkey"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"golang.org/x/crypto/bcrypt"
@@ -27,6 +29,7 @@ type MeHandler struct {
 	Recent    *repo.RecentRepo
 	History   *repo.LoginHistoryRepo
 	Nodes     *repo.NodeRepo
+	Tags      *repo.TagRepo
 	Resolver  *asset.Resolver
 }
 
@@ -302,7 +305,7 @@ func (h *MeHandler) VisibleNodes(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"nodes": rows, "scope": "all"})
+		c.JSON(http.StatusOK, gin.H{"nodes": h.withTags(c.Request.Context(), rows), "scope": "all"})
 		return
 	}
 	if len(ids) == 0 {
@@ -324,5 +327,36 @@ func (h *MeHandler) VisibleNodes(c *gin.Context) {
 			filtered = append(filtered, r)
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"nodes": filtered, "scope": "scoped"})
+	c.JSON(http.StatusOK, gin.H{"nodes": h.withTags(c.Request.Context(), filtered), "scope": "scoped"})
+}
+
+// withTags decorates node rows with their managed colour tags so the user-facing
+// node grid renders the same colourful chips as the admin views.
+func (h *MeHandler) withTags(ctx context.Context, rows []model.Node) []meNodeView {
+	out := make([]meNodeView, len(rows))
+	for i, n := range rows {
+		out[i] = meNodeView{Node: n, TagList: []model.AssetTag{}}
+	}
+	if h.Tags == nil || len(rows) == 0 {
+		return out
+	}
+	ids := make([]uint64, len(rows))
+	for i, n := range rows {
+		ids[i] = n.ID
+	}
+	if byNode, err := h.Tags.TagsForNodes(ctx, ids); err == nil {
+		for i := range out {
+			if tl := byNode[out[i].ID]; tl != nil {
+				out[i].TagList = tl
+			}
+		}
+	}
+	return out
+}
+
+// meNodeView is the node projection for the user-facing list: the node plus its
+// colour tags (the freetext `tags` cache still rides along for search).
+type meNodeView struct {
+	model.Node
+	TagList []model.AssetTag `json:"tag_list"`
 }

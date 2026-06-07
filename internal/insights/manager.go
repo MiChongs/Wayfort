@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
@@ -35,7 +36,7 @@ var ErrDisabled = errors.New("insights: disabled by config")
 // caches the latest result. The cache is keyed by nodeID — all callers see
 // the same data, which is fine for read-only telemetry.
 type Manager struct {
-	cfg     Config
+	cfg     atomic.Pointer[Config] // live config; hot-swapped by ApplyConfig
 	logger  *zap.Logger
 	nodes   *repo.NodeRepo
 	creds   *repo.CredentialRepo
@@ -88,7 +89,7 @@ type Deps struct {
 	Asset    *asset.Resolver
 }
 
-func NewManager(cfg Config, deps Deps) *Manager {
+func normalize(cfg Config) Config {
 	if cfg.CacheTTL <= 0 {
 		cfg.CacheTTL = 3 * time.Second
 	}
@@ -98,8 +99,11 @@ func NewManager(cfg Config, deps Deps) *Manager {
 	if cfg.ProcessLimit <= 0 {
 		cfg.ProcessLimit = 200
 	}
-	return &Manager{
-		cfg:      cfg,
+	return cfg
+}
+
+func NewManager(cfg Config, deps Deps) *Manager {
+	m := &Manager{
 		logger:   deps.Logger,
 		nodes:    deps.Nodes,
 		creds:    deps.Creds,
@@ -113,14 +117,28 @@ func NewManager(cfg Config, deps Deps) *Manager {
 		nets:     map[uint64]*netCacheEntry{},
 		history:  map[uint64]*nodeHistory{},
 	}
+	n := normalize(cfg)
+	m.cfg.Store(&n)
+	return m
 }
 
-func (m *Manager) Enabled() bool { return m.cfg.Enabled }
+// conf returns the current live config snapshot.
+func (m *Manager) conf() Config { return *m.cfg.Load() }
+
+// ApplyConfig hot-swaps the insights tuning. Wired from the settings center so
+// enabling/disabling the dashboard and retuning the sampling budget take effect
+// without a restart.
+func (m *Manager) ApplyConfig(cfg Config) {
+	n := normalize(cfg)
+	m.cfg.Store(&n)
+}
+
+func (m *Manager) Enabled() bool { return m.conf().Enabled }
 
 // gateAndLoad performs the asset-grant check and loads the node + credential
 // from the repos. Shared by all three insights methods.
 func (m *Manager) gateAndLoad(ctx context.Context, userID, nodeID uint64) (*nodeAndCred, error) {
-	if !m.cfg.Enabled {
+	if !m.conf().Enabled {
 		return nil, ErrDisabled
 	}
 	if m.asset != nil {
@@ -174,7 +192,7 @@ func (m *Manager) System(ctx context.Context, userID, nodeID uint64) (*SystemSna
 func (m *Manager) cachedSystem(nodeID uint64) *SystemSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.system[nodeID]; ok && time.Since(e.at) < m.cfg.CacheTTL {
+	if e, ok := m.system[nodeID]; ok && time.Since(e.at) < m.conf().CacheTTL {
 		copy := e.snap
 		return &copy
 	}
@@ -182,9 +200,9 @@ func (m *Manager) cachedSystem(nodeID uint64) *SystemSnapshot {
 }
 
 func (m *Manager) collectSystem(ctx context.Context, nodeID uint64, l *nodeAndCred) (*SystemSnapshot, error) {
-	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.cfg.SSHTimeout, m.proxies, l.node, l.cred, systemScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, systemScript)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +249,7 @@ func (m *Manager) Processes(ctx context.Context, userID, nodeID uint64, sortBy s
 func (m *Manager) cachedProcs(nodeID uint64, sortBy string) *ProcessList {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.procs[nodeID]; ok && time.Since(e.at) < m.cfg.CacheTTL && e.sortBy == sortBy {
+	if e, ok := m.procs[nodeID]; ok && time.Since(e.at) < m.conf().CacheTTL && e.sortBy == sortBy {
 		copy := e.list
 		return &copy
 	}
@@ -239,9 +257,9 @@ func (m *Manager) cachedProcs(nodeID uint64, sortBy string) *ProcessList {
 }
 
 func (m *Manager) collectProcs(ctx context.Context, nodeID uint64, l *nodeAndCred, sortBy string) (*ProcessList, error) {
-	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.cfg.SSHTimeout, m.proxies, l.node, l.cred, processesScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, processesScript)
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +271,8 @@ func (m *Manager) collectProcs(ctx context.Context, nodeID uint64, l *nodeAndCre
 }
 
 func (m *Manager) trim(list *ProcessList, limit int) *ProcessList {
-	if limit <= 0 || limit > m.cfg.ProcessLimit {
-		limit = m.cfg.ProcessLimit
+	if limit <= 0 || limit > m.conf().ProcessLimit {
+		limit = m.conf().ProcessLimit
 	}
 	cp := *list
 	if len(cp.Processes) > limit {
@@ -285,7 +303,7 @@ func (m *Manager) Network(ctx context.Context, userID, nodeID uint64) (*NetworkS
 func (m *Manager) cachedNet(nodeID uint64) *NetworkSnapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if e, ok := m.nets[nodeID]; ok && time.Since(e.at) < m.cfg.CacheTTL {
+	if e, ok := m.nets[nodeID]; ok && time.Since(e.at) < m.conf().CacheTTL {
 		copy := e.snap
 		return &copy
 	}
@@ -293,9 +311,9 @@ func (m *Manager) cachedNet(nodeID uint64) *NetworkSnapshot {
 }
 
 func (m *Manager) collectNet(ctx context.Context, nodeID uint64, l *nodeAndCred) (*NetworkSnapshot, error) {
-	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.cfg.SSHTimeout, m.proxies, l.node, l.cred, networkScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, networkScript)
 	if err != nil {
 		return nil, err
 	}

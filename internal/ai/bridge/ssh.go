@@ -36,9 +36,29 @@ type NodeRunner struct {
 	DialTimeout time.Duration
 }
 
-// Exec implements tools.NodeRunner. It honours the caller's asset:connect
-// authorisation and times out after timeoutSec.
+// chunkWriter tees writes into a buffer while forwarding each fragment to an
+// optional callback, enabling live streaming of command output.
+type chunkWriter struct {
+	buf     *bytes.Buffer
+	onChunk func(string)
+}
+
+func (w *chunkWriter) Write(p []byte) (int, error) {
+	n, err := w.buf.Write(p)
+	if w.onChunk != nil && len(p) > 0 {
+		w.onChunk(string(p))
+	}
+	return n, err
+}
+
+// Exec implements tools.NodeRunner with buffered (non-streaming) execution.
 func (r *NodeRunner) Exec(ctx context.Context, userID uint64, nodeID uint64, command string, timeoutSec int) (string, string, int, error) {
+	return r.ExecStream(ctx, userID, nodeID, command, timeoutSec, nil)
+}
+
+// ExecStream honours the caller's asset:connect authorisation, times out after
+// timeoutSec, and streams stdout/stderr fragments to onChunk as they arrive.
+func (r *NodeRunner) ExecStream(ctx context.Context, userID uint64, nodeID uint64, command string, timeoutSec int, onChunk func(string)) (string, string, int, error) {
 	if r.Asset != nil {
 		ok, err := r.Asset.Check(ctx, userID, nodeID, asset.ActionConnect)
 		if err != nil {
@@ -89,8 +109,8 @@ func (r *NodeRunner) Exec(ctx context.Context, userID uint64, nodeID uint64, com
 	defer sess.Close()
 
 	var stdout, stderr bytes.Buffer
-	sess.Stdout = &stdout
-	sess.Stderr = &stderr
+	sess.Stdout = &chunkWriter{buf: &stdout, onChunk: onChunk}
+	sess.Stderr = &chunkWriter{buf: &stderr, onChunk: onChunk}
 
 	cmdCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()

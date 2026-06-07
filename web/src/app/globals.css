@@ -40,114 +40,114 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+
+  /* Type system — DESIGN.md "Vercel precision + Anthropic editorial" fusion.
+     Body / UI runs Geist (humanist sans); display headlines run Cormorant
+     Garamond (the Copernicus/Tiempos serif substitute); code runs Geist Mono.
+     The next/font CSS variables are injected on <html> in layout.tsx. */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: var(--font-geist-mono), "JetBrains Mono", ui-monospace,
+    SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --font-serif: var(--font-cormorant), "Tiempos Headline", "Cormorant Garamond",
+    Garamond, "Times New Roman", "Songti SC", serif;
+  --font-display: var(--font-serif);
 }
 
 :root {
+  /* DESIGN.md warm-editorial palette — cream canvas (#faf9f5), warm ink
+     (#141413), signature coral (#cc785c), hairline borders (#e6dfd8). Mapped
+     onto the shadcn token vocabulary so every component inherits the brand
+     without per-component edits. Hex is used verbatim to match DESIGN.md. */
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.141 0.005 285.823);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.141 0.005 285.823);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.141 0.005 285.823);
-  --primary: oklch(0.21 0.006 285.885);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.967 0.001 286.375);
-  --secondary-foreground: oklch(0.21 0.006 285.885);
-  --muted: oklch(0.967 0.001 286.375);
-  --muted-foreground: oklch(0.552 0.016 285.938);
-  --accent: oklch(0.967 0.001 286.375);
-  --accent-foreground: oklch(0.21 0.006 285.885);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.92 0.004 286.32);
-  --input: oklch(0.92 0.004 286.32);
-  --ring: oklch(0.705 0.015 286.067);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.141 0.005 285.823);
-  --sidebar-primary: oklch(0.21 0.006 285.885);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.967 0.001 286.375);
-  --sidebar-accent-foreground: oklch(0.21 0.006 285.885);
-  --sidebar-border: oklch(0.92 0.004 286.32);
-  --sidebar-ring: oklch(0.705 0.015 286.067);
 
-  /* Toast tones — mirror Tailwind v4 emerald/red/amber/sky palettes.
-     Sonner reads these via --{tone}-bg/-text/-border in sonner.tsx so
-     the rendered surface stays inside our oklch design vocabulary.
-     Light values pair the -50 tinted background with -800 text and a
-     -500/40 border, matching alert.tsx's visual rhythm at toast scale. */
-  --toast-success-bg: oklch(0.965 0.045 152);          /* emerald-50ish */
-  --toast-success-text: oklch(0.38 0.118 152);         /* emerald-800ish */
-  --toast-success-border: oklch(0.7 0.18 152 / 0.4);   /* emerald-500/40 */
-  --toast-error-bg: oklch(0.97 0.03 25);               /* red-50ish */
-  --toast-error-text: oklch(0.43 0.18 27);             /* red-800ish */
-  --toast-error-border: oklch(0.7 0.21 27 / 0.4);      /* red-500/40 */
-  --toast-warning-bg: oklch(0.975 0.05 90);            /* amber-50ish */
-  --toast-warning-text: oklch(0.42 0.13 75);           /* amber-800ish */
-  --toast-warning-border: oklch(0.78 0.18 80 / 0.45);  /* amber-500/45 */
-  --toast-info-bg: oklch(0.965 0.04 230);              /* sky-50ish */
-  --toast-info-text: oklch(0.42 0.13 235);             /* sky-800ish */
-  --toast-info-border: oklch(0.7 0.17 235 / 0.4);      /* sky-500/40 */
+  --background: #faf9f5; /* canvas — warm tinted cream */
+  --foreground: #141413; /* ink */
+  --card: #ffffff; /* clean white surface lifts off the cream canvas */
+  --card-foreground: #141413;
+  --popover: #ffffff;
+  --popover-foreground: #141413;
+
+  --primary: #cc785c; /* coral — the brand voltage, used on CTAs */
+  --primary-foreground: #ffffff;
+  --secondary: #f5f0e8; /* surface-soft — quiet cream fill */
+  --secondary-foreground: #252523;
+  --muted: #f5f0e8;
+  --muted-foreground: #6c6a64; /* muted */
+  --accent: #efe9de; /* surface-card — one step darker than canvas */
+  --accent-foreground: #252523;
+  --destructive: #c64545; /* error */
+  --destructive-foreground: #ffffff;
+
+  --border: #e6dfd8; /* hairline */
+  --input: #e6dfd8;
+  --ring: #cc785c; /* coral focus ring per DESIGN text-input-focused */
+
+  /* Data-viz — warm-leaning quintet (coral / teal / amber / sage / navy). */
+  --chart-1: #cc785c;
+  --chart-2: #5db8a6;
+  --chart-3: #e8a55a;
+  --chart-4: #5db872;
+  --chart-5: #8a8580;
+
+  /* Sidebar — a calm warm-soft band, deliberately distinct from the white
+     content cards so the app chrome reads as a separate surface. */
+  --sidebar: #f5f0e8;
+  --sidebar-foreground: #3d3d3a;
+  --sidebar-primary: #cc785c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #efe9de;
+  --sidebar-accent-foreground: #141413;
+  --sidebar-border: #e6dfd8;
+  --sidebar-ring: #cc785c;
 }
 
 .dark {
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.92 0.004 286.32);
-  --primary-foreground: oklch(0.21 0.006 285.885);
-  --secondary: oklch(0.274 0.006 286.033);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.552 0.016 285.938);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.552 0.016 285.938);
+  /* Anthropic dark-navy surfaces (#181715 / #1f1e1b / #252320) with cream-
+     tinted on-dark text (#faf9f5). Coral stays the accent in dark mode — the
+     brand voltage never inverts to a cool tone. */
+  --background: #181715; /* surface-dark */
+  --foreground: #faf9f5; /* on-dark — cream-tinted white */
+  --card: #1f1e1b; /* surface-dark-soft */
+  --card-foreground: #faf9f5;
+  --popover: #1f1e1b;
+  --popover-foreground: #faf9f5;
 
-  /* Dark-mode toast tones. Deep tinted surface (-950 ~50% over popover)
-     for readable contrast on a dark page, light foreground (-200ish),
-     and a softer -500/30 border so the tone reads as a halo not a slab. */
-  --toast-success-bg: oklch(0.235 0.05 152 / 0.92);    /* emerald-950 mix */
-  --toast-success-text: oklch(0.88 0.13 152);          /* emerald-200ish */
-  --toast-success-border: oklch(0.62 0.16 152 / 0.45);
-  --toast-error-bg: oklch(0.24 0.08 25 / 0.92);        /* red-950 mix */
-  --toast-error-text: oklch(0.88 0.13 25);             /* red-200ish */
-  --toast-error-border: oklch(0.65 0.19 27 / 0.5);
-  --toast-warning-bg: oklch(0.25 0.07 80 / 0.92);      /* amber-950 mix */
-  --toast-warning-text: oklch(0.92 0.13 90);           /* amber-200ish */
-  --toast-warning-border: oklch(0.72 0.17 80 / 0.5);
-  --toast-info-bg: oklch(0.235 0.07 235 / 0.92);       /* sky-950 mix */
-  --toast-info-text: oklch(0.88 0.13 235);             /* sky-200ish */
-  --toast-info-border: oklch(0.65 0.16 235 / 0.45);
+  --primary: #cc785c; /* coral holds in dark mode */
+  --primary-foreground: #ffffff;
+  --secondary: #252320; /* surface-dark-elevated */
+  --secondary-foreground: #faf9f5;
+  --muted: #252320;
+  --muted-foreground: #a09d96; /* on-dark-soft */
+  --accent: #252320;
+  --accent-foreground: #faf9f5;
+  --destructive: #e06a6a;
+  --destructive-foreground: #181715;
+
+  --border: rgba(255, 255, 255, 0.1);
+  --input: rgba(255, 255, 255, 0.14);
+  --ring: #cc785c;
+
+  --chart-1: #cc785c;
+  --chart-2: #5db8a6;
+  --chart-3: #e8a55a;
+  --chart-4: #5db872;
+  --chart-5: #b8b2a8;
+
+  --sidebar: #141413; /* deeper than content so chrome recedes */
+  --sidebar-foreground: #d9d5cd;
+  --sidebar-primary: #cc785c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #252320;
+  --sidebar-accent-foreground: #faf9f5;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: #cc785c;
 }
 
 @layer base {
@@ -166,98 +166,266 @@
   }
 }
 
+@layer components {
+  /* Editorial serif display — Cormorant Garamond 500 with the negative
+     tracking DESIGN.md marks non-negotiable. Pair with a Tailwind text-size
+     utility, e.g. `class="display-title text-3xl"`, on page + hero headings.
+     Body copy stays Geist (font-sans); this is display-only. */
+  .display-title {
+    font-family: var(--font-display);
+    font-weight: 500;
+    letter-spacing: -0.02em;
+    font-feature-settings: "liga" 1, "calt" 1;
+  }
+
+  /* Uppercase micro-label — the DESIGN.md caption-uppercase token (12px / 500 /
+     1.5px tracking). Used on section eyebrows and metadata captions. */
+  .eyebrow {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  /* Remote-desktop stage backdrop — the letterbox area framing a fixed-aspect
+     remote desktop. Replaces a flat #000 with a warm-tinted dark vignette
+     (lighter near the top where the floating control bar + content sit, deeper
+     toward the edges) so the desktop reads as a framed surface rather than a
+     hole punched in black. Warm undertones keep it on-brand against the cream +
+     coral palette instead of a cold neutral black. */
+  .desktop-stage {
+    background-color: #0c0b0a;
+    background-image: radial-gradient(
+      135% 115% at 50% -8%,
+      #1b1916 0%,
+      #110f0d 52%,
+      #080706 100%
+    );
+  }
+}
+
 /* =========================================================================
-   Sonner toast animations — motion-spring(300, 28) curve approximation.
-   The actual toast chrome lives in web/src/components/ui/sonner.tsx; this
-   block only owns the entry / exit motion. Selectors target sonner's
-   data-attributes so we don't need to touch its rendered DOM.
-
-   Spring physics intuition:
-     - Enter: 360ms with cubic-bezier(0.32, 0.72, 0, 1) (motion easeOutQuint)
-       plus a 60% keyframe overshoot of ~2px / scale 1.01 to mimic the
-       under-damped settle of spring(stiffness=300, damping=28). Matches
-       the feel of the conversation-list-item.tsx item-enter transition.
-     - Exit: 220ms cubic-bezier(0.4, 0, 1, 1) (ease-in). Snappy departure
-       so a fast operator clicking through toasts doesn't see them linger.
-     - prefers-reduced-motion: collapse to 0ms so the animation respects
-       the OS-level accessibility preference.
+   进入 / 移动 / 退出动画 —— 接管 sonner 默认 ease,保留其基于 --y 的堆叠机制。
+   DESIGN.md 通篇克制,这里用 easeOutQuint「平顺落位、不回弹」(去掉早期 spring
+   overshoot 的弹跳感),时长偏短,贴合 Anthropic 沉稳的气质。
+     - 进入 / 堆叠移动:320ms easeOutQuint,无回弹。
+     - 退出:240ms ease-in,干脆离场。
+     - swiping 时让位给 sonner 的 transition:none,保证拖拽跟手。
    ========================================================================= */
-
-@keyframes toast-enter-right {
-  0%   { opacity: 0; transform: translateX(24px) scale(0.96); }
-  60%  { opacity: 1; transform: translateX(-2px) scale(1.01); }
-  100% { opacity: 1; transform: translateX(0) scale(1); }
+[data-sonner-toaster] [data-sonner-toast] {
+  transition:
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    height 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 200ms ease;
 }
-@keyframes toast-exit-right {
-  0%   { opacity: 1; transform: translateX(0) scale(1); }
-  100% { opacity: 0; transform: translateX(24px) scale(0.96); }
+[data-sonner-toaster] [data-sonner-toast][data-removed="true"] {
+  transition:
+    transform 240ms cubic-bezier(0.4, 0, 1, 1),
+    opacity 180ms ease;
 }
-@keyframes toast-enter-left {
-  0%   { opacity: 0; transform: translateX(-24px) scale(0.96); }
-  60%  { opacity: 1; transform: translateX(2px) scale(1.01); }
-  100% { opacity: 1; transform: translateX(0) scale(1); }
-}
-@keyframes toast-exit-left {
-  0%   { opacity: 1; transform: translateX(0) scale(1); }
-  100% { opacity: 0; transform: translateX(-24px) scale(0.96); }
-}
-@keyframes toast-enter-top {
-  0%   { opacity: 0; transform: translateY(-16px) scale(0.96); }
-  60%  { opacity: 1; transform: translateY(2px) scale(1.01); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes toast-exit-top {
-  0%   { opacity: 1; transform: translateY(0) scale(1); }
-  100% { opacity: 0; transform: translateY(-16px) scale(0.96); }
-}
-@keyframes toast-enter-bottom {
-  0%   { opacity: 0; transform: translateY(16px) scale(0.96); }
-  60%  { opacity: 1; transform: translateY(-2px) scale(1.01); }
-  100% { opacity: 1; transform: translateY(0) scale(1); }
-}
-@keyframes toast-exit-bottom {
-  0%   { opacity: 1; transform: translateY(0) scale(1); }
-  100% { opacity: 0; transform: translateY(16px) scale(0.96); }
-}
-
-[data-sonner-toaster][data-x-position="right"] [data-sonner-toast][data-mounted="true"] {
-  animation: toast-enter-right 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-[data-sonner-toaster][data-x-position="right"] [data-sonner-toast][data-removed="true"] {
-  animation: toast-exit-right 220ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-[data-sonner-toaster][data-x-position="left"] [data-sonner-toast][data-mounted="true"] {
-  animation: toast-enter-left 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-[data-sonner-toaster][data-x-position="left"] [data-sonner-toast][data-removed="true"] {
-  animation: toast-exit-left 220ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-[data-sonner-toaster][data-x-position="center"][data-y-position="top"] [data-sonner-toast][data-mounted="true"] {
-  animation: toast-enter-top 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-[data-sonner-toaster][data-x-position="center"][data-y-position="top"] [data-sonner-toast][data-removed="true"] {
-  animation: toast-exit-top 220ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-[data-sonner-toaster][data-x-position="center"][data-y-position="bottom"] [data-sonner-toast][data-mounted="true"] {
-  animation: toast-enter-bottom 360ms cubic-bezier(0.32, 0.72, 0, 1) both;
-}
-[data-sonner-toaster][data-x-position="center"][data-y-position="bottom"] [data-sonner-toast][data-removed="true"] {
-  animation: toast-exit-bottom 220ms cubic-bezier(0.4, 0, 1, 1) both;
-}
-
-/* Hover-expand polish — sonner toggles `data-expanded` on the stack when
-   the cursor enters; smooth the gap so the stack opens and re-collapses
-   without a snap. Mirrors motion's easeInOut curve. */
-[data-sonner-toaster] {
-  transition: gap 280ms cubic-bezier(0.4, 0, 0.2, 1);
+[data-sonner-toaster] [data-sonner-toast][data-swiping="true"] {
+  transition: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-sonner-toast][data-mounted="true"],
-  [data-sonner-toast][data-removed="true"] {
-    animation-duration: 0ms !important;
-  }
-  [data-sonner-toaster] {
+  [data-sonner-toaster] [data-sonner-toast],
+  [data-sonner-toaster] [data-sonner-toast][data-removed="true"] {
     transition-duration: 0ms !important;
+  }
+  /* loading 语气的 lucide 图标用 Tailwind animate-spin,reduced-motion 下停转 */
+  [data-sonner-toaster] [data-sonner-toast] .animate-spin {
+    animation: none !important;
+  }
+}
+
+/* =========================================================================
+   Global custom scrollbar — the OS/native scrollbar is never shown anywhere.
+   Every scroll container gets one thin, floating, brand-tinted pill that
+   adapts to light/dark via the muted-foreground token. The 3px transparent
+   border + padding-box clip make the thumb read as a ~5px floating capsule
+   inside a 11px gutter, so it never crowds content. Opt out per-element with
+   the `.no-scrollbar` utility below.
+   ========================================================================= */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 32%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: color-mix(in oklab, var(--muted-foreground) 26%, transparent);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 160ms ease;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklab, var(--muted-foreground) 46%, transparent);
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in oklab, var(--primary) 60%, transparent);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* =========================================================================
+   AI chat animation system — modelled on Claude.ai's web chat.
+   - .ai-shimmer: the signature "thinking" sweep. A bright band of foreground
+     glides across muted text, left-to-right, calmly. Used on the "正在思考"
+     label and the streaming-status line.
+   - .ai-caret: the streaming cursor — a soft rounded block with a gentle
+     breathing blink (eased, not a hard on/off).
+   - .ai-msg-in: a subtle fade + rise for newly committed messages.
+   All collapse to no-op under prefers-reduced-motion.
+   ========================================================================= */
+@keyframes ai-shimmer {
+  0% {
+    background-position: 180% center;
+  }
+  100% {
+    background-position: -80% center;
+  }
+}
+.ai-shimmer {
+  /* Solid muted base (always visible) with a bright foreground band that
+     sweeps across — so the text is never invisible even if the animation is
+     suppressed. */
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 38%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 62%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: ai-shimmer 2.4s linear infinite;
+}
+/* Coral-tinted shimmer for brand moments (the pre-first-token status). */
+.ai-shimmer-brand {
+  background-image: linear-gradient(
+    100deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 38%,
+    var(--primary) 50%,
+    var(--muted-foreground) 62%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: ai-shimmer 2.4s linear infinite;
+}
+
+@keyframes ai-caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  60%,
+  85% {
+    opacity: 0.15;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.ai-caret {
+  display: inline-block;
+  width: 0.5ch;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: ai-caret-blink 1.1s ease-in-out infinite;
+}
+
+/* Inline streaming caret: a coral block pinned to the very end of the last
+   rendered markdown block, so it trails the final word on the same line
+   (Claude.ai feel) rather than dropping to a new line. Driven by the
+   `data-streaming` flag StreamingText toggles while tokens are still arriving. */
+.ai-streaming-text[data-streaming="true"] .ai-md > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5ch;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 2px;
+  background: var(--primary);
+  animation: ai-caret-blink 1.1s ease-in-out infinite;
+}
+
+@keyframes ai-msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.ai-msg-in {
+  animation: ai-msg-in 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Soft "breathing" used on the thinking avatar / orb. */
+@keyframes ai-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-shimmer,
+  .ai-shimmer-brand,
+  .ai-caret,
+  .ai-msg-in {
+    animation: none !important;
+  }
+  .ai-shimmer,
+  .ai-shimmer-brand {
+    color: var(--muted-foreground);
+    -webkit-text-fill-color: var(--muted-foreground);
+  }
+  /* No blinking caret when motion is reduced — drop it entirely rather than
+     leave a static coral block hanging after the text. */
+  .ai-streaming-text[data-streaming="true"] .ai-md > :last-child::after {
+    display: none;
+  }
+}
+
+/* Hide the native scrollbar on horizontally-scrolling strips (workspace tab
+   bar, etc.) while keeping the element scrollable via wheel / drag. Covers
+   Firefox, legacy Edge/IE, and all WebKit/Blink browsers. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
   }
 }

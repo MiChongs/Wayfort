@@ -91,6 +91,8 @@ func AutoMigrate(db *gorm.DB) error {
 
 		// User / org / RBAC
 		&model.Department{},
+		&model.UserDepartment{},
+		&model.UserTag{},
 		&model.UserGroup{},
 		&model.UserGroupMember{},
 		&model.Role{},
@@ -101,6 +103,7 @@ func AutoMigrate(db *gorm.DB) error {
 		// Asset organisation and authorisation
 		&model.AssetGroup{},
 		&model.AssetGroupNode{},
+		&model.AssetTagGroup{},
 		&model.AssetTag{},
 		&model.NodeTag{},
 		&model.AssetGrant{},
@@ -149,5 +152,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.KnownHost{},
 		&model.BulkRun{},
 		&model.BulkRunResult{},
+
+		// System settings — DB-backed runtime configuration + change trail.
+		&model.SystemSetting{},
+		&model.SystemSettingAudit{},
 	)
 }

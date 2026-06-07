@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 
 type Props = {
   result?: DBQueryResult

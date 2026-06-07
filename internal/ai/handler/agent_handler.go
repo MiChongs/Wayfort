@@ -20,6 +20,7 @@ type AgentHandler struct {
 type agentPayload struct {
 	Name              string   `json:"name"`
 	Description       string   `json:"description"`
+	Icon              string   `json:"icon"`
 	Scope             string   `json:"scope"`
 	SystemPrompt      string   `json:"system_prompt"`
 	DefaultProviderID *uint64  `json:"default_provider_id"`
@@ -127,6 +128,7 @@ func (h *AgentHandler) payload(p *agentPayload, base *aimodel.AIAgent, claims *a
 		row.Name = p.Name
 	}
 	row.Description = p.Description
+	row.Icon = p.Icon
 	row.SystemPrompt = p.SystemPrompt
 	row.DefaultProviderID = p.DefaultProviderID
 	row.DefaultModel = p.DefaultModel

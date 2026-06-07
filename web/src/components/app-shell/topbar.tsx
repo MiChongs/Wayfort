@@ -3,7 +3,7 @@
 import * as React from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { Bell, LogOut, Menu, Moon, Search, Sun, User as UserIcon } from "lucide-react"
+import { LogOut, Menu, Moon, Search, Sun, User as UserIcon } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useHotkeys } from "react-hotkeys-hook"
 import {
@@ -18,7 +18,9 @@ import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { Sidebar } from "@/components/app-shell/sidebar"
+import { NotificationBell } from "@/components/notifications/notification-bell"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
+import { useAccess } from "@/lib/hooks/use-access"
 import { authService } from "@/lib/api/services"
 import { clearTokens } from "@/lib/auth/tokens"
 
@@ -33,8 +35,7 @@ const PATH_LABELS: Record<string, string> = {
   "/me/login-history": "登录历史",
   "/admin/users": "用户管理",
   "/admin/roles": "角色与权限",
-  "/admin/departments": "部门",
-  "/admin/groups": "用户组",
+  "/admin/organization": "组织架构",
   "/admin/nodes": "节点 - 资产",
   "/admin/credentials": "凭据",
   "/admin/proxies": "代理",
@@ -57,6 +58,7 @@ export function TopBar({
   const router = useRouter()
   const pathname = usePathname()
   const me = useCurrentUser()
+  const { tier } = useAccess()
   const { theme, setTheme, resolvedTheme } = useTheme()
   const [mounted, setMounted] = React.useState(false)
   React.useEffect(() => setMounted(true), [])
@@ -95,9 +97,7 @@ export function TopBar({
       </div>
       <Sheet open={mobileOpen} onOpenChange={(o) => !o && onMobileClose?.()}>
         <SheetContent side="left" className="p-0 w-72 md:hidden">
-          <div className="md:hidden block">
-            <Sidebar />
-          </div>
+          <Sidebar mobile />
         </SheetContent>
       </Sheet>
       <div className="flex items-center gap-1">
@@ -124,9 +124,7 @@ export function TopBar({
         >
           {mounted && (resolvedTheme || theme) === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </Button>
-        <Button variant="ghost" size="icon" aria-label="通知">
-          <Bell className="w-4 h-4" />
-        </Button>
+        <NotificationBell />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="gap-2 pl-2 pr-3">
@@ -139,7 +137,9 @@ export function TopBar({
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel>
               <div className="text-sm font-medium">{me?.usr}</div>
-              <div className="text-xs text-muted-foreground">{me?.adm ? "管理员" : "普通用户"}</div>
+              <div className="text-xs text-muted-foreground">
+                {tier === "superadmin" ? "超级管理员" : tier === "admin" ? "管理员" : "普通用户"}
+              </div>
             </DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>

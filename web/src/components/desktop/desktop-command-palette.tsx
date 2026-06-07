@@ -3,6 +3,7 @@
 import * as React from "react"
 import {
   Command as CommandIcon,
+  HardDrive,
   Keyboard as KeyboardIcon,
   Maximize,
   Plug,
@@ -31,6 +32,7 @@ import { PRESET_COMBOS } from "./desktop-key-map"
 export interface DesktopCommandActions {
   onSendCombo: (combo: string) => void
   onFullscreen: () => void
+  onFiles?: () => void
   onSettings: () => void
   onReconnect: () => void
   onDisconnect: () => void
@@ -82,6 +84,9 @@ export function DesktopCommandPalette({ open, onOpenChange, actions }: Props) {
 
             <CommandGroup heading="视图">
               <Item icon={Maximize} label="切换全屏" hint="F11" onSelect={run(actions.onFullscreen)} />
+              {actions.onFiles && (
+                <Item icon={HardDrive} label="文件传输 / 个人盘" onSelect={run(actions.onFiles)} />
+              )}
               <Item icon={SettingsIcon} label="打开桌面设置" onSelect={run(actions.onSettings)} />
             </CommandGroup>
 

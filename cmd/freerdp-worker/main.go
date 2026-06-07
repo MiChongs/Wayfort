@@ -57,6 +57,16 @@ func run(logger *zap.Logger) error {
 	stdin := bufio.NewReaderSize(os.Stdin, 64*1024)
 	stdoutMu := &sync.Mutex{}
 	writeFrame := func(body []byte) error {
+		// Never emit a frame the gateway's readFrame (desktop.MaxFrameBytes)
+		// would reject — an oversize write trips the gateway read and silently
+		// freezes the whole stream. The encode path (frame_encode.go) forces
+		// compression for large rects so this is a defensive backstop; skip +
+		// log rather than desync the protocol.
+		if len(body) > desktop.MaxFrameBytes {
+			logger.Warn("dropping oversize worker frame; exceeds gateway read cap",
+				zap.Int("bytes", len(body)), zap.Int("cap", desktop.MaxFrameBytes))
+			return nil
+		}
 		stdoutMu.Lock()
 		defer stdoutMu.Unlock()
 		var hdr [4]byte
@@ -108,6 +118,27 @@ func run(logger *zap.Logger) error {
 			logger.Warn("libfreerdp WLog level apply failed", zap.String("level", lvl))
 		}
 	}
+
+	// Always surface the rdpdr + drive channel handshake at DEBUG (low volume,
+	// off the main firehose). This is the only window into whether a redirected
+	// drive is actually announced to the server (the device-announce PDU after
+	// PAKID_CORE_USER_LOGGEDON) and whether the server then enumerates it.
+	dbgTags := []string{
+		"com.freerdp.channels.rdpdr.client",
+		"com.freerdp.channels.drive.client",
+		"com.freerdp.channels.rdpdr",
+		// Channel negotiation (GCC channel defs + server's accepted channel
+		// list/IDs + MCS join + channel data routing). This is how we see
+		// whether the server actually joins our rdpdr channel and sends data on
+		// it — the difference between "client loaded it" and "server uses it".
+		"com.freerdp.core.gcc",
+		"com.freerdp.core.mcs",
+		"com.freerdp.core.channels",
+		"com.freerdp.channels",
+	}
+	logger.Info("libfreerdp channel debug enabled",
+		zap.Int("ok", rdp.EnableChannelDebug(dbgTags)),
+		zap.Int("requested", len(dbgTags)))
 
 	// Plan 17 M2: backend is libfreerdp via rdp.NewClient when built with
 	// `-tags freerdp`; otherwise the rdp package's stub returns an error

@@ -44,3 +44,6 @@ func ApplyWLogLevel(level string) bool { return false }
 
 // ConfigureWLogToStderr — no-op when libfreerdp isn't linked.
 func ConfigureWLogToStderr() bool { return false }
+
+// EnableChannelDebug — no-op when libfreerdp isn't linked.
+func EnableChannelDebug(tags []string) int { return 0 }

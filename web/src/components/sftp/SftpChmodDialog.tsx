@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { sftpService, type SftpEntry } from "@/lib/api/services"
@@ -109,42 +110,36 @@ export function SftpChmodDialog({ nodeId, entry, onClose, onSaved }: Props) {
         </DialogHeader>
 
         <div className="space-y-4 py-2">
-          <div className="rounded-md border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-muted text-xs">
-                <tr>
-                  <th className="text-left px-2 py-1.5"></th>
-                  {PERMS.map((p) => (
-                    <th key={p.name} className="px-2 py-1.5 text-center">
-                      {p.label}
-                    </th>
-                  ))}
-                  <th className="px-2 py-1.5 text-center">八进制</th>
-                </tr>
-              </thead>
-              <tbody>
-                {BITS.map((b, bi) => {
-                  const blockMode = (mode >> ((2 - bi) * 3)) & 0o7
-                  return (
-                    <tr key={b.name} className="border-t">
-                      <td className="px-2 py-1.5 text-muted-foreground">{b.label}</td>
-                      {PERMS.map((p) => (
-                        <td key={p.name} className="px-2 py-1.5 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isOn(bi, p.value)}
-                            onChange={(e) => setBit(bi, p.value, e.target.checked)}
-                            className="w-4 h-4 accent-primary"
-                            aria-label={`${b.label} ${p.label}`}
-                          />
-                        </td>
-                      ))}
-                      <td className="px-2 py-1.5 text-center font-mono text-xs tabular-nums">{blockMode}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+          <div className="rounded-lg border p-3">
+            <div className="grid grid-cols-[5rem_repeat(3,1fr)_2.5rem] items-center gap-y-2.5 text-sm">
+              <span />
+              {PERMS.map((p) => (
+                <span key={p.name} className="text-center text-xs text-muted-foreground">
+                  {p.label}
+                </span>
+              ))}
+              <span className="text-center text-xs text-muted-foreground">值</span>
+              {BITS.map((b, bi) => {
+                const blockMode = (mode >> ((2 - bi) * 3)) & 0o7
+                return (
+                  <React.Fragment key={b.name}>
+                    <span className="text-muted-foreground">{b.label}</span>
+                    {PERMS.map((p) => (
+                      <span key={p.name} className="flex justify-center">
+                        <Checkbox
+                          checked={isOn(bi, p.value)}
+                          onCheckedChange={(v) => setBit(bi, p.value, v === true)}
+                          aria-label={`${b.label} ${p.label}`}
+                        />
+                      </span>
+                    ))}
+                    <span className="text-center font-mono text-xs tabular-nums text-muted-foreground">
+                      {blockMode}
+                    </span>
+                  </React.Fragment>
+                )
+              })}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3 items-end">

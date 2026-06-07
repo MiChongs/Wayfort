@@ -115,7 +115,21 @@ func (g *Gateway) runTelnetSession(ctx context.Context, conn *websocket.Conn, se
 	row := g.BeginSession(context.Background(), sessionID, model.SessionInteractive, claims, clientIP, node, recPath, recType)
 
 	sess := &Session{ID: sessionID, Conn: conn, Backend: backend, Recorder: rec, Cfg: g.cfg, Logger: g.logger}
-	runErr := sess.Run(ctx)
+	nodeID := node.ID
+	tracker := newCmdTracker(func(cmd string) {
+		g.Audit().Log(model.AuditLog{
+			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
+			SessionID: sessionID, NodeID: &nodeID, ClientIP: clientIP, Payload: cmd,
+		})
+	})
+	sess.OnCommand(tracker.feed)
+
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	unreg := g.RegisterLive(sessionID, cancel)
+	defer unreg()
+
+	runErr := sess.Run(sctx)
 	endErr := runErr
 	if errors.Is(endErr, context.Canceled) {
 		endErr = nil

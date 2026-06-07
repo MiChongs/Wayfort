@@ -74,7 +74,11 @@ type Request struct {
 	Temperature *float64
 	TopP        *float64
 	MaxTokens   int
-	Metadata    map[string]string
+	// ThinkingBudget, when > 0, enables the provider's extended-thinking /
+	// reasoning mode with that many tokens of thinking budget (Anthropic
+	// Extended Thinking). Providers that don't support it ignore the field.
+	ThinkingBudget int
+	Metadata       map[string]string
 }
 
 // EventType is the discriminator for the stream events Provider emits.

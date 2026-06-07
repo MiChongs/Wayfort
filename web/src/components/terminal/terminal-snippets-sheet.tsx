@@ -29,7 +29,7 @@ import {
   TerminalSquare,
   Variable,
 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -316,7 +316,7 @@ function SnippetRow({
       <CardContent className="space-y-1.5 p-2.5">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
-            {snippet.pinned && <Pin className="h-3 w-3 shrink-0 text-amber-500" />}
+            {snippet.pinned && <Pin className="h-3 w-3 shrink-0 text-[#e8a55a]" />}
             <span className="truncate text-sm font-medium">{snippet.name}</span>
             {snippet.usage_count > 0 && (
               <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal">
@@ -365,7 +365,7 @@ function SnippetRow({
               </Badge>
             ))}
             {snippet.variables && snippet.variables.length > 0 && (
-              <Badge variant="outline" className="h-4 border-sky-500/30 bg-sky-500/10 px-1.5 text-[10px] font-normal text-sky-600 dark:text-sky-300">
+              <Badge variant="outline" className="h-4 border-[#5db8a6]/30 bg-[#5db8a6]/10 px-1.5 text-[10px] font-normal text-[#4f9d8f] dark:text-[#5db8a6]">
                 <Variable className="mr-0.5 h-2.5 w-2.5" />
                 {snippet.variables.length} 变量
               </Badge>

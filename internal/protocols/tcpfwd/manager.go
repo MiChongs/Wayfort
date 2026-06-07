@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
@@ -18,7 +19,7 @@ import (
 
 // Manager owns the lifecycle of every active gateway-side TCP forwarder.
 type Manager struct {
-	cfg        config.TCPFwdConfig
+	cfg        atomic.Pointer[config.TCPFwdConfig] // live config; hot-swapped by ApplyConfig
 	repo       *repo.PortForwardRepo
 	nodes      *repo.NodeRepo
 	cache      *cache.Cache
@@ -43,12 +44,22 @@ type entry struct {
 }
 
 func NewManager(cfg config.TCPFwdConfig, r *repo.PortForwardRepo, nodes *repo.NodeRepo, c *cache.Cache, aud *audit.Writer, logger *zap.Logger, df DialerFactory) *Manager {
-	return &Manager{
-		cfg: cfg, repo: r, nodes: nodes, cache: c, audit: aud, logger: logger,
+	m := &Manager{
+		repo: r, nodes: nodes, cache: c, audit: aud, logger: logger,
 		makeDialer: df, entries: map[string]*entry{},
 		bus: NewEventBus(),
 	}
+	m.cfg.Store(&cfg)
+	return m
 }
+
+// conf returns the current live config snapshot.
+func (m *Manager) conf() config.TCPFwdConfig { return *m.cfg.Load() }
+
+// ApplyConfig hot-swaps the per-user limit + default TTL. New forwards honour
+// the updated values immediately; live forwarders keep their original lease.
+// ListenHost / PortRange are bootstrap-only and ignored here.
+func (m *Manager) ApplyConfig(cfg config.TCPFwdConfig) { m.cfg.Store(&cfg) }
 
 // Bus exposes the per-Manager event fanout. The WS endpoint subscribes here
 // to forward events to browsers.
@@ -110,21 +121,21 @@ type CreateOpts struct {
 
 // Create launches a new forwarder and persists its row.
 func (m *Manager) Create(ctx context.Context, userID uint64, username string, node *model.Node, opts CreateOpts) (*model.PortForward, error) {
-	if !m.cfg.Enabled {
+	if !m.conf().Enabled {
 		return nil, errors.New("tcpfwd disabled")
 	}
-	if m.cfg.MaxPerUser > 0 && m.CountForUser(userID) >= m.cfg.MaxPerUser {
-		return nil, fmt.Errorf("max %d port forwards per user", m.cfg.MaxPerUser)
+	if m.conf().MaxPerUser > 0 && m.CountForUser(userID) >= m.conf().MaxPerUser {
+		return nil, fmt.Errorf("max %d port forwards per user", m.conf().MaxPerUser)
 	}
 	ttl := opts.TTL
 	if ttl <= 0 {
-		ttl = m.cfg.DefaultTTL
+		ttl = m.conf().DefaultTTL
 	}
 	target, dialer, release, err := m.makeDialer(ctx, node)
 	if err != nil {
 		return nil, err
 	}
-	listenHost := m.cfg.ListenHost
+	listenHost := m.conf().ListenHost
 	if listenHost == "" {
 		listenHost = "127.0.0.1"
 	}
@@ -133,7 +144,7 @@ func (m *Manager) Create(ctx context.Context, userID uint64, username string, no
 		ID:        id,
 		UserID:    userID,
 		Host:      listenHost,
-		PortRange: m.cfg.PortRange,
+		PortRange: m.conf().PortRange,
 		Dialer:    dialer,
 		Target:    target,
 		Logger:    m.logger,
@@ -256,7 +267,7 @@ func (m *Manager) Close(ctx context.Context, id string) error {
 // PortForwardPortUnavailable so the operator can see the discrepancy in
 // the list view. Returns the count of successfully resumed entries.
 func (m *Manager) Resume(ctx context.Context) (int, error) {
-	if !m.cfg.Enabled {
+	if !m.conf().Enabled {
 		return 0, nil
 	}
 	rows, err := m.repo.ListActive(ctx, 0)

@@ -186,6 +186,13 @@ export function TerminalSettingsSheet({ open, onOpenChange, settings, onChange, 
                 checked={settings.webglEnabled}
                 onChange={(v) => onChange({ webglEnabled: v })}
               />
+
+              <SwitchField
+                label="断线自动重连"
+                description="网络意外断开时按 1s / 2s / 4s 退避自动重连。重连会建立新会话(原会话已随连接结束)。"
+                checked={settings.autoReconnect}
+                onChange={(v) => onChange({ autoReconnect: v })}
+              />
             </Section>
           </div>
         </ScrollArea>
@@ -206,9 +213,7 @@ export function TerminalSettingsSheet({ open, onOpenChange, settings, onChange, 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="space-y-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </h3>
+      <h3 className="eyebrow">{title}</h3>
       <div className="space-y-3">{children}</div>
     </section>
   )

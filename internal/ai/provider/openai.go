@@ -231,7 +231,21 @@ func buildOpenAIMessages(req Request) []openai.ChatCompletionMessageParamUnion {
 		case RoleSystem:
 			out = append(out, openai.SystemMessage(text))
 		case RoleUser:
-			out = append(out, openai.UserMessage(text))
+			imgs := collectImages(m.Content)
+			if len(imgs) == 0 {
+				out = append(out, openai.UserMessage(text))
+			} else {
+				parts := make([]openai.ChatCompletionContentPartUnionParam, 0, 1+len(imgs))
+				if text != "" {
+					parts = append(parts, openai.TextContentPart(text))
+				}
+				for _, img := range imgs {
+					parts = append(parts, openai.ImageContentPart(
+						openai.ChatCompletionContentPartImageImageURLParam{URL: img},
+					))
+				}
+				out = append(out, openai.UserMessage(parts))
+			}
 		case RoleAssistant:
 			if len(m.ToolCalls) > 0 {
 				calls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
@@ -296,6 +310,44 @@ func collectText(parts []ContentPart) string {
 		}
 	}
 	return sb.String()
+}
+
+// collectImages returns the image data (URLs / data: URLs) from a message's
+// content parts. Shared by every provider that supports vision input.
+func collectImages(parts []ContentPart) []string {
+	var out []string
+	for _, p := range parts {
+		if (p.Type == "image_url" || p.Type == "image") && p.ImageURL != "" {
+			out = append(out, p.ImageURL)
+		}
+	}
+	return out
+}
+
+// parseDataURL splits "data:<media-type>;base64,<data>" into the media type and
+// the raw base64 payload. ok is false for non-base64 / non-data URLs.
+func parseDataURL(u string) (mediaType, data string, ok bool) {
+	if !strings.HasPrefix(u, "data:") {
+		return "", "", false
+	}
+	rest := u[len("data:"):]
+	comma := strings.IndexByte(rest, ',')
+	if comma < 0 {
+		return "", "", false
+	}
+	meta := rest[:comma]
+	data = rest[comma+1:]
+	if !strings.Contains(meta, "base64") {
+		return "", "", false
+	}
+	mediaType = meta
+	if i := strings.IndexByte(meta, ';'); i >= 0 {
+		mediaType = meta[:i]
+	}
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return mediaType, data, true
 }
 
 func emit(ch chan<- Event, ctx context.Context, e Event) {

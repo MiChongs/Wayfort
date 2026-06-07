@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -65,14 +66,16 @@ func (h *Handler) Handle(c *gin.Context) {
 	// Phase 16 — same asset_access gate as webssh; DB CLI sessions are
 	// just terminals into a privileged shell, so the gate sits on the
 	// node's RequiresApprovalForConnect flag.
+	var grantDeadline time.Time
+	approvalCheck := approval.EnforcementCheck{
+		UserID:       claims.UserID,
+		BusinessType: model.ApprovalBizAssetAccess,
+		ResourceType: "node",
+		ResourceID:   strconv.FormatUint(nodeID, 10),
+		Action:       "connect",
+	}
 	if h.Approval != nil {
-		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
-			UserID:       claims.UserID,
-			BusinessType: model.ApprovalBizAssetAccess,
-			ResourceType: "node",
-			ResourceID:   strconv.FormatUint(nodeID, 10),
-			Action:       "connect",
-		})
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approvalCheck)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
 			return
@@ -80,6 +83,9 @@ func (h *Handler) Handle(c *gin.Context) {
 		if !res.Allowed {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
 			return
+		}
+		if res.Required && !res.ExpiresAt.IsZero() {
+			grantDeadline = res.ExpiresAt
 		}
 	}
 
@@ -108,6 +114,15 @@ func (h *Handler) Handle(c *gin.Context) {
 	defer cancel()
 	sessionID := uuid.NewString()
 	clientIP := c.ClientIP()
+	// Server-side hard cutoff (renewal-aware) when access came from a time-bound
+	// approval grant.
+	if h.Approval != nil && !grantDeadline.IsZero() {
+		stop := h.Approval.WatchGrant(ctx, approvalCheck, grantDeadline, func(reason string) {
+			_ = ws.Close(websocket.StatusPolicyViolation, reason)
+			cancel()
+		})
+		defer stop()
+	}
 	if err := h.run(ctx, ws, sessionID, claims, clientIP, node, spec, cols, rows); err != nil {
 		h.GW.Logger().Info("dbcli session ended", zap.String("session", sessionID), zap.Error(err))
 		_ = ws.Close(websocket.StatusInternalError, err.Error())
@@ -153,7 +168,14 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		ID: sessionID, Conn: ws, Backend: backend,
 		Recorder: rec, Cfg: h.GW.WSConfig(), Logger: h.GW.Logger(),
 	}
-	runErr := sess.Run(ctx)
+	sess.OnCommand(h.GW.CommandAuditor(sessionID, claims, clientIP, node))
+
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	unreg := h.GW.RegisterLive(sessionID, cancel)
+	defer unreg()
+
+	runErr := sess.Run(sctx)
 	endErr := runErr
 	if errors.Is(endErr, context.Canceled) {
 		endErr = nil

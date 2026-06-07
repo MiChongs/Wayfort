@@ -7,21 +7,14 @@
 
 import * as React from "react"
 import { useMutation } from "@tanstack/react-query"
-import { KeyRound, Loader2, Network, Plus, Tag } from "lucide-react"
-import { toast } from "sonner"
+import { Loader2, Network, Plus, Tag } from "lucide-react"
+import { toast } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import {
   Sheet,
   SheetContent,
@@ -33,6 +26,7 @@ import {
 } from "@/components/ui/sheet"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { CredentialPicker } from "@/components/admin/credential-picker"
 import { proxyService } from "@/lib/api/services"
 import type { Proxy, ProxyKind } from "@/lib/api/types"
 
@@ -78,7 +72,9 @@ export interface AddProxySheetProps {
   onCreated: () => void
 }
 
-export function AddProxySheet({ credentials, onCreated }: AddProxySheetProps) {
+export function AddProxySheet({ onCreated }: AddProxySheetProps) {
+  // `credentials` is still accepted for API compatibility but the embedded
+  // CredentialPicker now fetches + caches the list itself.
   const [open, setOpen] = React.useState(false)
   const [p, setP] = React.useState<Partial<Proxy> & { credential_id?: number }>(initialDraft())
 
@@ -178,29 +174,13 @@ export function AddProxySheet({ credentials, onCreated }: AddProxySheetProps) {
             )}
 
             <Field label={kindMeta.needs.credential ? "凭据 (必填)" : "凭据 (可选)"}>
-              <Select
-                value={p.credential_id ? String(p.credential_id) : "_none"}
-                onValueChange={(v) =>
-                  setP({ ...p, credential_id: v === "_none" ? undefined : Number(v) })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="选择凭据" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="_none">
-                    <span className="text-muted-foreground">— 不绑定 —</span>
-                  </SelectItem>
-                  {credentials.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      <div className="flex items-center gap-2">
-                        <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-                        {c.name}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <CredentialPicker
+                value={p.credential_id ?? null}
+                onChange={(id) => setP({ ...p, credential_id: id ?? undefined })}
+                allowNone={!kindMeta.needs.credential}
+                placeholder={kindMeta.needs.credential ? "选择凭据" : "不绑定（可选）"}
+                aria-invalid={kindMeta.needs.credential && !p.credential_id}
+              />
             </Field>
 
             <Field label="标签 (逗号分隔)">

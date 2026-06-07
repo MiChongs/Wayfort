@@ -5,29 +5,38 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	dockertypes "github.com/docker/docker/api/types"
 	dclient "github.com/docker/docker/client"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/dockerx"
 )
 
 type DockerLauncher struct {
 	cli *dclient.Client
-	cfg config.AnonymousConfig
+	cfg atomic.Pointer[config.AnonymousConfig] // live config; hot-swapped by ApplyConfig
 }
 
 func NewDockerLauncher(cfg config.AnonymousConfig) (*DockerLauncher, error) {
-	cli, err := dclient.NewClientWithOpts(dclient.FromEnv, dclient.WithAPIVersionNegotiation())
+	cli, err := dockerx.NewClient()
 	if err != nil {
 		return nil, err
 	}
-	return &DockerLauncher{cli: cli, cfg: cfg}, nil
+	l := &DockerLauncher{cli: cli}
+	l.cfg.Store(&cfg)
+	return l, nil
 }
 
-func (l *DockerLauncher) Client() *dclient.Client { return l.cli }
-func (l *DockerLauncher) Config() config.AnonymousConfig { return l.cfg }
+func (l *DockerLauncher) Client() *dclient.Client       { return l.cli }
+func (l *DockerLauncher) conf() config.AnonymousConfig  { return *l.cfg.Load() }
+func (l *DockerLauncher) Config() config.AnonymousConfig { return l.conf() }
+
+// ApplyConfig hot-swaps the sandbox limits. Newly launched containers pick up
+// the new image / resource caps immediately; in-flight containers keep theirs.
+func (l *DockerLauncher) ApplyConfig(cfg config.AnonymousConfig) { l.cfg.Store(&cfg) }
 
 // Create starts a fresh container with hardened defaults and returns its ID.
 // The container runs `tail -f /dev/null` so it stays alive; the actual shell
@@ -37,7 +46,7 @@ func (l *DockerLauncher) Create(ctx context.Context, sessionID string) (string, 
 		return "", err
 	}
 	cfg := &container.Config{
-		Image:        l.cfg.Image,
+		Image:        l.conf().Image,
 		Cmd:          []string{"tail", "-f", "/dev/null"},
 		Tty:          false,
 		AttachStdin:  false,
@@ -50,13 +59,13 @@ func (l *DockerLauncher) Create(ctx context.Context, sessionID string) (string, 
 	}
 	hostCfg := &container.HostConfig{
 		AutoRemove:     false, // we control removal in the janitor
-		NetworkMode:    container.NetworkMode(l.cfg.Network),
+		NetworkMode:    container.NetworkMode(l.conf().Network),
 		ReadonlyRootfs: true,
 		Tmpfs:          map[string]string{"/tmp": "rw,exec,nosuid,size=64m"},
 		Resources: container.Resources{
-			Memory:    l.cfg.MemoryMB * 1024 * 1024,
-			PidsLimit: ptr(l.cfg.PidsLimit),
-			NanoCPUs:  int64(l.cfg.CPU * 1e9),
+			Memory:    l.conf().MemoryMB * 1024 * 1024,
+			PidsLimit: ptr(l.conf().PidsLimit),
+			NanoCPUs:  int64(l.conf().CPU * 1e9),
 		},
 		SecurityOpt: []string{"no-new-privileges"},
 	}
@@ -78,12 +87,12 @@ func (l *DockerLauncher) ensureImage(ctx context.Context) error {
 	}
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
-			if tag == l.cfg.Image {
+			if tag == l.conf().Image {
 				return nil
 			}
 		}
 	}
-	r, err := l.cli.ImagePull(ctx, l.cfg.Image, image.PullOptions{})
+	r, err := l.cli.ImagePull(ctx, l.conf().Image, image.PullOptions{})
 	if err != nil {
 		return fmt.Errorf("image pull: %w", err)
 	}
@@ -96,7 +105,7 @@ func (l *DockerLauncher) ensureImage(ctx context.Context) error {
 // Attach creates an exec instance with a TTY and returns a hijacked
 // duplex connection plus the exec ID for resize calls.
 func (l *DockerLauncher) Attach(ctx context.Context, containerID string, cols, rows int) (dockertypes.HijackedResponse, string, error) {
-	cmd := l.cfg.Shell
+	cmd := l.conf().Shell
 	if len(cmd) == 0 {
 		cmd = []string{"/bin/sh"}
 	}

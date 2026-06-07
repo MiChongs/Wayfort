@@ -6,7 +6,7 @@
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { motion, useReducedMotion } from "motion/react"
 import { ArrowLeft, KeyRound, Loader2, Mail, ShieldCheck } from "lucide-react"
 import { Badge } from "@/components/ui/badge"

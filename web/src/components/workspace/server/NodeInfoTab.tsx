@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import { Copy, Heart, Loader2, RefreshCw } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { meService, nodeService } from "@/lib/api/services"
@@ -65,7 +65,7 @@ export function NodeInfoTab({ nodeId }: Props) {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-semibold truncate" title={n.name}>{n.name}</h2>
-            {isFav && <Heart className="w-3.5 h-3.5 fill-amber-400 text-amber-400 shrink-0" />}
+            {isFav && <Heart className="w-3.5 h-3.5 fill-[#e8a55a] text-[#e8a55a] shrink-0" />}
             {n.disabled && <Badge variant="destructive">已禁用</Badge>}
           </div>
           <div className="font-mono text-xs text-muted-foreground inline-flex items-center gap-1">

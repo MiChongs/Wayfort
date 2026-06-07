@@ -24,9 +24,10 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { useReducedMotion } from "motion/react"
-import { toast } from "sonner"
+import { motion, useReducedMotion } from "motion/react"
+import { toast } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { PortalContainerProvider } from "@/components/ui/portal-container"
 import { desktopControl } from "@/lib/desktop/control-client"
 import { nodeService } from "@/lib/api/services"
 import { patchRdpProtoOptions } from "@/lib/desktop/proto-options"
@@ -40,12 +41,13 @@ import type { UserInteraction } from "@devolutions/iron-remote-desktop"
 import { cn } from "@/lib/utils"
 import { DesktopCommandPalette } from "./desktop-command-palette"
 import { DesktopContextMenu } from "./desktop-context-menu"
-import { DesktopLoadingOverlay } from "./desktop-loading-overlay"
+import { DesktopConnectionStage } from "./desktop-connection-stage"
+import { useDesktopConnection } from "./desktop-connection"
 import { DesktopPerfPanel } from "./desktop-perf-panel"
 import { DesktopSettingsSheet } from "./desktop-settings-sheet"
-import { DesktopStatusBar } from "./desktop-status-bar"
 import { DesktopToolbar } from "./desktop-toolbar"
 import { useDesktopSettings } from "./use-desktop-settings"
+import { useDesktopChrome } from "./use-desktop-chrome"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
 
 // Lazy-load the iron-remote-desktop React wrapper so the Wasm-bearing
@@ -73,9 +75,8 @@ export interface IronRdpDesktopShellProps {
 export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.ReactElement {
 	const { nodeId, nodeName, nodeHost, nodePort, onStatusChange, onStatsChange, onLatencyChange } = props
 	const { settings, update, reset } = useDesktopSettings()
-	useReducedMotion()
+	const reduceMotion = useReducedMotion()
 
-	const wrapRef = React.useRef<HTMLDivElement | null>(null)
 	const uiRef = React.useRef<UserInteraction | null>(null)
 	const sessionIdRef = React.useRef<string>("")
 	const startedRef = React.useRef(false)
@@ -89,15 +90,18 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 	} | null>(null)
 	const [pendingPayload, setPendingPayload] = React.useState<IronRdpStartSessionPayload | null>(null)
 
-	const [status, setStatus] = React.useState<DesktopStatus>("loading-script")
-	const [startedAt, setStartedAt] = React.useState<number>(() => Date.now())
-	const [errorInfo, setErrorInfo] = React.useState<{ message: string; code?: number } | undefined>()
+	// Connection state machine — shared with the FreeRDP shell. The Wasm path
+	// can't introspect RTT (the socket is owned by the component), so latency /
+	// link quality stay "测量中"; everything else (timed step timeline, session
+	// clock, reconnect, error classification) works the same.
+	const conn = useDesktopConnection()
+	const status = conn.status
+	const setStatus = conn.setStatus
 	const [fullscreen, setFullscreen] = React.useState(false)
 	const [settingsOpen, setSettingsOpen] = React.useState(false)
 	const [paletteOpen, setPaletteOpen] = React.useState(false)
 	const [perfOpen, setPerfOpen] = React.useState(false)
 	const [remote, setRemote] = React.useState({ w: 1280, h: 720 })
-	const [pointer] = React.useState({ x: 0, y: 0 })
 	// IronRDP path: the WebSocket is owned by the Wasm component
 	// (`<iron-remote-desktop>`), so we can't introspect bytes from a
 	// FrameClient like the legacy path does. We populate fps via a
@@ -113,13 +117,13 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 	})
 	const [bumpKey, setBumpKey] = React.useState(0)
 
-	// Drive the elapsed-time text on the loading overlay.
-	const [, force] = React.useState(0)
-	React.useEffect(() => {
-		if (status === "connected" || status === "error" || status === "closed") return
-		const t = window.setInterval(() => force((v) => v + 1), 250)
-		return () => window.clearInterval(t)
-	}, [status])
+	// Single auto-hiding control bar (shared with the FreeRDP shell). Owns the
+	// wrapper element for the Fullscreen API + the overlay portal target.
+	const anyOverlayOpen = settingsOpen || paletteOpen || perfOpen
+	// Only auto-hide once connected — while connecting / reconnecting / errored
+	// the bar stays pinned so its status + reconnect controls stay reachable.
+	const { wrapRef, wrapEl, setWrap, chromeShown, revealChrome, onBarMouseEnter, onBarMouseLeave } =
+		useDesktopChrome(fullscreen && status === "connected", anyOverlayOpen)
 
 	// Fullscreen subscription (matches the legacy shell so the toolbar
 	// "全屏" button keeps working without protocol-specific wiring).
@@ -200,12 +204,12 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 		}).catch((err) => {
 			if (cancelled) return
 			toast.error("加载 IronRDP 模块失败", { description: (err as Error).message })
-			setStatus("error")
-			setErrorInfo({ message: (err as Error).message })
+			conn.fail((err as Error).message)
 		})
 		return () => {
 			cancelled = true
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [])
 
 	// Connect lifecycle: start a session on our gateway whenever the
@@ -213,9 +217,7 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 	// component to be ready, then issue ui.connect(config).
 	React.useEffect(() => {
 		let cancelled = false
-		setStatus("loading-script")
-		setStartedAt(Date.now())
-		setErrorInfo(undefined)
+		conn.restart()
 		startedRef.current = false
 
 		desktopControl
@@ -230,11 +232,9 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 			.then((resp: StartSessionResponse) => {
 				if (cancelled) return
 				if (resp.backend !== "ironrdp" || !resp.gateway_url || !resp.token) {
-					setStatus("error")
-					setErrorInfo({
-						message:
-							"gateway 返回了非 ironrdp 响应。检查 desktop.devolutions_gateway.enabled 是否为 true",
-					})
+					conn.fail(
+						"gateway 返回了非 ironrdp 响应。请检查 desktop.devolutions_gateway.enabled 是否为 true",
+					)
 					return
 				}
 				sessionIdRef.current = resp.session_id
@@ -253,8 +253,7 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 			})
 			.catch((err: Error) => {
 				if (cancelled) return
-				setStatus("error")
-				setErrorInfo({ message: err.message })
+				conn.fail(err.message)
 			})
 
 		return () => {
@@ -275,6 +274,7 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 			setPendingPayload(null)
 			startedRef.current = false
 		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [nodeId, bumpKey, settings.preferredWidth, settings.preferredHeight, nodeHost, nodePort])
 
 	// Once both the Wasm UI handle and the gateway payload are ready,
@@ -290,12 +290,11 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 		ui.connect(cfg)
 			.then(() => {
 				setStatus("connected")
-				setErrorInfo(undefined)
 			})
 			.catch((err) => {
-				setStatus("error")
-				setErrorInfo({ message: ironErrorMessage(err) })
+				conn.fail(ironErrorMessage(err))
 			})
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [pendingPayload, rdpExtensions])
 
 	function handleReady(ui: UserInteraction) {
@@ -381,26 +380,57 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 	return (
 		<TooltipProvider delayDuration={300}>
 			<div
-				ref={wrapRef}
-				className={cn("flex flex-col h-full w-full bg-background isolate", fullscreen && "fixed inset-0 z-[60]")}
+				ref={setWrap}
+				onMouseMove={fullscreen ? revealChrome : undefined}
+				className={cn("relative flex flex-col h-full w-full bg-background isolate", fullscreen && "fixed inset-0 z-[60]")}
 			>
-				<DesktopToolbar
-					status={status}
-					nodeName={nodeName}
-					nodeId={nodeId}
-					nodeHost={nodeHost}
-					nodePort={nodePort}
-					remoteWidth={remote.w}
-					remoteHeight={remote.h}
-					fullscreen={fullscreen}
-					onSendCombo={sendCombo}
-					onSendCtrlAltDel={() => sendCombo("Control+Alt+Delete")}
-					onSettings={() => setSettingsOpen(true)}
-					onPalette={() => setPaletteOpen(true)}
-					onFullscreen={toggleFullscreen}
-					onReconnect={handleReconnect}
-					onDisconnect={handleDisconnect}
-				/>
+				<PortalContainerProvider value={fullscreen ? wrapEl : undefined}>
+				{/* Single control bar. Overlays the canvas + auto-hides in
+				    fullscreen; pinned in normal flow when windowed. */}
+				<motion.div
+					className={cn(fullscreen ? "absolute inset-x-0 top-0 z-[70] p-2.5" : "relative z-10 shrink-0")}
+					initial={false}
+					animate={{ y: chromeShown ? 0 : "-100%", opacity: chromeShown ? 1 : 0 }}
+					transition={{ duration: reduceMotion ? 0 : 0.28, ease: [0.22, 1, 0.36, 1] }}
+					style={{ pointerEvents: chromeShown ? "auto" : "none" }}
+					onMouseEnter={onBarMouseEnter}
+					onMouseLeave={onBarMouseLeave}
+				>
+					<DesktopToolbar
+						status={status}
+						nodeName={nodeName}
+						nodeId={nodeId}
+						nodeHost={nodeHost}
+						nodePort={nodePort}
+						remoteWidth={remote.w}
+						remoteHeight={remote.h}
+						fullscreen={fullscreen}
+						backendLabel="IronRDP"
+						quality={conn.quality}
+						stats={stats}
+						sessionMs={conn.sessionMs}
+						latencyHistory={conn.latencyHistory}
+						keyboardLayout={settings.keyboardLayout}
+						onOpenPerfPanel={() => setPerfOpen(true)}
+						onSendCombo={sendCombo}
+						onSendCtrlAltDel={() => sendCombo("Control+Alt+Delete")}
+						onSettings={() => setSettingsOpen(true)}
+						onPalette={() => setPaletteOpen(true)}
+						onFullscreen={toggleFullscreen}
+						onReconnect={handleReconnect}
+						onDisconnect={handleDisconnect}
+					/>
+				</motion.div>
+
+				{/* Top reveal strip — nudge the pointer to the top edge to bring
+				    the auto-hidden bar back in fullscreen. */}
+				{fullscreen && !chromeShown && (
+					<div
+						className="absolute inset-x-0 top-0 z-[69] h-2.5"
+						onMouseEnter={revealChrome}
+						aria-hidden
+					/>
+				)}
 
 				<DesktopContextMenu
 					connected={status === "connected"}
@@ -411,41 +441,31 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 					onReconnect={handleReconnect}
 					onDisconnect={handleDisconnect}
 				>
-					<div className="relative flex-1 min-h-0 bg-black flex">
+					<div className="desktop-stage relative flex-1 min-h-0 flex">
 						<IronRemoteDesktopReact
 							module={rdpModule}
 							onReady={handleReady}
 							onError={(err) => {
-								setStatus("error")
-								setErrorInfo({ message: ironErrorMessage(err) })
+								conn.fail(ironErrorMessage(err))
 							}}
 							scale={mapScaleMode(settings.scaleMode)}
 							flexcenter
 							className="flex-1 min-h-0"
 						/>
-						<DesktopLoadingOverlay
-							status={status}
-							errorMessage={errorInfo?.message}
-							errorCode={errorInfo?.code}
-							elapsedMs={Date.now() - startedAt}
+						<DesktopConnectionStage
+							conn={conn}
 							nodeName={nodeName}
+							nodeHost={nodeHost}
+							nodePort={nodePort}
+							backendLabel="IronRDP"
 							onRetry={handleReconnect}
+							onRetryNow={handleReconnect}
 							onForceTlsOnly={handleForceTlsOnly}
 							onSwitchToGuacamole={handleSwitchToGuacamole}
+							onDisconnect={handleDisconnect}
 						/>
 					</div>
 				</DesktopContextMenu>
-
-				<DesktopStatusBar
-					status={status}
-					remoteWidth={remote.w}
-					remoteHeight={remote.h}
-					pointerX={pointer.x}
-					pointerY={pointer.y}
-					stats={stats}
-					keyboardLayout={settings.keyboardLayout}
-					onOpenPerfPanel={() => setPerfOpen(true)}
-				/>
 
 				<DesktopPerfPanel
 					open={perfOpen}
@@ -474,6 +494,7 @@ export function IronRdpDesktopShell(props: IronRdpDesktopShellProps): React.Reac
 						onDisconnect: handleDisconnect,
 					}}
 				/>
+			</PortalContainerProvider>
 			</div>
 		</TooltipProvider>
 	)

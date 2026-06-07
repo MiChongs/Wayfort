@@ -2,13 +2,14 @@
 
 import * as React from "react"
 import { motion, useReducedMotion } from "motion/react"
-import { ExternalLink, Loader2, Pin, VolumeX, X } from "lucide-react"
+import { ExternalLink, Loader2, Pin, SplitSquareHorizontal, VolumeX, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { WorkspaceTab as WorkspaceTabModel } from "./useWorkspaceStore"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 import { metaOf, rdpBackendShortLabel } from "./protocolMeta"
 import { GROUP_ACCENT_BG } from "./groupColors"
+import { STATUS_DOT, STATUS_LABEL, latencyTone } from "./tabStatus"
 
 type Props = {
   tab: WorkspaceTabModel
@@ -25,14 +26,9 @@ type Props = {
   onDrop: (ev: React.DragEvent) => void
   onDragEnd: () => void
   dragOver?: "left" | "right" | null
-}
-
-const STATUS_LABEL: Record<WorkspaceTabModel["status"], string> = {
-  fresh: "未连接",
-  connecting: "连接中",
-  connected: "已连接",
-  closed: "已关闭",
-  error: "连接错误",
+  /** True while THIS tab is the one being dragged — dims it so the drop
+   *  indicator on the target reads as the live insertion point. */
+  dragging?: boolean
 }
 
 // WorkspaceTab — shadcn-style browser tab with clear status semantics.
@@ -56,6 +52,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
     onDrop,
     onDragEnd,
     dragOver,
+    dragging,
     ...rest
   },
   ref,
@@ -69,6 +66,9 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
 
   const prefs = useWorkspaceStore((s) => s.prefs)
   const groups = useWorkspaceStore((s) => s.groups)
+  // This tab is the split's secondary pane (the primary pane is the active tab,
+  // already styled as the floating card).
+  const inSplit = useWorkspaceStore((s) => s.splitId === tab.id) && !active
   // Only render the group accent in manual mode — the derived modes are
   // implied by adjacency in the strip, so a coloured stripe would be
   // visual noise rather than information.
@@ -106,50 +106,46 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
-      title={`${tab.title}${tab.host ? ` (${tab.host}${tab.port ? ":" + tab.port : ""})` : ""}${rdpBackendLabel ? ` · ${rdpBackendLabel}` : ""} · ${STATUS_LABEL[tab.status]}`}
       className="contents"
       {...rest}
     >
-      <motion.div
-        layout={!reduced}
-        initial={reduced ? false : { opacity: 0, scale: 0.96, y: 4 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={reduced ? undefined : { opacity: 0, scale: 0.92, y: 4 }}
-        whileHover={reduced || active ? undefined : { y: -1 }}
-        transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-        className={cn(
-          "group/tab relative flex items-center gap-2 h-9 shrink-0",
-          tab.pinned ? "px-2 min-w-[64px] max-w-[120px]" : "px-3 min-w-[148px] max-w-[232px]",
-          "border-r border-border/60 text-sm cursor-default select-none",
-          "transition-colors duration-150",
-          active
-            ? "bg-card text-foreground"
-            : "bg-muted/20 text-muted-foreground hover:bg-muted/45 hover:text-foreground",
-        )}
-      >
-        {/* Active accent — shared layoutId animates between active tabs. */}
-        {active && (
+      <Tooltip delayDuration={500}>
+        <TooltipTrigger asChild>
+          <motion.div
+            data-tab-id={tab.id}
+            layout={!reduced}
+            initial={reduced ? false : { opacity: 0, scale: 0.96, y: 4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={reduced ? undefined : { opacity: 0, scale: 0.92, y: 4 }}
+            transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+            className={cn(
+              "group/tab relative flex items-center gap-1.5 shrink-0 self-end rounded-t-lg",
+              // 紧凑密度
+              tab.pinned ? "px-2 min-w-[52px] max-w-[104px]" : "px-2.5 min-w-[116px] max-w-[210px]",
+              "text-[13px] cursor-default select-none transition-[background-color,color,height,opacity] duration-150",
+              active
+                // Chrome 浮起卡片：与下方 bg-background 内容区同色，圆角顶 + 阴影 + 描边 + 2px 主题色顶边，占满条高并浮起
+                ? "h-full bg-background text-foreground shadow-sm border border-b-0 border-border/60 border-t-2 border-t-primary z-10"
+                // 非激活：扭平、偏灰、略矮（让激活卡片显得浮起），hover 才变亮
+                : "h-[calc(100%-3px)] bg-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+              dragging && "opacity-40",
+            )}
+          >
+        {/* Drop insertion marker — a glowing full-height bar in the gap on the
+            drop side, capped with a dot so the insertion point reads clearly. */}
+        {dragOver && (
           <motion.span
-            layoutId="workspace-tab-active"
-            className="absolute inset-x-0 top-0 h-[2px] bg-primary"
-            transition={{ type: "spring", stiffness: 480, damping: 38 }}
-          />
-        )}
-
-        {/* Drag indicators — thin primary line on the drop side. */}
-        {dragOver === "left" && (
-          <motion.span
-            initial={{ opacity: 0, scaleY: 0.6 }}
+            aria-hidden
+            initial={{ opacity: 0, scaleY: 0.5 }}
             animate={{ opacity: 1, scaleY: 1 }}
-            className="absolute left-0 top-1 bottom-1 w-0.5 bg-primary rounded-full"
-          />
-        )}
-        {dragOver === "right" && (
-          <motion.span
-            initial={{ opacity: 0, scaleY: 0.6 }}
-            animate={{ opacity: 1, scaleY: 1 }}
-            className="absolute right-0 top-1 bottom-1 w-0.5 bg-primary rounded-full"
-          />
+            transition={{ duration: 0.12, ease: "easeOut" }}
+            className={cn(
+              "absolute top-0 bottom-0 z-10 w-[3px] rounded-full bg-primary shadow-[0_0_8px] shadow-primary/60",
+              dragOver === "left" ? "-left-px" : "-right-px",
+            )}
+          >
+            <span className="absolute -top-[3px] left-1/2 -translate-x-1/2 h-1.5 w-1.5 rounded-full bg-primary" />
+          </motion.span>
         )}
 
         {/* Manual-mode group accent — bottom stripe in the group's hue. */}
@@ -188,20 +184,13 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
             toggle. Hidden on pinned tabs because the row is already
             compressed to icon + close. */}
         {!tab.pinned && tab.muted && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <VolumeX className="w-3 h-3 shrink-0 text-muted-foreground/80" />
-            </TooltipTrigger>
-            <TooltipContent>已静音通知</TooltipContent>
-          </Tooltip>
+          <VolumeX className="w-3 h-3 shrink-0 text-muted-foreground/80" aria-label="已静音通知" />
         )}
         {!tab.pinned && tab.poppedOut && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <ExternalLink className="w-3 h-3 shrink-0 text-primary" />
-            </TooltipTrigger>
-            <TooltipContent>已弹出到新窗口</TooltipContent>
-          </Tooltip>
+          <ExternalLink className="w-3 h-3 shrink-0 text-primary" aria-label="已弹出到新窗口" />
+        )}
+        {!tab.pinned && inSplit && (
+          <SplitSquareHorizontal className="w-3 h-3 shrink-0 text-primary" aria-label="并排显示中" />
         )}
 
         {editingTitle ? (
@@ -254,13 +243,13 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
               </span>
             )}
             {tab.status === "connecting" && (
-              <Loader2 className="w-3 h-3 animate-spin text-amber-500 shrink-0" aria-hidden />
+              <Loader2 className="w-3 h-3 animate-spin text-[#c08a2e] dark:text-[#e3b84e] shrink-0" aria-hidden />
             )}
           </span>
         )}
 
-        {/* Close button — pinned tabs survive by design, so the X stays
-            hidden until the user explicitly unpins via the ContextMenu. */}
+        {/* Close button — always visible (pinned tabs survive by design, so
+            their X is hidden until unpinned via the ContextMenu). */}
         {!tab.pinned && (
           <motion.button
             type="button"
@@ -275,7 +264,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
               "shrink-0 rounded-sm w-4 h-4 inline-flex items-center justify-center",
               "text-muted-foreground hover:text-foreground hover:bg-accent",
               "transition-opacity duration-150",
-              active ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover/tab:opacity-100",
+              active ? "opacity-80 hover:opacity-100" : "opacity-50 hover:opacity-100",
             )}
             aria-label={`关闭 ${tab.title}`}
             title="关闭 (Ctrl+W)"
@@ -283,10 +272,57 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
             <X className="w-3 h-3" />
           </motion.button>
         )}
-      </motion.div>
+          </motion.div>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="start" sideOffset={6} className="max-w-[260px]">
+          <TabPreview tab={tab} rdpBackendLabel={rdpBackendLabel} />
+        </TooltipContent>
+      </Tooltip>
     </div>
   )
 })
+
+// TabPreview — the rich hover bubble surfaced by the tab-level Tooltip. Pulls
+// title, protocol, address, live status + latency, and state flags into one
+// place so the strip itself stays compact.
+function TabPreview({
+  tab,
+  rdpBackendLabel,
+}: {
+  tab: WorkspaceTabModel
+  rdpBackendLabel: string | null
+}) {
+  const meta = metaOf(tab.protocol)
+  return (
+    <div className="space-y-1 text-xs">
+      <div className="text-sm font-medium leading-tight">{tab.title}</div>
+      <div className="text-muted-foreground">
+        {meta.label}
+        {rdpBackendLabel ? ` · ${rdpBackendLabel}` : ""}
+      </div>
+      {tab.host ? (
+        <div className="font-mono text-[11px] text-muted-foreground">
+          {tab.host}
+          {tab.port ? `:${tab.port}` : ""}
+        </div>
+      ) : null}
+      <div className="flex items-center gap-1.5 pt-0.5">
+        <span className={cn("inline-block h-1.5 w-1.5 rounded-full", STATUS_DOT[tab.status])} />
+        <span>{STATUS_LABEL[tab.status]}</span>
+        {tab.status === "connected" && tab.latencyMs != null ? (
+          <span className="tabular-nums text-muted-foreground">· {tab.latencyMs}ms</span>
+        ) : null}
+      </div>
+      {tab.pinned || tab.muted || tab.poppedOut ? (
+        <div className="flex items-center gap-2 pt-0.5 text-[11px] text-muted-foreground">
+          {tab.pinned ? <span>已固定</span> : null}
+          {tab.muted ? <span>已静音</span> : null}
+          {tab.poppedOut ? <span>已弹出</span> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 // StatusDot — semantic-color dot with motion-driven feedback:
 //   fresh       → small muted dot (no animation)
@@ -306,7 +342,7 @@ function StatusDot({
     return (
       <motion.span
         aria-label="connecting"
-        className={cn(base, "bg-amber-500")}
+        className={cn(base, STATUS_DOT.connecting)}
         animate={{ opacity: [0.4, 1, 0.4], scale: [0.85, 1.1, 0.85] }}
         transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
       />
@@ -315,9 +351,9 @@ function StatusDot({
   if (status === "connected" && !reduced) {
     return (
       <span className="relative inline-flex w-1.5 h-1.5 shrink-0" aria-label="connected">
-        <span className="absolute inset-0 rounded-full bg-emerald-500" />
+        <span className={cn("absolute inset-0 rounded-full", STATUS_DOT.connected)} />
         <motion.span
-          className="absolute inset-0 rounded-full bg-emerald-500"
+          className={cn("absolute inset-0 rounded-full", STATUS_DOT.connected)}
           animate={{ scale: [1, 2.4], opacity: [0.55, 0] }}
           transition={{ duration: 1.8, repeat: Infinity, ease: "easeOut" }}
         />
@@ -328,21 +364,24 @@ function StatusDot({
     return (
       <motion.span
         aria-label="error"
-        className={cn(base, "bg-destructive")}
+        className={cn(base, STATUS_DOT.error)}
         initial={{ x: 0 }}
         animate={{ x: [0, -1.5, 1.5, -1.5, 1.5, 0] }}
         transition={{ duration: 0.45, ease: "easeOut" }}
       />
     )
   }
-  const color = {
-    fresh: "bg-muted-foreground/40",
-    connecting: "bg-amber-500",
-    connected: "bg-emerald-500",
-    closed: "bg-muted-foreground/40",
-    error: "bg-destructive",
-  }[status]
-  return <span aria-label={status} className={cn(base, color)} />
+  if (status === "approval" && !reduced) {
+    return (
+      <motion.span
+        aria-label="approval"
+        className={cn(base, STATUS_DOT.approval)}
+        animate={{ opacity: [0.45, 1, 0.45] }}
+        transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+      />
+    )
+  }
+  return <span aria-label={status} className={cn(base, STATUS_DOT[status])} />
 }
 
 // LatencyBadge — tiny chip rendering "{ms}ms" next to the status dot.
@@ -366,18 +405,10 @@ function LatencyBadge({ ms }: { ms: number | null }) {
       </span>
     )
   }
-  const tone =
-    ms <= 80
-      ? "text-emerald-600 dark:text-emerald-400"
-      : ms <= 200
-        ? "text-amber-600 dark:text-amber-400"
-        : ms <= 500
-          ? "text-orange-600 dark:text-orange-400"
-          : "text-red-600 dark:text-red-400"
   return (
     <span
       title={`往返延迟 ${ms} ms`}
-      className={cn("shrink-0 text-[10px] tabular-nums leading-none", tone)}
+      className={cn("shrink-0 text-[10px] tabular-nums leading-none", latencyTone(ms))}
     >
       {ms}ms
     </span>

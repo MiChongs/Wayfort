@@ -70,6 +70,46 @@ services:
       - sessions:/var/lib/jumpserver/sessions
     restart: unless-stopped
 
+  # OnlyOffice Document Server — backs the in-browser Office editor used by the
+  # SFTP / OSS file viewers. The single image bundles its own Postgres / Redis /
+  # RabbitMQ, so no extra services are required. JWT signing is on; JWT_SECRET
+  # MUST match `office.jwt_secret` in the gateway config. extra_hosts lets the
+  # container reach the host-run gateway at host.docker.internal for the save
+  # callback (Docker Desktop provides this automatically; the explicit mapping
+  # makes it work on Linux engines too). First boot takes ~30–60s — wait for the
+  # healthcheck before opening a document.
+  onlyoffice:
+    image: onlyoffice/documentserver:8.2
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: "jumpserver-onlyoffice-secret-change-me"
+      JWT_HEADER: "Authorization"
+      JWT_IN_BODY: "true"
+    # Host 18082 → container 80. 8082 falls inside a Windows reserved/excluded
+    # TCP range (Hyper-V/WSL dynamic ports, e.g. 7999–8098), where Docker fails
+    # to bind with "An attempt was made to access a socket in a way forbidden by
+    # its access permissions." 18082 mirrors the gateway's 18080 escape hatch.
+    # Keep `office.document_server_url` in the gateway config on the same port.
+    ports: ["18082:80"]
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_log:/var/log/onlyoffice
+      - onlyoffice_cache:/var/lib/onlyoffice/documentserver/App_Data/cache/files
+      - onlyoffice_db:/var/lib/postgresql
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/healthcheck || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
 volumes:
   postgres: {}
   sessions: {}
+  onlyoffice_data: {}
+  onlyoffice_log: {}
+  onlyoffice_cache: {}
+  onlyoffice_db: {}

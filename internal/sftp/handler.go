@@ -17,6 +17,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/jumpserver-anonymous/internal/office"
 	pkgsftp "github.com/pkg/sftp"
 	"go.uber.org/zap"
 )
@@ -37,6 +38,9 @@ type Handler struct {
 	// user allowed to MUTATE files on this node" not "may they look at
 	// metadata".
 	Approval *approval.Service
+	// Office wires an external OnlyOffice Document Server for in-browser
+	// editing. Nil → office files fall back to download on the client.
+	Office *office.Service
 }
 
 // enforceFileXfer is the per-call gate; on Allowed=false the caller emits

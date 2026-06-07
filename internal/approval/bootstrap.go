@@ -81,6 +81,7 @@ func Bootstrap(ctx context.Context, deps BootstrapDeps) (*BootstrapResult, error
 	enforcer := NewRepoEnforcer(deps.DB, deps.NodeRepo, deps.CredRepo)
 
 	engine := NewStateMachineEngine(deps.Repo, lookup, ledger)
+	engine.SetAdminFallback(buildAdminFallback(deps.DB, deps.RoleRepo))
 
 	fanout := NewFanout(logger)
 	fanout.Register(NewWebhookNotifier())
@@ -152,6 +153,42 @@ func buildApproverLookup(db *gorm.DB, roles *repo.RoleRepo) ApproverLookup {
 		out := make([]uint64, 0, len(rows))
 		for _, r := range rows {
 			out = append(out, r.UserID)
+		}
+		return out, nil
+	}
+}
+
+// buildAdminFallback returns the system-admin user set used as last-resort
+// approvers: users flagged is_admin, plus members of the built-in "admin" role.
+// The bootstrap admin always satisfies this, so a request never wedges merely
+// because its configured approver role has no members.
+func buildAdminFallback(db *gorm.DB, roles *repo.RoleRepo) func(ctx context.Context) ([]uint64, error) {
+	if db == nil {
+		return func(_ context.Context) ([]uint64, error) { return nil, nil }
+	}
+	return func(ctx context.Context) ([]uint64, error) {
+		set := map[uint64]bool{}
+		var ids []uint64
+		if err := db.WithContext(ctx).Model(&model.User{}).
+			Where("is_admin = ? AND disabled = ?", true, false).Pluck("id", &ids).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			set[id] = true
+		}
+		if roles != nil {
+			if role, _ := roles.FindByName(ctx, "admin"); role != nil {
+				var rows []model.UserRole
+				if err := db.WithContext(ctx).Where("role_id = ?", role.ID).Find(&rows).Error; err == nil {
+					for _, r := range rows {
+						set[r.UserID] = true
+					}
+				}
+			}
+		}
+		out := make([]uint64, 0, len(set))
+		for id := range set {
+			out = append(out, id)
 		}
 		return out, nil
 	}

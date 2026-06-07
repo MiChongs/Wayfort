@@ -69,10 +69,18 @@ type DecisionOutcome struct {
 
 // StateMachineEngine is the in-process Engine implementation.
 type StateMachineEngine struct {
-	repo    *repo.ApprovalRepo
-	lookup  ApproverLookup
-	ledger  *Ledger
-	clock   func() time.Time
+	repo          *repo.ApprovalRepo
+	lookup        ApproverLookup
+	ledger        *Ledger
+	clock         func() time.Time
+	adminFallback func(ctx context.Context) ([]uint64, error)
+}
+
+// SetAdminFallback supplies the last-resort approver set (system admins) used
+// when a stage's configured roles / users resolve to nobody — so a request is
+// never wedged just because its approver role is unstaffed. Pass nil to disable.
+func (e *StateMachineEngine) SetAdminFallback(fn func(ctx context.Context) ([]uint64, error)) {
+	e.adminFallback = fn
 }
 
 // NewStateMachineEngine wires the in-process engine. `clock` is injectable
@@ -120,6 +128,20 @@ func (e *StateMachineEngine) SpawnStage(ctx context.Context, req *model.Approval
 				if _, exists := approvers[uid]; !exists {
 					approvers[uid] = role
 				}
+			}
+		}
+	}
+	// Last resort: when the configured roles/users resolve to nobody (e.g. the
+	// approver role is unstaffed), route to system admins so the request isn't
+	// wedged. Only if there are no admins either do we fail closed.
+	if len(approvers) == 0 && e.adminFallback != nil {
+		uids, err := e.adminFallback(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: admin fallback: %w", err)
+		}
+		for _, uid := range uids {
+			if uid > 0 {
+				approvers[uid] = "admin"
 			}
 		}
 	}

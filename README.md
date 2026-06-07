@@ -252,8 +252,11 @@ JumpServer-Anonymous/
 git clone https://github.com/MiChongs/JumpServer-Anonymous.git
 cd JumpServer-Anonymous
 
-# 2. 启动依赖（MySQL + Redis + 测试用 SSHD + guacd）
-docker compose -f deployments/docker-compose.yaml up -d mysql redis sshd-target guacd
+# 2. 启动依赖（PostgreSQL + Redis + 测试用 SSHD + guacd）
+docker compose -f deployments/docker-compose.yaml up -d postgres redis sshd-target guacd
+# 需要在线 Office（SFTP/OSS 内直接编辑 docx/xlsx/pptx）时再起 onlyoffice：
+#   docker compose -f deployments/docker-compose.yaml up -d onlyoffice
+# 首次启动约 30–60s；就绪后把 configs/config.yaml 的 office.enabled 设为 true。
 
 # 3. 拷贝配置
 cp configs/config.example.yaml configs/config.yaml
@@ -720,8 +723,9 @@ cp .env.example .env.local
 #   BACKEND_HTTP_URL=http://127.0.0.1:8080
 #   NEXT_PUBLIC_BACKEND_WS_URL=ws://127.0.0.1:8080
 #   NEXT_PUBLIC_API_BASE=/api/proxy/api/v1
-npm install
-npm run dev         # localhost:3000
+corepack enable     # 启用 package.json 中固定的 pnpm 版本
+pnpm install
+pnpm dev            # localhost:3000
 ```
 
 ### API 代理与 IP 透传
@@ -859,10 +863,11 @@ docker compose -f deployments/docker-compose.yaml up -d
 ```
 
 包含：
-- MySQL 8.0
+- PostgreSQL 16
 - Redis 7
 - Apache Guacamole guacd 1.5.5
 - 测试用 OpenSSH server（`testuser/testpass`，端口 2222）
+- OnlyOffice Document Server 8.2（端口 8082，在线编辑 Office 文档；JWT 默认开启，密钥需与 `office.jwt_secret` 一致）
 - 应用本身（端口 8080）
 
 ### 单独构建 Docker 镜像

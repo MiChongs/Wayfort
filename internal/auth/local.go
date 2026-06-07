@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
@@ -22,7 +23,7 @@ func (p *LocalProvider) Login(ctx context.Context, payload LoginPayload) (*model
 	if err != nil {
 		return nil, err
 	}
-	if u == nil || u.Disabled {
+	if u == nil || !u.IsActive(time.Now()) {
 		return nil, ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(payload.Password)); err != nil {

@@ -7,7 +7,7 @@ import remarkMath from "remark-math"
 import rehypeHighlight from "rehype-highlight"
 import rehypeKatex from "rehype-katex"
 import { Check, Copy, Terminal } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { MermaidBlock } from "./mermaid-block"
 import { cn } from "@/lib/utils"
 

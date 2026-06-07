@@ -10,6 +10,7 @@ const (
 	SessionSFTP        SessionKind = "sftp"
 	SessionGraphical   SessionKind = "graphical"
 	SessionTCPForward  SessionKind = "tcp_forward"
+	SessionOSS         SessionKind = "oss"
 )
 
 // RecordingType discriminates the format of the on-disk recording so the
@@ -20,7 +21,11 @@ type RecordingType string
 const (
 	RecordingAsciicast RecordingType = "asciicast"
 	RecordingGuac      RecordingType = "guac"
-	RecordingNone      RecordingType = ""
+	// RecordingDesktop is the freerdp backend's timestamped desktop.v2 frame
+	// tape (.dtr): the browser replays it in-place via the same canvas/decoder
+	// pipeline used for live sessions, with an input/event audit timeline.
+	RecordingDesktop RecordingType = "desktop"
+	RecordingNone    RecordingType = ""
 )
 
 type SessionStatus string

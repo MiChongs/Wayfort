@@ -5,21 +5,39 @@
 
 import { api, apiUpload, withTokenQuery, type UploadOptions } from "./client"
 import type {
+  SettingsSchema,
+  IntegrationStatus,
+  SettingsAudit,
+} from "./types"
+import type {
   AIAgent,
   AIConversation,
   AIMessage,
   AIProvider,
   AITool,
   AIToolInvocation,
+  AccessExplanation,
+  AccessInfo,
+  DashboardSummary,
+  NodeListParams,
+  NodeTestResult,
   AssetGrant,
   AssetGroup,
   AssetTag,
+  AssetTagGroup,
+  GranteeKind,
+  GranteeRef,
+  SubjectAccessRow,
+  SubjectKind,
   ChainTestResponse,
   ChainValidationResult,
   CommandHistoryRow,
   BulkRun,
   BulkRunResult,
   Credential,
+  CredentialInput,
+  CredentialUsage,
+  CredentialTestResult,
   Department,
   DockerContainer,
   DockerImage,
@@ -32,6 +50,11 @@ import type {
   LoginHistory,
   MFADevice,
   Node,
+  OssBucket,
+  OssListResult,
+  OssObjectMeta,
+  OssProvider,
+  OssStats,
   OIDCClient,
   Passkey,
   Permission,
@@ -42,11 +65,17 @@ import type {
   Role,
   SSHKey,
   Session,
+  SessionStats,
+  AuditEvent,
+  DriveInfo,
+  DriveEntry,
   Snippet,
   TerminalProfileRow,
   TokenPair,
   User,
+  UserDetail,
   UserGroup,
+  UserStats,
 } from "./types"
 
 // ----- auth -----
@@ -83,6 +112,8 @@ export const authService = {
 // ----- me -----
 export const meService = {
   profile: () => api<User>("GET", "/me/profile"),
+  // Role tier + permission set for dashboard + nav gating (server-computed).
+  access: () => api<AccessInfo>("GET", "/me/access"),
   updateProfile: (body: Partial<User>) => api<User>("PATCH", "/me/profile", { body }),
   changePassword: (old_password: string, new_password: string) =>
     api<void>("POST", "/me/password", { body: { old_password, new_password } }),
@@ -116,10 +147,16 @@ export const meService = {
 // ----- nodes / proxies / credentials -----
 export const nodeService = {
   list: () => api<{ nodes: Node[] }>("GET", "/nodes"),
+  // Server-side filtered/sorted list for the admin management table. Kept
+  // separate from list() so existing `queryFn: nodeService.list` callers (which
+  // must stay zero-arg) are unaffected.
+  search: (params: NodeListParams = {}) =>
+    api<{ nodes: Node[] }>("GET", "/nodes", { query: params as Record<string, string | undefined> }),
   get: (id: number) => api<Node>("GET", `/nodes/${id}`),
   create: (body: Partial<Node>) => api<Node>("POST", "/nodes", { body }),
   update: (id: number, body: Partial<Node>) => api<Node>("PATCH", `/nodes/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/nodes/${id}`),
+  test: (id: number) => api<NodeTestResult>("POST", `/nodes/${id}/test`),
 }
 export const proxyService = {
   list: () =>
@@ -155,11 +192,21 @@ export const chainTemplateService = {
 }
 export const credentialService = {
   list: () => api<{ credentials: Credential[] }>("GET", "/credentials"),
-  create: (body: { name: string; kind: string; username: string; secret: string; passphrase?: string }) =>
-    api<{ id: number }>("POST", "/credentials", { body }),
-  update: (id: number, body: { name?: string; kind?: string; username?: string; secret?: string }) =>
+  create: (body: CredentialInput) => api<{ id: number }>("POST", "/credentials", { body }),
+  update: (id: number, body: Partial<CredentialInput>) =>
     api<{ id: number }>("PATCH", `/credentials/${id}`, { body }),
-  remove: (id: number) => api<void>("DELETE", `/credentials/${id}`),
+  // `force` deletes even when nodes/proxies still reference the credential;
+  // without it the server replies 409 with the referencing resources.
+  remove: (id: number, opts: { force?: boolean } = {}) =>
+    api<void>("DELETE", `/credentials/${id}`, { query: opts.force ? { force: "true" } : undefined }),
+  usage: (id: number) => api<CredentialUsage>("GET", `/credentials/${id}/usage`),
+  test: (id: number, body: { node_id?: number; host?: string; port?: number }) =>
+    api<CredentialTestResult>("POST", `/credentials/${id}/test`, { body }),
+}
+
+// ----- role-aware dashboard -----
+export const dashboardService = {
+  summary: () => api<DashboardSummary>("GET", "/dashboard"),
 }
 
 // ----- Phase 11 — terminal personalization -----
@@ -239,9 +286,52 @@ export const bulkRunService = {
 
 // ----- sessions / port-forwards / sftp -----
 export const sessionService = {
-  list: (opts: { status?: string; node_id?: number; limit?: number; offset?: number } = {}) =>
-    api<{ sessions: Session[] }>("GET", "/sessions", { query: opts }),
+  list: (
+    opts: {
+      status?: string
+      kind?: string
+      q?: string
+      node_id?: number
+      from?: string
+      to?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) => api<{ sessions: Session[]; total: number }>("GET", "/sessions", { query: opts }),
+  get: (id: string) => api<{ session: Session }>("GET", `/sessions/${id}`),
+  audit: (id: string, limit = 500) =>
+    api<{ events: AuditEvent[] }>("GET", `/sessions/${id}/audit`, { query: { limit } }),
+  stats: (days = 14) => api<SessionStats>("GET", "/sessions/stats", { query: { days } }),
+  terminate: (id: string) =>
+    api<{ ok: boolean; live: boolean }>("POST", `/sessions/${id}/terminate`),
   recordingURL: (id: string) => withTokenQuery(`/api/proxy/api/v1/sessions/${id}/recording`),
+}
+
+// ----- desktop per-user file drive (redirected into RDP sessions) -----
+export const desktopDriveService = {
+  info: () => api<DriveInfo>("GET", "/desktop/drive"),
+  list: (path = "") =>
+    api<{ entries: DriveEntry[] }>("GET", "/desktop/drive/list", { query: { path } }),
+  upload: (
+    file: File,
+    path = "",
+    onProgress?: (sent: number, total: number) => void,
+    signal?: AbortSignal,
+  ) =>
+    apiUpload<{ ok: boolean; saved: number }>("/desktop/drive/upload", file, {
+      query: { path },
+      onProgress,
+      signal,
+    }),
+  downloadURL: (path: string) =>
+    withTokenQuery(`/api/proxy/api/v1/desktop/drive/download?path=${encodeURIComponent(path)}`),
+  remove: (path: string) => api<{ ok: boolean }>("DELETE", "/desktop/drive", { query: { path } }),
+  mkdir: (path: string) => api<{ ok: boolean }>("POST", "/desktop/drive/mkdir", { body: { path } }),
+  // Rename or move within the drive. `to` is the full destination path
+  // (parent dir + final name), so it covers both an in-place rename and a
+  // move into another folder.
+  rename: (from: string, to: string) =>
+    api<{ ok: boolean }>("POST", "/desktop/drive/rename", { body: { from, to } }),
 }
 
 // ----- Workspace v2 — firewall + docker services -----
@@ -322,6 +412,23 @@ export type SftpReadResponse = {
   truncated: boolean
   mode?: string
 }
+export type SftpSearchHit = SftpEntry & {
+  /** Directory the hit was found in (its parent), for "name — /etc/nginx" rows. */
+  dir: string
+}
+export type SftpSearchResult = {
+  root: string
+  query: string
+  entries: SftpSearchHit[]
+  truncated: boolean
+  scanned: number
+}
+// OnlyOffice editor bootstrap returned by the office-config endpoints; shared
+// by the SFTP and OSS surfaces and consumed by the OfficeEditor viewer.
+export type OfficeConfigResponse = {
+  document_server_url: string
+  config: Record<string, unknown> & { document?: { title?: string } }
+}
 export const sftpService = {
   list: (nodeId: number, path = "/") =>
     api<{ path: string; entries: SftpEntry[] }>("GET", `/nodes/${nodeId}/sftp/ls`, { query: { path } }),
@@ -365,20 +472,132 @@ export const sftpService = {
     ),
   downloadURL: (nodeId: number, path: string) =>
     withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/sftp/download?path=${encodeURIComponent(path)}`),
+  // Recursive name search under `path`, server-bounded by count / scan / time.
+  search: (nodeId: number, path: string, q: string, limit?: number) =>
+    api<SftpSearchResult>("GET", `/nodes/${nodeId}/sftp/search`, {
+      query: { path, q, ...(limit ? { limit: String(limit) } : {}) },
+    }),
+  // Server-side duplicate of a file or directory tree (no client round-trip).
+  copy: (nodeId: number, from: string, to: string) =>
+    api<{ ok: boolean; from: string; to: string; bytes: number }>("POST", `/nodes/${nodeId}/sftp/copy`, {
+      body: { from, to },
+    }),
+  // Streamed tar.gz of one or more paths; returns a tokenized browser URL.
+  archiveURL: (nodeId: number, paths: string[]) =>
+    withTokenQuery(
+      `/api/proxy/api/v1/nodes/${nodeId}/sftp/archive?${paths
+        .map((p) => `paths=${encodeURIComponent(p)}`)
+        .join("&")}`,
+    ),
+  // OnlyOffice editor config for an Office document on this node.
+  officeConfig: (nodeId: number, path: string) =>
+    api<OfficeConfigResponse>("GET", `/nodes/${nodeId}/sftp/office/config`, { query: { path } }),
+}
+
+// ----- OSS object storage (bastion) -----
+export const ossService = {
+  buckets: (nodeId: number) =>
+    api<{ provider: OssProvider; region?: string; default_bucket?: string; buckets: OssBucket[] | null }>(
+      "GET",
+      `/nodes/${nodeId}/oss/buckets`,
+    ),
+  objects: (nodeId: number, bucket: string, prefix = "", token = "") =>
+    api<OssListResult>("GET", `/nodes/${nodeId}/oss/objects`, {
+      query: { bucket, prefix, ...(token ? { token } : {}) },
+    }),
+  stat: (nodeId: number, bucket: string, key: string) =>
+    api<OssObjectMeta>("GET", `/nodes/${nodeId}/oss/stat`, { query: { bucket, key } }),
+  preview: (nodeId: number, bucket: string, key: string) =>
+    api<{ key: string; size: number; content: string; truncated: boolean; binary?: boolean }>(
+      "GET",
+      `/nodes/${nodeId}/oss/preview`,
+      { query: { bucket, key } },
+    ),
+  stats: (nodeId: number, bucket: string, prefix = "") =>
+    api<OssStats>("GET", `/nodes/${nodeId}/oss/stats`, {
+      query: { bucket, ...(prefix ? { prefix } : {}) },
+    }),
+  mkdir: (nodeId: number, bucket: string, prefix: string) =>
+    api<{ ok: boolean; bucket: string; key: string }>("POST", `/nodes/${nodeId}/oss/mkdir`, {
+      body: { bucket, prefix },
+    }),
+  remove: (nodeId: number, bucket: string, key: string, recursive = false) =>
+    api<{ ok: boolean; deleted: number }>("DELETE", `/nodes/${nodeId}/oss/object`, {
+      query: { bucket, key, ...(recursive ? { recursive: "true" } : {}) },
+    }),
+  copy: (
+    nodeId: number,
+    body: { bucket: string; src: string; dst: string; dst_bucket?: string; move?: boolean },
+  ) =>
+    api<{ ok: boolean; copied: number; move: boolean }>("POST", `/nodes/${nodeId}/oss/copy`, { body }),
+  upload: (
+    nodeId: number,
+    bucket: string,
+    prefix: string,
+    file: File | Blob,
+    opts: { name?: string; onProgress?: UploadOptions["onProgress"]; signal?: AbortSignal } = {},
+  ) =>
+    apiUpload<{ ok: boolean; bucket: string; key: string; bytes: number }>(
+      `/nodes/${nodeId}/oss/upload`,
+      file,
+      {
+        query: { bucket, prefix, ...(opts.name ? { name: opts.name } : {}) },
+        onProgress: opts.onProgress,
+        signal: opts.signal,
+      },
+    ),
+  downloadURL: (nodeId: number, bucket: string, key: string) =>
+    withTokenQuery(
+      `/api/proxy/api/v1/nodes/${nodeId}/oss/download?bucket=${encodeURIComponent(bucket)}&key=${encodeURIComponent(key)}`,
+    ),
+  discover: (body: {
+    provider: string
+    endpoint?: string
+    region?: string
+    credential_id: number
+    proxy_chain?: string
+    insecure_tls?: boolean
+    path_style?: boolean
+  }) =>
+    api<{ ok: boolean; provider: OssProvider; buckets: OssBucket[] | null }>("POST", `/oss/discover`, {
+      body,
+    }),
+  // OnlyOffice editor config for an object.
+  officeConfig: (nodeId: number, bucket: string, key: string) =>
+    api<OfficeConfigResponse>("GET", `/nodes/${nodeId}/oss/office/config`, { query: { bucket, key } }),
 }
 
 // ----- users / roles / groups / departments (admin) -----
 export const userService = {
-  list: (opts: { search?: string; disabled?: "true" | "false"; department_id?: number; limit?: number; offset?: number } = {}) =>
-    api<{ users: User[] }>("GET", "/users", { query: opts }),
+  list: (
+    opts: {
+      search?: string
+      disabled?: "true" | "false"
+      status?: string
+      department_id?: number
+      role_id?: number
+      tag_id?: number
+      mfa?: "true" | "false"
+      active_days?: number
+      sort?: "username" | "created" | "login"
+      order?: "asc" | "desc"
+      limit?: number
+      offset?: number
+    } = {},
+  ) => api<{ users: User[]; total: number }>("GET", "/users", { query: opts }),
+  stats: (days = 14) => api<UserStats>("GET", "/users/stats", { query: { days } }),
+  detail: (id: number) => api<UserDetail>("GET", `/users/${id}`),
   create: (body: Partial<User> & { password: string }) => api<User>("POST", "/users", { body }),
   update: (id: number, body: Partial<User>) => api<User>("PATCH", `/users/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/users/${id}`),
+  bulk: (body: { ids: number[]; action: string; department_ids?: number[] }) =>
+    api<{ ok: boolean; affected: number }>("POST", "/users/bulk", { body }),
   resetPassword: (id: number, password: string) => api<void>("POST", `/users/${id}/reset-password`, { body: { password } }),
   unlock: (id: number) => api<void>("POST", `/users/${id}/unlock`),
   forceLogout: (id: number) => api<void>("POST", `/users/${id}/force-logout`),
   listRoles: (id: number) => api<{ roles: Role[] }>("GET", `/users/${id}/roles`),
   replaceRoles: (id: number, role_ids: number[]) => api<void>("PUT", `/users/${id}/roles`, { body: { role_ids } }),
+  setTags: (id: number, tag_ids: number[]) => api<void>("PUT", `/users/${id}/tags`, { body: { tag_ids } }),
 }
 
 export const roleService = {
@@ -393,13 +612,22 @@ export const departmentService = {
   list: () => api<{ departments: Department[] }>("GET", "/departments"),
   create: (body: Partial<Department>) => api<Department>("POST", "/departments", { body }),
   update: (id: number, body: Partial<Department>) => api<Department>("PATCH", `/departments/${id}`, { body }),
+  // Reparent (drag-and-drop / "move to…"); parent_id null = top level.
+  move: (id: number, parent_id: number | null) =>
+    api<Department>("PUT", `/departments/${id}/parent`, { body: { parent_id } }),
   remove: (id: number) => api<void>("DELETE", `/departments/${id}`),
+  members: (id: number) => api<{ user_ids: number[] }>("GET", `/departments/${id}/members`),
+  addMember: (id: number, user_id: number) => api<void>("POST", `/departments/${id}/members`, { body: { user_id } }),
+  removeMember: (id: number, uid: number) => api<void>("DELETE", `/departments/${id}/members/${uid}`),
 }
 
 export const groupService = {
   list: () => api<{ groups: UserGroup[] }>("GET", "/groups"),
   create: (body: Partial<UserGroup>) => api<UserGroup>("POST", "/groups", { body }),
   update: (id: number, body: Partial<UserGroup>) => api<UserGroup>("PATCH", `/groups/${id}`, { body }),
+  // Reparent (drag-and-drop / "move to…"); parent_id null = top level.
+  move: (id: number, parent_id: number | null) =>
+    api<UserGroup>("PUT", `/groups/${id}/parent`, { body: { parent_id } }),
   remove: (id: number) => api<void>("DELETE", `/groups/${id}`),
   members: (id: number) => api<{ user_ids: number[] }>("GET", `/groups/${id}/members`),
   addMember: (id: number, user_id: number) => api<void>("POST", `/groups/${id}/members`, { body: { user_id } }),
@@ -411,21 +639,49 @@ export const assetGroupService = {
   list: () => api<{ asset_groups: AssetGroup[] }>("GET", "/asset-groups"),
   create: (body: Partial<AssetGroup>) => api<AssetGroup>("POST", "/asset-groups", { body }),
   update: (id: number, body: Partial<AssetGroup>) => api<AssetGroup>("PATCH", `/asset-groups/${id}`, { body }),
+  // Reparent (drag-and-drop / "move to…"); parent_id null = top level.
+  move: (id: number, parent_id: number | null) =>
+    api<AssetGroup>("PUT", `/asset-groups/${id}/parent`, { body: { parent_id } }),
   remove: (id: number) => api<void>("DELETE", `/asset-groups/${id}`),
   addNode: (id: number, node_id: number) => api<void>("POST", `/asset-groups/${id}/nodes`, { body: { node_id } }),
   removeNode: (id: number, nid: number) => api<void>("DELETE", `/asset-groups/${id}/nodes/${nid}`),
 }
 export const tagService = {
-  list: () => api<{ tags: AssetTag[] }>("GET", "/tags"),
+  list: () => api<{ tags: AssetTag[]; groups: AssetTagGroup[] }>("GET", "/tags"),
   create: (body: Partial<AssetTag>) => api<AssetTag>("POST", "/tags", { body }),
+  update: (id: number, body: Partial<AssetTag>) => api<AssetTag>("PATCH", `/tags/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/tags/${id}`),
   attach: (nodeId: number, tag_id: number) => api<void>("POST", `/nodes/${nodeId}/tags`, { body: { tag_id } }),
   detach: (nodeId: number, tagId: number) => api<void>("DELETE", `/nodes/${nodeId}/tags/${tagId}`),
+  // Set a node's tags to exactly this set (the tag-picker save path).
+  replaceNodeTags: (nodeId: number, tag_ids: number[]) =>
+    api<void>("PUT", `/nodes/${nodeId}/tags`, { body: { tag_ids } }),
+}
+export const tagGroupService = {
+  list: () => api<{ groups: AssetTagGroup[] }>("GET", "/tag-groups"),
+  create: (body: Partial<AssetTagGroup>) => api<AssetTagGroup>("POST", "/tag-groups", { body }),
+  update: (id: number, body: Partial<AssetTagGroup>) =>
+    api<AssetTagGroup>("PATCH", `/tag-groups/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/tag-groups/${id}`),
 }
 export const grantService = {
   list: () => api<{ grants: AssetGrant[] }>("GET", "/asset-grants"),
   create: (body: Partial<AssetGrant>) => api<AssetGrant>("POST", "/asset-grants", { body }),
   remove: (id: number) => api<void>("DELETE", `/asset-grants/${id}`),
+  // 授权向导：一次给「多个主体 × 多个资产」批量授权。
+  createBatch: (body: {
+    grantees: GranteeRef[]
+    subjects: { type: SubjectKind; id: number }[]
+    actions: string
+    valid_from?: string
+    valid_to?: string
+  }) => api<{ created: number }>("POST", "/asset-grants/batch", { body }),
+  // 按人看：穿透解析某主体实际可访问的资产 + 来源。
+  byGrantee: (type: GranteeKind, id: number) =>
+    api<AccessExplanation>("GET", `/access/by-grantee?type=${type}&id=${id}`),
+  // 按资产看：某节点谁能访问、经由什么、何时到期。
+  bySubject: (nodeId: number) =>
+    api<{ grantees: SubjectAccessRow[] }>("GET", `/access/by-subject?node_id=${nodeId}`),
 }
 
 // ----- OIDC -----
@@ -490,6 +746,9 @@ export const aiConversationService = {
     api<void>("POST", `/ai/conversations/${id}/invocations/${invId}/approve`),
   reject: (id: string, invId: string) =>
     api<void>("POST", `/ai/conversations/${id}/invocations/${invId}/reject`),
+  // Deliver a user's reply to a waiting ask_user invocation.
+  answer: (id: string, invId: string, answer: string) =>
+    api<void>("POST", `/ai/conversations/${id}/invocations/${invId}/answer`, { body: { answer } }),
   editMessage: (id: string, msgId: number, text: string) =>
     api<{ ok: boolean; message_count: number; edited_message_id: number; text: string }>(
       "PATCH",
@@ -612,11 +871,17 @@ export const insightsService = {
 import type {
   ApprovalEvent,
   ApprovalGrant,
+  ApprovalPreflight,
   ApprovalRequest,
   ApprovalRequestDetail,
   ApprovalSubscription,
   ApprovalTask,
   ApprovalTemplate,
+  ApprovalOverview,
+  ApprovalInboxItem,
+  ApprovalGrantRow,
+  ApprovalStats,
+  ApprovalBulkDecideResult,
   ChainVerifyResult,
   ApprovalBusinessType,
   DBColumnInfo,
@@ -671,22 +936,59 @@ export const approvalService = {
       },
     }),
   get: (id: string) => api<ApprovalRequestDetail>("GET", `/approvals/${id}`),
+  // Per-user workspace summary strip.
+  overview: () => api<ApprovalOverview>("GET", "/approvals/overview"),
+  // Admin governance snapshot.
+  stats: () => api<ApprovalStats>("GET", "/approvals/stats"),
+  // Workspace connection gate — call before connecting.
+  preflight: (q: { resource_type?: string; resource_id: string; business_type?: string; action?: string }) =>
+    api<ApprovalPreflight>("GET", "/approvals/preflight", {
+      query: {
+        resource_type: q.resource_type ?? "node",
+        resource_id: q.resource_id,
+        business_type: q.business_type ?? "asset_access",
+        action: q.action ?? "connect",
+      },
+    }),
+  // SSE stream URLs (consumed via lib/sse streamSSE — literal proxy path).
+  requestStreamURL: (id: string) => `/api/proxy/api/v1/approvals/${id}/stream`,
+  userStreamURL: () => `/api/proxy/api/v1/approvals/stream`,
   cancel: (id: string, reason: string) =>
     api<{ ok: true }>("POST", `/approvals/${id}/cancel`, { body: { reason } }),
   verifyChain: (id: string) =>
     api<ChainVerifyResult>("GET", `/approvals/${id}/audit/verify`),
   myTasks: (limit = 50) =>
     api<{ items: ApprovalTask[] }>("GET", "/approvals/tasks/me", { query: { limit } }),
-  approve: (taskId: number, comment: string) =>
-    api<unknown>("POST", `/approvals/tasks/${taskId}/approve`, { body: { comment, approve: true } }),
+  // Enriched approver inbox (task + parent request, one round-trip).
+  inbox: (limit = 100) =>
+    api<{ items: ApprovalInboxItem[] }>("GET", "/approvals/tasks/inbox", { query: { limit } }),
+  approve: (taskId: number, comment: string, durationSec?: number) =>
+    api<unknown>("POST", `/approvals/tasks/${taskId}/approve`, {
+      body: { comment, approve: true, duration_sec: durationSec ?? 0 },
+    }),
   reject: (taskId: number, comment: string) =>
     api<unknown>("POST", `/approvals/tasks/${taskId}/reject`, { body: { comment, approve: false } }),
+  // Apply one verdict to many owned tasks; per-row results come back.
+  bulkDecide: (taskIds: number[], approve: boolean, comment: string, durationSec?: number) =>
+    api<ApprovalBulkDecideResult>("POST", "/approvals/tasks/bulk", {
+      body: { task_ids: taskIds, approve, comment, duration_sec: durationSec ?? 0 },
+    }),
   delegate: (taskId: number, delegate_to_id: number, comment: string) =>
     api<{ task: ApprovalTask }>("POST", `/approvals/tasks/${taskId}/delegate`, {
       body: { delegate_to_id, comment },
     }),
+  // Issued-grant views.
+  myGrants: (status?: string, limit = 100) =>
+    api<{ items: ApprovalGrantRow[]; total: number }>("GET", "/approvals/grants/mine", {
+      query: { status, limit },
+    }),
+  grants: (query: { beneficiary_id?: number; status?: string; limit?: number; offset?: number } = {}) =>
+    api<{ items: ApprovalGrantRow[]; total: number }>("GET", "/approvals/grants", { query }),
   revokeGrant: (grantId: string, reason: string) =>
     api<{ ok: true }>("POST", `/approvals/grants/${grantId}/revoke`, { body: { reason } }),
+  // Self-service early release of one's own grant.
+  releaseGrant: (grantId: string, reason?: string) =>
+    api<{ ok: true }>("POST", `/approvals/grants/${grantId}/release`, { body: { reason } }),
   checkGrant: (query: {
     user_id: number
     resource_type: string
@@ -893,4 +1195,17 @@ export const dbService = {
     if (opts.limit && opts.limit > 0) q.set("limit", String(opts.limit))
     return withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/db/export?${q.toString()}`)
   },
+}
+
+// ---------- System settings (super-admin runtime configuration) ----------
+export const settingsService = {
+  schema: () => api<SettingsSchema>("GET", "/settings/schema"),
+  update: (changes: Record<string, unknown>) =>
+    api<{ ok: boolean; restart_keys: string[] | null }>("POST", "/settings", { body: { changes } }),
+  reset: (keys: string[]) => api<{ ok: boolean }>("POST", "/settings/reset", { body: { keys } }),
+  integrations: () =>
+    api<{ ok: boolean; integrations: IntegrationStatus[] }>("GET", "/settings/integrations"),
+  test: (id: string) =>
+    api<{ ok: boolean; integration: IntegrationStatus }>("POST", `/settings/integrations/${id}/test`),
+  audits: () => api<{ ok: boolean; audits: SettingsAudit[] }>("GET", "/settings/audits"),
 }

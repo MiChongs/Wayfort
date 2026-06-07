@@ -9,7 +9,7 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2, Plus, RefreshCw, Share2 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { AnimatePresence, motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"

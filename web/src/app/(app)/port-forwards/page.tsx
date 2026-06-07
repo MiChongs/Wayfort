@@ -20,7 +20,7 @@ import {
   WifiOff,
 } from "lucide-react"
 import { AnimatePresence, motion } from "motion/react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"

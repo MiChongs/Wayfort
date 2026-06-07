@@ -1,0 +1,61 @@
+/* video.js skin aligned to the project design system (warm coral on the dark
+   navy surface). Applied via the `vjs-theme-sftp` class on the player. */
+
+.vjs-theme-sftp {
+  font-family: inherit;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.vjs-theme-sftp .vjs-big-play-button {
+  width: 72px;
+  height: 72px;
+  line-height: 72px;
+  margin-top: -36px;
+  margin-left: -36px;
+  border: none;
+  border-radius: 9999px;
+  background-color: rgba(204, 120, 92, 0.9);
+  box-shadow: 0 8px 24px -12px rgba(20, 20, 19, 0.6);
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+.vjs-theme-sftp:hover .vjs-big-play-button,
+.vjs-theme-sftp .vjs-big-play-button:focus {
+  background-color: #cc785c;
+  transform: scale(1.04);
+}
+
+.vjs-theme-sftp .vjs-control-bar {
+  height: 3.25em;
+  background-color: rgba(20, 20, 19, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.vjs-theme-sftp .vjs-play-progress,
+.vjs-theme-sftp .vjs-volume-level {
+  background-color: #cc785c;
+}
+.vjs-theme-sftp .vjs-play-progress::before {
+  color: #cc785c;
+}
+.vjs-theme-sftp .vjs-slider {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+.vjs-theme-sftp .vjs-load-progress,
+.vjs-theme-sftp .vjs-load-progress div {
+  background-color: rgba(255, 255, 255, 0.3);
+}
+
+.vjs-theme-sftp .vjs-control:focus-visible {
+  outline: 2px solid #cc785c;
+  outline-offset: -2px;
+  text-shadow: none;
+}
+
+/* Audio-only mode: a compact bar instead of a black video stage. */
+.vjs-theme-sftp.vjs-audio-only-mode {
+  border-radius: 9999px;
+}
+.vjs-theme-sftp.vjs-audio-only-mode .vjs-control-bar {
+  border-radius: 9999px;
+}

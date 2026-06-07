@@ -4,13 +4,13 @@ import * as React from "react"
 import { use } from "react"
 import { motion } from "motion/react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import { ArrowLeft, SearchX } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { aiAgentService, aiConversationService } from "@/lib/api/services"
+import { aiAgentService, aiConversationService, aiProviderService } from "@/lib/api/services"
 import { streamSSE } from "@/lib/sse/eventsource"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { ConversationHeader } from "@/components/ai/conversation-header"
@@ -32,6 +32,7 @@ type StreamEvent =
       dry_run?: boolean
       truncated?: boolean
     }
+  | { kind: "tool_output_delta"; id: string; delta: string }
   | { kind: "tool_error"; id: string; error: string }
   | {
       kind: "permission_required"
@@ -52,6 +53,16 @@ type StreamEvent =
   | { kind: "reasoning_start" }
   | { kind: "reasoning_delta"; text: string }
   | { kind: "reasoning_end" }
+  | {
+      kind: "ask_user"
+      invocation_id: string
+      id?: string
+      question: string
+      options?: { label: string; description?: string }[]
+      allow_multiple?: boolean
+      allow_text?: boolean
+    }
+  | { kind: "plan_presented"; invocation_id: string; id?: string; plan: string }
   | { kind: "done" }
   | { kind: "ping" }
 
@@ -106,7 +117,25 @@ export default function ConversationPage({
     return agentsQuery.data?.agents.find((a) => a.id === aid)
   }, [detail.data, agentsQuery.data])
 
+  // Current model's vision capability — gates the composer's image-attach
+  // affordance. Undefined (provider/model unknown) falls through to "allowed".
+  const providerId = detail.data?.conversation.provider_id
+  const modelName = detail.data?.conversation.model
+  const modelsQuery = useQuery({
+    queryKey: ["ai", "provider-models", providerId],
+    queryFn: () => aiProviderService.models(providerId as number),
+    enabled: !!providerId,
+    staleTime: 10 * 60 * 1000,
+  })
+  const modelVision = React.useMemo<boolean | undefined>(() => {
+    const list = modelsQuery.data?.models
+    if (!list || !modelName) return undefined
+    const m = list.find((x) => x.id === modelName)
+    return m ? !!m.vision : undefined
+  }, [modelsQuery.data, modelName])
+
   const [draft, setDraft] = React.useState("")
+  const [attachments, setAttachments] = React.useState<string[]>([])
   const [live, setLive] = React.useState<LiveBubble[]>([])
   const [running, setRunning] = React.useState(false)
   const [thinking, setThinking] = React.useState(false)
@@ -117,6 +146,33 @@ export default function ConversationPage({
   const lastEventAtRef = React.useRef<number>(0)
   const [tab, setTab] = React.useState<"chat" | "invocations">("chat")
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null)
+
+  // Monotonic id for live user/assistant bubbles. Stable identity is what lets
+  // React keep a streaming bubble mounted as the list above it changes (tools
+  // fold into groups, notices append). Index-based keys would shift and remount
+  // the bubble mid-stream — resetting its text and replaying the entrance anim.
+  const liveIdRef = React.useRef(0)
+  const mkLiveId = React.useCallback(() => {
+    liveIdRef.current += 1
+    return `lb-${liveIdRef.current}`
+  }, [])
+
+  // Pre-fill the composer from a `?draft=` query param — the home page's
+  // suggestions / quick-start carry the user's first message here so a new
+  // conversation opens ready to send (Claude-web style). Consume once and
+  // strip the param so a refresh doesn't re-fill it.
+  const searchParams = useSearchParams()
+  const draftConsumedRef = React.useRef(false)
+  React.useEffect(() => {
+    if (draftConsumedRef.current) return
+    const q = searchParams.get("draft")
+    if (q) {
+      draftConsumedRef.current = true
+      setDraft(q)
+      router.replace(`/ai/conversations/${id}` as Parameters<typeof router.replace>[0])
+      setTimeout(() => composerRef.current?.focus(), 120)
+    }
+  }, [searchParams, id, router])
 
   function nextNoticeId(): string {
     noticeSeqRef.current += 1
@@ -220,11 +276,16 @@ export default function ConversationPage({
           streaming: true,
         }
       } else {
-        next.push({ kind: "assistant", chunks: [buffered], streaming: true })
+        next.push({
+          kind: "assistant",
+          id: mkLiveId(),
+          chunks: [buffered],
+          streaming: true,
+        })
       }
       return next
     })
-  }, [])
+  }, [mkLiveId])
 
   // Same RAF-batch pattern for reasoning deltas (which can come at OpenAI
   // o-series / Claude extended-thinking rates too). We append to the latest
@@ -262,13 +323,17 @@ export default function ConversationPage({
   }, [])
 
   function dispatchEvent(ev: StreamEvent) {
-    // Stop the "thinking" spinner once any concrete event arrives.
+    // Stop the "thinking / requesting" indicator only once real content
+    // arrives. NB: message_start is emitted by the backend immediately at the
+    // top of the turn (before any tokens), so it must NOT clear thinking —
+    // otherwise the indicator vanishes during the whole request-latency gap.
     if (
       ev.kind === "text_delta" ||
       ev.kind === "tool_call" ||
       ev.kind === "tool_output" ||
-      ev.kind === "message_start" ||
-      ev.kind === "permission_required"
+      ev.kind === "permission_required" ||
+      ev.kind === "ask_user" ||
+      ev.kind === "plan_presented"
     ) {
       setThinking(false)
     }
@@ -408,6 +473,10 @@ export default function ConversationPage({
       const next = l.slice()
       switch (ev.kind) {
         case "tool_call":
+          // ask_user / exit_plan_mode are interaction primitives — their
+          // dedicated cards (ask / plan) represent them, so skip the generic
+          // tool bubble.
+          if (ev.name === "ask_user" || ev.name === "exit_plan_mode") break
           next.push({
             kind: "tool",
             id: ev.id,
@@ -423,6 +492,23 @@ export default function ConversationPage({
             tool: ev.tool,
             summary: ev.summary,
             danger: isDangerName(ev.tool),
+          })
+          break
+        case "ask_user":
+          next.push({
+            kind: "ask",
+            invocationId: ev.invocation_id,
+            question: ev.question,
+            options: ev.options || [],
+            allowMultiple: !!ev.allow_multiple,
+            allowText: ev.allow_text !== false && (ev.allow_text === true || !(ev.options && ev.options.length)),
+          })
+          break
+        case "plan_presented":
+          next.push({
+            kind: "plan",
+            invocationId: ev.invocation_id,
+            plan: ev.plan,
           })
           break
         case "tool_start": {
@@ -449,6 +535,22 @@ export default function ConversationPage({
           }
           break
         }
+        case "tool_output_delta": {
+          // Live output: append the fragment to the tool bubble (capped so a
+          // chatty command can't grow the DOM unbounded; the final tool_output
+          // replaces it with the authoritative, truncated result).
+          const idx = next.findIndex((x) => x.kind === "tool" && x.id === ev.id)
+          if (idx >= 0) {
+            const t = next[idx] as Extract<LiveBubble, { kind: "tool" }>
+            const grown = (t.output || "") + ev.delta
+            next[idx] = {
+              ...t,
+              status: t.status === "pending" ? "running" : t.status,
+              output: grown.length > 9000 ? grown.slice(grown.length - 9000) : grown,
+            }
+          }
+          break
+        }
         case "tool_output": {
           const idx = next.findIndex(
             (x) => x.kind === "tool" && x.id === ev.id,
@@ -462,7 +564,7 @@ export default function ConversationPage({
             }
           }
           // Begin a fresh assistant bubble for the continuation after the tool result.
-          next.push({ kind: "assistant", chunks: [], streaming: true })
+          next.push({ kind: "assistant", id: mkLiveId(), chunks: [], streaming: true })
           break
         }
         case "tool_error": {
@@ -482,13 +584,17 @@ export default function ConversationPage({
 
   async function send(textOverride?: string) {
     const text = (textOverride ?? draft).trim()
-    if (!text || running) return
+    // Images ride along only on a fresh draft send (retry/regenerate re-send
+    // text only).
+    const images = textOverride ? [] : attachments
+    if ((!text && images.length === 0) || running) return
     setDraft("")
+    if (!textOverride) setAttachments([])
     if (await handleSlash(text)) return
     setLive((l) => [
       ...l,
-      { kind: "user", text },
-      { kind: "assistant", chunks: [], streaming: true },
+      { kind: "user", id: mkLiveId(), text, images: images.length ? images : undefined },
+      { kind: "assistant", id: mkLiveId(), chunks: [], streaming: true },
     ])
     setRunning(true)
     setThinking(true)
@@ -500,7 +606,7 @@ export default function ConversationPage({
     try {
       await streamSSE(
         `/api/proxy/api/v1/ai/conversations/${id}/messages`,
-        { method: "POST", body: { text }, signal: ctrl.signal },
+        { method: "POST", body: { text, images }, signal: ctrl.signal },
         (kind, data) => {
           const ev = { kind, ...(data as object) } as StreamEvent
           dispatchEvent(ev)
@@ -562,6 +668,28 @@ export default function ConversationPage({
       }
     },
     [id],
+  )
+  const answer = React.useCallback(
+    async (invId: string, text: string) => {
+      try {
+        await aiConversationService.answer(id, invId, text)
+      } catch (e: unknown) {
+        toast.error("提交失败", { description: (e as Error).message })
+      }
+    },
+    [id],
+  )
+  const thinkingBudget = detail.data?.conversation?.thinking_budget ?? 0
+  const setThinkingBudget = React.useCallback(
+    async (n: number) => {
+      try {
+        await aiConversationService.update(id, { thinking_budget: n })
+        qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
+      } catch (e: unknown) {
+        toast.error("设置失败", { description: (e as Error).message })
+      }
+    },
+    [id, qc],
   )
   const cancel = React.useCallback(() => {
     abortRef.current?.abort()
@@ -705,6 +833,7 @@ export default function ConversationPage({
     abortRef.current = null
     setLive([])
     setDraft("")
+    setAttachments([])
     setRunning(false)
     setThinking(false)
     setUsageIn(0)
@@ -809,6 +938,7 @@ export default function ConversationPage({
             agent={agent}
             onApprove={approve}
             onReject={reject}
+            onAnswer={answer}
             onRetry={retry}
             onRegenerateFrom={regenerateFromMessage}
             onEditUser={editUserMessage}
@@ -820,6 +950,11 @@ export default function ConversationPage({
             send={() => send()}
             cancel={cancel}
             running={running}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            vision={modelVision}
+            thinkingBudget={thinkingBudget}
+            onSetThinkingBudget={setThinkingBudget}
           />
         </TabsContent>
 

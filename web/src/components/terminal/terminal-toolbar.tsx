@@ -37,6 +37,8 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { SignalBars } from "@/components/desktop/desktop-signal"
+import type { LinkQuality } from "@/components/desktop/desktop-connection"
 import type { Status } from "./terminal-types"
 
 type Props = {
@@ -46,6 +48,7 @@ type Props = {
   liveTitle: string
   subtitle: string
   nodeId: number
+  quality?: LinkQuality
   fontSize: number
   bellEnabled: boolean
   searchActive: boolean
@@ -103,6 +106,18 @@ export function TerminalToolbar(p: Props) {
           </span>
         )}
       </div>
+
+      {p.status === "open" && p.quality && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="ml-1 hidden items-center gap-1.5 text-muted-foreground sm:inline-flex">
+              <SignalBars level={p.quality.level} tone={p.quality.tone} />
+              <span className="text-[11px] text-muted-foreground/80">{p.quality.label}</span>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">链路{p.quality.label}</TooltipContent>
+        </Tooltip>
+      )}
 
       <div className="ml-auto flex items-center gap-0.5">
         <IconBtn
@@ -210,7 +225,7 @@ export function TerminalToolbar(p: Props) {
           onClick={p.onFullscreen}
           title={p.fullscreen ? "退出全屏 (F11)" : "全屏 (F11)"}
         />
-        {p.status === "closed" ? (
+        {p.status === "closed" || p.status === "error" ? (
           <IconBtn icon={RotateCw} onClick={p.onReconnect} title="重新连接" variant="success" />
         ) : (
           <IconBtn icon={Plug} onClick={p.onDisconnect} title="断开连接" variant="danger" />
@@ -220,22 +235,28 @@ export function TerminalToolbar(p: Props) {
   )
 }
 
+// Warm status pill — design-system tones (amber transient · sage connected ·
+// destructive error · muted closed) instead of raw emerald/red.
+const STATUS_UI: Record<
+  Status,
+  { label: string; text: string; bg: string; dot: string; pulse: boolean }
+> = {
+  connecting: { label: "连接中", text: "text-[#c08a2e] dark:text-[#e3b84e]", bg: "bg-[#d4a017]/12", dot: "bg-[#d4a017] dark:bg-[#e3b84e]", pulse: true },
+  reconnecting: { label: "重连中", text: "text-[#c08a2e] dark:text-[#e3b84e]", bg: "bg-[#d4a017]/12", dot: "bg-[#d4a017] dark:bg-[#e3b84e]", pulse: true },
+  open: { label: "已连接", text: "text-[#4c9b62] dark:text-[#5db872]", bg: "bg-[#5db872]/12", dot: "bg-[#5db872]", pulse: false },
+  closed: { label: "已断开", text: "text-muted-foreground", bg: "bg-muted", dot: "bg-muted-foreground", pulse: false },
+  error: { label: "连接失败", text: "text-destructive", bg: "bg-destructive/10", dot: "bg-destructive", pulse: false },
+}
+
 function StatusDot({ status }: { status: Status }) {
-  const map: Record<Status, { dot: string; label: string }> = {
-    connecting: { dot: "bg-amber-500", label: "连接中" },
-    open: { dot: "bg-emerald-500", label: "已连接" },
-    closed: { dot: "bg-red-500", label: "已断开" },
-  }
-  const s = map[status]
+  const ui = STATUS_UI[status]
   return (
-    <div className="flex items-center gap-1.5 mr-1.5 pl-1">
-      <span className="relative inline-flex w-2 h-2 shrink-0">
-        <span className={cn("absolute inset-0 rounded-full", s.dot)} />
-        {status === "connecting" && (
-          <span className={cn("absolute inset-0 rounded-full animate-ping", s.dot)} />
-        )}
+    <div className={cn("mr-0.5 flex h-6 items-center gap-1.5 rounded-full pl-2 pr-2.5", ui.bg)}>
+      <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
+        <span className={cn("inline-block h-1.5 w-1.5 rounded-full", ui.dot)} />
+        {ui.pulse && <span className={cn("absolute inset-0 animate-ping rounded-full", ui.dot)} />}
       </span>
-      <span className="text-[11px] text-muted-foreground">{s.label}</span>
+      <span className={cn("text-[11px] font-medium", ui.text)}>{ui.label}</span>
     </div>
   )
 }
@@ -245,8 +266,8 @@ function btnCls(active?: boolean, variant?: "success" | "danger") {
     "inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors outline-none",
     "text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:ring-1 focus-visible:ring-ring",
     active && "bg-muted text-foreground",
-    variant === "success" && "text-emerald-500 hover:text-emerald-400",
-    variant === "danger" && "text-red-500 hover:text-red-400",
+    variant === "success" && "text-[#4c9b62] hover:text-[#4c9b62] dark:text-[#5db872]",
+    variant === "danger" && "text-destructive hover:text-destructive",
   )
 }
 
@@ -272,8 +293,8 @@ const IconBtn = React.forwardRef<
           className={cn(
             "h-7 w-7 text-muted-foreground hover:text-foreground",
             active && "bg-muted text-foreground",
-            variant === "success" && "text-emerald-500 hover:text-emerald-400",
-            variant === "danger" && "text-red-500 hover:text-red-400",
+            variant === "success" && "text-[#4c9b62] hover:text-[#4c9b62] dark:text-[#5db872]",
+            variant === "danger" && "text-destructive hover:text-destructive",
           )}
         >
           <Icon className="h-3.5 w-3.5" />

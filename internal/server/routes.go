@@ -9,6 +9,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
+	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -64,17 +65,18 @@ type Routes struct {
 	Proxy         *api.ProxyHandler
 	ChainTemplate *api.ChainTemplateHandler
 	Cred          *api.CredentialHandler
-	Session    *api.SessionHandler
-	SFTP       *sftp.Handler
-	WS         *webssh.Gateway
-	Guacamole  *guacamole.Handler
-	DBCLI      *dbcli.Handler
-	TCPFwd     *tcpfwd.Handler
-	TCPRelay   *tcpfwd.WSRelay
-	TCPEvents  *tcpfwd.WSEvents
-	Issuer     *auth.Issuer
-	Blocklist  *auth.Blocklist
-	Resolver   *auth.Resolver
+	Session       *api.SessionHandler
+	SFTP          *sftp.Handler
+	OSS           *oss.Handler
+	WS            *webssh.Gateway
+	Guacamole     *guacamole.Handler
+	DBCLI         *dbcli.Handler
+	TCPFwd        *tcpfwd.Handler
+	TCPRelay      *tcpfwd.WSRelay
+	TCPEvents     *tcpfwd.WSEvents
+	Issuer        *auth.Issuer
+	Blocklist     *auth.Blocklist
+	Resolver      *auth.Resolver
 
 	// New surfaces.
 	User       *api.UserHandler
@@ -83,8 +85,10 @@ type Routes struct {
 	Group      *api.GroupHandler
 	AssetGroup *api.AssetGroupHandler
 	Tag        *api.TagHandler
+	TagGroup   *api.TagGroupHandler
 	Grant      *api.GrantHandler
 	Me         *api.MeHandler
+	Dashboard  *api.DashboardHandler
 	OIDCClient *api.OIDCClientHandler
 
 	AI *ai.Set
@@ -96,9 +100,9 @@ type Routes struct {
 	TerminalProfile *api.TerminalProfileHandler
 
 	// Phase 12 — SSH power features (user-scoped).
-	SSHKey     *api.SSHKeysHandler
-	KnownHost  *api.KnownHostsHandler
-	BulkRun    *api.BulkRunHandler
+	SSHKey    *api.SSHKeysHandler
+	KnownHost *api.KnownHostsHandler
+	BulkRun   *api.BulkRunHandler
 
 	// Plan 14 — per-node live system telemetry served on the SSH page.
 	Insights *insights.Handler
@@ -109,6 +113,9 @@ type Routes struct {
 	// WebSocket data plane alongside the legacy guacd routes.
 	DesktopControl *desktop.ControlHandler
 	DesktopWS      *desktop.WSHandler
+	// DesktopDrive serves the per-user file drive that's redirected into RDP
+	// sessions (list / upload / download / delete / mkdir).
+	DesktopDrive *desktop.DriveHandler
 
 	// Workspace v2 — server-management panels (firewall, docker) that
 	// run SSH commands on the managed node.
@@ -118,6 +125,10 @@ type Routes struct {
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
 	KMS *api.KMSHandler
+
+	// System settings — DB-backed runtime configuration center. Super-admin
+	// only (gated with the system:admin permission). Nil when not wired.
+	Settings *api.SettingsHandler
 
 	// Phase 15 — Approval Service surface. Nil when the subsystem is
 	// disabled (the routes are still registered and return 503 stubs the
@@ -154,6 +165,17 @@ func (rt *Routes) Mount(r *gin.Engine) {
 	})
 	perm := func(p string) gin.HandlerFunc { return auth.RequirePermission(p, rt.Resolver) }
 
+	// OnlyOffice Document Server callbacks — authorized by the signed
+	// per-document token in ?t=, not the user JWT (the Document Server pulls
+	// files and posts saves with no user session of its own).
+	officeGroup := v1.Group("/office")
+	{
+		officeGroup.GET("/nodes/:id/sftp/file", rt.SFTP.OfficeFile)
+		officeGroup.POST("/nodes/:id/sftp/callback", rt.SFTP.OfficeCallback)
+		officeGroup.GET("/nodes/:id/oss/file", rt.OSS.OfficeFile)
+		officeGroup.POST("/nodes/:id/oss/callback", rt.OSS.OfficeCallback)
+	}
+
 	authed := v1.Group("")
 	authed.Use(mw)
 	{
@@ -180,6 +202,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/recent-nodes", rt.Me.RecentNodes)
 		me.GET("/login-history", rt.Me.LoginHistory)
 		me.GET("/nodes", rt.Me.VisibleNodes)
+		me.GET("/access", rt.Dashboard.Access)
 
 		// Phase 11 — terminal personalization. User-scoped (no admin
 		// perm needed): every authenticated user manages their own
@@ -215,11 +238,16 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// remain admin-locked further down.
 		authed.GET("/asset-groups", rt.AssetGroup.List)
 		authed.GET("/tags", rt.Tag.List)
+		authed.GET("/tag-groups", rt.TagGroup.List)
+		authed.GET("/dashboard", rt.Dashboard.Summary)
 
 		// Admin: users / roles / orgs
 		admin := authed.Group("")
 		admin.GET("/users", perm(auth.PermUserManage), rt.User.List)
+		admin.GET("/users/stats", perm(auth.PermUserManage), rt.User.Stats)
 		admin.POST("/users", perm(auth.PermUserManage), rt.User.Create)
+		admin.POST("/users/bulk", perm(auth.PermUserManage), rt.User.Bulk)
+		admin.GET("/users/:id", perm(auth.PermUserManage), rt.User.Detail)
 		admin.PATCH("/users/:id", perm(auth.PermUserManage), rt.User.Update)
 		admin.DELETE("/users/:id", perm(auth.PermUserManage), rt.User.Delete)
 		admin.POST("/users/:id/reset-password", perm(auth.PermUserManage), rt.User.ResetPassword)
@@ -227,6 +255,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/users/:id/force-logout", perm(auth.PermUserManage), rt.User.ForceLogout)
 		admin.GET("/users/:id/roles", perm(auth.PermUserManage), rt.User.ListRoles)
 		admin.PUT("/users/:id/roles", perm(auth.PermUserManage), rt.User.ReplaceRoles)
+		admin.PUT("/users/:id/tags", perm(auth.PermUserManage), rt.User.SetTags)
 
 		admin.GET("/roles", perm(auth.PermRoleManage), rt.Role.List)
 		admin.POST("/roles", perm(auth.PermRoleManage), rt.Role.Create)
@@ -238,11 +267,16 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.GET("/departments/tree", perm(auth.PermDeptManage), rt.Dept.Tree)
 		admin.POST("/departments", perm(auth.PermDeptManage), rt.Dept.Create)
 		admin.PATCH("/departments/:id", perm(auth.PermDeptManage), rt.Dept.Update)
+		admin.PUT("/departments/:id/parent", perm(auth.PermDeptManage), rt.Dept.Move)
 		admin.DELETE("/departments/:id", perm(auth.PermDeptManage), rt.Dept.Delete)
+		admin.GET("/departments/:id/members", perm(auth.PermDeptManage), rt.Dept.Members)
+		admin.POST("/departments/:id/members", perm(auth.PermDeptManage), rt.Dept.AddMember)
+		admin.DELETE("/departments/:id/members/:uid", perm(auth.PermDeptManage), rt.Dept.RemoveMember)
 
 		admin.GET("/groups", perm(auth.PermGroupManage), rt.Group.List)
 		admin.POST("/groups", perm(auth.PermGroupManage), rt.Group.Create)
 		admin.PATCH("/groups/:id", perm(auth.PermGroupManage), rt.Group.Update)
+		admin.PUT("/groups/:id/parent", perm(auth.PermGroupManage), rt.Group.Move)
 		admin.DELETE("/groups/:id", perm(auth.PermGroupManage), rt.Group.Delete)
 		admin.GET("/groups/:id/members", perm(auth.PermGroupManage), rt.Group.Members)
 		admin.POST("/groups/:id/members", perm(auth.PermGroupManage), rt.Group.AddMember)
@@ -254,6 +288,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.GET("/nodes/:id", perm(auth.PermNodeRead), rt.Node.Get)
 		admin.PATCH("/nodes/:id", perm(auth.PermNodeUpdate), rt.Node.Update)
 		admin.DELETE("/nodes/:id", perm(auth.PermNodeDelete), rt.Node.Delete)
+		admin.POST("/nodes/:id/test", perm(auth.PermNodeRead), rt.Node.Test)
+		// OSS "test & discover": list buckets for a provider/endpoint +
+		// credential during node creation so the admin can visually pick a
+		// default bucket. Gated by node-create (no per-node grant yet).
+		if rt.OSS != nil {
+			admin.POST("/oss/discover", perm(auth.PermNodeCreate), rt.OSS.Discover)
+		}
 		admin.GET("/proxies", perm(auth.PermProxyManage), rt.Proxy.List)
 		admin.POST("/proxies", perm(auth.PermProxyManage), rt.Proxy.Create)
 		admin.PATCH("/proxies/:id", perm(auth.PermProxyManage), rt.Proxy.Update)
@@ -269,19 +310,34 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/credentials", perm(auth.PermCredentialManage), rt.Cred.Create)
 		admin.PATCH("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Update)
 		admin.DELETE("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Delete)
+		admin.GET("/credentials/:id/usage", perm(auth.PermCredentialManage), rt.Cred.Usage)
+		admin.POST("/credentials/:id/test", perm(auth.PermCredentialManage), rt.Cred.Test)
 		// asset-groups / tags read routes moved up to authed (catalogue).
 		admin.POST("/asset-groups", perm(auth.PermAssetGroupManage), rt.AssetGroup.Create)
 		admin.PATCH("/asset-groups/:id", perm(auth.PermAssetGroupManage), rt.AssetGroup.Update)
+		admin.PUT("/asset-groups/:id/parent", perm(auth.PermAssetGroupManage), rt.AssetGroup.Move)
 		admin.DELETE("/asset-groups/:id", perm(auth.PermAssetGroupManage), rt.AssetGroup.Delete)
 		admin.POST("/asset-groups/:id/nodes", perm(auth.PermAssetGroupManage), rt.AssetGroup.AddNode)
 		admin.DELETE("/asset-groups/:id/nodes/:nid", perm(auth.PermAssetGroupManage), rt.AssetGroup.RemoveNode)
 		admin.POST("/tags", perm(auth.PermTagManage), rt.Tag.Create)
+		admin.PATCH("/tags/:id", perm(auth.PermTagManage), rt.Tag.Update)
 		admin.DELETE("/tags/:id", perm(auth.PermTagManage), rt.Tag.Delete)
+		// Tag groups (namespaces / categories).
+		admin.POST("/tag-groups", perm(auth.PermTagManage), rt.TagGroup.Create)
+		admin.PATCH("/tag-groups/:id", perm(auth.PermTagManage), rt.TagGroup.Update)
+		admin.DELETE("/tag-groups/:id", perm(auth.PermTagManage), rt.TagGroup.Delete)
+		// Node ↔ tag wiring: granular attach/detach, plus a full replace (the
+		// tag-picker save path).
 		admin.POST("/nodes/:id/tags", perm(auth.PermTagManage), rt.Tag.Attach)
+		admin.PUT("/nodes/:id/tags", perm(auth.PermTagManage), rt.Tag.Replace)
 		admin.DELETE("/nodes/:id/tags/:tid", perm(auth.PermTagManage), rt.Tag.Detach)
 		admin.GET("/asset-grants", perm(auth.PermGrantManage), rt.Grant.List)
 		admin.POST("/asset-grants", perm(auth.PermGrantManage), rt.Grant.Create)
+		admin.POST("/asset-grants/batch", perm(auth.PermGrantManage), rt.Grant.CreateBatch)
 		admin.DELETE("/asset-grants/:id", perm(auth.PermGrantManage), rt.Grant.Delete)
+		// 访问策略透视：按人看（穿透解析）/ 按资产看（谁能访问）。
+		admin.GET("/access/by-grantee", perm(auth.PermGrantManage), rt.Grant.ByGrantee)
+		admin.GET("/access/by-subject", perm(auth.PermGrantManage), rt.Grant.BySubject)
 
 		// OIDC client management
 		if rt.OIDCClient != nil {
@@ -291,10 +347,27 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			admin.DELETE("/oidc-clients/:id", perm(auth.PermOIDCManage), rt.OIDCClient.Delete)
 		}
 
+		// System settings — DB-backed runtime configuration center. Gated on
+		// system:admin (super-admin only): these knobs reshape auth policy,
+		// secret handling and every protocol gateway.
+		if rt.Settings != nil {
+			sg := admin.Group("/settings", perm(auth.PermSystemAdmin))
+			sg.GET("/schema", rt.Settings.Schema)
+			sg.POST("", rt.Settings.Update)
+			sg.POST("/reset", rt.Settings.Reset)
+			sg.GET("/integrations", rt.Settings.Integrations)
+			sg.POST("/integrations/:id/test", rt.Settings.TestIntegration)
+			sg.GET("/audits", rt.Settings.Audits)
+		}
+
 		// Operational: sessions, SFTP, WS endpoints
 		ops := authed.Group("")
 		ops.Use(auth.RejectAnonymous())
 		ops.GET("/sessions", perm(auth.PermSessionList), rt.Session.List)
+		ops.GET("/sessions/stats", perm(auth.PermSessionList), rt.Session.Stats)
+		ops.GET("/sessions/:id", perm(auth.PermSessionRead), rt.Session.Get)
+		ops.GET("/sessions/:id/audit", perm(auth.PermSessionRead), rt.Session.AuditTimeline)
+		ops.POST("/sessions/:id/terminate", perm(auth.PermSessionTerminate), rt.Session.Terminate)
 		ops.GET("/sessions/:id/recording", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/sessions/:id/cast", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
@@ -307,6 +380,26 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/sftp/chmod", rt.SFTP.Chmod)
 		ops.GET("/nodes/:id/sftp/read", rt.SFTP.ReadText)
 		ops.POST("/nodes/:id/sftp/write", rt.SFTP.WriteText)
+		ops.GET("/nodes/:id/sftp/search", rt.SFTP.Search)
+		ops.POST("/nodes/:id/sftp/copy", rt.SFTP.Copy)
+		ops.GET("/nodes/:id/sftp/archive", rt.SFTP.Archive)
+		ops.GET("/nodes/:id/sftp/office/config", rt.SFTP.OfficeConfig)
+		// Object-storage bastion (OSS): per-node grant checks live in the
+		// handler (connect → browse/stat/stats, download → get/preview,
+		// upload → put/mkdir/copy/delete). Writes also pass the approval gate.
+		if rt.OSS != nil {
+			ops.GET("/nodes/:id/oss/buckets", rt.OSS.Buckets)
+			ops.GET("/nodes/:id/oss/objects", rt.OSS.Objects)
+			ops.GET("/nodes/:id/oss/stat", rt.OSS.Stat)
+			ops.GET("/nodes/:id/oss/download", rt.OSS.Download)
+			ops.GET("/nodes/:id/oss/preview", rt.OSS.Preview)
+			ops.GET("/nodes/:id/oss/stats", rt.OSS.Stats)
+			ops.POST("/nodes/:id/oss/upload", rt.OSS.Upload)
+			ops.POST("/nodes/:id/oss/mkdir", rt.OSS.Mkdir)
+			ops.DELETE("/nodes/:id/oss/object", rt.OSS.Delete)
+			ops.GET("/nodes/:id/oss/office/config", rt.OSS.OfficeConfig)
+			ops.POST("/nodes/:id/oss/copy", rt.OSS.Copy)
+		}
 		// Plan 14 — system insights endpoints (sibling to SFTP, same auth).
 		// Routes are ALWAYS registered. When the manager is disabled the
 		// handler returns 503 with a structured body. This way a stale
@@ -340,6 +433,17 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/desktop/sessions", desktopControl(rt).Start)
 		ops.DELETE("/desktop/sessions/:session_id", desktopControl(rt).End)
 		ops.GET("/desktop/stats", desktopControl(rt).Stats)
+		// Per-user file drive (redirected into RDP sessions). Each user only
+		// ever sees their own folder; the handler scopes by the JWT subject.
+		if rt.DesktopDrive != nil {
+			ops.GET("/desktop/drive", rt.DesktopDrive.Info)
+			ops.GET("/desktop/drive/list", rt.DesktopDrive.List)
+			ops.POST("/desktop/drive/upload", rt.DesktopDrive.Upload)
+			ops.GET("/desktop/drive/download", rt.DesktopDrive.Download)
+			ops.DELETE("/desktop/drive", rt.DesktopDrive.Delete)
+			ops.POST("/desktop/drive/mkdir", rt.DesktopDrive.Mkdir)
+			ops.POST("/desktop/drive/rename", rt.DesktopDrive.Rename)
+		}
 		// Plan 19.5 — operator can re-run the worker bootstrap without
 		// restarting the gateway (e.g. after installing MSYS2 / brew /
 		// apt deps). Admin-only because it spawns package-manager
@@ -369,15 +473,37 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ag := ops.Group("/approvals")
 			ag.POST("", rt.Approval.CreateRequest)
 			ag.GET("", rt.Approval.ListRequests)
+			// Workspace connection gate: is approval required / already granted,
+			// and is there an in-flight request to resume?
+			ag.GET("/preflight", rt.Approval.Preflight)
+			// Per-user workspace summary strip (待我处理 / 我发起 / 今日已决策 / 我的授权).
+			ag.GET("/overview", rt.Approval.Overview)
+			// Admin governance snapshot (status / risk distribution, throughput, SLA).
+			ag.GET("/stats", perm(auth.PermApprovalAdmin), rt.Approval.Stats)
+			// Realtime (SSE): per-user notification stream + per-request status.
+			// Registered before "/:id" so the static path wins the route match.
+			ag.GET("/stream", rt.Approval.StreamUser)
 			ag.GET("/:id", rt.Approval.GetRequest)
+			ag.GET("/:id/stream", rt.Approval.StreamRequest)
 			ag.POST("/:id/cancel", rt.Approval.CancelRequest)
 			ag.GET("/:id/audit/verify", rt.Approval.VerifyChain)
 
 			ag.GET("/tasks/me", rt.Approval.MyTasks)
+			// Enriched approver inbox — pending tasks pre-joined with their parent
+			// request, killing the per-row N+1 the old list suffered.
+			ag.GET("/tasks/inbox", rt.Approval.Inbox)
+			ag.POST("/tasks/bulk", perm(auth.PermApprovalDecide), rt.Approval.BulkDecide)
 			ag.POST("/tasks/:task_id/approve", perm(auth.PermApprovalDecide), rt.Approval.Approve)
 			ag.POST("/tasks/:task_id/reject", perm(auth.PermApprovalDecide), rt.Approval.Reject)
 			ag.POST("/tasks/:task_id/delegate", perm(auth.PermApprovalDecide), rt.Approval.Delegate)
 
+			// Issued-grant views: the current user's own access, and the
+			// admin-wide governance list.
+			ag.GET("/grants/mine", rt.Approval.MyGrants)
+			ag.GET("/grants", perm(auth.PermApprovalAdmin), rt.Approval.ListGrants)
+			// Self-service early release (beneficiary ends their own grant);
+			// admin-wide revoke stays gated below.
+			ag.POST("/grants/:id/release", rt.Approval.ReleaseGrant)
 			ag.POST("/grants/:id/revoke", perm(auth.PermApprovalAdmin), rt.Approval.RevokeGrant)
 			ag.GET("/grants/check", rt.Approval.CheckGrant)
 
@@ -488,6 +614,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 
 		aiGroup.POST("/conversations/:id/invocations/:inv_id/approve", perm(auth.PermAIUse), rt.AI.Invocation.Approve)
 		aiGroup.POST("/conversations/:id/invocations/:inv_id/reject", perm(auth.PermAIUse), rt.AI.Invocation.Reject)
+		aiGroup.POST("/conversations/:id/invocations/:inv_id/answer", perm(auth.PermAIUse), rt.AI.Invocation.Answer)
 	}
 
 	// Anonymous WS uses the same middleware but allows the anonymous flag.

@@ -23,11 +23,11 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 - Backend unit tests: `go test ./...` or `make test` (`Makefile`).
 - Backend gateway build: `make build`, which runs `bash scripts/build-gateway.sh` (`Makefile`, `scripts/README.md`).
 - FreeRDP worker build: `make build-worker` or OS-specific scripts under `scripts/` (`Makefile`, `scripts/README.md`). This can require libfreerdp/CGo dependencies.
-- Frontend dev server: from `web/`, `npm run dev` (`web/package.json`).
-- Frontend build: from `web/`, `npm run build`; this runs `prebuild` first to copy Guacamole assets (`web/package.json`, `web/scripts/copy-guacamole.mjs`).
-- Frontend typecheck: from `web/`, `npm run typecheck` (`web/package.json`).
-- Frontend lint: from `web/`, `npm run lint` is declared as `next lint`, but no ESLint config was found in the checked tree. Needs verification with the installed Next.js version.
-- Package manager: `.gitignore` says the repo uses npm and treats `web/pnpm-lock.yaml` / `web/pnpm-workspace.yaml` as local-only; `web/package-lock.json` is present.
+- Frontend dev server: from `web/`, `pnpm dev` (`web/package.json`).
+- Frontend build: from `web/`, `pnpm build`; this runs `prebuild` first to copy Guacamole assets (`web/package.json`, `web/scripts/copy-guacamole.mjs`).
+- Frontend typecheck: from `web/`, `pnpm typecheck` (`web/package.json`).
+- Frontend lint: from `web/`, `pnpm lint` is declared as `next lint`, but `next lint` is deprecated/removed in Next 16 — typecheck + build are the effective gates.
+- Package manager: pnpm (pinned via `packageManager` in `web/package.json`). `web/pnpm-lock.yaml` + `web/pnpm-workspace.yaml` are tracked; `package-lock.json` is gitignored. First run: `corepack enable` then `pnpm install --frozen-lockfile`.
 
 ## Manual Verification Paths
 
@@ -46,11 +46,11 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 - No standalone migration test or migration directory was found; schema evolution relies on startup `AutoMigrate` (`internal/repo/db.go`).
 - `go test ./...` may include packages with external/runtime assumptions; the checked tests include loopback networking and SQLite, while worker builds can require system libraries.
 - README still references some older technology claims such as MySQL in the stack table, while current DB code and example config use PostgreSQL. Treat README architecture text as partly stale unless confirmed in code.
-- `npm run lint` needs verification because `next lint` may not be available in newer Next.js versions and no ESLint config was observed.
+- `pnpm lint` (`next lint`) is deprecated/removed in Next 16; rely on `pnpm typecheck` + `pnpm build` as the frontend gates until a flat ESLint config is added.
 
 ## Suggested Verification For Changes
 
 - Backend-only logic: run `go test ./...`; for gateway startup or schema-touching changes, also run `make build` if shell tooling is available.
-- Frontend-only logic: from `web/`, run `npm run typecheck` and `npm run build`; run `npm run lint` only after verifying the repo's Next.js lint support.
+- Frontend-only logic: from `web/`, run `pnpm typecheck` and `pnpm build` (the effective gates; `next lint` is gone in Next 16).
 - API contract changes: update both backend route/handler code under `internal/api` or `internal/server/routes.go` and frontend types/services in `web/src/lib/api/types.ts` / `web/src/lib/api/services.ts`, then manually exercise through `/api/proxy/api/v1/...`.
 - Desktop/RDP changes: run relevant Go tests under `internal/desktop`, then verify worker/gateway build/install path with `scripts/README.md` commands when touching worker integration.

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,6 +144,149 @@ func isApprover(tasks []model.ApprovalTask, uid uint64) bool {
 	return false
 }
 
+// Preflight — GET /api/v1/approvals/preflight?resource_type=&resource_id=&business_type=&action=
+// The workspace calls this before connecting: returns whether approval is
+// required, whether it is already satisfied, and any in-flight request to resume.
+func (h *ApprovalHandler) Preflight(c *gin.Context) {
+	if h.svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "approval service disabled"})
+		return
+	}
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	biz := model.ApprovalBusinessType(c.Query("business_type"))
+	if biz == "" {
+		biz = model.ApprovalBizAssetAccess
+	}
+	resType := c.DefaultQuery("resource_type", "node")
+	resID := c.Query("resource_id")
+	action := c.DefaultQuery("action", "connect")
+	if resID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "resource_id required"})
+		return
+	}
+	res, err := h.svc.Preflight(c.Request.Context(), claims.UserID, biz, resType, resID, action)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+// StreamRequest — GET /api/v1/approvals/:id/stream (SSE). Live status for one
+// request: an initial snapshot then an "update" frame on every transition.
+func (h *ApprovalHandler) StreamRequest(c *gin.Context) {
+	if h.svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "approval service disabled"})
+		return
+	}
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	id := c.Param("id")
+	detail, err := h.svc.GetRequest(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if detail == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "request not found"})
+		return
+	}
+	if !claims.Admin && detail.Request.RequesterID != claims.UserID && !isApprover(detail.Tasks, claims.UserID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not allowed"})
+		return
+	}
+	ch, cancel := h.svc.Hub().SubscribeRequest(id)
+	defer cancel()
+	snap := snapshotEvent(*detail.Request)
+	streamApprovalSSE(c, ch, &snap)
+}
+
+// StreamUser — GET /api/v1/approvals/stream (SSE). Every event addressed to the
+// current user (their requests + tasks assigned to them). Backs the in-app
+// notification center, and is the seam a future notification system plugs into.
+func (h *ApprovalHandler) StreamUser(c *gin.Context) {
+	if h.svc == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "approval service disabled"})
+		return
+	}
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	ch, cancel := h.svc.Hub().SubscribeUser(claims.UserID)
+	defer cancel()
+	streamApprovalSSE(c, ch, nil)
+}
+
+func snapshotEvent(r model.ApprovalRequest) approval.Event {
+	return approval.Event{
+		RequestID:    r.ID,
+		RequesterID:  r.RequesterID,
+		Kind:         "snapshot",
+		Status:       string(r.Status),
+		Title:        r.Title,
+		BusinessType: string(r.BusinessType),
+		ResourceType: r.ResourceType,
+		ResourceID:   r.ResourceID,
+		RiskLevel:    string(r.RiskLevel),
+		CurrentStage: r.CurrentStage,
+		TotalStages:  r.TotalStages,
+		At:           time.Now(),
+	}
+}
+
+// streamApprovalSSE writes the approval event channel to the response as SSE,
+// flushing each frame and emitting a 15s keepalive ping (mirrors the AI SSE
+// pump). Returns when the channel closes or the client disconnects.
+func streamApprovalSSE(c *gin.Context, ch <-chan approval.Event, initial *approval.Event) {
+	w := c.Writer
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	write := func(kind string, v any) {
+		b, _ := json.Marshal(v)
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", kind, b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	if initial != nil {
+		write("snapshot", initial)
+	} else {
+		write("ready", gin.H{})
+	}
+	ping := time.NewTicker(15 * time.Second)
+	defer ping.Stop()
+	done := c.Request.Context().Done()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return
+			}
+			write("update", ev)
+		case <-ping.C:
+			_, _ = io.WriteString(w, "event: ping\ndata: {}\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-done:
+			return
+		}
+	}
+}
+
 // CancelRequest — POST /api/v1/approvals/:id/cancel
 func (h *ApprovalHandler) CancelRequest(c *gin.Context) {
 	claims := auth.FromContext(c.Request.Context())
@@ -177,9 +323,110 @@ func (h *ApprovalHandler) MyTasks(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"items": tasks})
 }
 
+// Inbox — GET /api/v1/approvals/tasks/inbox?limit=
+// The approver's pending tasks, each pre-joined with its parent request so the
+// workspace list renders in one round-trip (no per-row N+1).
+func (h *ApprovalHandler) Inbox(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	items, err := h.svc.Inbox(c.Request.Context(), claims.UserID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// Overview — GET /api/v1/approvals/overview
+// The four workspace counters for the current user.
+func (h *ApprovalHandler) Overview(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	ov, err := h.svc.Overview(c.Request.Context(), claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, ov)
+}
+
+// MyGrants — GET /api/v1/approvals/grants/mine?status=&limit=&offset=
+// The current user's issued grants (active by default). status accepts a
+// comma-separated list of grant lifecycle states.
+func (h *ApprovalHandler) MyGrants(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	statuses := splitCSV(c.Query("status"))
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	rows, total, err := h.svc.MyGrants(c.Request.Context(), claims.UserID, statuses, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows, "total": total})
+}
+
+// ListGrants — GET /api/v1/approvals/grants?beneficiary_id=&status=&limit=&offset=
+// Admin governance view across every beneficiary.
+func (h *ApprovalHandler) ListGrants(c *gin.Context) {
+	beneficiary, _ := strconv.ParseUint(c.Query("beneficiary_id"), 10, 64)
+	statuses := splitCSV(c.Query("status"))
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	offset, _ := strconv.Atoi(c.Query("offset"))
+	rows, total, err := h.svc.ListGrants(c.Request.Context(), beneficiary, statuses, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": rows, "total": total})
+}
+
+// Stats — GET /api/v1/approvals/stats
+// Admin governance snapshot: status / risk / business distribution, today's
+// throughput, active grants, mean decision latency.
+func (h *ApprovalHandler) Stats(c *gin.Context) {
+	snap, err := h.svc.Stats(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, snap)
+}
+
+func splitCSV(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 type decideBody struct {
 	Approve bool   `json:"approve"`
 	Comment string `json:"comment"`
+	// DurationSec lets the approver set the issued grant's window length (in
+	// seconds) at decision time, clamped to the template cap by the service.
+	// 0 = keep the requester's asked-for window. Only meaningful on the
+	// finalising approval.
+	DurationSec int `json:"duration_sec"`
 }
 
 // Approve / Reject — POST /api/v1/approvals/tasks/:task_id/approve|reject
@@ -201,15 +448,68 @@ func (h *ApprovalHandler) decide(c *gin.Context, approve bool) {
 	_ = c.ShouldBindJSON(&body)
 	body.Approve = approve
 	out, err := h.svc.Decide(c.Request.Context(), taskID, approval.DecideInput{
-		ApproverID: claims.UserID,
-		Approve:    body.Approve,
-		Comment:    body.Comment,
+		ApproverID:  claims.UserID,
+		Approve:     body.Approve,
+		Comment:     body.Comment,
+		DurationSec: body.DurationSec,
 	})
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+type bulkDecideBody struct {
+	TaskIDs     []uint64 `json:"task_ids"`
+	Approve     bool     `json:"approve"`
+	Comment     string   `json:"comment"`
+	DurationSec int      `json:"duration_sec"`
+}
+
+type bulkDecideResult struct {
+	TaskID uint64 `json:"task_id"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+}
+
+// BulkDecide — POST /api/v1/approvals/tasks/bulk
+// Applies the same verdict to a set of tasks the caller owns. Each task is
+// decided independently; a failure on one is reported per-row rather than
+// failing the whole batch, so the approver sees exactly what went through.
+func (h *ApprovalHandler) BulkDecide(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	var body bulkDecideBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.TaskIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "task_ids required"})
+		return
+	}
+	results := make([]bulkDecideResult, 0, len(body.TaskIDs))
+	okCount := 0
+	for _, id := range body.TaskIDs {
+		_, err := h.svc.Decide(c.Request.Context(), id, approval.DecideInput{
+			ApproverID:  claims.UserID,
+			Approve:     body.Approve,
+			Comment:     body.Comment,
+			DurationSec: body.DurationSec,
+		})
+		r := bulkDecideResult{TaskID: id, OK: err == nil}
+		if err != nil {
+			r.Error = err.Error()
+		} else {
+			okCount++
+		}
+		results = append(results, r)
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "ok_count": okCount, "total": len(body.TaskIDs)})
 }
 
 type delegateBody struct {
@@ -251,6 +551,7 @@ func (h *ApprovalHandler) Delegate(c *gin.Context) {
 // ----- grants -----
 
 // RevokeGrant — POST /api/v1/approvals/grants/:id/revoke
+// Admin-gated (approval:admin) at the route layer: collapse anyone's grant.
 func (h *ApprovalHandler) RevokeGrant(c *gin.Context) {
 	claims := auth.FromContext(c.Request.Context())
 	if claims == nil {
@@ -262,6 +563,46 @@ func (h *ApprovalHandler) RevokeGrant(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&body)
 	if err := h.svc.RevokeGrant(c.Request.Context(), c.Param("id"), claims.UserID, body.Reason); err != nil {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ReleaseGrant — POST /api/v1/approvals/grants/:id/release
+// Self-service: a beneficiary ends their own grant early (least-privilege
+// hygiene — "我用完了"). Authorisation is checked here, not at the route, so it
+// stays open to any authenticated user but only for grants they hold. Admins
+// may also release any grant.
+func (h *ApprovalHandler) ReleaseGrant(c *gin.Context) {
+	claims := auth.FromContext(c.Request.Context())
+	if claims == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing claims"})
+		return
+	}
+	id := c.Param("id")
+	g, err := h.repo.FindGrant(c.Request.Context(), id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if g == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "grant not found"})
+		return
+	}
+	if !claims.Admin && g.BeneficiaryID != claims.UserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not your grant"})
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	reason := body.Reason
+	if reason == "" {
+		reason = "本人主动结束"
+	}
+	if err := h.svc.RevokeGrant(c.Request.Context(), id, claims.UserID, reason); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
@@ -363,25 +704,29 @@ func (h *ApprovalHandler) UpdateTemplate(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "template not found"})
 		return
 	}
-	if existing.IsSystem {
-		c.JSON(http.StatusForbidden, gin.H{"error": "system template is read-only"})
-		return
-	}
 	var body templateBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	existing.Description = body.Description
-	existing.BusinessType = model.ApprovalBusinessType(body.BusinessType)
-	existing.Priority = body.Priority
-	existing.Enabled = body.Enabled
-	existing.Selector = body.Selector
-	existing.Stages = body.Stages
-	existing.RiskRule = body.RiskRule
-	existing.AutoApprove = body.AutoApprove
-	existing.MaxDurationSec = body.MaxDurationSec
-	existing.DefaultTimeoutSec = body.DefaultTimeoutSec
+	if existing.IsSystem {
+		// Built-in templates keep their definition (selector / stages / risk /
+		// business type / name) locked so a shipped policy can't be corrupted,
+		// but an admin may still enable/disable one or change its priority.
+		existing.Enabled = body.Enabled
+		existing.Priority = body.Priority
+	} else {
+		existing.Description = body.Description
+		existing.BusinessType = model.ApprovalBusinessType(body.BusinessType)
+		existing.Priority = body.Priority
+		existing.Enabled = body.Enabled
+		existing.Selector = body.Selector
+		existing.Stages = body.Stages
+		existing.RiskRule = body.RiskRule
+		existing.AutoApprove = body.AutoApprove
+		existing.MaxDurationSec = body.MaxDurationSec
+		existing.DefaultTimeoutSec = body.DefaultTimeoutSec
+	}
 	if err := h.repo.UpdateTemplate(c.Request.Context(), existing); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

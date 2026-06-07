@@ -6,6 +6,8 @@ import { ArrowDownToLine, ExternalLink, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { SftpWorkspace } from "@/components/sftp/SftpWorkspace"
+import { OssWorkspace } from "@/components/oss/OssWorkspace"
+import { ApprovalGate } from "@/components/workspace/ApprovalGate"
 import { SideDock } from "./SideDock"
 import { TcpForwardPanel } from "./TcpForwardPanel"
 import { useWorkspaceStore, type WorkspaceTab as TabModel } from "./useWorkspaceStore"
@@ -41,7 +43,10 @@ function LoadingShim({ label }: { label: string }) {
 // TabBody is split out so it can read the workspace store hooks (setStatus
 // / open) and forward them to the per-protocol component. The previous
 // inline renderTabBody couldn't call hooks because it was a free function.
-function TabBody({ tab }: { tab: TabModel }) {
+// Memoised so dragging the split divider (which re-renders WorkspaceTabContent
+// on every pointer move) doesn't re-run the heavy per-protocol session bodies.
+// The `tab` object reference is stable unless that tab actually changes.
+const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
   const setLatency = useWorkspaceStore((s) => s.setLatency)
   const setPoppedOut = useWorkspaceStore((s) => s.setPoppedOut)
@@ -74,8 +79,11 @@ function TabBody({ tab }: { tab: TabModel }) {
   // connected (bug surfaced after PR #6 redesign — the dots are accurate
   // only if the protocol pushes status up to the store).
   const onSshStatusChange = React.useCallback(
-    (s: "connecting" | "open" | "closed") => {
-      setStatus(tab.id, s === "open" ? "connected" : s === "closed" ? "closed" : "connecting")
+    (s: "connecting" | "open" | "reconnecting" | "closed" | "error") => {
+      setStatus(
+        tab.id,
+        s === "open" ? "connected" : s === "error" ? "error" : s === "closed" ? "closed" : "connecting",
+      )
     },
     [setStatus, tab.id],
   )
@@ -121,6 +129,7 @@ function TabBody({ tab }: { tab: TabModel }) {
   React.useEffect(() => {
     if (
       tab.protocol === "sftp" ||
+      tab.protocol === "oss" ||
       tab.protocol === "tcp_forward" ||
       tab.protocol === "db_studio"
     ) {
@@ -132,102 +141,212 @@ function TabBody({ tab }: { tab: TabModel }) {
     }
   }, [tab.id, tab.protocol, setStatus])
 
-  switch (tab.protocol) {
-    case "ssh":
-    case "telnet":
-    case "dbcli":
-      return (
-        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-          <WebSSHTerminal
-            protocol={tab.protocol}
-            nodeId={tab.nodeId}
-            displayName={tab.title}
-            host={tab.host}
-            port={tab.port}
-            onStatusChange={onSshStatusChange}
-            onOpenSftp={onOpenSftp}
-          />
-        </SideDock>
-      )
-    case "rdp":
-    case "vnc":
-      return (
-        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-          <RDPDisplay
-            protocol={tab.protocol}
-            nodeId={tab.nodeId}
-            nodeName={tab.title}
-            nodeHost={tab.host}
-            nodePort={tab.port}
-          />
-        </SideDock>
-      )
-    case "rdp_next":
-      return (
-        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-          <DesktopDisplay
-            nodeId={tab.nodeId}
-            nodeName={tab.title}
-            nodeHost={tab.host}
-            nodePort={tab.port}
-            backend={tab.rdpBackend}
-            onStatusChange={onDesktopStatusChange}
-            onLatencyChange={onDesktopLatency}
-          />
-        </SideDock>
-      )
-    case "sftp":
-      return <SftpWorkspace nodeId={tab.nodeId} showNodeHeader={false} className="h-full flex flex-col" />
-    case "tcp_forward":
-      return <TcpForwardPanel nodeId={tab.nodeId} />
-    case "db_studio":
-      return (
-        <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-          <DBStudio nodeId={tab.nodeId} embedded />
-        </SideDock>
-      )
+  // Connect-gated protocols pass through the approval gate: if the asset
+  // requires approval and the user has no active grant, the tab shows the
+  // request panel (apply + live status) instead of closing, then auto-connects
+  // once approved. Browse-first protocols (sftp/oss/db_studio) are not gated at
+  // open — their write operations enforce approval per-action.
+  const body = (): React.ReactNode => {
+    switch (tab.protocol) {
+      case "ssh":
+      case "telnet":
+      case "dbcli":
+        return (
+          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+            <WebSSHTerminal
+              protocol={tab.protocol}
+              nodeId={tab.nodeId}
+              displayName={tab.title}
+              host={tab.host}
+              port={tab.port}
+              onStatusChange={onSshStatusChange}
+              onOpenSftp={onOpenSftp}
+            />
+          </SideDock>
+        )
+      case "rdp":
+      case "vnc":
+        return (
+          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+            <RDPDisplay
+              protocol={tab.protocol}
+              nodeId={tab.nodeId}
+              nodeName={tab.title}
+              nodeHost={tab.host}
+              nodePort={tab.port}
+            />
+          </SideDock>
+        )
+      case "rdp_next":
+        return (
+          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+            <DesktopDisplay
+              nodeId={tab.nodeId}
+              nodeName={tab.title}
+              nodeHost={tab.host}
+              nodePort={tab.port}
+              backend={tab.rdpBackend}
+              onStatusChange={onDesktopStatusChange}
+              onLatencyChange={onDesktopLatency}
+            />
+          </SideDock>
+        )
+      case "sftp":
+        return <SftpWorkspace nodeId={tab.nodeId} showNodeHeader={false} className="h-full flex flex-col" />
+      case "oss":
+        return <OssWorkspace nodeId={tab.nodeId} className="h-full flex flex-col" />
+      case "tcp_forward":
+        return <TcpForwardPanel nodeId={tab.nodeId} />
+      case "db_studio":
+        return (
+          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
+            <DBStudio nodeId={tab.nodeId} embedded />
+          </SideDock>
+        )
+    }
+    return null
   }
-}
+
+  if (CONNECT_GATED.has(tab.protocol)) {
+    return (
+      <ApprovalGate
+        tabId={tab.id}
+        nodeId={tab.nodeId}
+        nodeName={tab.title}
+        nodeSubtitle={tab.host ? `${tab.protocol} · ${tab.host}${tab.port ? `:${tab.port}` : ""}` : tab.protocol}
+        countdown={tab.protocol !== "tcp_forward"}
+        onStateChange={(s) => {
+          if (s === "approval") setStatus(tab.id, "approval")
+          else if (s === "checking") setStatus(tab.id, "connecting")
+        }}
+      >
+        {body()}
+      </ApprovalGate>
+    )
+  }
+  return body()
+})
+
+// Protocols whose tab open is blocked until an asset_access grant exists.
+const CONNECT_GATED = new Set(["ssh", "telnet", "dbcli", "rdp", "vnc", "rdp_next", "tcp_forward"])
 
 // Canvas-bearing protocols can't tolerate display:none — Guacamole and the
 // freerdp viewer stop receiving size events and may freeze. We keep them in
 // the layout box but make them visually inert when inactive.
 const CANVAS_PROTOS = new Set(["rdp", "vnc", "rdp_next"])
 
+const FULL_RECT: React.CSSProperties = { left: 0, top: 0, right: 0, bottom: 0 }
+
+// rectFor positions a pane via percentage left/width (row split) or top/height
+// (column split). Single (no split) → full bleed. Every tab stays mounted at a
+// stable key; only this rect + visibility change, so canvas sessions are never
+// remounted across a split toggle.
+function rectFor(
+  pane: "primary" | "secondary",
+  dir: "row" | "col",
+  ratio: number,
+): React.CSSProperties {
+  const primary = pane === "primary"
+  if (dir === "row") {
+    return primary
+      ? { left: 0, top: 0, width: `${ratio * 100}%`, height: "100%" }
+      : { left: `${ratio * 100}%`, top: 0, width: `${(1 - ratio) * 100}%`, height: "100%" }
+  }
+  return primary
+    ? { left: 0, top: 0, width: "100%", height: `${ratio * 100}%` }
+    : { left: 0, top: `${ratio * 100}%`, width: "100%", height: `${(1 - ratio) * 100}%` }
+}
+
 export function WorkspaceTabContent() {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeId = useWorkspaceStore((s) => s.activeId)
+  const splitId = useWorkspaceStore((s) => s.splitId)
+  const splitDir = useWorkspaceStore((s) => s.splitDir)
+  const splitRatio = useWorkspaceStore((s) => s.splitRatio)
+  const containerRef = React.useRef<HTMLDivElement | null>(null)
+
+  const split = !!splitId && splitId !== activeId && tabs.some((t) => t.id === splitId)
 
   return (
-    <div className="relative flex-1 min-h-0 bg-background overflow-hidden">
-      {tabs.length === 0 ? null : (
-        tabs.map((tab) => {
-          const active = tab.id === activeId
-          const useVisibility = CANVAS_PROTOS.has(tab.protocol)
-          return (
-            <div
-              key={tab.id}
-              role="tabpanel"
-              aria-hidden={!active}
-              aria-label={tab.title}
-              hidden={!active && !useVisibility}
-              style={
-                useVisibility
-                  ? {
-                      // Background canvas tabs stay laid out so RDP/VNC keep
-                      // their server dimensions; just hidden and inert.
-                      visibility: active ? "visible" : "hidden",
-                      pointerEvents: active ? "auto" : "none",
-                    }
-                  : undefined
-              }
-              className={cn("absolute inset-0", active ? "z-10" : "z-0")}
-            >
-              <TabBody tab={tab} />
-            </div>
-          )
-        })
+    <div ref={containerRef} className="relative min-h-0 flex-1 overflow-hidden bg-background">
+      {tabs.map((tab) => {
+        const pane: "primary" | "secondary" | "background" =
+          tab.id === activeId ? "primary" : split && tab.id === splitId ? "secondary" : "background"
+        const visible = pane !== "background"
+        const isCanvas = CANVAS_PROTOS.has(tab.protocol)
+        const style: React.CSSProperties = visible
+          ? { ...(split ? rectFor(pane, splitDir, splitRatio) : FULL_RECT), visibility: "visible", pointerEvents: "auto", zIndex: 10 }
+          : isCanvas
+            // Keepalive: stay laid out full-size but inert so RDP/VNC keep their
+            // server dimensions and the WS connection survives in the background.
+            ? { ...FULL_RECT, visibility: "hidden", pointerEvents: "none", zIndex: 0 }
+            : { ...FULL_RECT, display: "none" }
+        return (
+          <div
+            key={tab.id}
+            role="tabpanel"
+            aria-hidden={!visible}
+            aria-label={tab.title}
+            style={style}
+            className={cn(
+              "absolute",
+              split && pane === "primary" && "rounded-sm ring-1 ring-inset ring-primary/35",
+            )}
+          >
+            <TabBody tab={tab} />
+          </div>
+        )
+      })}
+      {split && <SplitDivider containerRef={containerRef} dir={splitDir} ratio={splitRatio} />}
+    </div>
+  )
+}
+
+// Draggable divider between split panes. Uses pointer capture so the drag keeps
+// tracking even as the cursor passes over a terminal / canvas pane.
+function SplitDivider({
+  containerRef,
+  dir,
+  ratio,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>
+  dir: "row" | "col"
+  ratio: number
+}) {
+  const setSplitRatio = useWorkspaceStore((s) => s.setSplitRatio)
+  const dragging = React.useRef(false)
+  return (
+    <div
+      role="separator"
+      aria-orientation={dir === "row" ? "vertical" : "horizontal"}
+      onPointerDown={(e) => {
+        dragging.current = true
+        ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+        e.preventDefault()
+      }}
+      onPointerMove={(e) => {
+        if (!dragging.current) return
+        const el = containerRef.current
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        setSplitRatio(dir === "row" ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height)
+      }}
+      onPointerUp={(e) => {
+        dragging.current = false
+        ;(e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId)
+      }}
+      className={cn(
+        "group absolute z-20 flex items-center justify-center",
+        dir === "row" ? "bottom-0 top-0 w-3 -translate-x-1/2 cursor-col-resize" : "left-0 right-0 h-3 -translate-y-1/2 cursor-row-resize",
       )}
+      style={dir === "row" ? { left: `${ratio * 100}%` } : { top: `${ratio * 100}%` }}
+    >
+      <span
+        className={cn(
+          "rounded-full bg-border transition-colors group-hover:bg-primary/60",
+          dir === "row" ? "h-10 w-[3px]" : "h-[3px] w-10",
+        )}
+      />
     </div>
   )
 }

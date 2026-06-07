@@ -90,7 +90,15 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 	tools := buildAnthropicTools(req.Tools)
 	maxTok := int64(req.MaxTokens)
 	if maxTok <= 0 {
-		maxTok = 4096
+		maxTok = 8192
+	}
+	thinkingOn := req.ThinkingBudget > 0
+	if thinkingOn {
+		// The thinking budget is part of max_tokens; leave headroom for the
+		// visible answer on top of it.
+		if budget := int64(req.ThinkingBudget); maxTok < budget+8192 {
+			maxTok = budget + 8192
+		}
 	}
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(model),
@@ -101,11 +109,18 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 	if req.System != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.System}}
 	}
-	if req.Temperature != nil {
-		params.Temperature = param.NewOpt(*req.Temperature)
-	}
-	if req.TopP != nil {
-		params.TopP = param.NewOpt(*req.TopP)
+	if thinkingOn {
+		// Extended thinking: enable the thinking config. Temperature / top_p
+		// must be left at default (the API rejects custom temperature while
+		// thinking), so we deliberately don't set them here.
+		params.Thinking = anthropic.ThinkingConfigParamOfEnabled(int64(req.ThinkingBudget))
+	} else {
+		if req.Temperature != nil {
+			params.Temperature = param.NewOpt(*req.Temperature)
+		}
+		if req.TopP != nil {
+			params.TopP = param.NewOpt(*req.TopP)
+		}
 	}
 
 	stream := p.client.Messages.NewStreaming(ctx, params)
@@ -198,7 +213,18 @@ func buildAnthropicMessages(req Request) []anthropic.MessageParam {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleUser:
-			blocks := []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(collectText(m.Content))}
+			blocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(m.Content))
+			if t := collectText(m.Content); t != "" {
+				blocks = append(blocks, anthropic.NewTextBlock(t))
+			}
+			for _, img := range collectImages(m.Content) {
+				if mt, data, ok := parseDataURL(img); ok {
+					blocks = append(blocks, anthropic.NewImageBlockBase64(mt, data))
+				}
+			}
+			if len(blocks) == 0 {
+				blocks = append(blocks, anthropic.NewTextBlock(""))
+			}
 			out = append(out, anthropic.NewUserMessage(blocks...))
 		case RoleAssistant:
 			blocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(m.ToolCalls))

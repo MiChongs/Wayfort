@@ -61,6 +61,7 @@ func (h *Handler) Create(c *gin.Context) {
 	// interactive sessions: a forwarder is a TCP pipe to a privileged
 	// network endpoint, so the same RequiresApprovalForConnect flag on
 	// the node controls it.
+	var grantDeadline time.Time
 	if h.Approval != nil {
 		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
 			UserID:       claims.UserID,
@@ -77,6 +78,9 @@ func (h *Handler) Create(c *gin.Context) {
 			c.JSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
 			return
 		}
+		if res.Required && !res.ExpiresAt.IsZero() {
+			grantDeadline = res.ExpiresAt
+		}
 	}
 
 	var ttl time.Duration
@@ -87,6 +91,18 @@ func (h *Handler) Create(c *gin.Context) {
 			return
 		}
 		ttl = d
+	}
+	// Server-side hard cutoff: cap the forwarder's lifetime at the approval
+	// grant expiry via the existing TTL reaper, so a time-bound grant can't be
+	// outlived by a long-lived forward.
+	if !grantDeadline.IsZero() {
+		remaining := time.Until(grantDeadline)
+		if remaining < time.Second {
+			remaining = time.Second
+		}
+		if ttl == 0 || ttl > remaining {
+			ttl = remaining
+		}
 	}
 	row, err := h.Manager.Create(c.Request.Context(), claims.UserID, claims.Username, node, CreateOpts{
 		TTL:    ttl,

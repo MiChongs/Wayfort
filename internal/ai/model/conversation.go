@@ -31,6 +31,9 @@ type AIConversation struct {
 	Temperature        *float64           `gorm:"column:temperature" json:"temperature,omitempty"`
 	TopP               *float64           `gorm:"column:top_p" json:"top_p,omitempty"`
 	MaxTokens          *int               `gorm:"column:max_tokens" json:"max_tokens,omitempty"`
+	// ThinkingBudget enables provider extended-thinking with this many tokens
+	// of reasoning budget (NULL / 0 = off). Surfaced as the "深度思考" toggle.
+	ThinkingBudget     *int               `gorm:"column:thinking_budget" json:"thinking_budget,omitempty"`
 	ParentConversation *string            `gorm:"size:64;index" json:"parent_conversation,omitempty"`
 	CreatedAt          time.Time          `json:"created_at"`
 	UpdatedAt          time.Time          `json:"updated_at"`

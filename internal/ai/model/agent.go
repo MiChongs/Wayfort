@@ -31,6 +31,9 @@ type AIAgent struct {
 	ID                uint64          `gorm:"primaryKey" json:"id"`
 	Name              string          `gorm:"size:128;index;not null" json:"name"`
 	Description       string          `gorm:"size:512" json:"description"`
+	// Icon is an optional unified icon token for the agent avatar
+	// ("lucide:bot", "simple:openai", "emoji:🤖"). Empty == initials avatar.
+	Icon              string          `gorm:"size:48" json:"icon,omitempty"`
 	Scope             AgentScope      `gorm:"size:16;index;not null" json:"scope"`
 	OwnerID           *uint64         `gorm:"index" json:"owner_id,omitempty"`
 	SystemPrompt      string          `gorm:"type:text" json:"system_prompt"`

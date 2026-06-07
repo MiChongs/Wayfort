@@ -26,6 +26,20 @@ type Config struct {
 	Insights  InsightsConfig  `mapstructure:"insights"`
 	Desktop   DesktopConfig   `mapstructure:"desktop"`
 	Approval  ApprovalConfig  `mapstructure:"approval"`
+	Office    OfficeConfig    `mapstructure:"office"`
+}
+
+// OfficeConfig wires an external OnlyOffice / Collabora Document Server for
+// in-browser editing of Office documents on the SFTP and OSS surfaces.
+// Disabled by default — when off, office files fall back to download.
+// document_server_url is where the editor's api.js is served; callback_base_url
+// is THIS gateway's URL as reachable from the Document Server (it pulls files
+// and posts saves there); jwt_secret must match the Document Server's secret.
+type OfficeConfig struct {
+	Enabled           bool   `mapstructure:"enabled"`
+	DocumentServerURL string `mapstructure:"document_server_url"`
+	JWTSecret         string `mapstructure:"jwt_secret"`
+	CallbackBaseURL   string `mapstructure:"callback_base_url"`
 }
 
 // ApprovalConfig is the Phase 16c knob set for the audit-ledger offsite
@@ -104,6 +118,97 @@ type DesktopConfig struct {
 	// the gateway subprocess validates them and byte-proxies TCP to the
 	// target RDP host. Replaces the libfreerdp cgo subprocess pipeline.
 	DevolutionsGateway DevolutionsGatewayConfig `mapstructure:"devolutions_gateway"`
+
+	// Recording — session screen recording + input audit for the freerdp
+	// backend. The gateway tees the desktop.v2 frame stream (and, when
+	// IncludeInput is on, keyboard/mouse/clipboard events + milestones) to a
+	// timestamped .dtr file that the browser replays in-place via the same
+	// canvas/decoder pipeline. On by default, as bastion audit usually
+	// requires it.
+	Recording DesktopRecordingConfig `mapstructure:"recording"`
+
+	// Drive — per-user persistent file drive redirected into every freerdp
+	// session (rdpdr filesystem redirection). The user uploads/downloads via
+	// the browser file panel; the same folder is mounted as a drive in the
+	// remote desktop so files move both ways. ironrdp sessions don't use it.
+	Drive DesktopDriveConfig `mapstructure:"drive"`
+
+	// WebRTC — the hardware-decoded video path for the freerdp backend. When
+	// enabled and the browser advertises WebRTC support, the worker VP8-encodes
+	// the composited framebuffer and the gateway streams it over a Pion video
+	// track instead of pushing dirty-bitmap frames the browser decodes in JS.
+	// The browser renders it in a <video> element (GPU decode). Falls back to
+	// the legacy bitmap path automatically when negotiation fails.
+	WebRTC DesktopWebRTCConfig `mapstructure:"webrtc"`
+}
+
+// DesktopWebRTCConfig parameterises the WebRTC video transport. ICE defaults
+// to host candidates only (works for a directly reachable gateway / same-LAN
+// browser); add STUN/TURN/public-IP for NAT traversal.
+type DesktopWebRTCConfig struct {
+	// Enabled gates the whole path. On by default; the browser must also
+	// advertise WebRTC support or the session silently uses the bitmap path.
+	Enabled bool `mapstructure:"enabled"`
+	// Codec is the preferred WebRTC video codec: "vp9" (default) uses VP9's
+	// screen-content coding — markedly sharper for desktop text/UI at the same
+	// bitrate — when the browser can decode it; "vp8" forces the universally
+	// supported baseline. A vp9 preference falls back to vp8 per-session when
+	// the browser doesn't advertise VP9 decode.
+	Codec string `mapstructure:"codec"`
+	// BitrateKbps / FPS tune the worker's video encoder. BitrateKbps is the
+	// "balanced" quality target; the per-session VideoQuality choice scales it.
+	// 0 = worker defaults (8000 kbps / 30 fps).
+	BitrateKbps int `mapstructure:"bitrate_kbps"`
+	FPS         int `mapstructure:"fps"`
+	// STUNURLs are reflexive-candidate servers, e.g.
+	// ["stun:stun.l.google.com:19302"]. Empty = host candidates only.
+	STUNURLs []string `mapstructure:"stun_urls"`
+	// TURN* relays media when neither side can reach the other directly (the
+	// gateway sits behind symmetric NAT and the browser is remote). Empty URL
+	// disables TURN.
+	TURNURL      string `mapstructure:"turn_url"`
+	TURNUsername string `mapstructure:"turn_username"`
+	TURNPassword string `mapstructure:"turn_password"`
+	// PublicIP maps the gateway's host candidates to a known public address
+	// (1:1 NAT). Set this when the gateway has a stable public IP but binds a
+	// private one — the cheapest way to make WebRTC work across NAT without a
+	// STUN/TURN round trip.
+	PublicIP string `mapstructure:"public_ip"`
+	// UDPPortMin / UDPPortMax bound the ICE UDP port range so a firewall can
+	// be opened narrowly. 0/0 = let the OS pick any ephemeral port.
+	UDPPortMin int `mapstructure:"udp_port_min"`
+	UDPPortMax int `mapstructure:"udp_port_max"`
+}
+
+// DesktopDriveConfig parameterises the redirected per-user file drive.
+type DesktopDriveConfig struct {
+	// Enabled gates the whole feature. On by default.
+	Enabled bool `mapstructure:"enabled"`
+	// Dir is the base directory under which each user gets a folder
+	// (<dir>/user-<id>). Empty = <sessions_dir>/desktop-drives.
+	Dir string `mapstructure:"dir"`
+	// Name is the drive label shown in the remote "This PC" (ASCII).
+	Name string `mapstructure:"name"`
+	// AllowUpload / AllowDownload gate the transfer directions independently so
+	// an operator can run upload-only (no exfil) or download-only.
+	AllowUpload   bool `mapstructure:"allow_upload"`
+	AllowDownload bool `mapstructure:"allow_download"`
+	// MaxFileMB caps a single uploaded file; MaxTotalMB caps a user's whole
+	// folder. 0 = unlimited.
+	MaxFileMB  int `mapstructure:"max_file_mb"`
+	MaxTotalMB int `mapstructure:"max_total_mb"`
+}
+
+// DesktopRecordingConfig parameterises freerdp session recording.
+type DesktopRecordingConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Dir is where .dtr recordings are written. Empty = <sessions_dir>/desktop-recordings.
+	Dir string `mapstructure:"dir"`
+	// IncludeInput records keyboard / mouse / clipboard events into the audit
+	// timeline alongside the screen frames. Keystrokes may contain secrets, so
+	// the recordings inherit the same PermSessionRead gate as every other
+	// recording — but operators can disable input capture here.
+	IncludeInput bool `mapstructure:"include_input"`
 }
 
 // DevolutionsGatewayConfig parameterises the Devolutions Gateway
@@ -355,6 +460,10 @@ type AuditConfig struct {
 	ChanSize      int           `mapstructure:"chan_size"`
 	BatchSize     int           `mapstructure:"batch_size"`
 	BatchInterval time.Duration `mapstructure:"batch_interval"`
+	// BatchTimeout bounds each batch insert. Generous by default so a cold
+	// dev Postgres (container still warming up its connection pool) doesn't
+	// trip "context deadline exceeded" on the first few flushes.
+	BatchTimeout time.Duration `mapstructure:"batch_timeout"`
 }
 
 type WebSSHConfig struct {
@@ -479,6 +588,30 @@ func setDefaults(v *viper.Viper) {
 	// startup and otherwise ignores it. Remove from new configs.
 	v.SetDefault("desktop.auto_install", false)
 	v.SetDefault("desktop.install_prefix", "")
+	v.SetDefault("desktop.recording.enabled", true)
+	v.SetDefault("desktop.recording.dir", "")
+	v.SetDefault("desktop.recording.include_input", true)
+	v.SetDefault("desktop.drive.enabled", true)
+	v.SetDefault("desktop.drive.dir", "")
+	v.SetDefault("desktop.drive.name", "JumpServer")
+	v.SetDefault("desktop.drive.allow_upload", true)
+	v.SetDefault("desktop.drive.allow_download", true)
+	v.SetDefault("desktop.drive.max_file_mb", 1024)
+	v.SetDefault("desktop.drive.max_total_mb", 4096)
+	// WebRTC video path. On by default; needs a WebRTC-capable browser and the
+	// freerdp backend. ICE host-only by default — add stun/turn/public_ip for
+	// cross-NAT. Bitrate/fps 0 → worker defaults (8000 kbps / 30 fps).
+	v.SetDefault("desktop.webrtc.enabled", true)
+	v.SetDefault("desktop.webrtc.codec", "vp9")
+	v.SetDefault("desktop.webrtc.bitrate_kbps", 8000)
+	v.SetDefault("desktop.webrtc.fps", 30)
+	v.SetDefault("desktop.webrtc.stun_urls", []string{})
+	v.SetDefault("desktop.webrtc.turn_url", "")
+	v.SetDefault("desktop.webrtc.turn_username", "")
+	v.SetDefault("desktop.webrtc.turn_password", "")
+	v.SetDefault("desktop.webrtc.public_ip", "")
+	v.SetDefault("desktop.webrtc.udp_port_min", 0)
+	v.SetDefault("desktop.webrtc.udp_port_max", 0)
 
 	// Plan 29 — ironrdp backend via Devolutions Gateway subprocess.
 	// Defaults are tuned for a single-host deploy where the gateway

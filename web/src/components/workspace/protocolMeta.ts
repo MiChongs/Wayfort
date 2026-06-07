@@ -1,4 +1,4 @@
-import { Database, FolderTree, Monitor, Network, Server, Share2, Table, Terminal } from "lucide-react"
+import { Cloud, Database, FolderTree, Monitor, Network, Server, Share2, Table, Terminal } from "lucide-react"
 import type { Protocol } from "./useWorkspaceStore"
 import type { ComponentType } from "react"
 import type { DesktopBackend } from "@/lib/desktop/types"
@@ -43,12 +43,22 @@ export const RDP_BACKEND_META: Record<DesktopBackend, { label: string; shortLabe
   },
 }
 
+// Warm protocol tints — collapsed from the old rainbow onto the design system's
+// warm accent families so the workspace reads cohesive, not IDE-like:
+//   terminals → teal · databases → amber · desktops → coral · files → sage ·
+//   utility → muted. Icon shape still carries the fine-grained recognition.
+const TINT_TERMINAL = "text-[#4f9d8f] dark:text-[#5db8a6]"
+const TINT_DB = "text-[#bf6f33] dark:text-[#e8a55a]"
+const TINT_DESKTOP = "text-primary"
+const TINT_FILE = "text-[#4c9b62] dark:text-[#5db872]"
+const TINT_UTIL = "text-muted-foreground"
+
 export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
   ssh: {
     key: "ssh",
     label: "SSH 终端",
     icon: Terminal,
-    tint: "text-emerald-500 dark:text-emerald-400",
+    tint: TINT_TERMINAL,
     hrefSegment: "ssh",
     ws: true,
   },
@@ -56,7 +66,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "telnet",
     label: "Telnet 终端",
     icon: Terminal,
-    tint: "text-amber-500 dark:text-amber-400",
+    tint: TINT_TERMINAL,
     hrefSegment: "telnet",
     ws: true,
   },
@@ -64,7 +74,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "dbcli",
     label: "数据库 CLI",
     icon: Database,
-    tint: "text-violet-500 dark:text-violet-400",
+    tint: TINT_DB,
     hrefSegment: "dbcli",
     ws: true,
   },
@@ -72,7 +82,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "db_studio",
     label: "数据库浏览",
     icon: Table,
-    tint: "text-indigo-500 dark:text-indigo-400",
+    tint: TINT_DB,
     hrefSegment: "db",
     ws: false,
   },
@@ -80,7 +90,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "rdp",
     label: "RDP 远程桌面",
     icon: Monitor,
-    tint: "text-sky-500 dark:text-sky-400",
+    tint: TINT_DESKTOP,
     hrefSegment: "rdp",
     ws: true,
   },
@@ -88,7 +98,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "rdp_next",
     label: "RDP (Beta · 新栈)",
     icon: Monitor,
-    tint: "text-cyan-500 dark:text-cyan-400",
+    tint: TINT_DESKTOP,
     hrefSegment: "rdp-next",
     ws: true,
   },
@@ -96,7 +106,7 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "vnc",
     label: "VNC 远程桌面",
     icon: Monitor,
-    tint: "text-blue-500 dark:text-blue-400",
+    tint: TINT_DESKTOP,
     hrefSegment: "vnc",
     ws: true,
   },
@@ -104,15 +114,23 @@ export const PROTOCOL_META: Record<Protocol, ProtocolMeta> = {
     key: "sftp",
     label: "SFTP 文件管理",
     icon: FolderTree,
-    tint: "text-orange-500 dark:text-orange-400",
+    tint: TINT_FILE,
     hrefSegment: "sftp",
+    ws: false,
+  },
+  oss: {
+    key: "oss",
+    label: "对象存储",
+    icon: Cloud,
+    tint: TINT_FILE,
+    hrefSegment: "oss",
     ws: false,
   },
   tcp_forward: {
     key: "tcp_forward",
     label: "端口转发",
     icon: Share2,
-    tint: "text-pink-500 dark:text-pink-400",
+    tint: TINT_UTIL,
     hrefSegment: "port-forwards",
     ws: false,
   },
@@ -150,6 +168,8 @@ export function protocolsForNode(protocol: string): Protocol[] {
       return ["vnc", "tcp_forward"]
     case "tcp":
       return ["sftp", "tcp_forward"]
+    case "oss":
+      return ["oss"]
     default:
       if (RELATIONAL_DB_PROTOS.has(protocol)) {
         // Relational DBs (vanilla + every Chinese DB) get DB Studio

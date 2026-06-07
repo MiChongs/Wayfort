@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,9 @@ type SSEHandler struct {
 }
 
 type sendMessageReq struct {
-	Text string `json:"text" binding:"required"`
+	Text string `json:"text"`
+	// Images are data: URLs (base64) for vision-capable models. Optional.
+	Images []string `json:"images"`
 }
 
 // SendMessage is POST /api/v1/ai/conversations/:id/messages and is itself an
@@ -44,7 +47,11 @@ func (h *SSEHandler) SendMessage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	sink, err := h.Factory.Run(c.Request.Context(), conv, req.Text)
+	if strings.TrimSpace(req.Text) == "" && len(req.Images) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text or images required"})
+		return
+	}
+	sink, err := h.Factory.Run(c.Request.Context(), conv, req.Text, req.Images)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return

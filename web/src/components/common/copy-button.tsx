@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Check, Copy } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 
 // Reusable copy-to-clipboard. Inline icon button with two-second checkmark state.

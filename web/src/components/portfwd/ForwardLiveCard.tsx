@@ -17,7 +17,7 @@ import {
   Loader2,
   Trash2,
 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Badge } from "@/components/ui/badge"

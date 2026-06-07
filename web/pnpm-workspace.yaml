@@ -1,0 +1,8 @@
+# pnpm settings for the web app.
+#
+# pnpm blocks dependency install/build scripts by default (supply-chain safety).
+# `allowBuilds` is the per-package allow-list of native build / postinstall
+# scripts we trust to run. sharp backs Next.js image optimisation and
+# compiles / fetches a native binary at install time.
+allowBuilds:
+  sharp: true

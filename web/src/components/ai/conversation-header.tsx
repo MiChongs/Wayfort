@@ -180,6 +180,14 @@ export function ConversationHeader({
             <span>↑ {tokensIn.toLocaleString()}</span>
             <span>/</span>
             <span>↓ {tokensOut.toLocaleString()}</span>
+            {(conversation?.total_cost_micros ?? 0) > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="cursor-default tabular-nums">· ~{formatCost(conversation!.total_cost_micros!)}</span>
+                </TooltipTrigger>
+                <TooltipContent>按公开 list price 估算的累计成本</TooltipContent>
+              </Tooltip>
+            )}
             <span>·</span>
             <span>{conversation?.message_count || 0} 条消息</span>
             {running && (
@@ -294,4 +302,13 @@ export function ConversationHeader({
       )}
     </div>
   )
+}
+
+// formatCost renders micro-dollars as a compact USD string, widening precision
+// for sub-cent spends so a cheap conversation doesn't read as "$0.00".
+function formatCost(micros: number): string {
+  const usd = micros / 1_000_000
+  if (usd >= 1) return `$${usd.toFixed(2)}`
+  if (usd >= 0.01) return `$${usd.toFixed(3)}`
+  return `$${usd.toFixed(4)}`
 }

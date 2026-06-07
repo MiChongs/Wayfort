@@ -1,10 +1,12 @@
 "use client"
 
-import { Activity } from "lucide-react"
+import { ArrowDown, ArrowUp, Clock, Gauge } from "lucide-react"
 import { motion, useReducedMotion } from "motion/react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { DesktopStatus, SessionStats } from "./desktop-types"
+import { formatClock, type LinkQuality } from "./desktop-connection"
+import { LatencySparkline } from "./desktop-signal"
 
 type Props = {
   status: DesktopStatus
@@ -14,31 +16,30 @@ type Props = {
   pointerY: number
   stats: SessionStats
   keyboardLayout: string
-  // Optional — when provided, the status bar shows a trailing
-  // "性能监视" button (Activity icon) that opens the perf panel.
-  // Falsy / undefined hides it cleanly so callers without a panel
-  // don't see a dead control.
+  // Live extras from the connection model.
+  sessionMs?: number | null
+  latencyHistory?: number[]
+  quality?: LinkQuality
+  // Optional — when provided, the status bar shows a trailing "性能" button
+  // that opens the perf panel. Falsy hides it cleanly.
   onOpenPerfPanel?: () => void
 }
 
-const STATUS_TINT: Record<DesktopStatus, string> = {
-  "loading-script": "bg-amber-500",
-  connecting: "bg-amber-500",
-  handshake: "bg-amber-500",
-  connected: "bg-emerald-500",
-  reconnecting: "bg-amber-500",
-  closed: "bg-zinc-500",
-  error: "bg-red-500",
+const STATUS_UI: Record<DesktopStatus, { label: string; dot: string }> = {
+  "loading-script": { label: "加载中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  connecting: { label: "连接中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  handshake: { label: "握手中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  connected: { label: "已连接", dot: "bg-[#5db872]" },
+  reconnecting: { label: "重连中", dot: "bg-[#d4a017] dark:bg-[#e3b84e]" },
+  closed: { label: "已断开", dot: "bg-muted-foreground" },
+  error: { label: "连接失败", dot: "bg-destructive" },
 }
 
-const STATUS_LABEL: Record<DesktopStatus, string> = {
-  "loading-script": "加载中",
-  connecting: "连接中",
-  handshake: "握手中",
-  connected: "已连接",
-  reconnecting: "重连中",
-  closed: "已断开",
-  error: "错误",
+const TONE_TEXT: Record<LinkQuality["tone"], string> = {
+  good: "text-[#4c9b62] dark:text-[#5db872]",
+  fair: "text-[#c08a2e] dark:text-[#e3b84e]",
+  poor: "text-destructive",
+  muted: "text-muted-foreground",
 }
 
 export function DesktopStatusBar({
@@ -49,93 +50,114 @@ export function DesktopStatusBar({
   pointerY,
   stats,
   keyboardLayout,
+  sessionMs,
+  latencyHistory,
+  quality,
   onOpenPerfPanel,
 }: Props) {
-  // Latency colour: green ≤ 80ms, amber ≤ 200ms, red beyond.
-  const latencyClass =
-    stats.latencyMs == null
-      ? "text-muted-foreground"
-      : stats.latencyMs > 500
-        ? "text-red-500"
-        : stats.latencyMs > 200
-          ? "text-amber-500"
-          : "text-emerald-500"
-  const reducedMotion = useReducedMotion()
+  const reduce = useReducedMotion()
+  const ui = STATUS_UI[status]
+  const transient =
+    status === "connecting" || status === "handshake" || status === "reconnecting" || status === "loading-script"
+  const tone = quality?.tone ?? "muted"
+  const latencyText = TONE_TEXT[tone]
+
   return (
     <footer
       className={cn(
-        "h-6 shrink-0 px-2 inline-flex items-center gap-3 select-none",
-        "border-t border-border/50",
-        "bg-card/60 backdrop-blur supports-[backdrop-filter]:bg-card/40",
-        "text-[10px] font-mono text-muted-foreground",
+        "flex h-7 shrink-0 select-none items-center gap-2.5 px-2.5",
+        "border-t border-border/50 bg-card/60 backdrop-blur supports-[backdrop-filter]:bg-card/40",
+        "text-[11px] text-muted-foreground",
       )}
-      aria-label="desktop status"
+      aria-label="桌面状态栏"
     >
+      {/* status */}
       <span className="inline-flex items-center gap-1.5">
-        <motion.span
-          layout
-          transition={{ type: "spring", stiffness: 360, damping: 26 }}
-          className={cn("inline-block w-1.5 h-1.5 rounded-full", STATUS_TINT[status])}
-          aria-hidden
-        />
-        {!reducedMotion && (status === "connecting" || status === "handshake" || status === "reconnecting" || status === "loading-script") && (
-          <span className={cn("absolute -ml-[1.5px] -mt-[1.5px] inline-block h-2 w-2 animate-ping rounded-full opacity-60", STATUS_TINT[status])} aria-hidden />
-        )}
-        {STATUS_LABEL[status]}
+        <span className="relative inline-flex h-1.5 w-1.5">
+          <span className={cn("inline-block h-1.5 w-1.5 rounded-full", ui.dot)} />
+          {transient && !reduce && (
+            <span className={cn("absolute inset-0 animate-ping rounded-full", ui.dot)} />
+          )}
+        </span>
+        <span className="text-foreground/70">{ui.label}</span>
       </span>
-      <Pipe />
-      <span>
-        {remoteWidth || "-"}×{remoteHeight || "-"}
-      </span>
-      <Pipe />
-      <span>
-        cursor {pointerX}:{pointerY}
-      </span>
-      <Pipe />
-      <span>
-        <ArrowDown /> {formatBytes(stats.bytesIn)}
-        <span className="mx-1 text-muted-foreground/50">·</span>
-        <ArrowUp /> {formatBytes(stats.bytesOut)}
-      </span>
-      <Pipe />
-      <span className={latencyClass}>
-        {stats.latencyMs == null ? "— ms" : `${stats.latencyMs} ms`}
-      </span>
-      {stats.fps != null && (
+
+      {/* session timer — only once connected */}
+      {sessionMs != null && (
         <>
-          <Pipe />
-          <span>{stats.fps.toFixed(0)} fps</span>
+          <Sep />
+          <span className="inline-flex items-center gap-1 tabular-nums">
+            <Clock className="h-3 w-3 text-muted-foreground/60" />
+            <span className="font-mono">{formatClock(sessionMs)}</span>
+          </span>
         </>
       )}
-      <span className="ml-auto opacity-70 uppercase">{keyboardLayout}</span>
-      {onOpenPerfPanel && (
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          onClick={onOpenPerfPanel}
-          aria-label="打开性能监视面板"
-          title="性能监视  (Ctrl+Shift+P)"
-          className="-mr-1 h-5 gap-1 px-1.5 text-[10px] font-normal text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-        >
-          <Activity className="h-3 w-3" />
-          <span>性能</span>
-        </Button>
+
+      <Sep />
+      <span className="font-mono tabular-nums">
+        {remoteWidth || "—"}×{remoteHeight || "—"}
+      </span>
+
+      <Sep className="hidden xl:inline-block" />
+      <span className="hidden font-mono tabular-nums xl:inline">
+        {pointerX}:{pointerY}
+      </span>
+
+      <Sep className="hidden sm:inline-block" />
+      <span className="hidden items-center gap-1.5 font-mono tabular-nums sm:inline-flex">
+        <ArrowDown className="h-3 w-3 text-[#5db872]/80" />
+        {formatBytes(stats.bytesIn)}
+        <ArrowUp className="ml-1 h-3 w-3 text-muted-foreground/70" />
+        {formatBytes(stats.bytesOut)}
+      </span>
+
+      {/* latency + sparkline */}
+      <Sep />
+      <span className={cn("inline-flex items-center gap-1.5 font-mono tabular-nums", latencyText)}>
+        {stats.latencyMs == null ? "— ms" : `${stats.latencyMs} ms`}
+        {latencyHistory && latencyHistory.length >= 2 && (
+          <span className={latencyText}>
+            <LatencySparkline points={latencyHistory} tone={tone} />
+          </span>
+        )}
+      </span>
+
+      {stats.fps != null && (
+        <>
+          <Sep className="hidden md:inline-block" />
+          <span className="hidden font-mono tabular-nums md:inline">{stats.fps.toFixed(0)} fps</span>
+        </>
       )}
+      {stats.transport && (
+        <>
+          <Sep className="hidden md:inline-block" />
+          <span className="hidden text-foreground/65 md:inline">{stats.transport}</span>
+        </>
+      )}
+
+      <span className="ml-auto inline-flex items-center gap-2.5">
+        <span className="font-mono uppercase text-muted-foreground/70">{keyboardLayout}</span>
+        {onOpenPerfPanel && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={onOpenPerfPanel}
+            aria-label="打开性能监视面板"
+            title="性能监视  (Ctrl+Shift+P)"
+            className="-mr-1 h-5 gap-1 px-1.5 text-[11px] font-normal text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Gauge className="h-3 w-3" />
+            <span>性能</span>
+          </Button>
+        )}
+      </span>
     </footer>
   )
 }
 
-function Pipe() {
-  return <span className="opacity-30">|</span>
-}
-
-function ArrowDown() {
-  return <span className="text-emerald-500/80">↓</span>
-}
-
-function ArrowUp() {
-  return <span className="text-blue-500/80">↑</span>
+function Sep({ className }: { className?: string }) {
+  return <span className={cn("inline-block h-3 w-px bg-border", className)} aria-hidden />
 }
 
 function formatBytes(n: number): string {

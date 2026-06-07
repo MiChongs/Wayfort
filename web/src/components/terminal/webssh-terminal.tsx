@@ -32,9 +32,15 @@ import {
   useTerminalSettings,
 } from "./use-terminal-settings"
 import { resolveTerminalTheme } from "./terminal-themes"
+import { useTerminalConnection } from "./terminal-connection"
+import { TerminalConnectionStage } from "./terminal-connection-stage"
 import type { SearchOptions, Status } from "./terminal-types"
 
 export type { Status } from "./terminal-types"
+
+// Backoff schedule for auto-reconnect on an unexpected drop. After the last
+// one is exhausted the stage surfaces a manual-retry error panel.
+const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
 
 type Props = {
   protocol: "ssh" | "telnet" | "dbcli"
@@ -145,14 +151,20 @@ export function WebSSHTerminal({
     onStatusChangeRef.current = onStatusChange
   }, [onStatusChange])
 
-  const [status, setStatusState] = React.useState<Status>("connecting")
-  const setStatus = React.useCallback((s: Status) => {
-    setStatusState(s)
-    onStatusChangeRef.current?.(s)
-  }, [])
+  // Connection state machine — owns the phased timeline, reconnect countdown,
+  // link quality and disconnect classification. `tc` (not `conn`, which is the
+  // local WebSSHConnection inside the effect) so the two don't shadow.
+  const tc = useTerminalConnection()
+  const status = tc.status
+  // Bridge status out to the workspace tab badge whenever it changes (fires on
+  // mount too, covering the initial "connecting").
   React.useEffect(() => {
-    onStatusChangeRef.current?.("connecting")
-  }, [])
+    onStatusChangeRef.current?.(status)
+  }, [status])
+  // Backoff bookkeeping for auto-reconnect — component refs so they persist
+  // across the bumpKey-driven effect re-runs that a reconnect triggers.
+  const reconnectAttemptRef = React.useRef(0)
+  const reconnectTimerRef = React.useRef<number | null>(null)
 
   // UI overlays
   const [searchOpen, setSearchOpen] = React.useState(false)
@@ -311,7 +323,7 @@ export function WebSSHTerminal({
     let resizeObserver: ResizeObserver | undefined
     let viewport: HTMLDivElement | null = null
     let onViewportScroll: (() => void) | null = null
-    setStatus("connecting")
+    tc.start()
 
     ;(async () => {
       const { Terminal } = await import("@xterm/xterm")
@@ -455,9 +467,66 @@ export function WebSSHTerminal({
       openedAtRef.current = 0
       statsRef.current = { bytesIn: 0, bytesOut: 0 }
 
+      // Diagnostic farewell for an unrecoverable drop — the classified banner
+      // in the scrollback plus an actionable toast. Shared by the no-auto-
+      // reconnect path and the "gave up after N attempts" path.
+      function writeDiagnosticBanner(reason: string) {
+        const info = inferDisconnect(reason)
+        const reasonText = t(`terminal.disconnect.reason.${info.category}`)
+        try {
+          term.writeln(
+            renderDisconnectBanner(term.cols, { kind: "unexpected", t, reason: reasonText, raw: info.raw }),
+          )
+        } catch {
+          /* */
+        }
+        toast.error(t("terminal.disconnect.unexpected"), {
+          description: reasonText,
+          action: info.href
+            ? {
+                label: t(`terminal.disconnect.suggestion.${info.suggestion}`),
+                onClick: () => router.push(info.href!),
+              }
+            : undefined,
+        })
+      }
+
+      // Auto-reconnect on an unexpected drop: 1s/2s/4s backoff, with a live
+      // countdown on the stage. A fresh attempt re-runs this effect (bumpKey),
+      // re-creating the terminal — the old SSH session died with the socket, so
+      // the new one is a clean shell. Gives up (error panel) after the last
+      // backoff is exhausted.
+      function scheduleReconnect(reason: string) {
+        const attempt = reconnectAttemptRef.current
+        if (attempt >= RECONNECT_BACKOFFS_MS.length) {
+          // Classify the real last-drop reason (not a generic string) so the
+          // error panel shows the actionable category + suggestion.
+          tc.fail(reason)
+          writeDiagnosticBanner(reason)
+          return
+        }
+        const delay = RECONNECT_BACKOFFS_MS[attempt]
+        reconnectAttemptRef.current = attempt + 1
+        tc.beginReconnect(attempt + 1, delay)
+        try {
+          term.writeln(`\r\n\x1b[2m── 连接中断，${Math.round(delay / 1000)}s 后第 ${attempt + 1} 次重连 ──\x1b[0m`)
+        } catch {
+          /* */
+        }
+        reconnectTimerRef.current = window.setTimeout(() => {
+          reconnectTimerRef.current = null
+          setBumpKey((v) => v + 1)
+        }, delay)
+      }
+
       const conn = new WebSSHConnection(path, {
+        onOpen: () => {
+          // WS handshake done — encrypted channel up; SSH auth is next.
+          if (!disposed) tc.markOpen()
+        },
         onReady: () => {
-          setStatus("open")
+          tc.markReady()
+          reconnectAttemptRef.current = 0
           openedAtRef.current = Date.now()
           // Branded welcome banner — ANSI-coloured ASCII art + node
           // metadata. Banner module returns a string with internal
@@ -474,60 +543,34 @@ export function WebSSHTerminal({
         onOutput: (bytes) => term.write(bytes),
         onError: (m) => toast.error(t("terminal.error.sessionError"), { description: m }),
         onClose: (m) => {
-          setStatus("closed")
-          const duration = formatDuration(
-            openedAtRef.current ? Date.now() - openedAtRef.current : 0,
-          )
-          const { bytesIn, bytesOut } = statsRef.current
           if (userClosedRef.current) {
-            // Friendly farewell — we know exactly what happened, so
-            // skip diagnostics and surface a session summary instead.
-            term.writeln(
-              renderDisconnectBanner(term.cols, {
-                kind: "user",
-                t,
-                duration,
-                bytesIn,
-                bytesOut,
-              }),
-            )
+            // Friendly farewell — we know exactly what happened, so skip
+            // diagnostics and surface a session summary instead.
+            tc.close()
+            const duration = formatDuration(openedAtRef.current ? Date.now() - openedAtRef.current : 0)
+            const { bytesIn, bytesOut } = statsRef.current
+            term.writeln(renderDisconnectBanner(term.cols, { kind: "user", t, duration, bytesIn, bytesOut }))
             toast.success(t("terminal.disconnect.userInitiated"), {
-              description: t("terminal.disconnect.userInitiatedDetail", {
-                duration,
-                bytesIn,
-                bytesOut,
-              }),
+              description: t("terminal.disconnect.userInitiatedDetail", { duration, bytesIn, bytesOut }),
             })
-          } else {
-            // Network or server dropped us. Classify the raw reason
-            // string, translate it, and offer an actionable next step.
-            const info = inferDisconnect(m)
-            const reasonText = t(`terminal.disconnect.reason.${info.category}`)
-            term.writeln(
-              renderDisconnectBanner(term.cols, {
-                kind: "unexpected",
-                t,
-                reason: reasonText,
-                raw: info.raw,
-              }),
-            )
-            const href = info.href
-            toast.error(t("terminal.disconnect.unexpected"), {
-              description: reasonText,
-              action: href
-                ? {
-                    label: t(`terminal.disconnect.suggestion.${info.suggestion}`),
-                    onClick: () => router.push(href),
-                  }
-                : undefined,
-            })
+            return
           }
+          // Unexpected drop → auto-reconnect (if enabled) or surface the error.
+          if (settingsRef.current.autoReconnect) {
+            scheduleReconnect(m)
+            return
+          }
+          tc.fail(m)
+          writeDiagnosticBanner(m)
         },
         onStats: (s) => {
           statsRef.current = s
           setStats(s)
         },
-        onLatency: (ms) => setLatencyMs(ms),
+        onLatency: (ms) => {
+          setLatencyMs(ms)
+          tc.pushLatency(ms)
+        },
       })
       conn.open({ cols: term.cols, rows: term.rows })
       connRef.current = conn
@@ -598,6 +641,10 @@ export function WebSSHTerminal({
 
     return () => {
       disposed = true
+      if (reconnectTimerRef.current !== null && typeof window !== "undefined") {
+        window.clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
       resizeObserver?.disconnect()
       if (fitRafRef.current !== null && typeof window !== "undefined") {
         window.cancelAnimationFrame(fitRafRef.current)
@@ -767,14 +814,26 @@ export function WebSSHTerminal({
     toast.success("主题已切换", { description: name })
   }
   function handleReconnect() {
+    reconnectAttemptRef.current = 0
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     setBumpKey((v) => v + 1)
   }
   function handleDisconnect() {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
     // Flag before close() so the upcoming onClose handler picks the
     // user-initiated branch (farewell banner + success toast), not the
     // unexpected-disconnect diagnostics path.
     userClosedRef.current = true
     connRef.current?.close()
+    // Mid-backoff there's no live socket whose onClose can fire — settle the
+    // state machine directly so the stage shows the closed panel.
+    if (tc.status === "reconnecting") tc.close()
   }
 
   // -------- derived display strings --------------------------------------
@@ -802,6 +861,7 @@ export function WebSSHTerminal({
           liveTitle={liveTitle}
           subtitle={subtitle}
           nodeId={nodeId}
+          quality={tc.quality}
           fontSize={settings.fontSize}
           bellEnabled={settings.bellEnabled}
           searchActive={searchOpen}
@@ -839,15 +899,17 @@ export function WebSSHTerminal({
           onSendSignal={sendSignal}
         >
           <div className="relative flex-1 min-h-0">
-            {status === "connecting" && (
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="flex items-center gap-2 text-sm px-3 py-1.5 rounded-full border bg-card/70 backdrop-blur text-muted-foreground">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                  正在连接到 {host || displayName || "远端"}…
-                </div>
-              </div>
-            )}
             <div ref={containerRef} className="absolute inset-0 p-1" />
+            <TerminalConnectionStage
+              conn={tc}
+              nodeName={displayName}
+              subtitle={subtitle}
+              protocolLabel={protocol.toUpperCase()}
+              onRetry={handleReconnect}
+              onRetryNow={handleReconnect}
+              onDisconnect={handleDisconnect}
+              onNavigate={(href) => router.push(href)}
+            />
             {scrolledUp && (
               <motion.button
                 initial={reduced ? false : { opacity: 0, y: 8, scale: 0.95 }}
@@ -880,6 +942,9 @@ export function WebSSHTerminal({
           bytesIn={stats.bytesIn}
           bytesOut={stats.bytesOut}
           latencyMs={latencyMs}
+          sessionMs={tc.sessionMs}
+          latencyHistory={tc.latencyHistory}
+          quality={tc.quality}
         />
 
         <TerminalSearchPopover

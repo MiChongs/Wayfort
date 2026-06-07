@@ -128,6 +128,12 @@ func New(cfg Config, deps Deps) *Set {
 	tools.RegisterSFTPTools(toolReg, tdeps)
 	tools.RegisterSessionTools(toolReg, tdeps)
 	tools.RegisterIdentityTools(toolReg, tdeps)
+	// Interactive primitives (handled by the runner): structured questions and
+	// the complete Plan-mode handshake. The runner auto-injects these into the
+	// top-level agent's toolset, so they work for every agent without editing
+	// each one's AllowedTools.
+	tools.RegisterAskUserTool(toolReg)
+	tools.RegisterExitPlanModeTool(toolReg)
 
 	factory := runner.NewFactory(providerReg, toolReg, convRepo, msgRepo, invRepo,
 		agentRepo, deps.AuditWriter, deps.Logger, runner.Config{

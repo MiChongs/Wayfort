@@ -2,24 +2,20 @@
 
 import * as React from "react"
 import Link from "next/link"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
 import {
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
-  FileCheck,
-  Filter,
+  CalendarCheck,
   Inbox,
-  Plus,
+  KeyRound,
   RefreshCw,
-  ShieldAlert,
-  XCircle,
+  Search,
+  Send,
+  Settings2,
+  ShieldCheck,
 } from "lucide-react"
-import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Select,
   SelectContent,
@@ -27,228 +23,343 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
+import { EmptyState } from "@/components/common/empty-state"
 import { approvalService } from "@/lib/api/services"
-import type {
-  ApprovalBusinessType,
-  ApprovalRequest,
-  ApprovalRequestStatus,
-  ApprovalRiskLevel,
-  ApprovalTask,
-} from "@/lib/api/types"
-import { fullTime, relTime } from "@/lib/format"
+import { useAccess } from "@/lib/hooks/use-access"
+import { relTime, fullTime } from "@/lib/format"
+import { cn } from "@/lib/utils"
+import {
+  BIZ_ICONS,
+  BIZ_LABELS,
+  bizLabel,
+  riskMeta,
+  STATUS_META,
+  statusMeta,
+  stageModeLabel,
+} from "@/lib/approvals/meta"
+import { CreateRequestDialog } from "@/components/approvals/create-request-dialog"
+import { QuickDecide, BulkDecideBar } from "@/components/approvals/decision"
+import { GrantCard } from "@/components/approvals/grant-card"
+import type { ApprovalInboxItem, ApprovalRequest } from "@/lib/api/types"
 
-const BIZ_LABELS: Record<ApprovalBusinessType, string> = {
-  asset_access: "资产访问",
-  credential_use: "凭据使用",
-  command_exec: "命令执行",
-  sql_exec: "SQL 执行",
-  file_transfer: "文件传输",
-  session_extend: "会话续期",
-  session_elevate: "会话提权",
-  break_glass: "应急访问",
-  vendor_access: "第三方访问",
-  audit_view: "审计查看",
-}
+type View = "inbox" | "mine" | "grants"
 
-const STATUS_LABELS: Record<ApprovalRequestStatus, string> = {
-  pending: "待审批",
-  approved: "已通过",
-  auto_approved: "自动通过",
-  rejected: "已驳回",
-  cancelled: "已撤销",
-  expired: "已过期",
-}
+export default function ApprovalsPage() {
+  const access = useAccess()
+  const [view, setView] = React.useState<View>("inbox")
 
-const RISK_STYLES: Record<ApprovalRiskLevel, string> = {
-  low: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200",
-  medium: "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200",
-  high: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200",
-  critical: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200",
-}
+  const overview = useQuery({
+    queryKey: ["approval", "overview"],
+    queryFn: () => approvalService.overview(),
+    refetchInterval: 20_000,
+  })
+  const ov = overview.data
 
-const RISK_LABELS: Record<ApprovalRiskLevel, string> = {
-  low: "低",
-  medium: "中",
-  high: "高",
-  critical: "严重",
-}
-
-function StatusBadge({ status }: { status: ApprovalRequestStatus }) {
-  const icon = {
-    pending: <Clock className="w-3 h-3" />,
-    approved: <CheckCircle2 className="w-3 h-3" />,
-    auto_approved: <CheckCircle2 className="w-3 h-3" />,
-    rejected: <XCircle className="w-3 h-3" />,
-    cancelled: <XCircle className="w-3 h-3" />,
-    expired: <Clock className="w-3 h-3" />,
-  }[status]
-  const variant: Record<ApprovalRequestStatus, "default" | "secondary" | "outline" | "destructive"> = {
-    pending: "default",
-    approved: "secondary",
-    auto_approved: "secondary",
-    rejected: "destructive",
-    cancelled: "outline",
-    expired: "outline",
-  }
   return (
-    <Badge variant={variant[status]} className="gap-1">
-      {icon}
-      {STATUS_LABELS[status]}
-    </Badge>
+    <div className="mx-auto w-full max-w-5xl space-y-5 p-6">
+      <header className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="eyebrow">访问治理</p>
+          <h1 className="display-title text-3xl">审批中心</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            在这里处理待你审批的请求、跟进自己发起的申请、管理手中的访问授权。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {access.isAdmin && (
+            <Button asChild variant="outline" className="gap-1.5">
+              <Link href="/admin/approvals">
+                <Settings2 className="h-4 w-4" /> 治理台
+              </Link>
+            </Button>
+          )}
+          <CreateRequestDialog />
+        </div>
+      </header>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard
+          icon={Inbox}
+          label="待我处理"
+          value={ov?.pending_for_me}
+          active={view === "inbox"}
+          onClick={() => setView("inbox")}
+          accent
+        />
+        <StatCard
+          icon={Send}
+          label="我发起的进行中"
+          value={ov?.my_open_requests}
+          active={view === "mine"}
+          onClick={() => setView("mine")}
+        />
+        <StatCard
+          icon={KeyRound}
+          label="我的有效授权"
+          value={ov?.active_grants}
+          active={view === "grants"}
+          onClick={() => setView("grants")}
+        />
+        <StatCard icon={CalendarCheck} label="今日已决策" value={ov?.decided_today} muted />
+      </div>
+
+      {view === "inbox" && <InboxView />}
+      {view === "mine" && <MineView isAdmin={access.isAdmin} />}
+      {view === "grants" && <GrantsView />}
+    </div>
   )
 }
 
-function RiskPill({ level }: { level: ApprovalRiskLevel }) {
+function StatCard({
+  icon: Icon,
+  label,
+  value,
+  active,
+  muted,
+  accent,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  value?: number
+  active?: boolean
+  muted?: boolean
+  accent?: boolean
+  onClick?: () => void
+}) {
+  const interactive = !!onClick
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${RISK_STYLES[level]}`}>
-      {(level === "high" || level === "critical") && <ShieldAlert className="w-3 h-3" />}
-      风险：{RISK_LABELS[level]}
+    <button
+      type="button"
+      disabled={!interactive}
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-3 rounded-xl border bg-card p-3.5 text-left transition-colors",
+        interactive && "hover:border-primary/40 hover:bg-accent/40",
+        active && "border-primary bg-primary/5 ring-1 ring-primary/20",
+        !interactive && "cursor-default",
+      )}
+    >
+      <span
+        className={cn(
+          "grid h-9 w-9 shrink-0 place-items-center rounded-lg",
+          active || accent ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+        )}
+      >
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0">
+        <span className={cn("block text-2xl font-semibold tabular-nums leading-none", muted && "text-muted-foreground")}>
+          {value ?? "—"}
+        </span>
+        <span className="mt-1 block truncate text-xs text-muted-foreground">{label}</span>
+      </span>
+    </button>
+  )
+}
+
+// ---- shared pills ----
+
+function Pill({ className, children }: { className?: string; children: React.ReactNode }) {
+  return (
+    <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium", className)}>
+      {children}
     </span>
   )
 }
 
-export default function ApprovalsPage() {
-  return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
-            <FileCheck className="w-5 h-5" /> 审批中心
-          </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            高风险动作的统一审批通道 — 资产访问、凭据使用、命令执行、文件传输等 10 类业务都在这里。
-          </p>
-        </div>
-        <CreateRequestButton />
-      </div>
+// ---- inbox (待我审批) ----
 
-      <Tabs defaultValue="tasks" className="w-full">
-        <TabsList>
-          <TabsTrigger value="tasks" className="gap-1">
-            <Inbox className="w-4 h-4" /> 待我审批
-          </TabsTrigger>
-          <TabsTrigger value="mine" className="gap-1">
-            <FileCheck className="w-4 h-4" /> 我的申请
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="tasks" className="mt-4">
-          <TasksForMeTab />
-        </TabsContent>
-        <TabsContent value="mine" className="mt-4">
-          <MyRequestsTab />
-        </TabsContent>
-      </Tabs>
-    </div>
-  )
-}
-
-function TasksForMeTab() {
+function InboxView() {
   const q = useQuery({
-    queryKey: ["approval.tasks.me"],
-    queryFn: () => approvalService.myTasks(100),
-    refetchInterval: 15000,
+    queryKey: ["approval", "inbox"],
+    queryFn: () => approvalService.inbox(200),
+    refetchInterval: 15_000,
   })
+  const [search, setSearch] = React.useState("")
+  const [selected, setSelected] = React.useState<Set<number>>(new Set())
+
+  const items = q.data?.items ?? []
+  const filtered = React.useMemo(() => {
+    const s = search.trim().toLowerCase()
+    if (!s) return items
+    return items.filter((it) => {
+      const r = it.request
+      return (
+        (r.title || "").toLowerCase().includes(s) ||
+        (r.requester_name || "").toLowerCase().includes(s) ||
+        (r.reason || "").toLowerCase().includes(s) ||
+        bizLabel(r.business_type).includes(s) ||
+        `${r.resource_type ?? ""}${r.resource_id ?? ""}`.toLowerCase().includes(s)
+      )
+    })
+  }, [items, search])
+
+  const toggle = (id: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const allChecked = filtered.length > 0 && filtered.every((it) => selected.has(it.task.id))
+  const toggleAll = () =>
+    setSelected((prev) => {
+      if (filtered.every((it) => prev.has(it.task.id))) {
+        const next = new Set(prev)
+        filtered.forEach((it) => next.delete(it.task.id))
+        return next
+      }
+      const next = new Set(prev)
+      filtered.forEach((it) => next.add(it.task.id))
+      return next
+    })
+
+  const reload = () => {
+    q.refetch()
+    setSelected(new Set())
+  }
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <div className="text-sm text-muted-foreground">
-          需要你处理的审批任务（{q.data?.items.length ?? 0}）
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索申请人、资源、事由…"
+            className="pl-8"
+          />
         </div>
-        <Button variant="ghost" size="sm" onClick={() => q.refetch()}>
-          <RefreshCw className="w-4 h-4" /> 刷新
+        {filtered.length > 0 && (
+          <label className="flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+            <Checkbox checked={allChecked} onCheckedChange={toggleAll} /> 全选
+          </label>
+        )}
+        <Button variant="ghost" size="icon" onClick={reload} title="刷新">
+          <RefreshCw className={cn("h-4 w-4", q.isFetching && "animate-spin")} />
         </Button>
       </div>
-      {q.data?.items.length === 0 && (
-        <div className="rounded-lg border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
-          没有待你处理的审批 — 收工。
+
+      {q.isLoading ? (
+        <ListSkeleton />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={ShieldCheck}
+          title={items.length === 0 ? "没有待你处理的审批" : "没有匹配的结果"}
+          description={items.length === 0 ? "需要你决策的请求会出现在这里。" : "换个关键词试试。"}
+        />
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((it) => (
+            <InboxCard
+              key={it.task.id}
+              item={it}
+              checked={selected.has(it.task.id)}
+              onToggle={() => toggle(it.task.id)}
+              onDone={reload}
+            />
+          ))}
         </div>
       )}
-      <div className="grid gap-2">
-        {q.data?.items.map((t) => <TaskCard key={t.id} task={t} />)}
+
+      <BulkDecideBar taskIds={[...selected]} onClear={() => setSelected(new Set())} onDone={reload} />
+    </div>
+  )
+}
+
+function InboxCard({
+  item,
+  checked,
+  onToggle,
+  onDone,
+}: {
+  item: ApprovalInboxItem
+  checked: boolean
+  onToggle: () => void
+  onDone: () => void
+}) {
+  const { task, request: r } = item
+  const Icon = BIZ_ICONS[r.business_type] ?? ShieldCheck
+  const risk = riskMeta(r.risk_level)
+  const overdueSoon = task.expires_at && Date.parse(task.expires_at) - Date.now() < 60 * 60 * 1000
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-3 rounded-xl border bg-card p-3.5 transition-colors hover:border-primary/30",
+        checked && "border-primary/50 bg-primary/5",
+      )}
+    >
+      <Checkbox checked={checked} onCheckedChange={onToggle} className="mt-1" />
+      <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+        <Icon className="h-4 w-4" />
+      </span>
+      <Link href={`/approvals/${task.request_id}`} className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-medium">{r.title || `${bizLabel(r.business_type)}申请`}</span>
+          <Pill className={risk.badge}>
+            <risk.icon className="h-3 w-3" /> {risk.label}
+          </Pill>
+          {r.total_stages > 1 && (
+            <Pill className="bg-muted text-muted-foreground">
+              第 {task.stage + 1}/{r.total_stages} 级 · {stageModeLabel(task.stage_mode, task.quorum_n)}
+            </Pill>
+          )}
+        </div>
+        <div className="mt-1 truncate text-xs text-muted-foreground">
+          <span className="text-foreground/80">{r.requester_name}</span> 申请{bizLabel(r.business_type)}
+          {r.reason ? ` · ${r.reason}` : " · 未填写事由"}
+        </div>
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          收到于 {relTime(task.created_at)}
+          {task.expires_at && (
+            <span className={cn("ml-1", overdueSoon && "text-amber-600 dark:text-amber-400")}>
+              · {relTime(task.expires_at)}超时
+            </span>
+          )}
+        </div>
+      </Link>
+      <div className="shrink-0 pt-0.5">
+        <QuickDecide task={task} onDone={onDone} />
       </div>
     </div>
   )
 }
 
-function TaskCard({ task }: { task: ApprovalTask }) {
-  // The /tasks/me endpoint returns ApprovalTask rows but not the parent
-  // request. We pull the parent lazily so the card stays scannable on
-  // page load — the user can drill into details by clicking through.
-  const req = useQuery({
-    queryKey: ["approval.task.parent", task.request_id],
-    queryFn: () => approvalService.get(task.request_id),
-    staleTime: 30_000,
-  })
-  const r = req.data?.request
-  return (
-    <Link
-      href={`/approvals/${task.request_id}`}
-      className="rounded-lg border p-3 flex items-center justify-between hover:bg-muted/50 transition-colors"
-    >
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-medium truncate">
-            {r ? r.title || `${BIZ_LABELS[r.business_type]} 申请` : "(加载中)"}
-          </span>
-          {r && <RiskPill level={r.risk_level} />}
-          <Badge variant="outline" className="text-xs">
-            阶段 {task.stage + 1}/{r?.total_stages ?? "?"}
-          </Badge>
-          <Badge variant="outline" className="text-xs">
-            {task.stage_mode === "all"
-              ? "会签"
-              : task.stage_mode === "any"
-              ? "或签"
-              : `quorum ${task.quorum_n}`}
-          </Badge>
-        </div>
-        <div className="text-xs text-muted-foreground mt-1 truncate">
-          {r ? `${r.requester_name} 申请 ${BIZ_LABELS[r.business_type]} — ${r.reason || "（未填写理由）"}` : ""}
-        </div>
-        <div className="text-xs text-muted-foreground mt-0.5">
-          收到于 {relTime(task.created_at)}
-          {task.expires_at && ` · 到期 ${relTime(task.expires_at)}`}
-        </div>
-      </div>
-    </Link>
-  )
-}
+// ---- mine (我的申请) ----
 
-function MyRequestsTab() {
+function MineView({ isAdmin }: { isAdmin: boolean }) {
   const [status, setStatus] = React.useState<string>("")
   const [biz, setBiz] = React.useState<string>("")
+  const [scopeAll, setScopeAll] = React.useState(false)
+
   const q = useQuery({
-    queryKey: ["approval.mine", status, biz],
+    queryKey: ["approval", "list", status, biz, scopeAll],
     queryFn: () =>
       approvalService.list({
-        mine: true,
+        mine: !scopeAll,
         status: status || undefined,
         business_type: biz || undefined,
         limit: 100,
       }),
+    refetchInterval: 20_000,
   })
+  const items = q.data?.items ?? []
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex flex-wrap items-center gap-2">
         <Select value={status || "all"} onValueChange={(v) => setStatus(v === "all" ? "" : v)}>
           <SelectTrigger className="w-32">
             <SelectValue placeholder="状态" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
-              <SelectItem key={k} value={k}>{v}</SelectItem>
+            {Object.entries(STATUS_META).map(([k, v]) => (
+              <SelectItem key={k} value={k}>
+                {v.label}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -259,160 +370,115 @@ function MyRequestsTab() {
           <SelectContent>
             <SelectItem value="all">全部业务</SelectItem>
             {Object.entries(BIZ_LABELS).map(([k, v]) => (
-              <SelectItem key={k} value={k}>{v}</SelectItem>
+              <SelectItem key={k} value={k}>
+                {v}
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <div className="text-xs text-muted-foreground flex items-center gap-1 ml-auto">
-          <Filter className="w-3 h-3" /> 共 {q.data?.total ?? 0} 条
-        </div>
-      </div>
-      <div className="grid gap-2">
-        {q.data?.items.map((r) => <RequestCard key={r.id} req={r} />)}
-        {q.data?.items.length === 0 && (
-          <div className="rounded-lg border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
-            还没有发起过审批申请。点右上角「发起申请」开始。
-          </div>
+        {isAdmin && (
+          <label className="ml-auto flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+            <Checkbox checked={scopeAll} onCheckedChange={(v) => setScopeAll(!!v)} /> 查看全部用户
+          </label>
         )}
       </div>
+
+      {q.isLoading ? (
+        <ListSkeleton />
+      ) : items.length === 0 ? (
+        <EmptyState
+          icon={Send}
+          title="还没有申请"
+          description="点右上角「发起申请」开始，或在工作台连接受控资产时按提示申请。"
+        />
+      ) : (
+        <div className="space-y-2">
+          {items.map((r) => (
+            <RequestCard key={r.id} req={r} showRequester={scopeAll} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
-function RequestCard({ req }: { req: ApprovalRequest }) {
+function RequestCard({ req, showRequester }: { req: ApprovalRequest; showRequester?: boolean }) {
+  const Icon = BIZ_ICONS[req.business_type] ?? ShieldCheck
+  const sm = statusMeta(req.status)
+  const risk = riskMeta(req.risk_level)
+  const pending = req.status === "pending"
   return (
     <Link
       href={`/approvals/${req.id}`}
-      className="rounded-lg border p-3 flex items-center justify-between hover:bg-muted/50 transition-colors gap-3"
+      className="flex items-start gap-3 rounded-xl border bg-card p-3.5 transition-colors hover:border-primary/30"
     >
+      <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+        <Icon className="h-4 w-4" />
+      </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-medium truncate">{req.title || `${BIZ_LABELS[req.business_type]} 申请`}</span>
-          <RiskPill level={req.risk_level} />
-          <Badge variant="outline" className="text-xs">{BIZ_LABELS[req.business_type]}</Badge>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="truncate font-medium">{req.title || `${bizLabel(req.business_type)}申请`}</span>
+          <Pill className={risk.badge}>
+            <risk.icon className="h-3 w-3" /> {risk.label}
+          </Pill>
+          <span className="text-xs text-muted-foreground">{bizLabel(req.business_type)}</span>
         </div>
-        <div className="text-xs text-muted-foreground mt-1 truncate">
-          {req.reason || "（未填写理由）"}
+        <div className="mt-1 truncate text-xs text-muted-foreground">
+          {showRequester && <span className="text-foreground/80">{req.requester_name} · </span>}
+          {req.reason || "未填写事由"}
         </div>
-        <div className="text-xs text-muted-foreground mt-0.5">
-          {fullTime(req.created_at)} · 窗口 {fullTime(req.window_start)} → {fullTime(req.window_end)}
+        <div className="mt-0.5 text-[11px] text-muted-foreground">
+          提交于 {relTime(req.created_at)}
+          {pending && req.total_stages > 1 && ` · 进度 ${Math.min(req.current_stage + 1, req.total_stages)}/${req.total_stages}`}
+          {req.effective_window_end && ` · 有效至 ${fullTime(req.effective_window_end)}`}
         </div>
       </div>
-      <StatusBadge status={req.status} />
+      <Pill className={cn("mt-0.5 shrink-0", sm.badge)}>
+        <sm.icon className="h-3 w-3" /> {sm.label}
+      </Pill>
     </Link>
   )
 }
 
-function CreateRequestButton() {
-  const [open, setOpen] = React.useState(false)
-  const qc = useQueryClient()
-  const [biz, setBiz] = React.useState<ApprovalBusinessType>("asset_access")
-  const [title, setTitle] = React.useState("")
-  const [reason, setReason] = React.useState("")
-  const [resourceType, setResourceType] = React.useState("node")
-  const [resourceID, setResourceID] = React.useState("")
-  const [hours, setHours] = React.useState(2)
+// ---- grants (我的授权) ----
 
-  const mut = useMutation({
-    mutationFn: () =>
-      approvalService.create({
-        business_type: biz,
-        title,
-        reason,
-        resource_type: resourceType,
-        resource_id: resourceID,
-        window_end: new Date(Date.now() + hours * 3600_000).toISOString(),
-      }),
-    onSuccess: (d) => {
-      qc.invalidateQueries({ queryKey: ["approval.mine"] })
-      qc.invalidateQueries({ queryKey: ["approval.tasks.me"] })
-      if (d.auto_approved) {
-        toast.success("已自动批准（policy 命中），grant 已发放")
-      } else {
-        toast.success("审批申请已创建，等待审批人处理")
-      }
-      setOpen(false)
-      setTitle("")
-      setReason("")
-      setResourceID("")
-    },
-    onError: (err: { message?: string }) => {
-      toast.error(err.message || "创建失败")
-    },
+function GrantsView() {
+  const [showAll, setShowAll] = React.useState(false)
+  const q = useQuery({
+    queryKey: ["approval", "my-grants", showAll],
+    queryFn: () => approvalService.myGrants(showAll ? "active,expired,revoked,used_up" : "active"),
+    refetchInterval: 30_000,
   })
-
+  const items = q.data?.items ?? []
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button>
-          <Plus className="w-4 h-4" /> 发起申请
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>发起审批申请</DialogTitle>
-          <DialogDescription>
-            填写要做什么、对哪个资源做、为什么。审批通过后系统自动发放有限时窗的访问凭证。
-          </DialogDescription>
-        </DialogHeader>
-        <div className="grid gap-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="text-xs">业务类型</Label>
-              <Select value={biz} onValueChange={(v) => setBiz(v as ApprovalBusinessType)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {Object.entries(BIZ_LABELS).map(([k, v]) => (
-                    <SelectItem key={k} value={k}>{v}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="text-xs">资源类型</Label>
-              <Select value={resourceType} onValueChange={setResourceType}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="node">节点 (node)</SelectItem>
-                  <SelectItem value="credential">凭据 (credential)</SelectItem>
-                  <SelectItem value="session">会话 (session)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div>
-            <Label className="text-xs">资源 ID</Label>
-            <Input value={resourceID} onChange={(e) => setResourceID(e.target.value)} placeholder="e.g. 42" />
-          </div>
-          <div>
-            <Label className="text-xs">标题</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="一句话说明你要做什么" />
-          </div>
-          <div>
-            <Label className="text-xs">理由</Label>
-            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={4} placeholder="审批人会看到这段文字 — 解释清楚业务背景与紧迫度" />
-          </div>
-          <div>
-            <Label className="text-xs">需要的访问窗口（小时）</Label>
-            <Input
-              type="number"
-              min={1}
-              max={72}
-              value={hours}
-              onChange={(e) => setHours(Math.max(1, Math.min(72, Number(e.target.value) || 1)))}
-            />
-          </div>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">通过审批后发放给你的访问授权，到期自动失效。</p>
+        <label className="flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-sm">
+          <Checkbox checked={showAll} onCheckedChange={(v) => setShowAll(!!v)} /> 含历史
+        </label>
+      </div>
+      {q.isLoading ? (
+        <ListSkeleton />
+      ) : items.length === 0 ? (
+        <EmptyState icon={KeyRound} title="暂无有效授权" description="审批通过后，限时访问授权会显示在这里。" />
+      ) : (
+        <div className="space-y-2">
+          {items.map((g) => (
+            <GrantCard key={g.id} grant={g} mode="self" onChanged={() => q.refetch()} />
+          ))}
         </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)}>取消</Button>
-          <Button
-            disabled={!biz || !resourceID || mut.isPending}
-            onClick={() => mut.mutate()}
-          >
-            {mut.isPending ? "提交中..." : "提交"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      )}
+    </div>
+  )
+}
+
+function ListSkeleton() {
+  return (
+    <div className="space-y-2">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="h-[78px] animate-pulse rounded-xl border bg-muted/40" />
+      ))}
+    </div>
   )
 }

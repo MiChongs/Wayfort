@@ -33,6 +33,9 @@ func NewWriter(cfg config.AuditConfig, r *repo.AuditRepo, logger *zap.Logger) *W
 	if cfg.BatchInterval <= 0 {
 		cfg.BatchInterval = 200 * time.Millisecond
 	}
+	if cfg.BatchTimeout <= 0 {
+		cfg.BatchTimeout = 15 * time.Second
+	}
 	return &Writer{
 		cfg:    cfg,
 		repo:   r,
@@ -64,7 +67,7 @@ func (w *Writer) Run(ctx context.Context) error {
 		if len(buf) == 0 {
 			return
 		}
-		fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		fctx, cancel := context.WithTimeout(context.Background(), w.cfg.BatchTimeout)
 		if err := w.repo.BatchInsert(fctx, buf); err != nil {
 			w.logger.Warn("audit batch insert failed", zap.Error(err), zap.Int("count", len(buf)))
 		}

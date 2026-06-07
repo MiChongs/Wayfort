@@ -17,15 +17,26 @@
 import * as React from "react"
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react"
 import {
+  ArrowLeftRight,
+  Columns2,
   ExternalLink,
   Pin,
   Plus,
   RotateCcw,
+  Rows2,
   Settings2,
+  SplitSquareHorizontal,
   Volume2,
   VolumeX,
 } from "lucide-react"
-import { toast } from "sonner"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import { toast } from "@/components/ui/sonner"
 import { useQueryClient } from "@tanstack/react-query"
 import {
   ContextMenu,
@@ -78,6 +89,7 @@ const PROTOCOL_LABEL: Record<Protocol, string> = {
   rdp_next: "RDP (新)",
   vnc: "VNC",
   sftp: "SFTP",
+  oss: "对象存储",
   tcp_forward: "端口转发",
 }
 
@@ -99,6 +111,12 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
   const createGroup = useWorkspaceStore((s) => s.createGroup)
   const moveTabToGroup = useWorkspaceStore((s) => s.moveTabToGroup)
+  const splitId = useWorkspaceStore((s) => s.splitId)
+  const splitDir = useWorkspaceStore((s) => s.splitDir)
+  const setSplit = useWorkspaceStore((s) => s.setSplit)
+  const toggleSplit = useWorkspaceStore((s) => s.toggleSplit)
+  const swapSplit = useWorkspaceStore((s) => s.swapSplit)
+  const setSplitDir = useWorkspaceStore((s) => s.setSplitDir)
 
   const qc = useQueryClient()
   const [renamingId, setRenamingId] = React.useState<string | null>(null)
@@ -138,6 +156,68 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   )
 
   const reduced = useReducedMotion()
+
+  // ----- overflow scrolling -----
+  // The strip hides its native scrollbar (no-scrollbar) and is driven by the
+  // wheel + drag + edge-fade affordances below, so overflowing tabs stay
+  // reachable without a system scrollbar on screen.
+  const scrollRef = React.useRef<HTMLDivElement | null>(null)
+  const [edges, setEdges] = React.useState({ left: false, right: false })
+
+  const updateEdges = React.useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }))
+  }, [])
+
+  // Background-independent edge fade: a CSS mask fades the tabs to transparent
+  // only on the side that can actually scroll, so overflow reads cleanly
+  // regardless of the strip colour (a gradient overlay would have to match it).
+  const maskStyle = React.useMemo<React.CSSProperties>(() => {
+    const l = edges.left ? "transparent 0, black 24px" : "black 0, black 24px"
+    const r = edges.right ? "black calc(100% - 24px), transparent 100%" : "black calc(100% - 24px), black 100%"
+    const g = `linear-gradient(to right, ${l}, ${r})`
+    return { WebkitMaskImage: g, maskImage: g }
+  }, [edges.left, edges.right])
+
+  // Vertical wheel → horizontal scroll. Non-passive so we can preventDefault
+  // and stop the page scrolling while the cursor is over the strip; only
+  // hijacked when there is real horizontal overflow.
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0 || el.scrollWidth <= el.clientWidth) return
+      e.preventDefault()
+      el.scrollLeft += e.deltaY
+      updateEdges()
+    }
+    el.addEventListener("wheel", onWheel, { passive: false })
+    return () => el.removeEventListener("wheel", onWheel)
+  }, [updateEdges])
+
+  // Recompute fade edges on mount / resize / tab-set changes (open, close,
+  // reorder, group collapse all change overflow).
+  React.useEffect(() => {
+    updateEdges()
+    const el = scrollRef.current
+    if (!el) return
+    const ro = new ResizeObserver(updateEdges)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [updateEdges, tabs.length, sections.length])
+
+  // Keep the active tab visible when it changes (keyboard switch, new tab,
+  // duplicate). `inline:nearest` avoids yanking the strip when it's already
+  // in view.
+  React.useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !activeId) return
+    const node = el.querySelector<HTMLElement>(`[data-tab-id="${activeId}"]`)
+    node?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: reduced ? "auto" : "smooth" })
+  }, [activeId, reduced])
 
   const handleCopyAddress = React.useCallback((tab: WorkspaceTabModel) => {
     if (!tab.host || !tab.port) {
@@ -194,16 +274,21 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
 
   return (
     <>
-      <div
-        role="tablist"
-        aria-label="工作台 Tabs"
-        className={cn(
-          "flex items-stretch border-b bg-background h-9",
-          "overflow-x-auto overflow-y-hidden scrollbar-thin",
-          "[scrollbar-gutter:stable]",
-        )}
-      >
-        <LayoutGroup id="workspace-tabs">
+      <div className="relative flex items-stretch bg-muted/30 h-9">
+        {/* Scroll viewport — native scrollbar hidden (no-scrollbar); the wheel
+            handler + a side-aware CSS mask keep overflowing tabs reachable and
+            cleanly faded without a system scrollbar on screen. Tabs bottom-align
+            so the active card lifts as a Chrome-style floating card. */}
+        <div className="relative flex-1 min-w-0">
+          <div
+            ref={scrollRef}
+            role="tablist"
+            aria-label="工作台 Tabs"
+            onScroll={updateEdges}
+            style={maskStyle}
+            className="flex items-end h-full gap-0.5 px-1 overflow-x-auto overflow-y-hidden no-scrollbar"
+          >
+            <LayoutGroup id="workspace-tabs">
           <AnimatePresence initial={false} mode="popLayout">
             {sections.map((section, sIdx) => (
               <SectionBlock
@@ -230,6 +315,7 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
                         onDrop={onDrop(tab.id)}
                         onDragEnd={onDragEnd}
                         dragOver={drag && drag.hoverId === tab.id ? drag.side : null}
+                        dragging={drag?.fromId === tab.id}
                       />
                     </ContextMenuTrigger>
                     <ContextMenuContent className="w-56">
@@ -336,6 +422,18 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
                         <RotateCcw className="w-4 h-4" /> 重启连接
                       </ContextMenuItem>
                       <ContextMenuItem
+                        onSelect={() => {
+                          if (splitId === tab.id) setSplit(null)
+                          else if (tab.id === activeId) toggleSplit()
+                          else setSplit(tab.id)
+                        }}
+                        disabled={tabs.length < 2}
+                      >
+                        <SplitSquareHorizontal className="w-4 h-4" />
+                        {splitId === tab.id ? "取消并排" : "并排查看"}
+                        <ContextMenuShortcut>Ctrl+\</ContextMenuShortcut>
+                      </ContextMenuItem>
+                      <ContextMenuItem
                         onSelect={() => handlePopOut(tab)}
                         disabled={tab.poppedOut}
                       >
@@ -347,9 +445,13 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
                 )}
               />
             ))}
-          </AnimatePresence>
-        </LayoutGroup>
-        <div className="ml-auto flex items-center gap-1 pr-1">
+            </AnimatePresence>
+            </LayoutGroup>
+          </div>
+        </div>
+        {/* Pinned action area — stays put when tabs overflow (previously it
+            scrolled off with the strip). A divider sets it apart from tabs. */}
+        <div className="shrink-0 flex items-center gap-0.5 px-1.5 border-l border-border/40">
           <motion.button
             type="button"
             onClick={onNewTab}
@@ -359,12 +461,49 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
             title="新建 Tab (Ctrl+T)"
             aria-label="新建 Tab"
             className={cn(
-              "shrink-0 flex items-center justify-center h-8 w-8 text-muted-foreground rounded-md",
+              "shrink-0 flex items-center justify-center h-7 w-7 text-muted-foreground rounded-md",
               "hover:bg-accent hover:text-foreground transition-colors",
             )}
           >
             <Plus className="w-4 h-4" />
           </motion.button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                title="分屏 (Ctrl+\)"
+                aria-label="分屏"
+                className={cn(
+                  "shrink-0 flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+                  splitId
+                    ? "bg-primary/12 text-primary"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                )}
+              >
+                <SplitSquareHorizontal className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onSelect={() => toggleSplit()} disabled={!splitId && tabs.length < 2}>
+                <SplitSquareHorizontal className="h-4 w-4" />
+                {splitId ? "取消并排" : "并排查看"}
+                <span className="ml-auto font-mono text-[10px] text-muted-foreground">Ctrl \</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setSplitDir("row")}>
+                <Columns2 className="h-4 w-4" /> 横向并排
+                {splitDir === "row" && <span className="ml-auto text-primary">✓</span>}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setSplitDir("col")}>
+                <Rows2 className="h-4 w-4" /> 纵向并排
+                {splitDir === "col" && <span className="ml-auto text-primary">✓</span>}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => swapSplit()} disabled={!splitId}>
+                <ArrowLeftRight className="h-4 w-4" /> 交换两侧
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <motion.button
             type="button"
             onClick={() => setSettingsOpen(true)}
@@ -373,7 +512,7 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
             title="工作台设置"
             aria-label="工作台设置"
             className={cn(
-              "shrink-0 flex items-center justify-center h-8 w-8 text-muted-foreground rounded-md",
+              "shrink-0 flex items-center justify-center h-7 w-7 text-muted-foreground rounded-md",
               "hover:bg-accent hover:text-foreground transition-colors",
             )}
           >

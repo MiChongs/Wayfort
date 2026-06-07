@@ -5,8 +5,9 @@ import "time"
 type AuditEventKind string
 
 const (
-	AuditSessionStart    AuditEventKind = "session.start"
-	AuditSessionEnd      AuditEventKind = "session.end"
+	AuditSessionStart     AuditEventKind = "session.start"
+	AuditSessionEnd       AuditEventKind = "session.end"
+	AuditSessionTerminate AuditEventKind = "session.terminate"
 	AuditCommand         AuditEventKind = "command"
 	AuditResize          AuditEventKind = "resize"
 	AuditFileUpload      AuditEventKind = "file.upload"
@@ -27,6 +28,13 @@ const (
 	// Plan v2 — server-management actions executed via SSH.
 	AuditFirewallChange  AuditEventKind = "firewall.change"
 	AuditDockerAction    AuditEventKind = "docker.action"
+	// Object-storage (OSS) bastion operations.
+	AuditOSSList     AuditEventKind = "oss.list"
+	AuditOSSDownload AuditEventKind = "oss.download"
+	AuditOSSUpload   AuditEventKind = "oss.upload"
+	AuditOSSDelete   AuditEventKind = "oss.delete"
+	AuditOSSMkdir    AuditEventKind = "oss.mkdir"
+	AuditOSSCopy     AuditEventKind = "oss.copy"
 )
 
 type AuditLog struct {

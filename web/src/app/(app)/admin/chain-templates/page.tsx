@@ -19,26 +19,24 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react"
-import { toast } from "sonner"
-import { cn } from "@/lib/utils"
+import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-  SheetTrigger,
-} from "@/components/ui/sheet"
-import { Textarea } from "@/components/ui/textarea"
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { ConfirmDeleteIconButton } from "@/components/admin/confirm-delete"
-import { ProxyChainBuilder, ProxyChainSummary } from "@/components/admin/proxy-chain-builder"
+import { ProxyChainSummary } from "@/components/admin/proxy-chain-builder"
+import { ProxyChainCanvas } from "@/components/admin/proxy-chain-canvas"
 import { chainTemplateService, proxyService } from "@/lib/api/services"
 import type { ProxyChainTemplate } from "@/lib/api/types"
 
@@ -69,7 +67,7 @@ export default function ChainTemplatesPage() {
             <Layers className="h-5 w-5" /> 代理链模板
           </h1>
           <p className="text-sm text-muted-foreground">
-            把常用的 hop 序列固化为模板,下次新建节点时一键套用。
+            把常走的中转路径保存成模板，新建节点时直接套用，不用每次重连。
           </p>
         </div>
         <ChainTemplateSheet
@@ -88,7 +86,7 @@ export default function ChainTemplatesPage() {
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
             <Sparkles className="h-6 w-6" />
-            尚未保存任何模板。任何节点添加 Sheet 内的 “保存为模板” 都会沉淀到这里。
+            还没有模板。点右上角「新建模板」，在画布上拖几个代理连成一条链就能保存。
           </CardContent>
         </Card>
       ) : (
@@ -140,8 +138,8 @@ function ChainTemplateCard({
     setTesting(true)
     try {
       const r = await proxyService.testChain(t.chain)
-      if (r.ok) toast.success(`模板 “${t.name}” 全部 hop 建链成功`)
-      else toast.error(`模板 “${t.name}” 测试失败`, { description: r.results?.find((x) => !x.ok)?.error })
+      if (r.ok) toast.success(`模板「${t.name}」链路连通`)
+      else toast.error(`模板「${t.name}」链路不通`, { description: r.results?.find((x) => !x.ok)?.error })
     } catch (e) {
       toast.error("测试请求失败", { description: (e as Error).message })
     } finally {
@@ -164,7 +162,7 @@ function ChainTemplateCard({
             </Badge>
           ) : (
             <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 font-normal text-emerald-600 dark:text-emerald-300">
-              <CheckCircle2 className="mr-1 h-3 w-3" /> 健康
+              <CheckCircle2 className="mr-1 h-3 w-3" /> 正常
             </Badge>
           )}
         </div>
@@ -197,8 +195,8 @@ function ChainTemplateCard({
             }
           />
           <ConfirmDeleteIconButton
-            title={`删除模板 “${t.name}”？`}
-            description="已经套用此模板的节点不会被影响 — 模板只是用于复制粘贴的快捷方式。"
+            title={`删除模板「${t.name}」？`}
+            description="删除模板不影响已经套用它的节点；模板只是一份可复用的链路草稿。"
             loading={removing}
             onConfirm={onDelete}
           />
@@ -250,48 +248,44 @@ function ChainTemplateSheet({
   const canSave = !!name.trim() && !!chain.trim() && !save.isPending
 
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
-      <SheetTrigger asChild>
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
         {trigger || (
           <Button>
             <Plus className="h-4 w-4" /> 新建模板
           </Button>
         )}
-      </SheetTrigger>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-[640px]">
-        <SheetHeader className="border-b px-6 pt-6 pb-4">
-          <SheetTitle className={cn("flex items-center gap-2 text-base", existing && "text-foreground")}>
-            <Sparkles className="h-4 w-4" /> {existing ? "编辑模板" : "新建代理链模板"}
-          </SheetTitle>
-          <SheetDescription>
-            模板只是一段可重用的 hop 序列;实际链路在节点详情里依然能再次调整。
-          </SheetDescription>
-        </SheetHeader>
-        <ScrollArea className="min-h-0 flex-1 px-6 py-4">
-          <div className="space-y-4">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">名称</Label>
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如:亚太-生产-跳板链" />
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs uppercase tracking-wide text-muted-foreground">标签</Label>
-                <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="逗号分隔" />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs uppercase tracking-wide text-muted-foreground">描述</Label>
-              <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />
-            </div>
-            <ProxyChainBuilder
-              value={chain}
-              onChange={setChain}
-              proxies={proxies}
-              compact
-            />
+      </DialogTrigger>
+      <DialogContent className="flex h-[82vh] max-w-[min(1100px,95vw)] flex-col gap-0 p-0">
+        <DialogHeader className="space-y-1 border-b px-5 py-3">
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <Sparkles className="h-4 w-4" /> {existing ? "编辑代理链模板" : "新建代理链模板"}
+          </DialogTitle>
+          <DialogDescription>
+            在画布上把代理拖成一条链：客户端 → 中转 …… → 目标。保存后可在任意节点一键套用，套用后仍能在节点里微调。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid grid-cols-1 gap-3 border-b px-5 py-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)]">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">名称</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：华东生产跳板" />
           </div>
-        </ScrollArea>
-        <SheetFooter className="flex-row items-center justify-end gap-2 border-t bg-muted/30 px-6 py-3">
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">标签</Label>
+            <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="逗号分隔，可留空" />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs text-muted-foreground">说明</Label>
+            <Input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="这条链用在什么场景（可选）" />
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 p-3">
+          <ProxyChainCanvas value={chain} onChange={setChain} proxies={proxies} />
+        </div>
+
+        <DialogFooter className="flex-row items-center justify-end gap-2 border-t bg-muted/30 px-5 py-3">
           <Button variant="outline" onClick={() => setOpen(false)} disabled={save.isPending}>
             取消
           </Button>
@@ -299,8 +293,8 @@ function ChainTemplateSheet({
             {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
             {existing ? "保存" : "创建"}
           </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

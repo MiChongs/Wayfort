@@ -5,7 +5,7 @@ import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useRouter } from "next/navigation"
 import { Bot, Loader2, Search } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import {
   Dialog,
   DialogContent,

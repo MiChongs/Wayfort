@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { motion, useReducedMotion } from "motion/react"
+import { useReducedMotion } from "motion/react"
 import { Markdown } from "./markdown"
 
 // Claude.ai-style streaming: render Markdown progressively, no per-chunk fade,
@@ -61,24 +61,12 @@ export function StreamingText({
   }, [full, done, reduce, displayed])
 
   return (
-    <div className="ai-streaming-text relative">
+    // The coral streaming caret is a pseudo-element pinned to the END of the
+    // last rendered block (see `.ai-streaming-text[data-streaming] … ::after`
+    // in globals.css) so it sits INLINE after the final word — the Claude.ai
+    // feel — instead of dropping onto its own line beneath the prose.
+    <div className="ai-streaming-text relative" data-streaming={done ? undefined : "true"}>
       <Markdown text={displayed} />
-      {!done && <Caret reduce={reduce ?? false} />}
     </div>
-  )
-}
-
-// Caret is a tiny inline-block bar that follows the last rendered text. We
-// keep it as a sibling rather than injecting into the Markdown AST: simpler,
-// and the visual offset is unobtrusive enough. motion handles the blink so
-// we don't need a global CSS keyframe.
-function Caret({ reduce }: { reduce: boolean }) {
-  return (
-    <motion.span
-      aria-hidden
-      className="inline-block w-[7px] h-[14px] -mb-[2px] ml-[2px] bg-foreground/85 align-baseline rounded-[1.5px]"
-      animate={reduce ? undefined : { opacity: [1, 0, 1] }}
-      transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-    />
   )
 }

@@ -1,5 +1,15 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Pin the Turbopack workspace root to THIS directory (web/). Next 16's
+  // Turbopack otherwise infers the root by walking up the tree for a lockfile,
+  // and a stray parent-dir lockfile (e.g. a leftover ~/pnpm-lock.yaml in the
+  // user's home) hijacks the inference — it then resolves the project as
+  // web/src/app and can't find `next/package.json`, failing the build with
+  // "Next.js inferred your workspace root, but it may not be correct".
+  // https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory
+  turbopack: {
+    root: import.meta.dirname,
+  },
   // reactStrictMode is OFF for this app because the workspace v2 lifecycle
   // (rdp_next desktop, terminal v2, sftp) opens long-lived WebSockets and
   // spawns gateway-side worker subprocesses on mount. React 19 dev's

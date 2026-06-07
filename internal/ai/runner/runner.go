@@ -26,6 +26,14 @@ type Config struct {
 	ToolTimeout      time.Duration
 	ApprovalTimeout  time.Duration
 	SSEKeepalive     time.Duration
+	// HistoryTokenBudget caps the approximate token size of the prior-turn
+	// history fed back to the model each iteration (system prompt + the new
+	// output are budgeted separately by the provider). When the transcript
+	// grows past this, the agent's ContextStrategy decides what to drop.
+	HistoryTokenBudget int
+	// StreamRetries is how many times a failed Stream() *establishment* is
+	// retried (transient connection / 5xx). Mid-stream errors are not retried.
+	StreamRetries int
 }
 
 func (c Config) withDefaults() Config {
@@ -44,6 +52,15 @@ func (c Config) withDefaults() Config {
 	if c.SSEKeepalive <= 0 {
 		c.SSEKeepalive = 15 * time.Second
 	}
+	if c.HistoryTokenBudget <= 0 {
+		c.HistoryTokenBudget = 48000
+	}
+	if c.StreamRetries < 0 {
+		c.StreamRetries = 0
+	}
+	if c.StreamRetries == 0 {
+		c.StreamRetries = 2
+	}
 	return c
 }
 
@@ -61,12 +78,16 @@ type Factory struct {
 
 	mu      sync.Mutex
 	running map[string]*activeRun
+
+	capMu    sync.Mutex
+	toolCaps map[string]bool // model id → supports tool calling (best-effort, cached)
 }
 
 type activeRun struct {
 	cancel  context.CancelFunc
 	sink    *ChannelSink
-	pending map[string]chan bool // invocationID → approve/reject signals
+	pending map[string]chan bool   // invocationID → approve/reject (tools + plan)
+	answers map[string]chan string // invocationID → ask_user free/structured answer
 	mu      sync.Mutex
 }
 
@@ -77,6 +98,7 @@ func NewFactory(p *provider.Registry, tr *tools.Registry, conv *airepo.Conversat
 		Provider: p, Tools: tr, Conv: conv, Msg: msg, Inv: inv,
 		Agents: agents, Audit: aud, Logger: logger,
 		Cfg: cfg.withDefaults(), running: map[string]*activeRun{},
+		toolCaps: map[string]bool{},
 	}
 }
 
@@ -90,9 +112,32 @@ func (f *Factory) Cancel(convID string) {
 	}
 }
 
-// Approve / Reject deliver the user's decision into a waiting tool gate.
+// Approve / Reject deliver the user's decision into a waiting tool gate (or a
+// pending plan presented via exit_plan_mode).
 func (f *Factory) Approve(convID, invocationID string) bool { return f.signal(convID, invocationID, true) }
 func (f *Factory) Reject(convID, invocationID string) bool  { return f.signal(convID, invocationID, false) }
+
+// Answer delivers the user's reply to a waiting ask_user invocation.
+func (f *Factory) Answer(convID, invID, text string) bool {
+	f.mu.Lock()
+	r, exists := f.running[convID]
+	f.mu.Unlock()
+	if !exists {
+		return false
+	}
+	r.mu.Lock()
+	ch, found := r.answers[invID]
+	r.mu.Unlock()
+	if !found {
+		return false
+	}
+	select {
+	case ch <- text:
+		return true
+	default:
+		return false
+	}
+}
 
 func (f *Factory) signal(convID, invID string, ok bool) bool {
 	f.mu.Lock()
@@ -128,7 +173,7 @@ func (f *Factory) Stream(convID string) *ChannelSink {
 
 // Run kicks off one turn for the conversation and returns a Sink the caller
 // can drain. The Sink closes when the turn is over.
-func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInput string) (*ChannelSink, error) {
+func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInput string, images []string) (*ChannelSink, error) {
 	agent, err := f.Agents.FindByID(ctx, conv.AgentID)
 	if err != nil || agent == nil {
 		return nil, fmt.Errorf("agent not found: %w", err)
@@ -153,7 +198,12 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 
 	sink := NewChannelSink(128)
 	runCtx, cancel := context.WithCancel(context.Background())
-	active := &activeRun{cancel: cancel, sink: sink, pending: map[string]chan bool{}}
+	active := &activeRun{
+		cancel:  cancel,
+		sink:    sink,
+		pending: map[string]chan bool{},
+		answers: map[string]chan string{},
+	}
 
 	f.mu.Lock()
 	f.running[conv.ID] = active
@@ -166,7 +216,7 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 			f.mu.Unlock()
 			sink.Close()
 		}()
-		if err := f.execute(runCtx, conv, agent, prov, userInput, sink, active, mode, 0); err != nil {
+		if err := f.execute(runCtx, conv, agent, prov, userInput, images, sink, active, mode, 0); err != nil {
 			f.Logger.Warn("ai runner failed", zap.String("conv", conv.ID), zap.Error(err))
 			sink.Emit(Event{Kind: KindError, Data: map[string]string{"error": err.Error()}})
 		}
@@ -178,12 +228,19 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 // execute runs the actual model + tool loop. depth is increased when invoked
 // as a sub-agent — top-level calls pass 0.
 func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent,
-	prov provider.Provider, userInput string, sink *ChannelSink, active *activeRun,
+	prov provider.Provider, userInput string, images []string, sink *ChannelSink, active *activeRun,
 	mode aimodel.PermissionMode, depth int) error {
-	// Persist the user message first so resume / replay works.
+	// Persist the user message first so resume / replay works. Vision input is
+	// carried as image_url content parts alongside the text.
+	parts := []provider.ContentPart{{Type: "text", Text: userInput}}
+	for _, img := range images {
+		if img != "" {
+			parts = append(parts, provider.ContentPart{Type: "image_url", ImageURL: img})
+		}
+	}
 	userMsg := &aimodel.AIMessage{
 		ConversationID: conv.ID, Role: aimodel.RoleUser,
-		Content: jsonEncode([]provider.ContentPart{{Type: "text", Text: userInput}}),
+		Content:   jsonEncode(parts),
 		CreatedAt: time.Now(),
 	}
 	if err := f.Msg.Append(ctx, userMsg); err != nil {
@@ -201,6 +258,17 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 		return err
 	}
 	messages := mapHistoryToProvider(history)
+	// Context-window management. truncate_oldest drops the oldest turns;
+	// summarize condenses them into a synthetic recap via a cheap model call;
+	// none keeps the full transcript.
+	switch agent.ContextStrategy {
+	case aimodel.CtxStrategyNone:
+		// keep full history
+	case aimodel.CtxStrategySummarize:
+		messages = f.summarizeOverflow(ctx, prov, conv.Model, messages, f.Cfg.HistoryTokenBudget)
+	default:
+		messages = condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
+	}
 
 	allowedTools := parseStringList(agent.AllowedTools)
 	// If the agent is allowed to call sub-agents but we're already at max depth,
@@ -208,7 +276,33 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	if depth >= f.Cfg.MaxSubAgentDepth {
 		allowedTools = stripTool(allowedTools, "call_subagent")
 	}
+	// Auto-inject the interactive primitives for the top-level turn only. A
+	// sub-agent runs headless (its events are drained), so pausing for user
+	// input there would deadlock — never expose them below depth 0.
+	if depth == 0 {
+		allowedTools = ensureTool(allowedTools, tools.AskUserToolName)
+		if mode == aimodel.PermModePlan {
+			allowedTools = ensureTool(allowedTools, tools.ExitPlanModeToolName)
+		} else {
+			allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
+		}
+	} else {
+		allowedTools = stripTool(allowedTools, tools.AskUserToolName)
+		allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
+	}
 	toolSchemas := f.Tools.ProviderSchemas(allowedTools)
+	// Capability gating: don't send tool schemas to a model that can't do tool
+	// calling (wastes tokens / risks an API error).
+	if len(toolSchemas) > 0 && !f.modelSupportsTools(ctx, prov, conv.Model) {
+		toolSchemas = nil
+	}
+
+	// Runtime system-prompt addendum teaching the model when to use the
+	// interactive primitives (and the Plan-mode contract).
+	systemPrompt := agent.SystemPrompt
+	if depth == 0 {
+		systemPrompt += "\n\n" + interactionGuidance(mode)
+	}
 
 	gate := &tools.PermissionGate{
 		Mode:    mode,
@@ -231,7 +325,7 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 		}
 		req := provider.Request{
 			Model:    conv.Model,
-			System:   agent.SystemPrompt,
+			System:   systemPrompt,
 			Messages: messages,
 			Tools:    toolSchemas,
 		}
@@ -253,19 +347,23 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 		if conv.MaxTokens != nil {
 			req.MaxTokens = *conv.MaxTokens
 		}
-		stream, err := prov.Stream(ctx, req)
+		if conv.ThinkingBudget != nil && *conv.ThinkingBudget > 0 {
+			req.ThinkingBudget = *conv.ThinkingBudget
+		}
+		stream, err := f.streamWithRetry(ctx, prov, req)
 		if err != nil {
 			return err
 		}
-		assistant, toolCalls, usage, finish, err := f.consumeStream(ctx, stream, sink)
+		assistant, reasoning, toolCalls, usage, finish, err := f.consumeStream(ctx, stream, sink)
 		if err != nil {
 			return err
 		}
-		// Persist assistant turn.
+		// Persist assistant turn (reasoning kept for the transcript, not replayed).
 		toolCallsJSON, _ := json.Marshal(toolCalls)
 		asstMsg := &aimodel.AIMessage{
 			ConversationID: conv.ID, Role: aimodel.RoleAssistant,
 			Content:       jsonEncode([]provider.ContentPart{{Type: "text", Text: assistant}}),
+			Reasoning:     reasoning,
 			ToolCalls:     string(toolCallsJSON),
 			InputTokens:   usage.in, OutputTokens: usage.out, FinishReason: finish,
 			CreatedAt: time.Now(),
@@ -276,6 +374,7 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 		conv.MessageCount++
 		conv.TotalInputTokens += uint64(usage.in)
 		conv.TotalOutputTokens += uint64(usage.out)
+		conv.TotalCostMicros += costMicros(conv.Model, usage.in, usage.out)
 		_ = f.Conv.Update(ctx, conv)
 		messages = append(messages, provider.Message{
 			Role: provider.RoleAssistant,
@@ -288,20 +387,21 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 			_ = f.Conv.Update(ctx, conv)
 			return nil
 		}
-		// Run each tool call, append result messages.
-		for _, tc := range toolCalls {
-			result := f.runOneTool(ctx, conv, agent, gate, mode, tc, sink, asstMsg.ID)
+		// Run the tool calls (concurrently when safe), then persist + feed their
+		// results back in call order for the next round.
+		results := f.runToolBatch(ctx, conv, agent, gate, mode, toolCalls, sink, active, asstMsg.ID)
+		for i, tc := range toolCalls {
 			toolMsg := &aimodel.AIMessage{
 				ConversationID: conv.ID, Role: aimodel.RoleTool,
 				ToolCallID:     tc.ID,
-				Content:        jsonEncode([]provider.ContentPart{{Type: "text", Text: result}}),
+				Content:        jsonEncode([]provider.ContentPart{{Type: "text", Text: results[i]}}),
 				CreatedAt:      time.Now(),
 			}
 			_ = f.Msg.Append(ctx, toolMsg)
 			conv.MessageCount++
 			messages = append(messages, provider.Message{
 				Role: provider.RoleTool, ToolCallID: tc.ID, Name: tc.Name,
-				Content: []provider.ContentPart{{Type: "text", Text: result}},
+				Content: []provider.ContentPart{{Type: "text", Text: results[i]}},
 			})
 		}
 	}
@@ -315,8 +415,9 @@ type usageAcc struct{ in, out uint32 }
 
 // consumeStream drains a provider.Event channel, forwards events to the sink,
 // and returns the accumulated assistant text + tool calls.
-func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Event, sink *ChannelSink) (string, []provider.ToolCall, usageAcc, string, error) {
+func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Event, sink *ChannelSink) (string, string, []provider.ToolCall, usageAcc, string, error) {
 	var text strings.Builder
+	var reasoning strings.Builder
 	type pending struct {
 		id   string
 		name string
@@ -332,6 +433,7 @@ func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Even
 			sink.Emit(Event{Kind: KindReasoningStart, Data: map[string]any{}})
 		case provider.EvtReasoningDelta:
 			if ev.Text != "" {
+				reasoning.WriteString(ev.Text)
 				sink.Emit(Event{Kind: KindReasoningDelta, Data: map[string]string{"text": ev.Text}})
 			}
 		case provider.EvtReasoningEnd:
@@ -376,7 +478,7 @@ func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Even
 		case provider.EvtMessageEnd:
 			finish = ev.FinishReason
 		case provider.EvtError:
-			return text.String(), nil, usage, finish, ev.Err
+			return text.String(), reasoning.String(), nil, usage, finish, ev.Err
 		}
 	}
 	calls := make([]provider.ToolCall, 0, len(order))
@@ -389,14 +491,60 @@ func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Even
 		calls = append(calls, provider.ToolCall{ID: id, Name: p.name, Arguments: args})
 	}
 	_ = ctx
-	return text.String(), calls, usage, finish, nil
+	return text.String(), reasoning.String(), calls, usage, finish, nil
+}
+
+// runToolBatch executes one assistant turn's tool calls, concurrently when
+// safe. If the batch contains an interactive primitive (ask_user /
+// exit_plan_mode) — which pauses for user input and, for plan, mutates the
+// conversation mode — it falls back to sequential execution. Results are
+// returned in call order so the next provider request stays deterministic.
+//
+// Concurrency safety: each runOneTool persists its own invocation rows
+// (gorm pool-safe), registers approval channels under active.mu, and emits to
+// the channel-backed sink — none of which races. The shared conv/gate are only
+// mutated by the interactive path, which never runs in parallel.
+func (f *Factory) runToolBatch(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent,
+	gate *tools.PermissionGate, mode aimodel.PermissionMode, calls []provider.ToolCall,
+	sink *ChannelSink, active *activeRun, parentMsgID uint64) []string {
+	results := make([]string, len(calls))
+	interactive := false
+	for _, tc := range calls {
+		if tc.Name == tools.AskUserToolName || tc.Name == tools.ExitPlanModeToolName {
+			interactive = true
+			break
+		}
+	}
+	if len(calls) <= 1 || interactive {
+		for i, tc := range calls {
+			results[i] = f.runOneTool(ctx, conv, agent, gate, mode, tc, sink, active, parentMsgID)
+		}
+		return results
+	}
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i] = f.runOneTool(ctx, conv, agent, gate, mode, calls[i], sink, active, parentMsgID)
+		}(i)
+	}
+	wg.Wait()
+	return results
 }
 
 // runOneTool dispatches one tool_call, handling permission flow, execution,
 // and audit/invocation persistence.
 func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent,
 	gate *tools.PermissionGate, mode aimodel.PermissionMode, tc provider.ToolCall,
-	sink *ChannelSink, parentMsgID uint64) string {
+	sink *ChannelSink, active *activeRun, parentMsgID uint64) string {
+	// Interactive primitives are driven by the runner, not executed as tools.
+	switch tc.Name {
+	case tools.AskUserToolName:
+		return f.handleAskUser(ctx, conv, tc, sink, active, parentMsgID)
+	case tools.ExitPlanModeToolName:
+		return f.handleExitPlanMode(ctx, conv, tc, sink, active, gate, parentMsgID)
+	}
 	tool := f.Tools.Get(tc.Name)
 	if tool == nil {
 		return fmt.Sprintf("[error] tool %q not registered", tc.Name)
@@ -411,6 +559,7 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		ID:             invID,
 		ConversationID: conv.ID,
 		MessageID:      parentMsgID,
+		ToolCallID:     tc.ID,
 		ToolName:       tc.Name,
 		InputJSON:      tc.Arguments,
 		PermissionMode: mode,
@@ -480,7 +629,14 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		_ = f.Inv.Update(ctx, inv)
 		sink.Emit(Event{Kind: KindToolStart, Data: map[string]any{"id": tc.ID, "invocation_id": invID}})
 		runCtx, cancel := context.WithTimeout(ctx, f.Cfg.ToolTimeout)
-		out, err := tool.Run(runCtx, makeToolCtx(conv, agent), json.RawMessage(tc.Arguments))
+		tctx := makeToolCtx(conv, agent)
+		// Live output streaming: forward fragments to the UI as they arrive.
+		tctx.Stream = func(chunk string) {
+			sink.Emit(Event{Kind: KindToolOutputDelta, Data: map[string]any{
+				"id": tc.ID, "invocation_id": invID, "delta": chunk,
+			}})
+		}
+		out, err := tool.Run(runCtx, tctx, json.RawMessage(tc.Arguments))
 		cancel()
 		now := time.Now()
 		inv.CompletedAt = &now
@@ -529,6 +685,177 @@ func (a *approvalAdapter) RequestApproval(ctx context.Context, inv *aimodel.AITo
 	}
 }
 
+// handleAskUser pauses the run, emits an ask_user event, and waits for the
+// user's structured/free answer (delivered via Factory.Answer). The answer is
+// returned to the model as the tool result.
+func (f *Factory) handleAskUser(ctx context.Context, conv *aimodel.AIConversation, tc provider.ToolCall,
+	sink *ChannelSink, active *activeRun, parentMsgID uint64) string {
+	var q struct {
+		Question string `json:"question"`
+		Options  []struct {
+			Label       string `json:"label"`
+			Description string `json:"description"`
+		} `json:"options"`
+		AllowMultiple bool  `json:"allow_multiple"`
+		AllowText     *bool `json:"allow_text"`
+	}
+	_ = json.Unmarshal([]byte(tc.Arguments), &q)
+	if strings.TrimSpace(q.Question) == "" {
+		return "[error] ask_user 缺少 question"
+	}
+	invID := newInvID()
+	inv := &aimodel.AIToolInvocation{
+		ID: invID, ConversationID: conv.ID, MessageID: parentMsgID,
+		ToolCallID: tc.ID,
+		ToolName:   tools.AskUserToolName, InputJSON: tc.Arguments,
+		PermissionMode: conv.PermissionMode, Status: aimodel.InvStatusPending,
+		CreatedAt: time.Now(),
+	}
+	_ = f.Inv.Create(ctx, inv)
+
+	allowText := len(q.Options) == 0
+	if q.AllowText != nil {
+		allowText = *q.AllowText
+	}
+	sink.Emit(Event{Kind: KindAskUser, Data: map[string]any{
+		"invocation_id":  invID,
+		"id":             tc.ID,
+		"question":       q.Question,
+		"options":        q.Options,
+		"allow_multiple": q.AllowMultiple,
+		"allow_text":     allowText,
+	}})
+
+	ch := make(chan string, 1)
+	active.mu.Lock()
+	active.answers[invID] = ch
+	active.mu.Unlock()
+	defer func() {
+		active.mu.Lock()
+		delete(active.answers, invID)
+		active.mu.Unlock()
+	}()
+
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	select {
+	case ans := <-ch:
+		now := time.Now()
+		inv.Status = aimodel.InvStatusSucceeded
+		inv.OutputText = ans
+		inv.CompletedAt = &now
+		_ = f.Inv.Update(ctx, inv)
+		sink.Emit(Event{Kind: KindToolOutput, Data: map[string]any{"id": tc.ID, "invocation_id": invID, "output": ans}})
+		return "用户回答：" + ans
+	case <-waitCtx.Done():
+		now := time.Now()
+		inv.Status = aimodel.InvStatusFailed
+		inv.ErrorMessage = "user did not answer in time"
+		inv.CompletedAt = &now
+		_ = f.Inv.Update(ctx, inv)
+		sink.Emit(Event{Kind: KindToolError, Data: map[string]any{"id": tc.ID, "invocation_id": invID, "error": "用户未在时限内回答"}})
+		return "[no answer] 用户未在时限内回答；请基于已有信息继续，或稍后再问。"
+	}
+}
+
+// handleExitPlanMode presents the agent's plan and waits for approval. On
+// approval the conversation switches to execute (normal) mode — the complete
+// Plan-mode handshake. Reuses the approve/reject signal (bool) plumbing.
+func (f *Factory) handleExitPlanMode(ctx context.Context, conv *aimodel.AIConversation, tc provider.ToolCall,
+	sink *ChannelSink, active *activeRun, gate *tools.PermissionGate, parentMsgID uint64) string {
+	if conv.PermissionMode != aimodel.PermModePlan {
+		return "当前不在计划模式，无需审批，可直接按计划执行。"
+	}
+	var p struct {
+		Plan string `json:"plan"`
+	}
+	_ = json.Unmarshal([]byte(tc.Arguments), &p)
+	if strings.TrimSpace(p.Plan) == "" {
+		return "[error] exit_plan_mode 缺少 plan"
+	}
+	invID := newInvID()
+	inv := &aimodel.AIToolInvocation{
+		ID: invID, ConversationID: conv.ID, MessageID: parentMsgID,
+		ToolCallID: tc.ID,
+		ToolName:   tools.ExitPlanModeToolName, InputJSON: tc.Arguments,
+		PermissionMode: conv.PermissionMode, Status: aimodel.InvStatusPending,
+		CreatedAt: time.Now(),
+	}
+	_ = f.Inv.Create(ctx, inv)
+
+	sink.Emit(Event{Kind: KindPlanPresented, Data: map[string]any{
+		"invocation_id": invID, "id": tc.ID, "plan": p.Plan,
+	}})
+
+	ch := make(chan bool, 1)
+	active.mu.Lock()
+	active.pending[invID] = ch
+	active.mu.Unlock()
+	defer func() {
+		active.mu.Lock()
+		delete(active.pending, invID)
+		active.mu.Unlock()
+	}()
+
+	timeout := f.Cfg.ApprovalTimeout
+	if timeout < 5*time.Minute {
+		timeout = 5 * time.Minute
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	select {
+	case ok := <-ch:
+		now := time.Now()
+		inv.CompletedAt = &now
+		if !ok {
+			inv.Status = aimodel.InvStatusRejected
+			_ = f.Inv.Update(ctx, inv)
+			sink.Emit(Event{Kind: KindToolError, Data: map[string]any{"id": tc.ID, "invocation_id": invID, "error": "用户驳回了计划"}})
+			return "用户驳回了该计划。请根据可能的顾虑修订（更稳妥的步骤 / 补充前置检查 / 缩小影响面 / 增加回滚），然后重新调用 exit_plan_mode 呈现。"
+		}
+		inv.Status = aimodel.InvStatusApproved
+		ap := time.Now()
+		inv.ApprovedAt = &ap
+		inv.OutputText = "approved"
+		_ = f.Inv.Update(ctx, inv)
+		// Switch to execute mode: persist on the conversation + flip the live
+		// gate so the rest of this turn (and future turns) can act.
+		conv.PermissionMode = aimodel.PermModeNormal
+		_ = f.Conv.Update(ctx, conv)
+		gate.Mode = aimodel.PermModeNormal
+		sink.Emit(Event{Kind: KindToolOutput, Data: map[string]any{"id": tc.ID, "invocation_id": invID, "output": "用户已批准计划，切换到执行模式"}})
+		return "用户已批准计划，会话已切换到【执行模式】。现在请按计划逐步执行；高危动作仍会逐项请求用户确认。"
+	case <-waitCtx.Done():
+		now := time.Now()
+		inv.Status = aimodel.InvStatusFailed
+		inv.ErrorMessage = "plan approval timed out"
+		inv.CompletedAt = &now
+		_ = f.Inv.Update(ctx, inv)
+		sink.Emit(Event{Kind: KindToolError, Data: map[string]any{"id": tc.ID, "invocation_id": invID, "error": "计划审批超时"}})
+		return "[timeout] 计划审批超时；请提示用户在收到计划后尽快批准或驳回。"
+	}
+}
+
+func ensureTool(in []string, name string) []string {
+	for _, s := range in {
+		if s == name {
+			return in
+		}
+	}
+	return append(in, name)
+}
+
+func interactionGuidance(mode aimodel.PermissionMode) string {
+	base := "【向用户提问】当关键信息缺失、存在多个可选方案、或动作有歧义时，调用 ask_user 工具向用户提问" +
+		"（可附单选/多选选项与可选自由文本），不要凭空假设。"
+	if mode == aimodel.PermModePlan {
+		return base + "\n\n【计划模式】你当前处于只读计划模式：只能用只读工具调研，禁止任何写操作。" +
+			"调研完成后必须调用 exit_plan_mode 工具，把一份分步骤、含前置检查 / 风险 / 回滚的完整执行计划呈现给用户审批。" +
+			"用户批准后系统会自动切换到执行模式，你再逐步执行（高危动作仍逐项确认）。"
+	}
+	return base
+}
+
 // --- helpers ---
 
 func mapHistoryToProvider(rows []aimodel.AIMessage) []provider.Message {
@@ -551,6 +878,260 @@ func mapHistoryToProvider(rows []aimodel.AIMessage) []provider.Message {
 func jsonEncode(parts []provider.ContentPart) string {
 	b, _ := json.Marshal(parts)
 	return string(b)
+}
+
+// streamWithRetry establishes a provider stream, retrying transient setup
+// failures with a short linear backoff. Only the *establishment* is retried —
+// once events flow, an error is surfaced as-is (partial output may already be
+// on the wire).
+func (f *Factory) streamWithRetry(ctx context.Context, prov provider.Provider, req provider.Request) (<-chan provider.Event, error) {
+	var lastErr error
+	for attempt := 0; attempt <= f.Cfg.StreamRetries; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		stream, err := prov.Stream(ctx, req)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+		if attempt < f.Cfg.StreamRetries {
+			select {
+			case <-time.After(time.Duration(300*(attempt+1)) * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// condenseHistory keeps the transcript within a token budget. truncate_oldest
+// (the default) drops the oldest turns, snapping the kept window to a user
+// message so a tool result never leads without its triggering assistant turn.
+// "summarize" currently behaves like truncate_oldest (a real summary would need
+// an extra model call); "none" disables trimming.
+func condenseHistory(msgs []provider.Message, strategy aimodel.ContextStrategy, budget int) []provider.Message {
+	if strategy == aimodel.CtxStrategyNone || budget <= 0 || len(msgs) == 0 {
+		return msgs
+	}
+	kept, _ := splitHistoryAtBudget(msgs, budget)
+	return kept
+}
+
+// splitHistoryAtBudget returns the newest suffix that fits the token budget
+// (snapped to a user-turn boundary so a tool result never leads) plus the older
+// messages it dropped. When everything fits, kept = msgs and dropped = nil.
+func splitHistoryAtBudget(msgs []provider.Message, budget int) (kept, dropped []provider.Message) {
+	if budget <= 0 || len(msgs) == 0 {
+		return msgs, nil
+	}
+	total := 0
+	for i := range msgs {
+		total += estimateTokens(msgs[i])
+	}
+	if total <= budget {
+		return msgs, nil
+	}
+	acc := 0
+	start := len(msgs)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		t := estimateTokens(msgs[i])
+		if acc+t > budget {
+			break
+		}
+		acc += t
+		start = i
+	}
+	for start < len(msgs) && msgs[start].Role != provider.RoleUser {
+		start++
+	}
+	if start >= len(msgs) {
+		start = 0
+		for i := len(msgs) - 1; i >= 0; i-- {
+			if msgs[i].Role == provider.RoleUser {
+				start = i
+				break
+			}
+		}
+	}
+	return msgs[start:], msgs[:start]
+}
+
+// summarizeOverflow implements the "summarize" context strategy: when the
+// transcript exceeds the budget, the dropped (older) turns are condensed into a
+// single recap message via a cheap model call, prepended to the recent suffix.
+// Any failure degrades to truncate_oldest.
+func (f *Factory) summarizeOverflow(ctx context.Context, prov provider.Provider, model string, msgs []provider.Message, budget int) []provider.Message {
+	if budget <= 0 || len(msgs) == 0 {
+		return msgs
+	}
+	total := 0
+	for i := range msgs {
+		total += estimateTokens(msgs[i])
+	}
+	if total <= budget {
+		return msgs
+	}
+	kept, dropped := splitHistoryAtBudget(msgs, budget*3/4) // reserve room for the recap
+	if len(dropped) == 0 {
+		return kept
+	}
+	summary, err := f.summarizeMessages(ctx, prov, model, dropped)
+	if err != nil || strings.TrimSpace(summary) == "" {
+		if f.Logger != nil && err != nil {
+			f.Logger.Warn("context summarize failed; truncating instead", zap.Error(err))
+		}
+		return kept
+	}
+	out := make([]provider.Message, 0, len(kept)+1)
+	out = append(out, provider.Message{
+		Role: provider.RoleUser,
+		Content: []provider.ContentPart{{Type: "text",
+			Text: "【此前对话的摘要（系统自动压缩，供你保持上下文）】\n" + summary + "\n【摘要结束；以下为最近的对话】"}},
+	})
+	out = append(out, kept...)
+	return out
+}
+
+func (f *Factory) summarizeMessages(ctx context.Context, prov provider.Provider, model string, msgs []provider.Message) (string, error) {
+	var sb strings.Builder
+	for _, m := range msgs {
+		txt := messageText(m)
+		if txt == "" && len(m.ToolCalls) > 0 {
+			names := make([]string, 0, len(m.ToolCalls))
+			for _, tc := range m.ToolCalls {
+				names = append(names, tc.Name)
+			}
+			txt = "[调用工具: " + strings.Join(names, ", ") + "]"
+		}
+		if txt == "" {
+			continue
+		}
+		sb.WriteString(string(m.Role))
+		sb.WriteString(": ")
+		sb.WriteString(txt)
+		sb.WriteString("\n")
+	}
+	body := sb.String()
+	if strings.TrimSpace(body) == "" {
+		return "", nil
+	}
+	// Cap the summarization input so it can't itself overflow; keep the tail
+	// (closest to the recent turns is most relevant).
+	const maxSummarizeInput = 24000
+	if len(body) > maxSummarizeInput {
+		body = "…(更早内容已省略)…\n" + body[len(body)-maxSummarizeInput:]
+	}
+	req := provider.Request{
+		Model:  model,
+		System: "你是对话历史压缩器。把下面的多轮运维对话压缩成简洁的中文要点：用户目标、关键事实与发现、已执行的操作及其结果、尚未完成的事项与下一步。直接给要点，不要寒暄、不要复述本提示。",
+		Messages: []provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.ContentPart{{Type: "text", Text: body}},
+		}},
+		MaxTokens: 1024,
+	}
+	stream, err := prov.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for ev := range stream {
+		switch ev.Type {
+		case provider.EvtTextDelta:
+			out.WriteString(ev.Text)
+		case provider.EvtError:
+			return "", ev.Err
+		}
+	}
+	return out.String(), nil
+}
+
+func messageText(m provider.Message) string {
+	var sb strings.Builder
+	for _, p := range m.Content {
+		if p.Type == "text" || p.Type == "" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
+}
+
+// noToolModelSubstrings marks models we KNOW can't do tool calling. We gate on
+// this denylist rather than a provider's Tools flag because several providers
+// don't report capability flags — defaulting those to "supports tools" avoids
+// disabling tools for capable models.
+var noToolModelSubstrings = []string{
+	"embedding", "embed-", "whisper", "tts-", "dall-e", "dalle", "moderation",
+	"text-davinci", "davinci-002", "babbage-002", "-instruct", "rerank",
+}
+
+func modelLacksTools(model string) bool {
+	m := strings.ToLower(model)
+	for _, s := range noToolModelSubstrings {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// modelSupportsTools best-effort decides whether to send tool schemas. Defaults
+// to true unless the model is on the denylist or a capability-reporting
+// provider explicitly reports the model has no tools. Cached per model id.
+func (f *Factory) modelSupportsTools(ctx context.Context, prov provider.Provider, model string) bool {
+	if model == "" {
+		return true
+	}
+	if modelLacksTools(model) {
+		return false
+	}
+	f.capMu.Lock()
+	if v, ok := f.toolCaps[model]; ok {
+		f.capMu.Unlock()
+		return v
+	}
+	f.capMu.Unlock()
+
+	supported := true
+	lctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	models, err := prov.ListModels(lctx)
+	cancel()
+	if err == nil {
+		anyToolFlag, found := false, false
+		for _, m := range models {
+			if m.Tools {
+				anyToolFlag = true
+			}
+			if m.ID == model {
+				found = true
+				supported = m.Tools
+			}
+		}
+		// Only trust a negative when the provider reports tool flags for SOME
+		// model; otherwise it doesn't populate the field → assume yes.
+		if !found || !anyToolFlag {
+			supported = true
+		}
+	}
+	f.capMu.Lock()
+	f.toolCaps[model] = supported
+	f.capMu.Unlock()
+	return supported
+}
+
+// estimateTokens is a cheap ~4-chars-per-token heuristic plus per-message
+// overhead — good enough for budgeting without pulling a real tokenizer.
+func estimateTokens(m provider.Message) int {
+	n := 0
+	for _, p := range m.Content {
+		n += len(p.Text)
+	}
+	for _, tc := range m.ToolCalls {
+		n += len(tc.Name) + len(tc.Arguments)
+	}
+	return n/4 + 8
 }
 
 func parseStringList(raw string) []string {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,9 +40,13 @@ type Service struct {
 	enricher ContextEnricher
 	enforcer Enforcer
 	notifier *FanoutNotifier
+	hub      *Hub
 	logger   *zap.Logger
 	clock    func() time.Time
 }
+
+// Hub exposes the realtime fan-out so SSE handlers can subscribe.
+func (s *Service) Hub() *Hub { return s.hub }
 
 // Options bundles construction parameters. The Engine field is required;
 // Notifier / Enricher / Enforcer are optional and default to no-ops.
@@ -83,6 +88,7 @@ func NewService(opt Options) (*Service, error) {
 		enricher: opt.Enricher,
 		enforcer: opt.Enforcer,
 		notifier: opt.Notifier,
+		hub:      NewHub(),
 		logger:   logger,
 		clock:    time.Now,
 	}, nil
@@ -115,8 +121,8 @@ type CreateOutput struct {
 	Request *model.ApprovalRequest `json:"request"`
 	// AutoApproved indicates the policy auto-approved on creation; the
 	// Grant field is populated in that case.
-	AutoApproved bool                  `json:"auto_approved"`
-	Grant        *model.ApprovalGrant  `json:"grant,omitempty"`
+	AutoApproved bool                 `json:"auto_approved"`
+	Grant        *model.ApprovalGrant `json:"grant,omitempty"`
 }
 
 // CreateRequest validates input, runs the policy engine, and either
@@ -214,7 +220,7 @@ func (s *Service) CreateRequest(ctx context.Context, in *CreateRequestInput) (*C
 
 	if dec.AutoApproved {
 		grant, err := s.finalApprove(ctx, req, dec, autoApproveActor, "system",
-			model.ApprovalReqAutoApproved, dec.AutoApproveReason)
+			model.ApprovalReqAutoApproved, dec.AutoApproveReason, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -340,7 +346,7 @@ func (s *Service) Decide(ctx context.Context, taskID uint64, in DecideInput) (*D
 				}
 			}
 			grant, err := s.finalApprove(ctx, req, dec, in.ApproverID, "",
-				model.ApprovalReqApproved, "all stages approved")
+				model.ApprovalReqApproved, "all stages approved", in.DurationSec)
 			if err != nil {
 				return nil, err
 			}
@@ -398,10 +404,19 @@ func (s *Service) loadStage(ctx context.Context, req *model.ApprovalRequest, sta
 // the auto-approve path in CreateRequest.
 func (s *Service) finalApprove(ctx context.Context, req *model.ApprovalRequest,
 	dec *PolicyDecision, actorID uint64, actorName string,
-	finalStatus model.ApprovalRequestStatus, reason string) (*model.ApprovalGrant, error) {
+	finalStatus model.ApprovalRequestStatus, reason string, overrideDurationSec int) (*model.ApprovalGrant, error) {
+	// Default: honour the requester's asked-for window, anchored at request
+	// creation. When an approver sets an explicit duration, re-anchor at the
+	// moment of approval ("从现在起 N 小时") so a late decision still grants the
+	// full window. Either way the template cap is the hard ceiling.
+	notBefore := req.WindowStart
 	notAfter := req.WindowEnd
+	if overrideDurationSec > 0 {
+		notBefore = s.clock()
+		notAfter = notBefore.Add(time.Duration(overrideDurationSec) * time.Second)
+	}
 	if dec != nil && dec.MaxDurationSec > 0 {
-		cap := req.WindowStart.Add(time.Duration(dec.MaxDurationSec) * time.Second)
+		cap := notBefore.Add(time.Duration(dec.MaxDurationSec) * time.Second)
 		if cap.Before(notAfter) {
 			notAfter = cap
 		}
@@ -415,7 +430,7 @@ func (s *Service) finalApprove(ctx context.Context, req *model.ApprovalRequest,
 		ResourceID:    req.ResourceID,
 		Actions:       defaultActionsFor(req.BusinessType),
 		MaxUses:       0,
-		NotBefore:     req.WindowStart,
+		NotBefore:     notBefore,
 		NotAfter:      notAfter,
 		Status:        model.ApprovalGrantActive,
 		CreatedAt:     s.clock(),
@@ -437,11 +452,11 @@ func (s *Service) finalApprove(ctx context.Context, req *model.ApprovalRequest,
 	}
 	_, _ = s.ledger.AppendForRequest(ctx, req.ID, model.ApprovalEvGrantIssued,
 		actorID, actorName, map[string]any{
-			"grant_id":      g.ID,
-			"resource":      g.ResourceType + ":" + g.ResourceID,
-			"actions":       g.Actions,
-			"not_before":    g.NotBefore,
-			"not_after":     g.NotAfter,
+			"grant_id":   g.ID,
+			"resource":   g.ResourceType + ":" + g.ResourceID,
+			"actions":    g.Actions,
+			"not_before": g.NotBefore,
+			"not_after":  g.NotAfter,
 		})
 	return g, nil
 }
@@ -476,6 +491,11 @@ type DecideInput struct {
 	ApproverID uint64
 	Approve    bool
 	Comment    string
+	// DurationSec, when > 0 and this decision finalises the request, sets the
+	// issued grant's window length from WindowStart. It is always clamped to
+	// the template's MaxDurationSec — an approver can tighten or extend within
+	// the policy cap, never beyond it. Ignored on rejection or non-final stages.
+	DurationSec int
 }
 type DecideOutput struct {
 	Request      *model.ApprovalRequest
@@ -646,6 +666,9 @@ func (s *Service) VerifyChain(ctx context.Context, requestID string) (*ChainVeri
 // block the caller. Errors are logged inside the FanoutNotifier.
 func (s *Service) dispatchNotify(ctx context.Context, req *model.ApprovalRequest,
 	kind model.ApprovalEventKind, grant *model.ApprovalGrant) {
+	// In-app realtime fan-out runs first and unconditionally — it is
+	// independent of whether any external (IM/webhook) subscriptions exist.
+	s.publishHub(ctx, req, kind, grant)
 	if s.notifier == nil {
 		return
 	}
@@ -669,6 +692,129 @@ func (s *Service) dispatchNotify(ctx context.Context, req *model.ApprovalRequest
 		env.GrantID = grant.ID
 	}
 	s.notifier.Dispatch(ctx, env, subs)
+}
+
+// publishHub emits a realtime status snapshot to the in-process Hub. Audience =
+// the requester plus every still-pending approver, so the per-user stream
+// reaches both sides of the flow.
+func (s *Service) publishHub(ctx context.Context, req *model.ApprovalRequest,
+	kind model.ApprovalEventKind, grant *model.ApprovalGrant) {
+	if s.hub == nil || req == nil {
+		return
+	}
+	audience := []uint64{req.RequesterID}
+	if tasks, err := s.repo.TasksForRequest(ctx, req.ID); err == nil {
+		for _, t := range tasks {
+			if t.State == model.ApprovalTaskPending && t.ApproverID != 0 {
+				audience = append(audience, t.ApproverID)
+			}
+		}
+	}
+	ev := Event{
+		RequestID:    req.ID,
+		RequesterID:  req.RequesterID,
+		Audience:     audience,
+		Kind:         string(kind),
+		Status:       string(req.Status),
+		Title:        req.Title,
+		BusinessType: string(req.BusinessType),
+		ResourceType: req.ResourceType,
+		ResourceID:   req.ResourceID,
+		RiskLevel:    string(req.RiskLevel),
+		CurrentStage: req.CurrentStage,
+		TotalStages:  req.TotalStages,
+		At:           s.clock(),
+	}
+	if grant != nil {
+		ev.GrantID = grant.ID
+		ev.ExpiresAt = grant.NotAfter
+	}
+	s.hub.Publish(ev)
+}
+
+// PreflightResult tells the workspace whether a connection may proceed, and if
+// not, whether the user already has a pending request to resume.
+type PreflightResult struct {
+	Required         bool      `json:"required"`
+	Allowed          bool      `json:"allowed"`
+	GrantID          string    `json:"grant_id,omitempty"`
+	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	PendingRequestID string    `json:"pending_request_id,omitempty"`
+	Reason           string    `json:"reason,omitempty"`
+}
+
+// Preflight is the workspace gate: it runs the same enforcement check the
+// gateways do, and surfaces any in-flight request so the UI can resume it
+// instead of opening a duplicate.
+func (s *Service) Preflight(ctx context.Context, userID uint64, biz model.ApprovalBusinessType, resType, resID, action string) (PreflightResult, error) {
+	res, err := s.CheckEnforced(ctx, EnforcementCheck{
+		UserID:       userID,
+		BusinessType: biz,
+		ResourceType: resType,
+		ResourceID:   resID,
+		Action:       action,
+	})
+	if err != nil {
+		return PreflightResult{}, err
+	}
+	out := PreflightResult{
+		Required:  res.Required,
+		Allowed:   res.Allowed,
+		GrantID:   res.GrantID,
+		ExpiresAt: res.ExpiresAt,
+		Reason:    res.Reason,
+	}
+	if res.Required && !res.Allowed {
+		if req, err := s.repo.FindPendingRequestForResource(ctx, userID, resType, resID, biz); err == nil && req != nil {
+			out.PendingRequestID = req.ID
+		}
+	}
+	return out, nil
+}
+
+// WatchGrant runs the authoritative, renewal-aware server-side cutoff for a live
+// session. Starting from initialDeadline it waits; when the window lapses it
+// re-checks — a renewed grant (a fresh request approved before expiry, whose
+// grant carries a later not_after) reschedules the cutoff so the session is NOT
+// dropped; otherwise onExpire fires. Returns a stop func (safe to call once);
+// it also stops when ctx is cancelled (session ended). A zero initialDeadline
+// means the access wasn't time-bound — returns a no-op.
+func (s *Service) WatchGrant(ctx context.Context, chk EnforcementCheck, initialDeadline time.Time, onExpire func(reason string)) func() {
+	if initialDeadline.IsZero() || onExpire == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() { once.Do(func() { close(done) }) }
+
+	go func() {
+		deadline := initialDeadline
+		for {
+			wait := time.Until(deadline)
+			if wait < 0 {
+				wait = 0
+			}
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-done:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			// Window reached — re-check. A renewal extends `ExpiresAt`.
+			res, err := s.CheckEnforced(ctx, chk)
+			if err != nil || !res.Allowed || res.ExpiresAt.IsZero() ||
+				!res.ExpiresAt.After(deadline.Add(time.Second)) {
+				onExpire("approval expired")
+				return
+			}
+			deadline = res.ExpiresAt // renewed → keep the session alive
+		}
+	}()
+	return stop
 }
 
 // ----- helpers -----

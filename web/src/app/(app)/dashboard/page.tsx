@@ -1,322 +1,431 @@
 "use client"
 
+// Role-aware dashboard. The backend /dashboard endpoint returns a system-wide
+// payload for admin/superadmin and a personal one for everyone else; this page
+// renders the matching layout. Every chart goes through the shadcn
+// ChartContainer (recharts) so theming + tooltips stay consistent.
+
 import * as React from "react"
 import Link from "next/link"
 import { useQuery } from "@tanstack/react-query"
 import {
-  Activity, Bot, Database, Heart, Monitor, Server, ShieldCheck, Sparkles, Terminal,
-} from "lucide-react"
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  XAxis,
+  YAxis,
+} from "recharts"
 import {
-  aiAgentService, aiConversationService, meService, sessionService,
-} from "@/lib/api/services"
-import { useCurrentUser } from "@/lib/hooks/use-current-user"
-import { relTime } from "@/lib/format"
+  Activity,
+  CheckCircle,
+  Heart,
+  KeyRound,
+  LayoutGrid,
+  Network,
+  Server,
+  ShieldCheck,
+  Sparkles,
+  Users,
+} from "lucide-react"
+import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Card } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
-import { EmptyState } from "@/components/common/empty-state"
-import type { NodeProtocol, Session } from "@/lib/api/types"
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart"
+import { dashboardService } from "@/lib/api/services"
+import type { DashboardSummary, DashKV, DashSession } from "@/lib/api/types"
 
-const PROTOCOL_ICON: Record<NodeProtocol, React.ComponentType<{ className?: string }>> = {
-  ssh: Terminal,
-  telnet: Terminal,
-  rdp: Monitor,
-  vnc: Monitor,
-  mysql: Database,
-  postgres: Database,
-  redis: Database,
-  mongo: Database,
-  tcp: Server,
-  // Phase 22+ — 国产数据库. All render as Database; vendor labels show
-  // up via the engine catalogue in DB Studio.
-  dameng: Database,
-  kingbase: Database,
-  vastbase: Database,
-  highgo: Database,
-  opengauss: Database,
-  gaussdb: Database,
-  tidb: Database,
-  oceanbase: Database,
-  starrocks: Database,
-  doris: Database,
-  gbase8a: Database,
-  gbase8s: Database,
+const PALETTE = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"]
+
+const KIND_LABELS: Record<string, string> = {
+  interactive: "交互终端",
+  sftp: "文件传输",
+  graphical: "图形桌面",
+  tcp_forward: "端口转发",
+  anonymous: "匿名",
+  unknown: "其他",
+}
+const STATUS_LABELS: Record<string, string> = {
+  active: "进行中",
+  closed: "已结束",
+  terminated: "被中断",
+  errored: "错误",
+  unknown: "其他",
 }
 
 export default function DashboardPage() {
-  const me = useCurrentUser()
-  const nodes = useQuery({ queryKey: ["me", "nodes"], queryFn: meService.visibleNodes })
-  const recent = useQuery({ queryKey: ["me", "recent"], queryFn: () => meService.recentNodes(8) })
-  const fav = useQuery({ queryKey: ["me", "favorites"], queryFn: meService.favorites })
-  const sessions = useQuery({ queryKey: ["sessions", "dashboard"], queryFn: () => sessionService.list({ limit: 200 }) })
-  const agents = useQuery({ queryKey: ["ai", "agents"], queryFn: aiAgentService.list })
-  const convs = useQuery({ queryKey: ["ai", "convs"], queryFn: aiConversationService.list })
-
-  // 7-day session count for the chart.
-  const chartData = React.useMemo(() => {
-    const days: { label: string; date: string; count: number }[] = []
-    const now = new Date()
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(now)
-      d.setDate(now.getDate() - i)
-      d.setHours(0, 0, 0, 0)
-      const key = d.toISOString().slice(0, 10)
-      days.push({ label: `${d.getMonth() + 1}/${d.getDate()}`, date: key, count: 0 })
-    }
-    for (const s of sessions.data?.sessions || []) {
-      const key = (s.started_at || "").slice(0, 10)
-      const slot = days.find((d) => d.date === key)
-      if (slot) slot.count++
-    }
-    return days
-  }, [sessions.data])
-
-  // Top protocols pie / list.
-  const protocolStats = React.useMemo(() => {
-    const m = new Map<string, number>()
-    for (const n of nodes.data?.nodes || []) {
-      m.set(n.protocol, (m.get(n.protocol) || 0) + 1)
-    }
-    return Array.from(m.entries()).sort((a, b) => b[1] - a[1])
-  }, [nodes.data])
-
-  // Pending approval queue across all conversations.
-  const pendingInvocations = React.useMemo(() => {
-    // We don't have a backend endpoint for "all pending across me", so the
-    // dashboard surfaces this via the count of "running" conversations only.
-    return (convs.data?.conversations || []).filter((c) => c.status === "running")
-  }, [convs.data])
+  const q = useQuery({ queryKey: ["dashboard"], queryFn: dashboardService.summary })
+  const data = q.data
 
   return (
-    <div className="p-6 space-y-6">
-      <div className="flex items-end justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">你好，{me?.usr || "访客"}</h1>
-          <p className="text-sm text-muted-foreground mt-1">欢迎回到 JumpServer Anonymous，这里是你的运维总览。</p>
+    <div className="space-y-6 p-6">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="display-title text-3xl">总览</h1>
+          <p className="text-sm text-muted-foreground">
+            {data?.scope === "system" ? "全平台运行态势与会话活动。" : "你的资产、会话与待办一览。"}
+          </p>
         </div>
-        {pendingInvocations.length > 0 && (
-          <Link
-            href={"/ai" as Parameters<typeof Link>[0]["href"]}
-            className="inline-flex items-center gap-2 text-sm px-3 py-1.5 rounded-md bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition-colors"
-          >
-            <Sparkles className="w-4 h-4" />
-            有 {pendingInvocations.length} 个 AI 对话正在运行
-          </Link>
+        {data && (
+          <Badge variant={data.scope === "system" ? "coral" : "soft"} className="rounded-full">
+            {data.tier === "superadmin" ? "超级管理员视图" : data.tier === "admin" ? "管理员视图" : "个人视图"}
+          </Badge>
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard icon={Server} label="可见节点" value={nodes.data?.nodes.length ?? "-"} hint={nodes.data?.scope === "all" ? "全部资产" : "已授权资产"} />
-        <StatCard icon={Activity} label="近 7 天会话" value={chartData.reduce((a, b) => a + b.count, 0)} />
-        <StatCard icon={Heart} label="收藏节点" value={fav.data?.node_ids.length ?? "-"} />
-        <StatCard icon={Bot} label="可用 Agent" value={agents.data?.agents.length ?? "-"} />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Activity className="w-5 h-5" /> 会话趋势</CardTitle>
-            <CardDescription>过去 7 天的会话数</CardDescription>
-          </CardHeader>
-          <CardContent className="pb-6">
-            {sessions.isLoading ? (
-              <Skeleton className="h-48 w-full" />
-            ) : (
-              <ResponsiveContainer width="100%" height={200} minWidth={0}>
-                <BarChart data={chartData} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
-                  <XAxis dataKey="label" tick={{ fontSize: 10 }} stroke="currentColor" opacity={0.5} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 10 }} stroke="currentColor" opacity={0.5} width={28} />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-popover)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
-                  <Bar dataKey="count" fill="var(--color-primary)" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><ShieldCheck className="w-5 h-5" /> 协议分布</CardTitle>
-            <CardDescription>当前可见资产</CardDescription>
-          </CardHeader>
-          <CardContent className="pb-6">
-            {protocolStats.length === 0 ? (
-              <div className="text-sm text-muted-foreground">没有数据</div>
-            ) : (
-              <div className="space-y-2">
-                {protocolStats.map(([proto, n]) => {
-                  const Icon = (PROTOCOL_ICON as Record<string, React.ComponentType<{ className?: string }>>)[proto] || Server
-                  const total = nodes.data?.nodes.length || 1
-                  return (
-                    <div key={proto} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="flex items-center gap-1.5">
-                          <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-                          {proto.toUpperCase()}
-                        </span>
-                        <span className="text-muted-foreground">{n}</span>
-                      </div>
-                      <div className="h-1.5 rounded-full bg-muted overflow-hidden">
-                        <div className="h-full bg-primary" style={{ width: `${(n / total) * 100}%` }} />
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Activity className="w-5 h-5" /> 最近的会话</CardTitle>
-            <CardDescription>SSH / Telnet / RDP / VNC / DB CLI</CardDescription>
-          </CardHeader>
-          <CardContent className="pb-6">
-            <RecentSessions sessions={(sessions.data?.sessions || []).slice(0, 8)} loading={sessions.isLoading} />
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Sparkles className="w-5 h-5" /> 推荐 Agent</CardTitle>
-            <CardDescription>点开始一段运维对话</CardDescription>
-          </CardHeader>
-          <CardContent className="pb-6">
-            {agents.isLoading ? (
-              <ListSkeleton />
-            ) : (agents.data?.agents?.length ?? 0) === 0 ? (
-              <EmptyState
-                icon={Bot}
-                title="没有可用 Agent"
-                description="管理员可在 AI Agent 中创建"
-              />
-            ) : (
-              <ul className="space-y-2">
-                {agents.data!.agents.slice(0, 6).map((a) => (
-                  <li key={a.id}>
-                    <Link
-                      href={"/ai" as Parameters<typeof Link>[0]["href"]}
-                      className="block rounded p-2 hover:bg-accent text-sm"
-                    >
-                      <div className="font-medium flex items-center gap-2">
-                        <Bot className="w-4 h-4" />
-                        {a.name}
-                        <Badge variant="outline" className="text-[10px]">{a.scope}</Badge>
-                      </div>
-                      <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{a.description}</div>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Server className="w-5 h-5" /> 我的节点</CardTitle>
-          <CardDescription>按资产授权过滤后的可访问节点 · 最近使用 {recent.data?.recent.length ?? 0} 个</CardDescription>
-        </CardHeader>
-        <CardContent className="pb-6">
-          {nodes.isLoading ? (
-            <ListSkeleton />
-          ) : (nodes.data?.nodes?.length ?? 0) === 0 ? (
-            <EmptyState
-              icon={Server}
-              title="还没有被授权访问任何节点"
-              description="请联系管理员通过「资产授权」开放访问"
-            />
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {nodes.data!.nodes.slice(0, 9).map((n) => {
-                const Icon = PROTOCOL_ICON[n.protocol] || Server
-                return (
-                  <Link
-                    key={n.id}
-                    href={`/nodes/${n.id}` as Parameters<typeof Link>[0]["href"]}
-                    className="rounded-lg border p-3 hover:bg-accent hover:border-primary/40 transition-colors"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="font-medium text-sm flex items-center gap-1.5">
-                        <Icon className="w-3.5 h-3.5 text-muted-foreground" />
-                        {n.name}
-                      </div>
-                      <Badge variant="outline" className="text-[10px]">{n.protocol}</Badge>
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-1 font-mono">{n.host}:{n.port}</div>
-                  </Link>
-                )
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {q.isLoading || !data ? (
+        <DashboardSkeleton />
+      ) : data.scope === "system" ? (
+        <SystemDashboard data={data} />
+      ) : (
+        <PersonalDashboard data={data} />
+      )}
     </div>
   )
 }
 
-function RecentSessions({ sessions, loading }: { sessions: Session[]; loading: boolean }) {
-  if (loading) return <ListSkeleton />
-  if (sessions.length === 0) return <div className="text-sm text-muted-foreground py-2">还没有会话记录</div>
+// ---------------- system (admin / superadmin) ----------------
+
+function SystemDashboard({ data }: { data: DashboardSummary }) {
+  const s = data.stats
   return (
-    <ul className="divide-y">
-      {sessions.map((s) => (
-        <li key={s.id} className="py-2.5 flex items-center justify-between">
-          <Link
-            href={`/sessions/${s.id}` as Parameters<typeof Link>[0]["href"]}
-            className="flex-1 min-w-0 group"
-          >
-            <div className="font-medium text-sm group-hover:underline truncate">{s.node_name || s.id}</div>
-            <div className="text-xs text-muted-foreground">
-              {s.kind} · {s.status} · {relTime(s.started_at)}
-            </div>
-          </Link>
-          <Badge variant={s.status === "errored" ? "destructive" : s.status === "active" ? "success" : "outline"} className="ml-2">
-            {s.status}
-          </Badge>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard icon={Users} label="用户" value={s.users} tone="plain" />
+        <StatCard
+          icon={Server}
+          label="节点"
+          value={s.nodes}
+          sub={s.nodes_disabled ? `${s.nodes_disabled} 个已停用` : "全部启用"}
+          tone="plain"
+        />
+        <StatCard icon={Activity} label="活跃会话" value={s.sessions_active} sub={`累计 ${s.sessions_total}`} tone="coral" />
+        <StatCard icon={CheckCircle} label="待审批" value={s.approvals_pending} tone={s.approvals_pending > 0 ? "amber" : "plain"} />
+      </div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard icon={KeyRound} label="凭据" value={s.credentials} compact />
+        <StatCard icon={Network} label="代理" value={s.proxies} compact />
+        <StatCard icon={ShieldCheck} label="今日审计事件" value={s.audit_today} compact />
+        <StatCard icon={Server} label="停用节点" value={s.nodes_disabled} compact />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <TrendCard className="lg:col-span-2" title="会话趋势" subtitle="近 14 天" data={data.sessions_daily} />
+        <DonutCard title="会话类型" data={data.sessions_by_kind} labels={KIND_LABELS} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <RankCard title="最活跃节点" data={data.top_nodes ?? []} />
+        <DonutCard title="会话状态" data={data.sessions_by_status ?? []} labels={STATUS_LABELS} />
+        <RecentCard title="近期会话" rows={data.recent_sessions} />
+      </div>
+    </div>
   )
 }
 
+// ---------------- personal (user) ----------------
+
+function PersonalDashboard({ data }: { data: DashboardSummary }) {
+  const s = data.stats
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard icon={Server} label="可见节点" value={s.visible_nodes} tone="plain" />
+        <StatCard icon={Heart} label="收藏" value={s.favorites} tone="plain" />
+        <StatCard icon={Activity} label="近 7 天会话" value={s.sessions_7d} tone="coral" />
+        <StatCard icon={CheckCircle} label="我的待审批" value={s.approvals_pending} tone={s.approvals_pending > 0 ? "amber" : "plain"} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <TrendCard className="lg:col-span-2" title="我的会话趋势" subtitle="近 14 天" data={data.sessions_daily} />
+        <DonutCard title="我的会话类型" data={data.sessions_by_kind} labels={KIND_LABELS} />
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-3">
+        <RecentCard className="lg:col-span-2" title="我的近期会话" rows={data.recent_sessions} />
+        <QuickLinks />
+      </div>
+    </div>
+  )
+}
+
+// ---------------- pieces ----------------
+
+type Tone = "plain" | "coral" | "amber"
+
 function StatCard({
-  icon: Icon, label, value, hint,
+  icon: Icon,
+  label,
+  value,
+  sub,
+  tone = "plain",
+  compact,
 }: {
   icon: React.ComponentType<{ className?: string }>
   label: string
-  value: React.ReactNode
-  hint?: string
+  value?: number
+  sub?: string
+  tone?: Tone
+  compact?: boolean
 }) {
+  const iconWrap =
+    tone === "coral"
+      ? "bg-primary/12 text-primary"
+      : tone === "amber"
+        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+        : "bg-accent text-muted-foreground"
   return (
-    <Card>
-      <CardContent className="pt-6 pb-6">
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">{label}</div>
-          <Icon className="w-4 h-4 text-muted-foreground" />
-        </div>
-        <div className="mt-2 text-2xl font-semibold">{value}</div>
-        {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
-      </CardContent>
+    <Card className={cn("gap-0 p-4", compact && "p-3")}>
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+        <span className={cn("flex items-center justify-center rounded-md", compact ? "h-6 w-6" : "h-7 w-7", iconWrap)}>
+          <Icon className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
+        </span>
+      </div>
+      <div className={cn("mt-1 font-semibold tabular-nums tracking-tight", compact ? "text-xl" : "text-2xl")}>
+        {(value ?? 0).toLocaleString()}
+      </div>
+      {sub && <div className="mt-0.5 text-[11px] text-muted-foreground">{sub}</div>}
     </Card>
   )
 }
 
-function ListSkeleton() {
+function CardShell({
+  title,
+  subtitle,
+  className,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  className?: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="space-y-2">
-      {[0, 1, 2].map((i) => <Skeleton key={i} className="h-8 w-full" />)}
+    <Card className={cn("gap-0 p-4", className)}>
+      <div className="mb-3 flex items-baseline justify-between">
+        <h3 className="text-sm font-medium">{title}</h3>
+        {subtitle && <span className="text-[11px] text-muted-foreground">{subtitle}</span>}
+      </div>
+      {children}
+    </Card>
+  )
+}
+
+function TrendCard({
+  title,
+  subtitle,
+  data,
+  className,
+}: {
+  title: string
+  subtitle?: string
+  data: { date: string; count: number }[]
+  className?: string
+}) {
+  const config: ChartConfig = { count: { label: "会话", color: "var(--chart-1)" } }
+  const total = data.reduce((a, b) => a + b.count, 0)
+  return (
+    <CardShell title={title} subtitle={subtitle} className={className}>
+      {total === 0 ? (
+        <EmptyChart />
+      ) : (
+        <ChartContainer config={config} className="aspect-auto h-[220px] w-full">
+          <AreaChart data={data} margin={{ left: 4, right: 8, top: 8, bottom: 0 }}>
+            <defs>
+              <linearGradient id="fill-count" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="var(--color-count)" stopOpacity={0.35} />
+                <stop offset="100%" stopColor="var(--color-count)" stopOpacity={0.02} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid vertical={false} strokeDasharray="3 3" />
+            <XAxis
+              dataKey="date"
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+              minTickGap={24}
+              tickFormatter={(v: string) => v.slice(5)}
+            />
+            <YAxis tickLine={false} axisLine={false} width={28} allowDecimals={false} />
+            <ChartTooltip content={<ChartTooltipContent />} />
+            <Area type="monotone" dataKey="count" stroke="var(--color-count)" strokeWidth={2} fill="url(#fill-count)" />
+          </AreaChart>
+        </ChartContainer>
+      )}
+    </CardShell>
+  )
+}
+
+function DonutCard({ title, data, labels }: { title: string; data: DashKV[]; labels: Record<string, string> }) {
+  const config: ChartConfig = {}
+  data.forEach((d, i) => {
+    config[d.name] = { label: labels[d.name] ?? d.name, color: PALETTE[i % PALETTE.length] }
+  })
+  const total = data.reduce((a, b) => a + b.value, 0)
+  return (
+    <CardShell title={title}>
+      {total === 0 ? (
+        <EmptyChart />
+      ) : (
+        <>
+          <ChartContainer config={config} className="mx-auto aspect-square h-[180px]">
+            <PieChart>
+              <ChartTooltip content={<ChartTooltipContent nameKey="name" hideLabel />} />
+              <Pie data={data} dataKey="value" nameKey="name" innerRadius={52} outerRadius={78} strokeWidth={2} paddingAngle={2}>
+                {data.map((d) => (
+                  <Cell key={d.name} fill={`var(--color-${d.name})`} stroke="var(--background)" />
+                ))}
+              </Pie>
+            </PieChart>
+          </ChartContainer>
+          <div className="mt-2 space-y-1">
+            {data.slice(0, 5).map((d) => (
+              <div key={d.name} className="flex items-center gap-2 text-xs">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-[3px]" style={{ background: `var(--color-${d.name})` }} />
+                <span className="truncate text-muted-foreground">{labels[d.name] ?? d.name}</span>
+                <span className="ml-auto font-medium tabular-nums">{d.value}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </CardShell>
+  )
+}
+
+function RankCard({ title, data }: { title: string; data: DashKV[] }) {
+  const config: ChartConfig = { value: { label: "会话数", color: "var(--chart-1)" } }
+  return (
+    <CardShell title={title}>
+      {data.length === 0 ? (
+        <EmptyChart />
+      ) : (
+        <ChartContainer config={config} className="aspect-auto h-[200px] w-full">
+          <BarChart data={data} layout="vertical" margin={{ left: 4, right: 12 }}>
+            <XAxis type="number" hide allowDecimals={false} />
+            <YAxis
+              type="category"
+              dataKey="name"
+              tickLine={false}
+              axisLine={false}
+              width={96}
+              tickFormatter={(v: string) => (v.length > 10 ? v.slice(0, 10) + "…" : v)}
+            />
+            <ChartTooltip content={<ChartTooltipContent />} cursor={false} />
+            <Bar dataKey="value" fill="var(--color-value)" radius={[0, 5, 5, 0]} barSize={16} />
+          </BarChart>
+        </ChartContainer>
+      )}
+    </CardShell>
+  )
+}
+
+function RecentCard({ title, rows, className }: { title: string; rows: DashSession[]; className?: string }) {
+  return (
+    <CardShell title={title} className={className}>
+      {rows.length === 0 ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">暂无会话记录</div>
+      ) : (
+        <div className="space-y-1">
+          {rows.map((r) => (
+            <div key={r.id} className="flex items-center gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-accent/50">
+              <StatusDot status={r.status} />
+              <span className="truncate font-medium">{r.node_name || "—"}</span>
+              <span className="truncate text-xs text-muted-foreground">{r.username}</span>
+              <Badge variant="outline" className="ml-auto shrink-0 rounded-full font-normal">
+                {KIND_LABELS[r.kind] ?? r.kind}
+              </Badge>
+              <span className="shrink-0 text-[11px] text-muted-foreground">{relTime(r.started_at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </CardShell>
+  )
+}
+
+function QuickLinks() {
+  const links = [
+    { href: "/nodes", label: "节点", icon: Server },
+    { href: "/workspace", label: "工作台", icon: LayoutGrid },
+    { href: "/sessions", label: "会话", icon: Activity },
+    { href: "/ai", label: "AI 助手", icon: Sparkles },
+  ]
+  return (
+    <CardShell title="快捷入口">
+      <div className="grid grid-cols-2 gap-2">
+        {links.map((l) => {
+          const Icon = l.icon
+          return (
+            <Link
+              key={l.href}
+              href={l.href}
+              className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2.5 text-sm transition-colors hover:bg-accent"
+            >
+              <Icon className="h-4 w-4 text-primary" />
+              {l.label}
+            </Link>
+          )
+        })}
+      </div>
+    </CardShell>
+  )
+}
+
+function StatusDot({ status }: { status: string }) {
+  const color =
+    status === "active"
+      ? "bg-emerald-500"
+      : status === "errored"
+        ? "bg-destructive"
+        : status === "terminated"
+          ? "bg-amber-500"
+          : "bg-muted-foreground/40"
+  return <span className={cn("h-2 w-2 shrink-0 rounded-full", color)} />
+}
+
+function EmptyChart() {
+  return <div className="flex h-[180px] items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Skeleton key={i} className="h-[92px] rounded-xl" />
+        ))}
+      </div>
+      <div className="grid gap-3 lg:grid-cols-3">
+        <Skeleton className="h-[280px] rounded-xl lg:col-span-2" />
+        <Skeleton className="h-[280px] rounded-xl" />
+      </div>
     </div>
   )
+}
+
+function relTime(iso?: string): string {
+  if (!iso) return ""
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ""
+  const sec = Math.floor((Date.now() - t) / 1000)
+  if (sec < 60) return "刚刚"
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min} 分钟前`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr} 小时前`
+  const day = Math.floor(hr / 24)
+  if (day < 30) return `${day} 天前`
+  return `${Math.floor(day / 30)} 个月前`
 }

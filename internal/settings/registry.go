@@ -1,0 +1,401 @@
+package settings
+
+// registry.go is the single declarative source of every managed configuration
+// key and how the settings center renders it. Adding a knob is one entry here;
+// the codec, validation, persistence, schema endpoint and React renderer all
+// derive from it. Keep Help copy factual and short — it's operator guidance,
+// not marketing.
+
+// Groups, in left-nav order.
+var groups = []Group{
+	{ID: "auth", Title: "认证与安全", Icon: "shield-check", Order: 10,
+		Subtitle: "令牌有效期、登录锁定、多因子与异常登录策略"},
+	{ID: "ai", Title: "AI 助手", Icon: "bot", Order: 20,
+		Subtitle: "运行预算、权限模式与只读命令白名单"},
+	{ID: "notify", Title: "通知与邮件", Icon: "mail", Order: 30,
+		Subtitle: "SMTP 出信通道与投递队列", Integrations: []string{"smtp"}},
+	{ID: "desktop", Title: "远程桌面", Icon: "monitor", Order: 40,
+		Subtitle: "RDP 后端、会话录制、个人盘与 WebRTC 视频", Integrations: []string{"devolutions"}},
+	{ID: "protocols", Title: "协议网关", Icon: "network", Order: 50,
+		Subtitle: "Guacamole、数据库命令行、TCP 转发与 Telnet", Integrations: []string{"guacd", "docker_dbcli"}},
+	{ID: "observability", Title: "会话与审计", Icon: "activity", Order: 60,
+		Subtitle: "审计写入、会话录制、终端通道与主机监控"},
+	{ID: "sshpool", Title: "连接池", Icon: "waypoints", Order: 70,
+		Subtitle: "跳板 SSH 连接复用与回收"},
+	{ID: "anonymous", Title: "匿名沙箱", Icon: "box", Order: 80,
+		Subtitle: "一次性容器终端的镜像与资源限额", Integrations: []string{"docker_anon"}},
+	{ID: "archive", Title: "审批归档", Icon: "archive", Order: 90,
+		Subtitle: "审批账本离线归档到 S3 兼容对象存储", Integrations: []string{"s3archive"}},
+	{ID: "office", Title: "在线文档", Icon: "file-text", Order: 100,
+		Subtitle: "OnlyOffice / Collabora 在浏览器内编辑文档", Integrations: []string{"office"}},
+}
+
+var specs = []Spec{
+	// ---------------- 认证与安全 (boot-wired → needs restart) ----------------
+	{Key: "auth.access_ttl", Group: "auth", Type: TypeDuration, Label: "访问令牌有效期",
+		Help: "登录后签发的访问令牌存活时长，到期需用刷新令牌换新。"},
+	{Key: "auth.refresh_ttl", Group: "auth", Type: TypeDuration, Label: "刷新令牌有效期",
+		Help: "刷新令牌存活时长，到期后必须重新登录。"},
+	{Key: "auth.lockout.enabled", Group: "auth", Type: TypeBool, Label: "登录失败锁定",
+		Help: "连续登录失败达到阈值后，临时冻结该账号的登录。"},
+	{Key: "auth.lockout.threshold", Group: "auth", Type: TypeInt, Label: "锁定阈值", Unit: "次",
+		Min: f(1), Max: f(100), DependsOn: "auth.lockout.enabled", DependsValue: "true",
+		Help: "统计窗口内允许的最大连续失败次数。"},
+	{Key: "auth.lockout.window", Group: "auth", Type: TypeDuration, Label: "统计窗口",
+		DependsOn: "auth.lockout.enabled", DependsValue: "true",
+		Help: "在该时间窗口内累计失败次数；窗口滚动。"},
+	{Key: "auth.lockout.duration", Group: "auth", Type: TypeDuration, Label: "锁定时长",
+		DependsOn: "auth.lockout.enabled", DependsValue: "true",
+		Help: "触发锁定后账号被冻结的时长。"},
+	{Key: "auth.mfa.enforce_for_admin", Group: "auth", Type: TypeBool, Label: "强制管理员启用 MFA",
+		Help: "管理员未绑定任何多因子时，登录后强制进入绑定流程。"},
+	{Key: "auth.mfa.totp_issuer", Group: "auth", Type: TypeString, Label: "TOTP 发行方",
+		Help: "写入验证器 App 的发行方名称，显示在用户的动态口令条目里。"},
+	{Key: "auth.mfa.email_otp_ttl", Group: "auth", Type: TypeDuration, Label: "邮箱验证码有效期",
+		Help: "邮件下发的一次性验证码存活时长。"},
+	{Key: "auth.mfa.email_otp_cooldown", Group: "auth", Type: TypeDuration, Label: "验证码发送冷却",
+		Help: "两次请求邮箱验证码之间的最短间隔。"},
+	{Key: "auth.mfa.recovery_codes_count", Group: "auth", Type: TypeInt, Label: "恢复码数量", Unit: "个",
+		Min: f(4), Max: f(24), Help: "每次重新生成恢复码时签发的条数。"},
+	{Key: "auth.passkey.enabled", Group: "auth", Type: TypeBool, Label: "Passkey 登录",
+		Help: "允许用户以 WebAuthn Passkey（指纹 / 设备 PIN / 安全密钥）登录。"},
+	{Key: "auth.passkey.rp_id", Group: "auth", Type: TypeString, Label: "RP ID", Advanced: true,
+		DependsOn: "auth.passkey.enabled", DependsValue: "true", Placeholder: "example.com",
+		Help: "WebAuthn 依赖方标识，通常为站点主域名（不含协议与端口）。"},
+	{Key: "auth.passkey.rp_display", Group: "auth", Type: TypeString, Label: "展示名", Advanced: true,
+		DependsOn: "auth.passkey.enabled", DependsValue: "true",
+		Help: "注册 Passkey 时向用户展示的站点名称。"},
+	{Key: "auth.passkey.rp_origins", Group: "auth", Type: TypeStringList, Label: "允许来源", Advanced: true,
+		DependsOn: "auth.passkey.enabled", DependsValue: "true", Placeholder: "https://example.com",
+		Help: "允许发起 Passkey 校验的来源地址，需与浏览器访问地址完全一致。"},
+	{Key: "auth.passkey.discoverable_login", Group: "auth", Type: TypeBool, Label: "免用户名登录", Advanced: true,
+		DependsOn: "auth.passkey.enabled", DependsValue: "true",
+		Help: "允许不输入用户名直接用 Passkey 登录（可发现凭据）。"},
+	{Key: "auth.anomaly.enabled", Group: "auth", Type: TypeBool, Label: "异常登录检测",
+		Help: "对新设备 / 异地登录等行为进行识别并记录。"},
+	{Key: "auth.anomaly.notify_email", Group: "auth", Type: TypeBool, Label: "异常登录邮件提醒",
+		DependsOn: "auth.anomaly.enabled", DependsValue: "true",
+		Help: "识别到异常登录时向账号邮箱发送提醒。"},
+
+	// ---------------- AI 助手 (request-time → live) ----------------
+	{Key: "ai.enabled", Group: "ai", Type: TypeBool, Label: "启用 AI 助手", Live: true,
+		Help: "关闭后所有用户的 AI 会话入口与接口一并停用。"},
+	{Key: "ai.default_permission_mode", Group: "ai", Type: TypeEnum, Label: "默认权限模式", Live: true,
+		Enum: []EnumOption{
+			{Value: "plan", Label: "规划", Help: "只读分析与规划，任何写操作都需人工确认"},
+			{Value: "normal", Label: "常规", Help: "只读命令自动执行，写 / 高危操作需人工确认"},
+			{Value: "bypass", Label: "放行", Help: "跳过确认直接执行（仅限可信场景）"},
+		},
+		Help: "新会话的初始权限模式，用户可在会话内临时调整。"},
+	{Key: "ai.max_iterations", Group: "ai", Type: TypeInt, Label: "单次最大迭代", Unit: "轮", Live: true,
+		Min: f(1), Max: f(100), Help: "一次请求中模型「思考→调用工具→观察」的最大轮数。"},
+	{Key: "ai.max_subagent_depth", Group: "ai", Type: TypeInt, Label: "子 Agent 最大深度", Unit: "层", Live: true,
+		Min: f(0), Max: f(5), Help: "Agent 调用子 Agent 的最大嵌套层数，0 表示禁止派生子 Agent。"},
+	{Key: "ai.tool_timeout", Group: "ai", Type: TypeDuration, Label: "工具调用超时", Live: true,
+		Help: "单个工具（命令执行 / 检索等）的最长运行时间。"},
+	{Key: "ai.approval_timeout", Group: "ai", Type: TypeDuration, Label: "人工确认超时", Live: true,
+		Help: "等待用户确认高危操作的最长时间，超时按拒绝处理。"},
+	{Key: "ai.conversation_ttl_days", Group: "ai", Type: TypeInt, Label: "会话保留天数", Unit: "天", Live: true,
+		Min: f(1), Max: f(3650), Help: "AI 会话记录的保留时长，超期自动清理。"},
+	{Key: "ai.seed_default_agents", Group: "ai", Type: TypeBool, Label: "种入默认 Agent", Advanced: true,
+		Help: "首次启动时写入内置全局 Agent 套件；同名已存在则跳过。仅在启动时生效。"},
+	{Key: "ai.ssh_exec_readonly_allow", Group: "ai", Type: TypeStringList, Label: "只读命令白名单（替换默认）", Advanced: true, Live: true,
+		Placeholder: "systemctl status", Help: "留空使用内置约 150 条只读命令清单；填写后完全替换内置清单。"},
+	{Key: "ai.ssh_exec_readonly_allow_extra", Group: "ai", Type: TypeStringList, Label: "只读命令白名单（追加）", Advanced: true, Live: true,
+		Placeholder: "mycli", Help: "在默认（或替换后）清单基础上追加放行的只读命令。"},
+
+	// ---------------- 通知与邮件 (request-time → live) ----------------
+	{Key: "notify.smtp.host", Group: "notify", Type: TypeString, Label: "SMTP 服务器", Live: true, Integration: "smtp",
+		Placeholder: "smtp.example.com", Help: "出信 SMTP 服务器地址，留空则关闭邮件功能。"},
+	{Key: "notify.smtp.port", Group: "notify", Type: TypeInt, Label: "端口", Live: true, Integration: "smtp",
+		Min: f(1), Max: f(65535), Help: "SMTP 端口，常见 465（隐式 TLS）/ 587（STARTTLS）/ 25。"},
+	{Key: "notify.smtp.username", Group: "notify", Type: TypeString, Label: "用户名", Live: true, Integration: "smtp",
+		Help: "SMTP 鉴权用户名，留空表示匿名发送。"},
+	{Key: "notify.smtp.password", Group: "notify", Type: TypeSecret, Label: "密码", Live: true, Integration: "smtp",
+		Help: "SMTP 鉴权密码 / 授权码，加密存储，保存后不再回显。"},
+	{Key: "notify.smtp.from", Group: "notify", Type: TypeString, Label: "发件人", Live: true, Integration: "smtp",
+		Placeholder: "JumpServer <noreply@example.com>", Help: "邮件的 From 头，可带显示名。"},
+	{Key: "notify.smtp.tls", Group: "notify", Type: TypeEnum, Label: "加密方式", Live: true, Integration: "smtp",
+		Enum: []EnumOption{
+			{Value: "starttls", Label: "STARTTLS"},
+			{Value: "tls", Label: "隐式 TLS"},
+			{Value: "none", Label: "不加密"},
+		},
+		Help: "与 SMTP 服务器协商的传输加密方式。"},
+	{Key: "notify.worker.chan_size", Group: "notify", Type: TypeInt, Label: "投递队列容量", Advanced: true,
+		Min: f(16), Max: f(65536), Help: "邮件发送队列长度，队满时丢弃新邮件。"},
+	{Key: "notify.worker.max_retries", Group: "notify", Type: TypeInt, Label: "最大重试", Unit: "次", Advanced: true, Live: true,
+		Min: f(0), Max: f(10), Help: "单封邮件发送失败后的最大重试次数。"},
+
+	// ---------------- 远程桌面 ----------------
+	{Key: "desktop.enabled", Group: "desktop", Type: TypeBool, Label: "启用远程桌面",
+		Help: "关闭后停用所有 RDP/桌面会话入口。"},
+	{Key: "desktop.default_backend", Group: "desktop", Type: TypeEnum, Label: "默认后端",
+		Enum: []EnumOption{
+			{Value: "ironrdp", Label: "IronRDP", Help: "经 Devolutions 网关，浏览器原生 RDP"},
+			{Value: "freerdp", Label: "FreeRDP", Help: "本机 freerdp-worker 子进程"},
+			{Value: "dummy", Label: "测试图案", Help: "无外部依赖的开发自测后端"},
+		},
+		Help: "新建桌面会话默认使用的渲染后端。"},
+	{Key: "desktop.max_concurrent_sessions", Group: "desktop", Type: TypeInt, Label: "最大并发会话", Unit: "个", Live: true,
+		Min: f(1), Max: f(1024), Help: "网关同时维持的桌面会话上限。"},
+	{Key: "desktop.worker_idle_timeout", Group: "desktop", Type: TypeDuration, Label: "Worker 空闲回收", Live: true,
+		Help: "桌面 Worker 进程空闲多久后回收。"},
+	// 录制
+	{Key: "desktop.recording.enabled", Group: "desktop", Type: TypeBool, Label: "会话录制", Live: true,
+		Help: "录制桌面会话画面，供事后回放审计。"},
+	{Key: "desktop.recording.include_input", Group: "desktop", Type: TypeBool, Label: "记录键鼠 / 剪贴板", Live: true,
+		DependsOn: "desktop.recording.enabled", DependsValue: "true",
+		Help: "在审计时间线中一并记录键盘、鼠标与剪贴板事件。"},
+	{Key: "desktop.recording.dir", Group: "desktop", Type: TypeString, Label: "录制目录", Advanced: true,
+		Help: "录制文件存放目录，留空使用会话目录下的 desktop-recordings。"},
+	// 个人盘
+	{Key: "desktop.drive.enabled", Group: "desktop", Type: TypeBool, Label: "个人文件盘", Live: true,
+		Help: "为每位用户挂载持久个人文件夹到远程桌面，实现双向传输。"},
+	{Key: "desktop.drive.name", Group: "desktop", Type: TypeString, Label: "盘符标签", Advanced: true, Live: true,
+		DependsOn: "desktop.drive.enabled", DependsValue: "true",
+		Help: "远程「此电脑」中显示的盘符名称（ASCII）。"},
+	{Key: "desktop.drive.allow_upload", Group: "desktop", Type: TypeBool, Label: "允许上传（本地→远端）", Live: true,
+		DependsOn: "desktop.drive.enabled", DependsValue: "true", Help: "允许把本地文件送入远程桌面。"},
+	{Key: "desktop.drive.allow_download", Group: "desktop", Type: TypeBool, Label: "允许下载（远端→本地）", Live: true,
+		DependsOn: "desktop.drive.enabled", DependsValue: "true", Help: "允许从远程桌面取回文件；关闭可防数据外带。"},
+	{Key: "desktop.drive.max_file_mb", Group: "desktop", Type: TypeInt, Label: "单文件上限", Unit: "MB", Live: true,
+		Min: f(0), DependsOn: "desktop.drive.enabled", DependsValue: "true", Help: "单个上传文件大小上限，0 表示不限。"},
+	{Key: "desktop.drive.max_total_mb", Group: "desktop", Type: TypeInt, Label: "个人盘总上限", Unit: "MB", Live: true,
+		Min: f(0), DependsOn: "desktop.drive.enabled", DependsValue: "true", Help: "单用户个人盘总容量上限，0 表示不限。"},
+	{Key: "desktop.drive.dir", Group: "desktop", Type: TypeString, Label: "文件盘目录", Advanced: true,
+		Help: "个人盘根目录，留空使用会话目录下的 desktop-drives。"},
+	// WebRTC
+	{Key: "desktop.webrtc.enabled", Group: "desktop", Type: TypeBool, Label: "WebRTC 视频", Live: true,
+		Help: "以硬解视频流推送桌面画面，失败时自动回退到位图通道。"},
+	{Key: "desktop.webrtc.codec", Group: "desktop", Type: TypeEnum, Label: "视频编码", Live: true,
+		Enum:      []EnumOption{{Value: "vp9", Label: "VP9"}, {Value: "vp8", Label: "VP8"}},
+		DependsOn: "desktop.webrtc.enabled", DependsValue: "true",
+		Help: "首选编码，VP9 对桌面文字更清晰；浏览器不支持时回退 VP8。"},
+	{Key: "desktop.webrtc.bitrate_kbps", Group: "desktop", Type: TypeInt, Label: "目标码率", Unit: "kbps", Live: true,
+		Min: f(0), DependsOn: "desktop.webrtc.enabled", DependsValue: "true",
+		Help: "均衡画质目标码率，0 使用 Worker 默认（8000）。"},
+	{Key: "desktop.webrtc.fps", Group: "desktop", Type: TypeInt, Label: "帧率", Unit: "fps", Live: true,
+		Min: f(1), Max: f(60), DependsOn: "desktop.webrtc.enabled", DependsValue: "true",
+		Help: "采集 / 编码帧率。"},
+	{Key: "desktop.webrtc.stun_urls", Group: "desktop", Type: TypeStringList, Label: "STUN 服务器", Advanced: true, Live: true,
+		Placeholder: "stun:stun.l.google.com:19302", Help: "反射候选服务器，用于跨 NAT；留空仅用主机候选。"},
+	{Key: "desktop.webrtc.turn_url", Group: "desktop", Type: TypeString, Label: "TURN 地址", Advanced: true, Live: true,
+		Placeholder: "turn:turn.example.com:3478", Help: "双方都无法直连时的媒体中继地址。"},
+	{Key: "desktop.webrtc.turn_username", Group: "desktop", Type: TypeString, Label: "TURN 用户名", Advanced: true, Live: true,
+		DependsOn: "desktop.webrtc.turn_url", DependsValue: "*", Help: "TURN 鉴权用户名。"},
+	{Key: "desktop.webrtc.turn_password", Group: "desktop", Type: TypeSecret, Label: "TURN 密码", Advanced: true, Live: true,
+		DependsOn: "desktop.webrtc.turn_url", DependsValue: "*", Help: "TURN 鉴权密码，加密存储。"},
+	{Key: "desktop.webrtc.public_ip", Group: "desktop", Type: TypeString, Label: "公网 IP（1:1 NAT）", Advanced: true, Live: true,
+		Help: "网关绑定内网但有固定公网 IP 时填写，最省事的跨 NAT 方案。"},
+	{Key: "desktop.webrtc.udp_port_min", Group: "desktop", Type: TypeInt, Label: "UDP 端口下界", Advanced: true,
+		Min: f(0), Max: f(65535), Help: "收窄 ICE 的 UDP 端口范围以便精确放行防火墙，0 表示任意。"},
+	{Key: "desktop.webrtc.udp_port_max", Group: "desktop", Type: TypeInt, Label: "UDP 端口上界", Advanced: true,
+		Min: f(0), Max: f(65535), Help: "与下界配对使用，0 表示任意。"},
+	// Devolutions 网关（boot-wired）
+	{Key: "desktop.devolutions_gateway.enabled", Group: "desktop", Type: TypeBool, Label: "启用 Devolutions 网关", Integration: "devolutions",
+		Help: "IronRDP 后端所依赖的网关子进程总开关。"},
+	{Key: "desktop.devolutions_gateway.auto_install", Group: "desktop", Type: TypeBool, Label: "缺失时自动安装", Advanced: true,
+		Help: "二进制缺失时在启动阶段自动下载安装。"},
+	{Key: "desktop.devolutions_gateway.auto_start", Group: "desktop", Type: TypeBool, Label: "由本进程托管启动", Advanced: true,
+		Help: "由网关进程拉起并监管；以 systemd / 容器方式独立运行时关闭。"},
+	{Key: "desktop.devolutions_gateway.listen_addr", Group: "desktop", Type: TypeString, Label: "内部监听地址", Integration: "devolutions",
+		Placeholder: "http://127.0.0.1:7171", Help: "网关子进程的内部监听地址，浏览器通常经反代访问。"},
+	{Key: "desktop.devolutions_gateway.advertised_url", Group: "desktop", Type: TypeString, Label: "对外地址", Integration: "devolutions",
+		Help: "下发给浏览器的 WebSocket 地址，留空由监听地址推导。"},
+	{Key: "desktop.devolutions_gateway.external_url", Group: "desktop", Type: TypeString, Label: "网关公网地址", Advanced: true,
+		Help: "网关自身对外的 HTTP(S) 地址，反代场景必填。"},
+	{Key: "desktop.devolutions_gateway.token_ttl", Group: "desktop", Type: TypeDuration, Label: "令牌有效期", Advanced: true,
+		Help: "签发给浏览器的一次性连接令牌存活时长。"},
+	{Key: "desktop.devolutions_gateway.health_timeout", Group: "desktop", Type: TypeDuration, Label: "健康检查超时", Advanced: true,
+		Help: "拉起后等待网关健康检查通过的最长时间。"},
+	{Key: "desktop.devolutions_gateway.verbosity", Group: "desktop", Type: TypeEnum, Label: "日志级别", Advanced: true,
+		Enum: []EnumOption{{Value: "warn", Label: "warn"}, {Value: "info", Label: "info"}, {Value: "debug", Label: "debug"}, {Value: "trace", Label: "trace"}},
+		Help: "网关子进程的日志详细程度。"},
+
+	// ---------------- 协议网关 ----------------
+	{Key: "protocols.guacamole.enabled", Group: "protocols", Type: TypeBool, Label: "启用 Guacamole（RDP/VNC）", Integration: "guacd",
+		Help: "经 guacd 提供旧版 RDP/VNC 接入。"},
+	{Key: "protocols.guacamole.guacd_addr", Group: "protocols", Type: TypeString, Label: "guacd 地址", Integration: "guacd",
+		Placeholder: "127.0.0.1:4822", DependsOn: "protocols.guacamole.enabled", DependsValue: "true",
+		Help: "guacd 守护进程的 host:port。"},
+	{Key: "protocols.guacamole.recording", Group: "protocols", Type: TypeBool, Label: "Guacamole 录制", Live: true,
+		DependsOn: "protocols.guacamole.enabled", DependsValue: "true", Help: "录制 guacd 会话画面。"},
+	{Key: "protocols.guacamole.recording_path_in_guacd", Group: "protocols", Type: TypeString, Label: "guacd 内录制路径", Advanced: true,
+		DependsOn: "protocols.guacamole.enabled", DependsValue: "true",
+		Help: "guacd 容器内看到的会话目录路径，留空使用宿主会话目录。"},
+	{Key: "protocols.dbcli.enabled", Group: "protocols", Type: TypeBool, Label: "启用数据库命令行", Integration: "docker_dbcli",
+		Help: "在一次性容器中提供 mysql/psql/redis-cli 等终端客户端。"},
+	{Key: "protocols.dbcli.ttl", Group: "protocols", Type: TypeDuration, Label: "容器存活时长", Live: true,
+		DependsOn: "protocols.dbcli.enabled", DependsValue: "true", Help: "数据库命令行容器的空闲存活时长。"},
+	{Key: "protocols.dbcli.images", Group: "protocols", Type: TypeStringMap, Label: "客户端镜像映射", Advanced: true, Live: true,
+		DependsOn: "protocols.dbcli.enabled", DependsValue: "true",
+		Help: "各数据库类型到客户端容器镜像的映射（如 mysql → mysql:8.0）。"},
+	{Key: "protocols.tcpfwd.enabled", Group: "protocols", Type: TypeBool, Label: "启用 TCP 转发",
+		Help: "允许用户申请把远端 TCP 端口转发到本地。"},
+	{Key: "protocols.tcpfwd.default_ttl", Group: "protocols", Type: TypeDuration, Label: "转发默认有效期", Live: true,
+		DependsOn: "protocols.tcpfwd.enabled", DependsValue: "true", Help: "新建端口转发的默认存活时长。"},
+	{Key: "protocols.tcpfwd.max_per_user", Group: "protocols", Type: TypeInt, Label: "单用户转发上限", Unit: "个", Live: true,
+		Min: f(1), Max: f(128), DependsOn: "protocols.tcpfwd.enabled", DependsValue: "true",
+		Help: "单个用户同时持有的端口转发数量上限。"},
+	{Key: "protocols.telnet.enabled", Group: "protocols", Type: TypeBool, Label: "启用 Telnet", Live: true,
+		Help: "允许通过 Telnet 协议接入目标。"},
+	{Key: "protocols.telnet.timeout", Group: "protocols", Type: TypeDuration, Label: "Telnet 连接超时", Live: true,
+		DependsOn: "protocols.telnet.enabled", DependsValue: "true", Help: "建立 Telnet 连接的超时时间。"},
+
+	// ---------------- 会话与审计 ----------------
+	{Key: "audit.batch_size", Group: "observability", Type: TypeInt, Label: "审计批量条数", Advanced: true,
+		Min: f(1), Max: f(4096), Help: "审计日志攒批写入的单批条数。"},
+	{Key: "audit.batch_interval", Group: "observability", Type: TypeDuration, Label: "审计批量间隔", Advanced: true,
+		Help: "未攒满一批时的最大等待间隔。"},
+	{Key: "audit.batch_timeout", Group: "observability", Type: TypeDuration, Label: "审计写入超时", Advanced: true,
+		Help: "单批审计写库的超时时间。"},
+	{Key: "audit.chan_size", Group: "observability", Type: TypeInt, Label: "审计队列容量", Advanced: true,
+		Min: f(64), Max: f(65536), Help: "审计事件缓冲队列长度，队满时丢弃低优先级事件。"},
+	{Key: "recorder.chan_size", Group: "observability", Type: TypeInt, Label: "录制队列容量", Advanced: true,
+		Min: f(64), Max: f(65536), Help: "终端录制事件缓冲队列长度。"},
+	{Key: "recorder.flush_interval", Group: "observability", Type: TypeDuration, Label: "录制刷新间隔", Advanced: true,
+		Help: "终端录制落盘的刷新间隔。"},
+	{Key: "webssh.read_buffer", Group: "observability", Type: TypeInt, Label: "终端读缓冲", Unit: "字节", Advanced: true,
+		Min: f(1024), Max: f(1048576), Help: "WebSSH 通道单次读缓冲大小。"},
+	{Key: "webssh.write_timeout", Group: "observability", Type: TypeDuration, Label: "终端写超时", Advanced: true,
+		Help: "向浏览器写入数据的超时时间。"},
+	{Key: "webssh.ping_interval", Group: "observability", Type: TypeDuration, Label: "终端心跳间隔", Advanced: true,
+		Help: "WebSocket 保活心跳间隔。"},
+	{Key: "insights.enabled", Group: "observability", Type: TypeBool, Label: "主机实时监控", Live: true,
+		Help: "在 SSH 页展示目标主机的 CPU / 内存 / 进程 / 网络等实时指标。"},
+	{Key: "insights.cache_ttl", Group: "observability", Type: TypeDuration, Label: "采样缓存", Live: true,
+		DependsOn: "insights.enabled", DependsValue: "true", Help: "并发轮询在该时间内复用同一份采样结果。"},
+	{Key: "insights.ssh_timeout", Group: "observability", Type: TypeDuration, Label: "采样超时", Live: true,
+		DependsOn: "insights.enabled", DependsValue: "true", Help: "单次指标采集的总时间预算。"},
+	{Key: "insights.process_limit", Group: "observability", Type: TypeInt, Label: "进程返回上限", Unit: "个", Live: true,
+		Min: f(10), Max: f(2000), DependsOn: "insights.enabled", DependsValue: "true", Help: "进程列表返回的最大条数。"},
+
+	// ---------------- 连接池 (request-time → live) ----------------
+	{Key: "sshpool.max_sessions_per_client", Group: "sshpool", Type: TypeInt, Label: "单连接最大会话", Unit: "个", Live: true,
+		Min: f(1), Max: f(64), Help: "同一跳板 SSH 连接上复用的最大会话数。"},
+	{Key: "sshpool.idle_eviction", Group: "sshpool", Type: TypeDuration, Label: "空闲回收", Live: true,
+		Help: "连接空闲多久后被回收。"},
+	{Key: "sshpool.dial_timeout", Group: "sshpool", Type: TypeDuration, Label: "拨号超时", Live: true,
+		Help: "建立跳板 SSH 连接的超时时间。"},
+	{Key: "sshpool.keepalive", Group: "sshpool", Type: TypeDuration, Label: "保活间隔", Live: true,
+		Help: "跳板连接的保活心跳间隔。"},
+
+	// ---------------- 匿名沙箱 (request-time → live) ----------------
+	{Key: "anonymous.enabled", Group: "anonymous", Type: TypeBool, Label: "启用匿名沙箱", Integration: "docker_anon",
+		Help: "提供无需登录、用完即弃的一次性容器终端。"},
+	{Key: "anonymous.image", Group: "anonymous", Type: TypeString, Label: "容器镜像", Live: true, Integration: "docker_anon",
+		Placeholder: "alpine:latest", DependsOn: "anonymous.enabled", DependsValue: "true", Help: "沙箱容器使用的镜像。"},
+	{Key: "anonymous.ttl", Group: "anonymous", Type: TypeDuration, Label: "存活时长", Live: true,
+		DependsOn: "anonymous.enabled", DependsValue: "true", Help: "沙箱容器的最长存活时间，到期销毁。"},
+	{Key: "anonymous.cpu", Group: "anonymous", Type: TypeFloat, Label: "CPU 限制", Unit: "核", Live: true,
+		Min: f(0.1), Max: f(16), Step: f(0.1), DependsOn: "anonymous.enabled", DependsValue: "true", Help: "单个沙箱容器的 CPU 配额。"},
+	{Key: "anonymous.memory_mb", Group: "anonymous", Type: TypeInt, Label: "内存限制", Unit: "MB", Live: true,
+		Min: f(16), Max: f(16384), DependsOn: "anonymous.enabled", DependsValue: "true", Help: "单个沙箱容器的内存上限。"},
+	{Key: "anonymous.pids_limit", Group: "anonymous", Type: TypeInt, Label: "进程数上限", Advanced: true, Live: true,
+		Min: f(8), Max: f(4096), DependsOn: "anonymous.enabled", DependsValue: "true", Help: "单个沙箱容器内的最大进程数。"},
+	{Key: "anonymous.network", Group: "anonymous", Type: TypeEnum, Label: "网络模式", Advanced: true, Live: true,
+		Enum:      []EnumOption{{Value: "none", Label: "无网络"}, {Value: "bridge", Label: "桥接"}, {Value: "host", Label: "主机"}},
+		DependsOn: "anonymous.enabled", DependsValue: "true", Help: "沙箱容器的网络模式，默认无网络最安全。"},
+	{Key: "anonymous.shell", Group: "anonymous", Type: TypeStringList, Label: "启动 Shell", Advanced: true, Live: true,
+		Placeholder: "/bin/sh", DependsOn: "anonymous.enabled", DependsValue: "true", Help: "容器内拉起的 Shell 命令及参数。"},
+
+	// ---------------- 审批归档 (boot-wired) ----------------
+	{Key: "approval.archive.enabled", Group: "archive", Type: TypeBool, Label: "启用离线归档", Integration: "s3archive",
+		Help: "把审批账本的哈希链事件持续推送到 S3 兼容对象存储。"},
+	{Key: "approval.archive.endpoint_url", Group: "archive", Type: TypeString, Label: "S3 端点", Integration: "s3archive",
+		Placeholder: "https://s3.example.com", DependsOn: "approval.archive.enabled", DependsValue: "true",
+		Help: "S3 兼容端点；填 AWS 官方桶时留空，MinIO/Ceph 等填其地址。"},
+	{Key: "approval.archive.region", Group: "archive", Type: TypeString, Label: "区域",
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "对象存储区域（region）。"},
+	{Key: "approval.archive.bucket", Group: "archive", Type: TypeString, Label: "存储桶", Integration: "s3archive",
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "归档写入的目标桶名。"},
+	{Key: "approval.archive.prefix", Group: "archive", Type: TypeString, Label: "对象前缀", Advanced: true,
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "归档对象 key 的统一前缀。"},
+	{Key: "approval.archive.access_key_id", Group: "archive", Type: TypeString, Label: "Access Key", Integration: "s3archive",
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "对象存储 Access Key ID。"},
+	{Key: "approval.archive.secret_access_key", Group: "archive", Type: TypeSecret, Label: "Secret Key", Integration: "s3archive",
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "对象存储 Secret Access Key，加密存储。"},
+	{Key: "approval.archive.retention_mode", Group: "archive", Type: TypeEnum, Label: "保留模式", Advanced: true,
+		Enum: []EnumOption{
+			{Value: "GOVERNANCE", Label: "GOVERNANCE", Help: "管理员可绕过保留期"},
+			{Value: "COMPLIANCE", Label: "COMPLIANCE", Help: "任何人都无法缩短保留期"},
+		},
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "对象锁（Object Lock）保留模式。"},
+	{Key: "approval.archive.retention_days", Group: "archive", Type: TypeInt, Label: "保留天数", Unit: "天", Advanced: true,
+		Min: f(1), Max: f(36500), DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "归档对象的锁定保留天数。"},
+	{Key: "approval.archive.flush_interval", Group: "archive", Type: TypeDuration, Label: "推送间隔", Advanced: true,
+		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "攒批推送归档的最大间隔。"},
+	{Key: "approval.archive.batch_size", Group: "archive", Type: TypeInt, Label: "推送批量条数", Advanced: true,
+		Min: f(1), Max: f(4096), DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "单批推送的事件条数。"},
+
+	// ---------------- 在线文档 (boot-wired) ----------------
+	{Key: "office.enabled", Group: "office", Type: TypeBool, Label: "启用在线文档编辑", Integration: "office",
+		Help: "在 SFTP / 对象存储界面内用 OnlyOffice/Collabora 编辑 Office 文档。"},
+	{Key: "office.document_server_url", Group: "office", Type: TypeString, Label: "Document Server 地址", Integration: "office",
+		Placeholder: "http://127.0.0.1:18082/", DependsOn: "office.enabled", DependsValue: "true",
+		Help: "浏览器加载编辑器 api.js 的地址。"},
+	{Key: "office.jwt_secret", Group: "office", Type: TypeSecret, Label: "JWT 密钥", Integration: "office",
+		DependsOn: "office.enabled", DependsValue: "true", Help: "与 Document Server 一致的签名密钥，加密存储。"},
+	{Key: "office.callback_base_url", Group: "office", Type: TypeString, Label: "回调地址", Integration: "office",
+		DependsOn: "office.enabled", DependsValue: "true", Help: "Document Server 回访本网关拉取/保存文件的地址。"},
+}
+
+// wiredLive is the set of keys whose owning subsystem actually re-reads the
+// value at request time AND is subscribed to the center for hot-reload (see
+// main.go OnReload wiring). The Live flags written inline above express intent;
+// this set is the source of truth for what currently applies without a restart.
+// Any inline-Live key NOT listed here is downgraded to "需重启" so the UI never
+// promises a live apply it can't deliver. Grow this set as more subsystems gain
+// an ApplyConfig hook.
+var wiredLive = map[string]bool{
+	"insights.enabled":              true,
+	"insights.cache_ttl":            true,
+	"insights.ssh_timeout":          true,
+	"insights.process_limit":        true,
+	"anonymous.image":               true,
+	"anonymous.ttl":                 true,
+	"anonymous.cpu":                 true,
+	"anonymous.memory_mb":           true,
+	"anonymous.pids_limit":          true,
+	"anonymous.network":             true,
+	"anonymous.shell":               true,
+	"protocols.tcpfwd.default_ttl":  true,
+	"protocols.tcpfwd.max_per_user": true,
+}
+
+// ---- lookups ----
+
+var specByKey = map[string]Spec{}
+
+func init() {
+	for i := range specs {
+		if specs[i].Live && !wiredLive[specs[i].Key] {
+			specs[i].Live = false
+		}
+		specByKey[specs[i].Key] = specs[i]
+	}
+}
+
+// Specs returns every managed key spec (registry order).
+func Specs() []Spec { return specs }
+
+// Groups returns the nav groups (declared order, which is also Order order).
+func Groups() []Group { return groups }
+
+// SpecByKey looks up one spec; ok=false for bootstrap / unknown keys.
+func SpecByKey(key string) (Spec, bool) { s, ok := specByKey[key]; return s, ok }
+
+// IsManaged reports whether key is a runtime-managed setting.
+func IsManaged(key string) bool { _, ok := specByKey[key]; return ok }
+
+// SecretKeys returns the keys whose values are sealed at rest.
+func SecretKeys() []string {
+	var out []string
+	for _, s := range specs {
+		if s.Type == TypeSecret {
+			out = append(out, s.Key)
+		}
+	}
+	return out
+}

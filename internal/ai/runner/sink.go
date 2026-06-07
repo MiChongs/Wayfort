@@ -19,6 +19,7 @@ const (
 	KindToolCall           EventKind = "tool_call"
 	KindToolStart          EventKind = "tool_start"
 	KindToolOutput         EventKind = "tool_output"
+	KindToolOutputDelta    EventKind = "tool_output_delta"
 	KindToolError          EventKind = "tool_error"
 	KindPermissionRequired EventKind = "permission_required"
 	KindUsage              EventKind = "usage"
@@ -34,6 +35,14 @@ const (
 	KindReasoningStart EventKind = "reasoning_start"
 	KindReasoningDelta EventKind = "reasoning_delta"
 	KindReasoningEnd   EventKind = "reasoning_end"
+
+	// Interactive primitives. ask_user pauses the run for a structured user
+	// answer; plan_presented pauses for the user to approve/reject the agent's
+	// plan (the complete Plan-mode handshake). Both reuse the invocation +
+	// approval plumbing — answers flow back via /answer, plan decisions via the
+	// existing /approve|/reject endpoints.
+	KindAskUser       EventKind = "ask_user"
+	KindPlanPresented EventKind = "plan_presented"
 )
 
 // Event is the payload pushed through the Sink. Data marshals to JSON for SSE.

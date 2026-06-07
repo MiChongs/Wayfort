@@ -179,6 +179,53 @@ desktop:
   default_backend: ironrdp
   max_concurrent_sessions: 64
 
+  # Session recording + input audit (freerdp backend). Frames are taped to a
+  # .dtr file the browser replays in-place with an input/event audit timeline.
+  recording:
+    enabled: true
+    dir: "" # empty => <storage.sessions_dir>/desktop-recordings
+    include_input: true # record keyboard/mouse/clipboard into the audit timeline
+
+  # ----- Per-user file drive (freerdp backend only) -----
+  # A persistent personal folder redirected into every RDP session as a mounted
+  # drive. The user uploads/downloads via the browser file panel; the same
+  # folder is the drive they see under "This PC" in the remote desktop, so files
+  # move both ways. ironrdp sessions don't get it.
+  drive:
+    enabled: true
+    dir: "" # empty => <storage.sessions_dir>/desktop-drives ; per-user under user-<id>
+    name: "JumpServer" # share label shown in the remote "This PC" (ASCII)
+    allow_upload: true # local -> remote
+    allow_download: true # remote -> local (set false to block exfiltration)
+    max_file_mb: 1024 # per-file cap, 0 = unlimited
+    max_total_mb: 4096 # per-user folder cap, 0 = unlimited
+
+  # ----- WebRTC video path (freerdp backend only) -----
+  # Streams the desktop as a hardware-decoded VP8 video track instead of the
+  # legacy dirty-bitmap frames the browser decodes in JS. The worker encodes the
+  # composited framebuffer with libvpx; the gateway relays it over a Pion video
+  # track; the browser plays it in a <video> element. Falls back to the bitmap
+  # path automatically when the browser lacks WebRTC or negotiation fails.
+  webrtc:
+    enabled: true
+    # Preferred codec: "vp9" (default) uses VP9 screen-content coding — much
+    # sharper for desktop text/UI at the same bitrate — when the browser can
+    # decode it; falls back to "vp8" per-session otherwise. Set "vp8" to force
+    # the universal baseline. Users can also force WebRTC vs JS per-session in
+    # the desktop settings sheet (传输方式), and pick a quality tier (画质).
+    codec: vp9
+    bitrate_kbps: 8000 # "balanced" target bitrate; the quality tier scales it (0 => 8000)
+    fps: 30 # capture/encode frame rate, 0 => worker default (30)
+    # ICE: host candidates only by default (works when the gateway is directly
+    # reachable from the browser / same LAN). Add STUN/TURN/public_ip for NAT.
+    stun_urls: [] # e.g. ["stun:stun.l.google.com:19302"]
+    turn_url: "" # e.g. "turn:turn.example.com:3478"
+    turn_username: ""
+    turn_password: ""
+    public_ip: "" # 1:1 NAT: map host candidates to the gateway's public IP
+    udp_port_min: 0 # narrow the ICE UDP range for a tight firewall (0/0 = any)
+    udp_port_max: 0
+
   # ----- Plan 29: IronRDP path (Devolutions Gateway subprocess) -----
   devolutions_gateway:
     # The supervisor is on by default since default_backend is ironrdp.
@@ -243,3 +290,19 @@ protocols:
   telnet:
     enabled: true
     timeout: 15s
+
+# Online Office (OnlyOffice / Collabora) — in-browser editing of Office
+# documents on the SFTP and OSS surfaces. Disabled by default; when off, office
+# files fall back to download.
+#
+# The bundled deployments/docker-compose.yaml ships an `onlyoffice` service and
+# the values below already line up with it — bring the stack up and set enabled
+# to true. document_server_url is the host-published port the browser loads the
+# editor from; callback_base_url is how the container reaches the host-run
+# gateway (:8080) to pull files and post saves; jwt_secret MUST match the
+# compose JWT_SECRET. CHANGE jwt_secret before any non-local deployment.
+office:
+  enabled: false
+  document_server_url: "http://127.0.0.1:18082/"
+  jwt_secret: "jumpserver-onlyoffice-secret-change-me"
+  callback_base_url: "http://host.docker.internal:8080"

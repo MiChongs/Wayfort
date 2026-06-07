@@ -41,15 +41,15 @@ Evidence is from the current repository snapshot. Items marked Unknown or Needs 
 - Backend tests: `go test ./...` or `make test`.
 - Backend gateway build: `make build`, which runs `bash scripts/build-gateway.sh`.
 - FreeRDP worker build: `make build-worker`; OS-specific install scripts are exposed as `make install-worker-linux`, `make install-worker-darwin`, and `make install-worker-windows`.
-- Frontend dev: from `web/`, `npm run dev`.
-- Frontend build: from `web/`, `npm run build`; `prebuild` copies Guacamole assets.
-- Frontend typecheck: from `web/`, `npm run typecheck`.
-- Frontend lint: from `web/`, `npm run lint` is declared as `next lint`, but needs verification with this Next.js version/config.
+- Frontend dev: from `web/`, `pnpm dev`.
+- Frontend build: from `web/`, `pnpm build`; `prebuild` copies Guacamole assets.
+- Frontend typecheck: from `web/`, `pnpm typecheck`.
+- Frontend lint: from `web/`, `pnpm lint` is declared as `next lint`, but is deprecated/removed in Next 16 — prefer `pnpm typecheck` + `pnpm build`.
 - Local dependencies: `docker compose -f deployments/docker-compose.yaml up` starts PostgreSQL, Redis, guacd, and a test SSH target; the app itself is intentionally run on the host per compose comments.
 
 ## Package And Artifact Notes
 
-- Frontend package manager appears to be npm: `web/package-lock.json` is present, while `.gitignore` treats pnpm files as local-only.
+- Frontend package manager is pnpm (pinned via `packageManager` in `web/package.json`); `web/pnpm-lock.yaml` + `web/pnpm-workspace.yaml` are tracked and `package-lock.json` is gitignored. Use `corepack enable` then `pnpm install`.
 - `web/scripts/copy-guacamole.mjs` runs on `postinstall` and `prebuild` to copy `guacamole-common.min.js` into `web/public/vendor/`.
 - Generated/runtime artifacts include `web/.next/`, `web/tsconfig.tsbuildinfo`, `var/`, root binaries, and `bin/` outputs.
 - Local config files such as `/config.yaml` and `/configs/config.yaml` are ignored and should not be treated as source of truth for documentation.

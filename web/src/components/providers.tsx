@@ -37,10 +37,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <TooltipProvider delayDuration={200}>
           {children}
           {/*
-            position / closeButton / theme-sync / richColors / shadcn
-            popover-token CSS variables all live inside the wrapper at
-            @/components/ui/sonner. Keep this mount point free of inline
-            props so the look stays consistent with shadcn defaults.
+            位置 / 主题联动 / 图标徽章 / classNames / 语义色 CSS 变量与默认
+            时长全部收敛在 @/components/ui/sonner 的 wrapper 与 globals.css 的
+            「Sonner toast」区块。这里保持零内联 props,让全局 toast 视觉统一。
           */}
           <Toaster />
           <ConfirmDialogHost />

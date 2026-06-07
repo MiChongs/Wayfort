@@ -18,6 +18,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/jumpserver-anonymous/internal/socks5"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -76,14 +77,16 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	// Phase 16 — asset_access gate, same as webssh / dbcli. RDP/VNC
 	// sessions to gated nodes need an active grant before the SOCKS
 	// listener gets spun up.
+	var grantDeadline time.Time
+	approvalCheck := approval.EnforcementCheck{
+		UserID:       claims.UserID,
+		BusinessType: model.ApprovalBizAssetAccess,
+		ResourceType: "node",
+		ResourceID:   strconv.FormatUint(nodeID, 10),
+		Action:       "connect",
+	}
 	if h.Approval != nil {
-		res, err := h.Approval.CheckEnforced(c.Request.Context(), approval.EnforcementCheck{
-			UserID:       claims.UserID,
-			BusinessType: model.ApprovalBizAssetAccess,
-			ResourceType: "node",
-			ResourceID:   strconv.FormatUint(nodeID, 10),
-			Action:       "connect",
-		})
+		res, err := h.Approval.CheckEnforced(c.Request.Context(), approvalCheck)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "approval check failed"})
 			return
@@ -91,6 +94,9 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 		if !res.Allowed {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": res.Reason, "approval_required": true})
 			return
+		}
+		if res.Required && !res.ExpiresAt.IsZero() {
+			grantDeadline = res.ExpiresAt
 		}
 	}
 
@@ -123,6 +129,15 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	defer cancel()
 	sessionID := uuid.NewString()
 	clientIP := c.ClientIP()
+	// Server-side hard cutoff (renewal-aware) when access came from a time-bound
+	// approval grant.
+	if h.Approval != nil && !grantDeadline.IsZero() {
+		stop := h.Approval.WatchGrant(ctx, approvalCheck, grantDeadline, func(reason string) {
+			_ = wsConn.Close(websocket.StatusPolicyViolation, reason)
+			cancel()
+		})
+		defer stop()
+	}
 
 	opts := runOpts{
 		guacProto:       guacProto,
@@ -179,7 +194,7 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		listenHost = "127.0.0.1"
 	}
 	target := pkgssh.AddrOf(node.Host, node.Port)
-	sl, err := New(ctx, listenHost, finalDialer, target, h.GW.Logger())
+	sl, err := socks5.New(ctx, listenHost, finalDialer, target, h.GW.Logger())
 	if err != nil {
 		return fmt.Errorf("start socks listener: %w", err)
 	}
@@ -288,8 +303,13 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 		})
 	}
 
+	sctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	unreg := h.GW.RegisterLive(sessionID, cancel)
+	defer unreg()
+
 	start := time.Now()
-	bytesIn, bytesOut, runErr := h.Bridge.Serve(ctx, ws, params)
+	bytesIn, bytesOut, runErr := h.Bridge.Serve(sctx, ws, params)
 	endErr := runErr
 	if errors.Is(endErr, context.Canceled) {
 		endErr = nil

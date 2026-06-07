@@ -57,6 +57,12 @@ export function iconForEntry(e: SftpEntry): IconType {
   return FileText
 }
 
+// Icon for a bare filename (no stat) — used by the transfer dock, where a
+// queued upload is known only by name.
+export function iconForName(name: string): IconType {
+  return iconForEntry({ name, is_dir: false, is_link: false } as SftpEntry)
+}
+
 export function iconColorForEntry(e: SftpEntry): string {
   if (e.is_link) return "text-cyan-500 dark:text-cyan-400"
   if (e.is_dir) return "text-sky-500 dark:text-sky-400"

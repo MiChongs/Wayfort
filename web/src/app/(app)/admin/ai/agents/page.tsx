@@ -3,7 +3,7 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Bot, Pencil, Plus, Trash2 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -19,6 +19,8 @@ import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet"
 import { aiAgentService, aiProviderService } from "@/lib/api/services"
+import { AgentAvatar } from "@/components/ai/agent-avatar"
+import { IconPicker } from "@/components/icons/icon-picker"
 import { DataTable, type Column } from "@/components/common/data-table"
 import { Badge } from "@/components/ui/badge"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
@@ -45,7 +47,8 @@ export default function AIAgentsPage() {
 
   const cols: Column<AIAgent>[] = [
     { header: "名称", cell: (a) => (
-      <button className="font-medium hover:underline text-left" onClick={() => setEditing(a)}>
+      <button className="flex items-center gap-2 text-left font-medium hover:underline" onClick={() => setEditing(a)}>
+        <AgentAvatar agent={a} size="sm" />
         {a.name}
       </button>
     ) },
@@ -206,6 +209,17 @@ function AgentFormFields({
   }, [tools])
   return (
     <div className="space-y-3 mt-2 max-h-[65vh] overflow-y-auto pr-1">
+      <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 p-3">
+        <AgentAvatar agent={{ name: a.name || "", icon: a.icon }} />
+        <div className="flex-1 space-y-1">
+          <Label>头像图标</Label>
+          <IconPicker
+            value={a.icon || ""}
+            onChange={(t) => setA({ ...a, icon: t })}
+            placeholder="默认首字母头像"
+          />
+        </div>
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1"><Label>名称 *</Label><Input value={a.name || ""} onChange={(e) => setA({ ...a, name: e.target.value })} /></div>
         <div className="space-y-1">

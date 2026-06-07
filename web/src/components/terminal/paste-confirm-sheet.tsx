@@ -44,7 +44,7 @@ export function PasteConfirmSheet({ text, onConfirm, onCancel }: Props) {
             <Badge variant="outline" className="font-normal">行数 {lines}</Badge>
             <Badge variant="outline" className="font-normal">字符 {chars.toLocaleString()}</Badge>
             {chars > 4096 && (
-              <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 font-normal text-amber-700 dark:text-amber-300">
+              <Badge variant="warning" className="font-normal">
                 超长内容
               </Badge>
             )}

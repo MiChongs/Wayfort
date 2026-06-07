@@ -106,6 +106,7 @@ function ShortcutsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
               ["Ctrl/⌘ + 1..9", "跳到第 N 个 Tab"],
               ["Ctrl/⌘ + K", "命令面板（全局）"],
               ["Ctrl/⌘ + B", "切换侧边栏"],
+              ["Ctrl/⌘ + \\", "分屏 / 取消分屏"],
               ["F11", "当前 Tab 全屏"],
               ["双击 Tab", "重命名"],
               ["中键 / Ctrl+W", "关闭 Tab"],

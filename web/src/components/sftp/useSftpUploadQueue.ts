@@ -153,10 +153,28 @@ export function useSftpUploadQueue(
     setTasks((prev) => prev.filter((t) => t.status === "pending" || t.status === "uploading"))
   }, [])
 
+  const cancelAll = React.useCallback(() => {
+    for (const t of tasksRef.current) {
+      if (t.status === "uploading" && t.abort) t.abort()
+      else if (t.status === "pending") update(t.id, { status: "cancelled" })
+    }
+  }, [update])
+
+  const retryFailed = React.useCallback(() => {
+    setTasks((prev) =>
+      prev.map((t) => (t.status === "error" ? { ...t, status: "pending", sent: 0, error: undefined } : t)),
+    )
+  }, [])
+
   const active = tasks.filter((t) => t.status === "pending" || t.status === "uploading")
   const finished = tasks.filter((t) => t.status === "done" || t.status === "error" || t.status === "cancelled")
   const totalSent = active.reduce((s, t) => s + t.sent, 0)
   const totalBytes = active.reduce((s, t) => s + t.size, 0)
+  const uploadingCount = tasks.filter((t) => t.status === "uploading").length
+  const doneCount = tasks.filter((t) => t.status === "done").length
+  const failedCount = tasks.filter((t) => t.status === "error").length
+  const pct = totalBytes > 0 ? Math.round((totalSent / totalBytes) * 100) : active.length === 0 ? 100 : 0
+  const hasActive = active.length > 0
 
   return {
     tasks,
@@ -164,10 +182,17 @@ export function useSftpUploadQueue(
     finished,
     totalSent,
     totalBytes,
+    uploadingCount,
+    doneCount,
+    failedCount,
+    pct,
+    hasActive,
     enqueue,
     enqueueMany,
     cancel,
     retry,
+    cancelAll,
+    retryFailed,
     clearFinished,
   }
 }

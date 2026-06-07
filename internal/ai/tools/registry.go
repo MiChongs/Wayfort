@@ -37,6 +37,10 @@ type ToolCtx struct {
 	Audit    *audit.Writer
 	Asset    *asset.Resolver
 	RBAC     *auth.Resolver
+	// Stream, when non-nil, lets a long-running tool push partial output to the
+	// live UI as it is produced (e.g. ssh_exec streaming command output). The
+	// final returned string is still the authoritative result fed to the model.
+	Stream func(chunk string)
 }
 
 // Run handler signature.
@@ -171,6 +175,9 @@ type PortForwardEntry struct {
 
 type NodeRunner interface {
 	Exec(ctx context.Context, userID uint64, nodeID uint64, command string, timeoutSec int) (stdout, stderr string, exit int, err error)
+	// ExecStream is like Exec but invokes onChunk with stdout/stderr fragments
+	// as they arrive (onChunk may be nil for buffered execution).
+	ExecStream(ctx context.Context, userID uint64, nodeID uint64, command string, timeoutSec int, onChunk func(string)) (stdout, stderr string, exit int, err error)
 }
 
 type SFTPRunner interface {

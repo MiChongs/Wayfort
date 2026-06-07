@@ -5,7 +5,7 @@
 // breaks the runtime because every internal module references the same
 // `Guacamole` global.
 //
-// This script is invoked automatically by `npm install` via the
+// This script is invoked automatically by `pnpm install` via the
 // `postinstall` script in package.json, and also defensively from `prebuild`.
 
 import { copyFileSync, mkdirSync, existsSync } from "node:fs"

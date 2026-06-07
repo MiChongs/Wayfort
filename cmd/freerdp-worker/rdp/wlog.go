@@ -72,3 +72,50 @@ func ApplyWLogLevel(level string) bool {
 	}
 	return C.WLog_SetStringLogLevel(root, clevel) != 0
 }
+
+// EnableChannelDebug bumps specific libfreerdp channel loggers to DEBUG without
+// turning the whole root into a firehose. WLOG_FILTER env is ignored on the
+// MSYS2 build (same reason ApplyWLogLevel exists), so we set the per-tag levels
+// directly. Used to surface the rdpdr device-announce handshake — the only way
+// to see whether a redirected drive is actually announced to the server.
+func EnableChannelDebug(tags []string) int {
+	// WLog_SetStringLogLevel on a freshly WLog_Get'd CHILD logger does NOT
+	// stick on this WinPR build: the per-tag effective level is re-resolved
+	// from the global filter table, so a direct level set is overridden when
+	// FreeRDP later creates its own logger for the same tag. The filter table
+	// (the programmatic equivalent of WLOG_FILTER, which the MSYS2 build also
+	// ignores via env) is the mechanism that actually drives per-tag levels.
+	// Add the filters here, before FreeRDP creates the channel loggers during
+	// connect, so they pick up DEBUG at creation time. Format: "tag:LEVEL"
+	// comma-separated, with a trailing wildcard so sub-loggers match too.
+	if len(tags) == 0 {
+		return 0
+	}
+	filter := ""
+	for i, tag := range tags {
+		if i > 0 {
+			filter += ","
+		}
+		filter += tag + ".*:DEBUG," + tag + ":DEBUG"
+	}
+	cf := C.CString(filter)
+	defer C.free(unsafe.Pointer(cf))
+	if C.WLog_AddStringLogFilters(cf) != 0 {
+		return len(tags)
+	}
+	return 0
+}
+
+// wlogDebugActiveProbe reports whether DEBUG is active for a tag's logger — a
+// test seam to verify EnableChannelDebug actually engages per-tag DEBUG (the
+// previous WLog_SetStringLogLevel approach reported success but DEBUG stayed
+// inactive).
+func wlogDebugActiveProbe(tag string) bool {
+	ctag := C.CString(tag)
+	defer C.free(unsafe.Pointer(ctag))
+	log := C.WLog_Get(ctag)
+	if log == nil {
+		return false
+	}
+	return C.WLog_IsLevelActive(log, C.WLOG_DEBUG) != 0
+}

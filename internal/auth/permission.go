@@ -131,3 +131,43 @@ func HasSystem(perms map[string]struct{}) bool {
 	_, ok := perms[PermSystemAdmin]
 	return ok
 }
+
+// Access tiers used by the frontend to pick a dashboard + gate nav. Three
+// buckets derived purely from the permission set:
+//   - superadmin: holds system:admin (the bootstrap root or the `admin` role)
+//   - admin:      holds any management permission but NOT system:admin
+//                 (e.g. the operator role, or a custom role with :manage perms)
+//   - user:       everyone else (guest / AI-only / plain users)
+const (
+	TierSuperadmin = "superadmin"
+	TierAdmin      = "admin"
+	TierUser       = "user"
+)
+
+// adminTierPerms marks the holder as at least "admin" tier. Deliberately
+// excludes plain read/list/use perms (node:list, session:list, ai:use, …) so a
+// read-only operator stays a "user" unless they can actually manage something.
+var adminTierPerms = []string{
+	PermNodeCreate, PermNodeUpdate, PermNodeDelete,
+	PermProxyManage, PermCredentialManage,
+	PermAssetGroupManage, PermTagManage, PermGrantManage,
+	PermSessionTerminate, PermAuditRead,
+	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
+	PermFirewallManage, PermDockerManage,
+	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
+	PermApprovalSubscribeManage, PermApprovalAuditRead,
+	PermAIAgentGlobal, PermAIProviderGlobal,
+}
+
+// TierFor classifies a permission set into one of the three access tiers.
+func TierFor(perms map[string]struct{}) string {
+	if HasSystem(perms) {
+		return TierSuperadmin
+	}
+	for _, p := range adminTierPerms {
+		if _, ok := perms[p]; ok {
+			return TierAdmin
+		}
+	}
+	return TierUser
+}

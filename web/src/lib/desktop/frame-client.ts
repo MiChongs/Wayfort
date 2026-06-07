@@ -6,6 +6,7 @@
 import { getAccessToken } from "@/lib/auth/tokens"
 import { collectClientCapabilities } from "./capabilities"
 import type {
+  AudioData,
   ClientMessage,
   ClipboardData,
   CursorEncoding,
@@ -15,6 +16,7 @@ import type {
   FrameRect,
   ServerMessage,
   SessionStatus,
+  WebRTCSignal,
 } from "./types"
 import type { FrameRectMeta } from "./canvas-renderer"
 
@@ -25,6 +27,10 @@ export interface FrameBytes {
 
 const WS_BASE = process.env.NEXT_PUBLIC_BACKEND_WS_URL || "ws://127.0.0.1:8080"
 const STATS_INTERVAL_MS = 1000
+// Heartbeat doubles as a latency probe: the gateway echoes each one back with
+// the same ts_ms, so a steady 2s cadence keeps an RTT sample fresh for the
+// status bar / link-quality readout while still defeating proxy idle timeouts.
+const HEARTBEAT_INTERVAL_MS = 2000
 const BINARY_HEADER_SIZE = 32
 const BINARY_KIND_JSON = 1
 const BINARY_KIND_RECT = 2
@@ -64,10 +70,25 @@ export interface FrameClientOpts {
   // navigator.clipboard. Image / file-list MIMEs land here too but
   // browser-side handling is M2.x.
   onClipboard?(data: ClipboardData): void
+  // Redirected remote audio chunk (rdpsnd PCM). The component feeds it to the
+  // Web Audio player.
+  onAudio?(data: AudioData): void
+  // WebRTC signaling (SDP answer / ICE candidate) from the gateway bridge. The
+  // component hands it to its RTCPeerConnection. Only fires in the WebRTC video
+  // path.
+  onWebRTC?(signal: WebRTCSignal): void
+  // Fired once the WS is open and the capability handshake has been sent. The
+  // component starts the WebRTC peer connection here (signaling needs an open
+  // socket). Distinct from onStatus("CONNECTING"), which is a display phase.
+  onOpen?(): void
   // Per-second snapshot of cumulative bytes received and sent. Used by the
   // status bar to render ↓ KB / ↑ KB counters without re-rendering on
   // every frame.
   onStats?(stats: FrameClientStats): void
+  // Round-trip latency (ms) from a heartbeat echo. Fires roughly every
+  // HEARTBEAT_INTERVAL_MS once the gateway answers; never fires if the
+  // gateway predates the heartbeat-ack support (graceful: latency stays null).
+  onLatency?(ms: number): void
 }
 
 export class FrameClient {
@@ -113,10 +134,16 @@ export class FrameClient {
         if (this.closed) return
         this.send({ caps })
       })
-      // 20s app-level heartbeat keeps middleboxes from idling us out.
+      // The socket is open — the component can now start WebRTC signaling.
+      this.opts.onOpen?.()
+      // App-level heartbeat: keeps middleboxes from idling us out AND doubles
+      // as the latency probe (the gateway echoes it; handleServerMessage clocks
+      // the round-trip). Fire one immediately so the first RTT sample lands
+      // without waiting a full interval.
+      this.send({ hb: { ts_ms: Date.now() } })
       this.hbTimer = window.setInterval(() => {
         this.send({ hb: { ts_ms: Date.now() } })
-      }, 20_000)
+      }, HEARTBEAT_INTERVAL_MS)
       if (this.opts.onStats) {
         this.statsTimer = window.setInterval(() => {
           this.opts.onStats?.({ bytesIn: this._bytesIn, bytesOut: this._bytesOut })
@@ -247,6 +274,13 @@ export class FrameClient {
   }
 
   private handleServerMessage(msg: ServerMessage): void {
+    // Heartbeat echo → round-trip latency. Cheap and frequent, so check it
+    // first and bail before the heavier frame/status branches.
+    if (msg.hb) {
+      const rtt = Date.now() - msg.hb.ts_ms
+      if (rtt >= 0 && rtt < 60_000) this.opts.onLatency?.(rtt)
+      return
+    }
     // Status updates go to React; frame/cursor updates go to the renderer.
     if (msg.status) {
       this.opts.onStatus(msg.status)
@@ -263,6 +297,14 @@ export class FrameClient {
       // text/plain*: write to navigator.clipboard. Other MIMEs (image,
       // file-list) are recognised but not yet plumbed end-to-end.
       this.opts.onClipboard?.(msg.clipboard)
+      return
+    }
+    if (msg.audio) {
+      this.opts.onAudio?.(msg.audio)
+      return
+    }
+    if (msg.webrtc) {
+      this.opts.onWebRTC?.(msg.webrtc)
       return
     }
     if (msg.bell) {

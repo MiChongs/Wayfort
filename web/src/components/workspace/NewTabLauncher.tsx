@@ -2,6 +2,18 @@
 
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
+import { useTheme } from "next-themes"
+import {
+  Copy,
+  PanelLeft,
+  RotateCcw,
+  Server,
+  SplitSquareHorizontal,
+  Star,
+  SunMoon,
+  Undo2,
+  X,
+} from "lucide-react"
 import {
   Command,
   CommandEmpty,
@@ -14,6 +26,7 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
+import { cn } from "@/lib/utils"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "./protocolMeta"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 
@@ -22,12 +35,25 @@ type Props = {
   onOpenChange: (open: boolean) => void
 }
 
-// Two-step launcher:
-//   1. pick a node (fuzzy search of every visible asset)
+// Two-step launcher + command surface:
+//   1. pick a node (fuzzy search of every visible asset) OR run a workspace
+//      action (close / split / reconnect / theme …)
 //   2. pick a protocol (the protocols that node supports)
 // Step 2 is skipped when the node only supports a single protocol.
 export function NewTabLauncher({ open, onOpenChange }: Props) {
   const openTab = useWorkspaceStore((s) => s.open)
+  const closeTab = useWorkspaceStore((s) => s.close)
+  const duplicate = useWorkspaceStore((s) => s.duplicate)
+  const setStatus = useWorkspaceStore((s) => s.setStatus)
+  const toggleSplit = useWorkspaceStore((s) => s.toggleSplit)
+  const toggleSidebar = useWorkspaceStore((s) => s.toggleSidebar)
+  const closeAll = useWorkspaceStore((s) => s.closeAll)
+  const reopenLastClosed = useWorkspaceStore((s) => s.reopenLastClosed)
+  const activeId = useWorkspaceStore((s) => s.activeId)
+  const splitId = useWorkspaceStore((s) => s.splitId)
+  const openTabs = useWorkspaceStore((s) => s.tabs)
+  const { theme, setTheme } = useTheme()
+
   const nodes = useQuery({ queryKey: ["me", "nodes"], queryFn: meService.visibleNodes })
   const recents = useQuery({ queryKey: ["me", "recents"], queryFn: () => meService.recentNodes(20) })
   const favorites = useQuery({ queryKey: ["me", "favorites"], queryFn: meService.favorites })
@@ -37,7 +63,6 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
 
   React.useEffect(() => {
     if (!open) {
-      // Reset on close so the next invocation starts fresh.
       setPickedNode(null)
       setQ("")
     }
@@ -46,6 +71,7 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
   const all: Node[] = nodes.data?.nodes ?? []
   const byId = React.useMemo(() => new Map(all.map((n) => [n.id, n])), [all])
   const favIds = new Set(favorites.data?.node_ids ?? [])
+  const openNodeIds = new Set(openTabs.map((t) => t.nodeId))
   const recentOrdered = (recents.data?.recent ?? [])
     .map((r) => byId.get(r.node_id))
     .filter((n): n is Node => !!n)
@@ -64,34 +90,103 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
     onOpenChange(false)
   }
 
+  const run = (fn: () => void) => {
+    fn()
+    onOpenChange(false)
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 overflow-hidden max-w-xl">
-        <DialogTitle className="sr-only">新建工作台 Tab</DialogTitle>
+      <DialogContent className="max-w-xl overflow-hidden p-0">
+        <DialogTitle className="sr-only">新建会话 / 命令面板</DialogTitle>
         <Command shouldFilter>
           {!pickedNode ? (
             <>
               <CommandInput
                 value={q}
                 onValueChange={setQ}
-                placeholder="按名称 / IP / 描述搜索节点…"
+                placeholder="搜索节点，或输入动作（分屏 / 关闭 / 主题…）"
                 autoFocus
               />
               <CommandList className="max-h-[60vh]">
-                <CommandEmpty>没有匹配的节点</CommandEmpty>
+                <CommandEmpty>没有匹配的节点或动作</CommandEmpty>
+
+                <CommandGroup heading="工作台动作">
+                  {activeId && (
+                    <ActionItem
+                      icon={SplitSquareHorizontal}
+                      label={splitId ? "取消并排" : "并排查看当前会话"}
+                      keywords="split 分屏 并排 side"
+                      onSelect={() => run(toggleSplit)}
+                    />
+                  )}
+                  {activeId && (
+                    <ActionItem
+                      icon={RotateCcw}
+                      label="重连当前会话"
+                      keywords="reconnect restart 重连 重启"
+                      onSelect={() => run(() => activeId && setStatus(activeId, "connecting"))}
+                    />
+                  )}
+                  {activeId && (
+                    <ActionItem
+                      icon={Copy}
+                      label="复制当前会话"
+                      keywords="duplicate copy 复制"
+                      onSelect={() => run(() => activeId && duplicate(activeId))}
+                    />
+                  )}
+                  {activeId && (
+                    <ActionItem
+                      icon={X}
+                      label="关闭当前会话"
+                      keywords="close 关闭"
+                      onSelect={() => run(() => activeId && closeTab(activeId))}
+                    />
+                  )}
+                  <ActionItem
+                    icon={Undo2}
+                    label="撤销关闭"
+                    keywords="reopen undo 撤销 恢复"
+                    onSelect={() => run(reopenLastClosed)}
+                  />
+                  <ActionItem
+                    icon={PanelLeft}
+                    label="切换侧边栏"
+                    keywords="sidebar 侧边栏 toggle"
+                    onSelect={() => run(toggleSidebar)}
+                  />
+                  <ActionItem
+                    icon={SunMoon}
+                    label={theme === "dark" ? "切换到明亮主题" : "切换到暗色主题"}
+                    keywords="theme 主题 dark light 明亮 暗色"
+                    onSelect={() => run(() => setTheme(theme === "dark" ? "light" : "dark"))}
+                  />
+                  {openTabs.length > 0 && (
+                    <ActionItem
+                      icon={X}
+                      label="关闭所有会话"
+                      keywords="close all 全部关闭 清空"
+                      onSelect={() => run(closeAll)}
+                    />
+                  )}
+                </CommandGroup>
+
                 {recentOrdered.length > 0 && (
                   <>
+                    <CommandSeparator />
                     <CommandGroup heading="最近访问">
                       {recentOrdered.slice(0, 6).map((n) => (
-                        <NodeRow key={`recent-${n.id}`} node={n} fav={favIds.has(n.id)} onPick={pickNode} />
+                        <NodeRow key={`recent-${n.id}`} node={n} fav={favIds.has(n.id)} open={openNodeIds.has(n.id)} onPick={pickNode} />
                       ))}
                     </CommandGroup>
-                    <CommandSeparator />
                   </>
                 )}
+
+                <CommandSeparator />
                 <CommandGroup heading="全部资产">
                   {enabled.map((n) => (
-                    <NodeRow key={n.id} node={n} fav={favIds.has(n.id)} onPick={pickNode} />
+                    <NodeRow key={n.id} node={n} fav={favIds.has(n.id)} open={openNodeIds.has(n.id)} onPick={pickNode} />
                   ))}
                 </CommandGroup>
               </CommandList>
@@ -115,23 +210,73 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
   }
 }
 
-function NodeRow({ node, fav, onPick }: { node: Node; fav: boolean; onPick: (n: Node) => void }) {
+function ActionItem({
+  icon: Icon,
+  label,
+  keywords,
+  onSelect,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  keywords: string
+  onSelect: () => void
+}) {
+  return (
+    <CommandItem value={`${label} ${keywords}`} onSelect={onSelect} className="gap-2">
+      <span className="grid h-6 w-6 place-items-center rounded-md bg-muted text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <span className="text-sm">{label}</span>
+    </CommandItem>
+  )
+}
+
+function NodeRow({
+  node,
+  fav,
+  open,
+  onPick,
+}: {
+  node: Node
+  fav: boolean
+  open: boolean
+  onPick: (n: Node) => void
+}) {
   const choices = protocolChoicesForNode(node.protocol)
   const meta = metaOf(choices[0]?.protocol ?? "tcp_forward")
   const Icon = meta.icon
+  const tags = (node.tags ?? "")
+    .split(/[,，\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .slice(0, 2)
   return (
     <CommandItem
       value={`${node.name} ${node.host} ${node.protocol} ${node.tags ?? ""} ${node.description ?? ""}`}
       onSelect={() => onPick(node)}
-      className="flex items-center gap-2"
+      className="gap-2.5"
     >
-      <Icon className={`w-4 h-4 ${meta.tint}`} />
-      <span className="font-medium truncate flex-1">{node.name}</span>
-      {fav && <span className="text-[10px] text-amber-500">★</span>}
-      <span className="text-[10px] text-muted-foreground font-mono truncate max-w-[12rem]">
-        {node.host}:{node.port}
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted">
+        <Icon className={cn("h-4 w-4", meta.tint)} />
       </span>
-      <span className="text-[10px] text-muted-foreground uppercase">{node.protocol}</span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-medium">{node.name}</span>
+          {fav && <Star className="h-3 w-3 shrink-0 fill-current text-[#bf6f33] dark:text-[#e8a55a]" />}
+          {open && <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-[#5db872]" title="已打开" />}
+        </span>
+        <span className="truncate font-mono text-[11px] text-muted-foreground">
+          {node.host}:{node.port}
+        </span>
+      </span>
+      <span className="flex shrink-0 items-center gap-1">
+        {tags.map((t) => (
+          <span key={t} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            {t}
+          </span>
+        ))}
+        <span className="hidden text-[10px] uppercase text-muted-foreground/70 sm:inline">{node.protocol}</span>
+      </span>
     </CommandItem>
   )
 }
@@ -160,12 +305,14 @@ function ProtocolPicker({
                 key={choice.value}
                 value={`${choice.label} ${choice.value}`}
                 onSelect={() => onPick(choice)}
-                className="flex items-center gap-2"
+                className="gap-2.5"
               >
-                <Icon className={`w-4 h-4 ${meta.tint}`} />
-                <span className="flex-1">{choice.label}</span>
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted">
+                  <Icon className={cn("h-4 w-4", meta.tint)} />
+                </span>
+                <span className="flex-1 text-sm">{choice.label}</span>
                 {choice.description && (
-                  <span className="hidden sm:inline text-[10px] text-muted-foreground truncate max-w-[17rem]">
+                  <span className="hidden max-w-[17rem] truncate text-[10px] text-muted-foreground sm:inline">
                     {choice.description}
                   </span>
                 )}
@@ -175,7 +322,9 @@ function ProtocolPicker({
         </CommandGroup>
         <CommandSeparator />
         <CommandGroup>
-          <CommandItem onSelect={onBack}>← 返回节点选择</CommandItem>
+          <CommandItem value="返回 back" onSelect={onBack} className="gap-2 text-muted-foreground">
+            <Server className="h-4 w-4" /> 返回节点选择
+          </CommandItem>
         </CommandGroup>
       </CommandList>
     </>

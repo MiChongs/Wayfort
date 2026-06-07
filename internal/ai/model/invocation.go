@@ -21,6 +21,10 @@ type AIToolInvocation struct {
 	ID              string           `gorm:"primaryKey;size:64" json:"id"`
 	ConversationID  string           `gorm:"size:64;index;not null" json:"conversation_id"`
 	MessageID       uint64           `gorm:"index" json:"message_id"`
+	// ToolCallID is the provider's tool_call id, so the UI can correlate each
+	// invocation to the exact tool_call (a tool called N times in one turn has
+	// N distinct ids — matching by tool_name alone is ambiguous).
+	ToolCallID      string           `gorm:"size:64;index" json:"tool_call_id,omitempty"`
 	ToolName        string           `gorm:"size:64;index" json:"tool_name"`
 	InputJSON       string           `gorm:"type:text" json:"input"`
 	PermissionMode  PermissionMode   `gorm:"size:16" json:"permission_mode"`

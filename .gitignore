@@ -30,11 +30,10 @@ bin/
 /.worktrees/
 /docs/
 
-# Web tooling — repo uses npm (package-lock.json). pnpm artifacts are
-# local-only when a contributor experiments with pnpm.
+# Web tooling — repo uses pnpm. pnpm-lock.yaml + pnpm-workspace.yaml are
+# tracked; npm's package-lock.json is not used.
 /web/.omc/
-/web/pnpm-lock.yaml
-/web/pnpm-workspace.yaml
+/web/package-lock.json
 # Per-developer dev URLs (BACKEND_HTTP_URL / NEXT_PUBLIC_BACKEND_WS_URL).
 # `.env.example` covers the documentation case; `.env` is local-only.
 /web/.env

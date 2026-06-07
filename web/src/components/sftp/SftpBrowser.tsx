@@ -1,44 +1,65 @@
 "use client"
 
 import * as React from "react"
-import { ArrowDown, ArrowUp, ChevronRight, Files, FolderOpen, Loader2, MousePointer2 } from "lucide-react"
-import { fmtBytes, fullTime, relTime } from "@/lib/format"
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronRight,
+  Download,
+  FolderOpen,
+  Loader2,
+  Pencil,
+  Trash2,
+  Upload,
+} from "lucide-react"
+import {
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Button } from "@/components/ui/button"
+import { fmtBytes, relTime, fullTime } from "@/lib/format"
 import { cn } from "@/lib/utils"
-import type { SftpEntry } from "@/lib/api/services"
+import type { SftpEntry, SftpSearchHit } from "@/lib/api/services"
 import type { SortKey, SortDir } from "./SftpToolbar"
 import { iconColorForEntry, iconForEntry } from "./fileIcons"
 import { SftpRenameInline } from "./SftpRenameInline"
 import { SftpRowContextMenu, type SftpContextActions } from "./SftpContextMenu"
+import { readMovePayload, SFTP_MOVE_MIME } from "./sftpDnd"
 
 type Props = {
-  entries: SftpEntry[]
+  entries: (SftpEntry | SftpSearchHit)[]
   sortKey: SortKey
   sortDir: SortDir
   onSort: (key: SortKey, dir: SortDir) => void
   loading: boolean
   error?: string | null
+  onRetry?: () => void
   isSelected: (path: string) => boolean
+  selectedPaths: string[]
+  allSelected: boolean
+  onToggleAll: () => void
   onRowClick: (entry: SftpEntry, index: number, ev: React.MouseEvent) => void
   onRowDoubleClick: (entry: SftpEntry) => void
-  // Workspace v2 — actions for the shadcn ContextMenu wrapper. onBeforeContextMenu
-  // lets the parent select the right-clicked row before any item fires.
+  onToggleRow: (entry: SftpEntry, index: number) => void
   contextActions: SftpContextActions
   onBeforeContextMenu?: (entry: SftpEntry) => void
   renamingPath: string | null
   onRenameSubmit: (entry: SftpEntry, newName: string) => void
   onRenameCancel: () => void
-  // The browser owns the drop-zone so dragging anywhere over the list
-  // triggers the upload pipeline. Files are surfaced back to the caller.
   onDropFiles: (files: File[]) => void
-  onRetry?: () => void
+  onMove: (paths: string[], targetDir: string) => void
+  canWrite: boolean
+  showLocation?: boolean
 }
 
-const COLS: { key: SortKey | "actions"; label: string; cls: string; sortable?: boolean }[] = [
-  { key: "name", label: "名称", cls: "min-w-0 flex-1", sortable: true },
-  { key: "size", label: "大小", cls: "w-20 hidden sm:flex justify-end", sortable: true },
-  { key: "type", label: "权限", cls: "w-24 hidden lg:flex font-mono", sortable: true },
-  { key: "type", label: "所有者", cls: "w-32 hidden xl:flex truncate" },
-  { key: "mtime", label: "修改时间", cls: "w-44 hidden md:flex", sortable: true },
+const HEAD: { key: SortKey; label: string; cls: string }[] = [
+  { key: "size", label: "大小", cls: "w-24 text-right hidden sm:table-cell" },
+  { key: "type", label: "权限", cls: "w-28 hidden lg:table-cell" },
+  { key: "mtime", label: "修改时间", cls: "w-44 hidden md:table-cell" },
 ]
 
 export function SftpBrowser({
@@ -48,170 +69,131 @@ export function SftpBrowser({
   onSort,
   loading,
   error,
+  onRetry,
   isSelected,
+  selectedPaths,
+  allSelected,
+  onToggleAll,
   onRowClick,
   onRowDoubleClick,
+  onToggleRow,
   contextActions,
   onBeforeContextMenu,
   renamingPath,
   onRenameSubmit,
   onRenameCancel,
   onDropFiles,
-  onRetry,
+  onMove,
+  canWrite,
+  showLocation,
 }: Props) {
-  const [dragOver, setDragOver] = React.useState(false)
+  const [dragFiles, setDragFiles] = React.useState(false)
   const dragDepth = React.useRef(0)
 
   const onDragEnter = (ev: React.DragEvent) => {
     if (!ev.dataTransfer?.types.includes("Files")) return
     dragDepth.current++
-    setDragOver(true)
+    setDragFiles(true)
   }
   const onDragLeave = () => {
     dragDepth.current = Math.max(0, dragDepth.current - 1)
-    if (dragDepth.current === 0) setDragOver(false)
+    if (dragDepth.current === 0) setDragFiles(false)
   }
   const onDragOver = (ev: React.DragEvent) => {
     if (ev.dataTransfer?.types.includes("Files")) ev.preventDefault()
   }
   const onDrop = (ev: React.DragEvent) => {
+    if (!ev.dataTransfer?.types.includes("Files")) return
     ev.preventDefault()
     dragDepth.current = 0
-    setDragOver(false)
-    const files = Array.from(ev.dataTransfer?.files || [])
+    setDragFiles(false)
+    const files = Array.from(ev.dataTransfer.files || [])
     if (files.length > 0) onDropFiles(files)
   }
 
+  const sortArrow = (key: SortKey) =>
+    key === sortKey ? (
+      sortDir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />
+    ) : null
+
   return (
     <div
-      className={cn(
-        "relative flex-1 min-h-0 overflow-auto",
-        dragOver && "ring-2 ring-primary ring-offset-2 ring-offset-background rounded-md",
-      )}
+      className="relative min-h-0 flex-1 overflow-auto"
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      {/* Sticky header */}
-      <div className="sticky top-0 z-10 bg-card border-b text-xs text-muted-foreground select-none">
-        <div className="flex items-center gap-2 px-3 py-2">
-          <span className="w-6 shrink-0" />
-          {COLS.map((c, i) => {
-            const active = c.sortable && (c as { key: SortKey }).key === sortKey
-            return (
-              <span key={i} className={cn("flex items-center gap-1", c.cls)}>
-                {c.sortable ? (
-                  <button
-                    type="button"
-                    className={cn("hover:text-foreground inline-flex items-center gap-1", active && "text-foreground")}
-                    onClick={() => {
-                      const k = (c as { key: SortKey }).key
-                      const dir = active ? (sortDir === "asc" ? "desc" : "asc") : "asc"
-                      onSort(k, dir)
-                    }}
-                  >
-                    {c.label}
-                    {active && (sortDir === "asc" ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />)}
-                  </button>
-                ) : (
-                  c.label
-                )}
-              </span>
-            )
-          })}
-        </div>
-      </div>
+      <table className="w-full caption-bottom text-sm">
+        <TableHeader className="sticky top-0 z-10 bg-card">
+          <TableRow className="hover:bg-transparent">
+            <TableHead className="w-11 pl-3">
+              <Checkbox
+                checked={allSelected && entries.length > 0}
+                onCheckedChange={onToggleAll}
+                aria-label="全选"
+                disabled={entries.length === 0}
+              />
+            </TableHead>
+            <TableHead>
+              <SortButton label="名称" active={sortKey === "name"} onClick={() => onSort("name", sortKey === "name" && sortDir === "asc" ? "desc" : "asc")}>
+                {sortArrow("name")}
+              </SortButton>
+            </TableHead>
+            {HEAD.map((h) => (
+              <TableHead key={h.label} className={h.cls}>
+                <SortButton
+                  label={h.label}
+                  active={sortKey === h.key}
+                  align={h.cls.includes("text-right") ? "right" : "left"}
+                  onClick={() => onSort(h.key, sortKey === h.key && sortDir === "asc" ? "desc" : "asc")}
+                >
+                  {sortArrow(h.key)}
+                </SortButton>
+              </TableHead>
+            ))}
+            <TableHead className="w-[7.5rem]" />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {error ? null : entries.map((e, i) => (
+            <Row
+              key={(e as SftpSearchHit).dir ? `${(e as SftpSearchHit).dir}/${e.name}` : e.path}
+              entry={e}
+              index={i}
+              selected={isSelected(e.path)}
+              renaming={renamingPath === e.path}
+              canWrite={canWrite}
+              selectedPaths={selectedPaths}
+              showLocation={showLocation}
+              contextActions={contextActions}
+              onBeforeContextMenu={onBeforeContextMenu}
+              onRowClick={onRowClick}
+              onRowDoubleClick={onRowDoubleClick}
+              onToggleRow={onToggleRow}
+              onRenameSubmit={onRenameSubmit}
+              onRenameCancel={onRenameCancel}
+              onMove={onMove}
+            />
+          ))}
+        </TableBody>
+      </table>
 
-      {/* Body */}
+      {/* States */}
       {error ? (
         <ErrorState error={error} onRetry={onRetry} />
       ) : loading && entries.length === 0 ? (
         <LoadingState />
       ) : entries.length === 0 ? (
-        <EmptyState />
-      ) : (
-        <ul className="divide-y">
-          {entries.map((e, i) => {
-            const Icon = iconForEntry(e)
-            const sel = isSelected(e.path)
-            const renaming = renamingPath === e.path
-            return (
-              <SftpRowContextMenu
-                key={e.path}
-                entry={e}
-                actions={contextActions}
-                onBeforeOpen={onBeforeContextMenu}
-              >
-              <li
-                role="row"
-                aria-selected={sel}
-                className={cn(
-                  "group flex items-center gap-2 px-3 py-1.5 text-sm cursor-default",
-                  "hover:bg-accent/50",
-                  sel && "bg-primary/10 hover:bg-primary/15",
-                )}
-                onClick={(ev) => onRowClick(e, i, ev)}
-                onDoubleClick={() => !renaming && onRowDoubleClick(e)}
-              >
-                <span className="w-6 shrink-0 inline-flex items-center justify-center">
-                  <Icon className={cn("w-4 h-4", iconColorForEntry(e))} />
-                </span>
-                <span className="min-w-0 flex-1 flex items-center gap-1">
-                  {renaming ? (
-                    <SftpRenameInline
-                      initial={e.name}
-                      onSubmit={(v) => onRenameSubmit(e, v)}
-                      onCancel={onRenameCancel}
-                    />
-                  ) : (
-                    <>
-                      <span
-                        className={cn(
-                          "truncate",
-                          e.is_dir && "text-foreground font-medium",
-                          e.is_link && "italic",
-                        )}
-                        title={e.name}
-                      >
-                        {e.name}
-                      </span>
-                      {e.is_link && e.link_target && (
-                        <span className="text-xs text-muted-foreground inline-flex items-center gap-0.5 truncate">
-                          <ChevronRight className="w-3 h-3 shrink-0" /> {e.link_target}
-                        </span>
-                      )}
-                    </>
-                  )}
-                </span>
-                <span className="w-20 hidden sm:flex justify-end tabular-nums text-muted-foreground">
-                  {e.is_dir ? "—" : fmtBytes(e.size)}
-                </span>
-                <span className="w-24 hidden lg:flex font-mono text-xs text-muted-foreground">
-                  {e.mode_octal || e.mode}
-                </span>
-                <span className="w-32 hidden xl:flex truncate text-xs text-muted-foreground" title={`${e.owner}:${e.group}`}>
-                  {e.owner || (e.uid != null ? String(e.uid) : "")}
-                </span>
-                <span
-                  className="w-44 hidden md:flex flex-col text-xs text-muted-foreground"
-                  title={fullTime(e.mod_time)}
-                >
-                  <span>{fullTime(e.mod_time)}</span>
-                  <span className="opacity-70">{relTime(e.mod_time)}</span>
-                </span>
-              </li>
-              </SftpRowContextMenu>
-            )
-          })}
-        </ul>
-      )}
+        <EmptyState search={showLocation} />
+      ) : null}
 
-      {dragOver && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-primary/5 backdrop-blur-[1px]">
-          <div className="rounded-lg border-2 border-dashed border-primary px-6 py-4 bg-card shadow-xl text-center">
-            <FolderOpen className="w-8 h-8 text-primary mx-auto mb-1" />
-            <div className="text-sm font-medium">放下文件以上传到此目录</div>
+      {/* Upload overlay */}
+      {dragFiles && (
+        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center bg-primary/5 backdrop-blur-[1px]">
+          <div className="flex flex-col items-center gap-1.5 rounded-xl border-2 border-dashed border-primary bg-card px-7 py-5 text-sm font-medium shadow-xl">
+            <Upload className="h-6 w-6 text-primary" />
+            放下文件以上传到当前目录
           </div>
         </div>
       )}
@@ -219,51 +201,246 @@ export function SftpBrowser({
   )
 }
 
-function LoadingState() {
+function Row({
+  entry,
+  index,
+  selected,
+  renaming,
+  canWrite,
+  selectedPaths,
+  showLocation,
+  contextActions,
+  onBeforeContextMenu,
+  onRowClick,
+  onRowDoubleClick,
+  onToggleRow,
+  onRenameSubmit,
+  onRenameCancel,
+  onMove,
+}: {
+  entry: SftpEntry | SftpSearchHit
+  index: number
+  selected: boolean
+  renaming: boolean
+  canWrite: boolean
+  selectedPaths: string[]
+  showLocation?: boolean
+  contextActions: SftpContextActions
+  onBeforeContextMenu?: (e: SftpEntry) => void
+  onRowClick: (e: SftpEntry, i: number, ev: React.MouseEvent) => void
+  onRowDoubleClick: (e: SftpEntry) => void
+  onToggleRow: (e: SftpEntry, index: number) => void
+  onRenameSubmit: (e: SftpEntry, name: string) => void
+  onRenameCancel: () => void
+  onMove: (paths: string[], targetDir: string) => void
+}) {
+  const Icon = iconForEntry(entry)
+  const [dropOver, setDropOver] = React.useState(false)
+  const acceptsDrop = entry.is_dir && canWrite
+  const dir = (entry as SftpSearchHit).dir
+
   return (
-    <ul className="divide-y">
-      {Array.from({ length: 8 }).map((_, i) => (
-        <li key={i} className="flex items-center gap-2 px-3 py-2">
-          <span className="w-4 h-4 rounded bg-muted animate-pulse" />
-          <span className="h-3 rounded bg-muted animate-pulse flex-1 max-w-[60%]" />
-          <span className="h-3 rounded bg-muted animate-pulse w-12 hidden sm:block" />
-          <span className="h-3 rounded bg-muted animate-pulse w-16 hidden lg:block" />
-          <span className="h-3 rounded bg-muted animate-pulse w-32 hidden md:block" />
-        </li>
-      ))}
-      <li className="px-3 py-2 text-xs text-muted-foreground flex items-center gap-2 justify-center">
-        <Loader2 className="w-3.5 h-3.5 animate-spin" /> 加载中…
-      </li>
-    </ul>
+    <SftpRowContextMenu entry={entry} actions={contextActions} onBeforeOpen={onBeforeContextMenu}>
+      <TableRow
+        data-state={selected ? "selected" : undefined}
+        draggable={canWrite && !renaming}
+        onClick={(ev) => onRowClick(entry, index, ev)}
+        onDoubleClick={() => !renaming && onRowDoubleClick(entry)}
+        onDragStart={(ev) => {
+          const paths = selected && selectedPaths.length > 1 ? selectedPaths : [entry.path]
+          ev.dataTransfer.setData(SFTP_MOVE_MIME, JSON.stringify({ paths }))
+          ev.dataTransfer.effectAllowed = "move"
+        }}
+        onDragOver={(ev) => {
+          if (!acceptsDrop || !ev.dataTransfer.types.includes(SFTP_MOVE_MIME)) return
+          ev.preventDefault()
+          ev.dataTransfer.dropEffect = "move"
+          setDropOver(true)
+        }}
+        onDragLeave={() => setDropOver(false)}
+        onDrop={(ev) => {
+          setDropOver(false)
+          if (!acceptsDrop) return
+          const paths = readMovePayload(ev.dataTransfer)
+          if (!paths || paths.includes(entry.path)) return
+          ev.preventDefault()
+          ev.stopPropagation()
+          onMove(paths, entry.path)
+        }}
+        className={cn(
+          "group cursor-default",
+          dropOver && "bg-primary/5 ring-1 ring-inset ring-primary",
+        )}
+      >
+        <TableCell className="pl-3">
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleRow(entry, index)}
+            onClick={(e) => e.stopPropagation()}
+            aria-label={`选择 ${entry.name}`}
+            className={cn(selected ? "opacity-100" : "opacity-0 transition-opacity group-hover:opacity-100")}
+          />
+        </TableCell>
+
+        <TableCell className="max-w-0">
+          <div className="flex items-center gap-2">
+            <Icon className={cn("h-4 w-4 shrink-0", iconColorForEntry(entry))} />
+            {renaming ? (
+              <SftpRenameInline
+                initial={entry.name}
+                onSubmit={(v) => onRenameSubmit(entry, v)}
+                onCancel={onRenameCancel}
+              />
+            ) : (
+              <div className="min-w-0">
+                <div className="flex items-center gap-1">
+                  <span className={cn("truncate", entry.is_dir && "font-medium", entry.is_link && "italic")} title={entry.name}>
+                    {entry.name}
+                  </span>
+                  {entry.is_link && entry.link_target && (
+                    <span className="inline-flex shrink-0 items-center gap-0.5 truncate text-xs text-muted-foreground">
+                      <ChevronRight className="h-3 w-3" /> {entry.link_target}
+                    </span>
+                  )}
+                </div>
+                {showLocation && dir && (
+                  <span className="block truncate font-mono text-[11px] text-muted-foreground" title={dir}>
+                    {dir}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </TableCell>
+
+        <TableCell className="hidden text-right tabular-nums text-muted-foreground sm:table-cell">
+          {entry.is_dir ? "—" : fmtBytes(entry.size)}
+        </TableCell>
+        <TableCell className="hidden font-mono text-xs text-muted-foreground lg:table-cell">
+          {entry.mode_octal || entry.mode}
+        </TableCell>
+        <TableCell className="hidden text-xs text-muted-foreground md:table-cell" title={fullTime(entry.mod_time)}>
+          {relTime(entry.mod_time)}
+        </TableCell>
+
+        <TableCell className="py-0 pr-2">
+          {!renaming && (
+            <div className="flex items-center justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+              {!entry.is_dir && (
+                <RowAction icon={Download} label="下载" onClick={() => contextActions.onDownload(entry)} />
+              )}
+              {canWrite && (
+                <RowAction icon={Pencil} label="重命名" onClick={() => contextActions.onRename(entry)} />
+              )}
+              {canWrite && (
+                <RowAction
+                  icon={Trash2}
+                  label="删除"
+                  danger
+                  onClick={() => contextActions.onDelete(entry)}
+                />
+              )}
+            </div>
+          )}
+        </TableCell>
+      </TableRow>
+    </SftpRowContextMenu>
   )
 }
 
-function EmptyState() {
+function RowAction({
+  icon: Icon,
+  label,
+  onClick,
+  danger,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  label: string
+  onClick: () => void
+  danger?: boolean
+}) {
   return (
-    <div className="h-full min-h-[200px] flex flex-col items-center justify-center text-muted-foreground p-10 text-center">
-      <Files className="w-10 h-10 mb-2 opacity-50" />
-      <div className="text-sm font-medium text-foreground">这个目录是空的</div>
-      <div className="text-xs mt-1">把文件拖到这里上传，或使用工具栏新建目录 / 文件。</div>
-      <div className="text-xs mt-3 inline-flex items-center gap-1 opacity-70">
-        <MousePointer2 className="w-3 h-3" /> 右键空白处也能呼出动作
-      </div>
+    <Button
+      size="icon"
+      variant="ghost"
+      className={cn("h-7 w-7 text-muted-foreground", danger ? "hover:bg-destructive/10 hover:text-destructive" : "hover:text-foreground")}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+      aria-label={label}
+      title={label}
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </Button>
+  )
+}
+
+function SortButton({
+  label,
+  active,
+  onClick,
+  align = "left",
+  children,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+  align?: "left" | "right"
+  children?: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-1 text-xs font-medium transition-colors hover:text-foreground",
+        active ? "text-foreground" : "text-muted-foreground",
+        align === "right" && "flex-row-reverse",
+      )}
+    >
+      {label}
+      {children}
+    </button>
+  )
+}
+
+function LoadingState() {
+  return (
+    <div className="divide-y">
+      {Array.from({ length: 8 }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3 px-3 py-2.5">
+          <span className="h-4 w-4 shrink-0 animate-pulse rounded bg-muted" />
+          <span className="h-3.5 max-w-[50%] flex-1 animate-pulse rounded bg-muted" />
+          <span className="hidden h-3 w-12 animate-pulse rounded bg-muted sm:block" />
+          <span className="hidden h-3 w-32 animate-pulse rounded bg-muted md:block" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function EmptyState({ search }: { search?: boolean }) {
+  return (
+    <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-2 p-10 text-center">
+      <FolderOpen className="h-10 w-10 text-muted-foreground/40" />
+      <div className="text-sm font-medium">{search ? "没有匹配的文件" : "这个目录是空的"}</div>
+      {!search && (
+        <div className="text-xs text-muted-foreground">把文件拖到这里上传，或用工具栏新建目录、文件</div>
+      )}
     </div>
   )
 }
 
 function ErrorState({ error, onRetry }: { error: string; onRetry?: () => void }) {
   return (
-    <div className="h-full min-h-[200px] flex flex-col items-center justify-center text-center p-10">
+    <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-1.5 p-10 text-center">
       <div className="text-sm font-medium text-destructive">无法读取目录</div>
-      <div className="text-xs text-muted-foreground mt-1 max-w-md break-words">{error}</div>
+      <div className="max-w-md break-words text-xs text-muted-foreground">{error}</div>
       {onRetry && (
-        <button
-          type="button"
-          className="mt-3 inline-flex items-center gap-1 text-xs text-primary hover:underline"
-          onClick={onRetry}
-        >
+        <Button variant="outline" size="sm" className="mt-2" onClick={onRetry}>
           重试
-        </button>
+        </Button>
       )}
     </div>
   )

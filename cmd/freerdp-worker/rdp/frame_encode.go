@@ -80,6 +80,38 @@ func (c *Client) submitFrame(x, y, width, height uint32, rawBGRA []byte) {
 }
 
 func (c *Client) encodeFramePayload(rawBGRA []byte, width, height uint32) (desktop.Encoding, []byte) {
+	enc, payload := c.chooseFrameEncoding(rawBGRA, width, height)
+	return c.capFramePayload(enc, payload, rawBGRA, width, height)
+}
+
+// capFramePayload guarantees the emitted payload (plus the 32-byte binary
+// header added downstream) stays under the gateway's frame cap. A huge,
+// incompressible raw rect — e.g. a photo-heavy region on a multi-monitor / 8K
+// desktop — would otherwise exceed desktop.MaxFrameBytes, trip the gateway's
+// readFrame, end the stdout pump, and freeze the session. Force JPEG in that
+// case: lossy but renderable and tiny.
+func (c *Client) capFramePayload(enc desktop.Encoding, payload, rawBGRA []byte, width, height uint32) (desktop.Encoding, []byte) {
+	const slack = 1024 // binary header + framing slack
+	if len(payload)+slack <= desktop.MaxFrameBytes {
+		return enc, payload
+	}
+	if rgba, ok := bgraToRGBA(rawBGRA, width, height); ok {
+		var out bytes.Buffer
+		if err := jpeg.Encode(&out, rgba, &jpeg.Options{Quality: 70}); err == nil &&
+			out.Len() > 0 && out.Len()+slack <= desktop.MaxFrameBytes {
+			return desktop.EncodingJPEG, out.Bytes()
+		}
+	}
+	// Could not shrink under the cap; return as-is. The worker's writeFrame
+	// skips it (logged) rather than desync the protocol — a dropped frame
+	// beats a frozen stream.
+	c.logger.Warn("frame payload exceeds gateway cap and could not be compressed under it",
+		zap.Int("payload_bytes", len(payload)),
+		zap.Uint32("width", width), zap.Uint32("height", height))
+	return enc, payload
+}
+
+func (c *Client) chooseFrameEncoding(rawBGRA []byte, width, height uint32) (desktop.Encoding, []byte) {
 	if !c.shouldCompressedEncode(rawBGRA, width, height) {
 		return desktop.EncodingRawBGRA, rawBGRA
 	}

@@ -3,14 +3,21 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2, RefreshCcw, Search, X } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { assetGroupService, meService, tagService } from "@/lib/api/services"
 import type { AssetGroup, Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { AssetTreeNode, type TreeFolder, type TreeItem, type TreeLeaf } from "./AssetTreeNode"
+import { TreeList } from "@/components/common/tree-list"
+import {
+  FolderContent,
+  LeafContent,
+  type TreeFolder,
+  type TreeItem,
+  type TreeLeaf,
+} from "./AssetTreeNode"
 import { AssetTreeViewSwitcher } from "./AssetTreeViewSwitcher"
 import { metaOf } from "./protocolMeta"
 import { useWorkspaceStore, type Protocol } from "./useWorkspaceStore"
@@ -51,7 +58,7 @@ export function AssetTree({ onOpenTab }: Props) {
       case "recent":
         return buildRecent(filteredNodes, recents.data?.recent ?? [])
       case "groups":
-        return buildGroups(filteredNodes, groups.data?.asset_groups ?? [])
+        return buildGroups(filteredNodes, groups.data?.asset_groups ?? [], favIds)
       case "tags":
         return buildTags(filteredNodes, tags.data?.tags?.map((t) => t.name) ?? [])
       case "protocols":
@@ -129,16 +136,27 @@ export function AssetTree({ onOpenTab }: Props) {
             {q ? "没有匹配的资产" : "这里还没有可见资产"}
           </div>
         ) : (
-          <div className="space-y-0.5">
-            {tree.map((it) => (
-              <AssetTreeNode
-                key={it.id}
-                item={it}
-                onOpenTab={onOpenTab}
-                onToggleFavorite={(n) => toggleFav.mutate(n)}
-              />
-            ))}
-          </div>
+          // `key` forces a fresh expansion state (all folders open) whenever the
+          // view or search changes — matching the old per-folder defaultOpen.
+          <TreeList<TreeItem>
+            key={`${treeView}:${q}`}
+            nodes={tree}
+            getId={(it) => it.id}
+            getChildren={(it) => (it.type === "folder" ? it.children : undefined)}
+            defaultExpandedIds={collectFolderIds(tree)}
+            indent={14}
+            renderRow={(it) =>
+              it.type === "folder" ? (
+                <FolderContent folder={it} />
+              ) : (
+                <LeafContent
+                  leaf={it}
+                  onOpenTab={onOpenTab}
+                  onToggleFavorite={(n) => toggleFav.mutate(n)}
+                />
+              )
+            }
+          />
         )}
       </div>
     </div>
@@ -149,6 +167,21 @@ export function AssetTree({ onOpenTab }: Props) {
 
 function leaf(node: Node, favIds: Set<number>, prefix: string): TreeLeaf {
   return { type: "leaf", id: `${prefix}:${node.id}`, node, isFavorite: favIds.has(node.id) }
+}
+
+// All folder ids in a forest — used to seed "everything expanded".
+function collectFolderIds(items: TreeItem[]): string[] {
+  const out: string[] = []
+  const walk = (arr: TreeItem[]) => {
+    for (const it of arr) {
+      if (it.type === "folder") {
+        out.push(it.id)
+        walk(it.children)
+      }
+    }
+  }
+  walk(items)
+  return out
 }
 
 function buildFavorites(nodes: Node[], favIds: Set<number>): TreeItem[] {
@@ -266,34 +299,49 @@ function buildTags(nodes: Node[], tagNames: string[]): TreeItem[] {
   return out
 }
 
-function buildGroups(nodes: Node[], groups: AssetGroup[]): TreeItem[] {
-  // The /asset-groups list endpoint enriches each group with its member
-  // node IDs (see internal/api/asset_handler.go). We build a flat
-  // group-by-group structure (path-based hierarchy is rare in practice
-  // and visible-node filtering would make trees confusing). Nodes that
-  // belong to no group land in the DEFAULT bucket, matching the JumpServer
-  // convention shown in the user's reference screenshot.
-  const byId = new Map(nodes.map((n) => [n.id, n]))
+function buildGroups(nodes: Node[], groups: AssetGroup[], favIds: Set<number>): TreeItem[] {
+  // The /asset-groups list endpoint enriches each group with its member node
+  // IDs. We now honour the real parent_id hierarchy: each group folder nests
+  // its child group folders ABOVE its own member leaves. Nodes in no group land
+  // in DEFAULT. Folder children are computed against the (already filtered)
+  // visible node set.
+  const byNode = new Map(nodes.map((n) => [n.id, n]))
+  const groupIds = new Set(groups.map((g) => g.id))
+  const childrenOf = new Map<number, AssetGroup[]>()
+  for (const g of groups) {
+    const key = g.parent_id != null && groupIds.has(g.parent_id) ? g.parent_id : 0
+    const arr = childrenOf.get(key) ?? []
+    arr.push(g)
+    childrenOf.set(key, arr)
+  }
   const grouped = new Set<number>()
-  const out: TreeItem[] = []
-  for (const g of [...groups].sort((a, b) => a.name.localeCompare(b.name))) {
-    const members: Node[] = []
+
+  const makeFolder = (g: AssetGroup): TreeFolder => {
+    const childFolders = (childrenOf.get(g.id) ?? [])
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(makeFolder)
+    const memberLeaves: TreeLeaf[] = []
     for (const nid of g.node_ids ?? []) {
-      const n = byId.get(nid)
+      const n = byNode.get(nid)
       if (n) {
-        members.push(n)
         grouped.add(n.id)
+        memberLeaves.push(leaf(n, favIds, `group-${g.id}`))
       }
     }
-    out.push({
+    return {
       type: "folder",
       id: `group:${g.id}`,
       label: g.name,
-      count: members.length,
+      count: memberLeaves.length,
       defaultOpen: true,
-      children: members.map((n) => leaf(n, new Set(), `group-${g.id}`)),
-    })
+      children: [...childFolders, ...memberLeaves],
+    }
   }
+
+  const out: TreeItem[] = (childrenOf.get(0) ?? [])
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(makeFolder)
+
   const ungrouped = nodes.filter((n) => !grouped.has(n.id))
   if (ungrouped.length > 0) {
     out.push({
@@ -302,7 +350,7 @@ function buildGroups(nodes: Node[], groups: AssetGroup[]): TreeItem[] {
       label: "DEFAULT",
       count: ungrouped.length,
       defaultOpen: true,
-      children: ungrouped.map((n) => leaf(n, new Set(), "group-default")),
+      children: ungrouped.map((n) => leaf(n, favIds, "group-default")),
     })
   }
   return out

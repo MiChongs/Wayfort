@@ -18,6 +18,9 @@ export interface TerminalSettings {
   ligaturesEnabled: boolean
   webglEnabled: boolean
   themeName: TerminalThemeName
+  // Auto-reconnect on an unexpected drop, with 1s/2s/4s backoff. The terminal
+  // re-establishes a fresh session (the old SSH session died with the socket).
+  autoReconnect: boolean
 }
 
 export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
@@ -33,6 +36,7 @@ export const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
   ligaturesEnabled: true,
   webglEnabled: true,
   themeName: "system",
+  autoReconnect: true,
 }
 
 export const FONT_SIZE_MIN = 10

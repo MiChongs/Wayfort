@@ -12,11 +12,16 @@ import (
 // WebSocket frames already provide message boundaries so we DON'T add the
 // prefix on the WS hop; only on stdio. See ws_handler.go / worker_freerdp.go.
 
-const maxFrameBytes = 64 * 1024 * 1024 // 64 MB sanity cap
+// MaxFrameBytes is the 64 MB sanity cap on a single length-prefixed stdio
+// frame. Exported so the worker subprocess (cmd/freerdp-worker) caps its
+// outbound writes to the same value the gateway's readFrame enforces —
+// otherwise an oversize frame trips readFrame and silently freezes the
+// stream. Keep both sides in lockstep through this one constant.
+const MaxFrameBytes = 64 * 1024 * 1024
 
 // writeFrame writes len32 + payload. Errors propagate as-is from w.
 func writeFrame(w io.Writer, payload []byte) error {
-	if len(payload) > maxFrameBytes {
+	if len(payload) > MaxFrameBytes {
 		return fmt.Errorf("frame too big: %d", len(payload))
 	}
 	var hdr [4]byte
@@ -37,7 +42,7 @@ func readFrame(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	n := binary.BigEndian.Uint32(hdr[:])
-	if n > maxFrameBytes {
+	if n > MaxFrameBytes {
 		return nil, fmt.Errorf("frame too big: %d", n)
 	}
 	if n == 0 {

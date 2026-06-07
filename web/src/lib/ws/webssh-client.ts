@@ -14,6 +14,11 @@ export interface SessionStats {
 
 export type WSSshHandler = {
   onOutput: (bytes: Uint8Array) => void
+  // Fires when the WebSocket itself opens (encrypted channel established) —
+  // distinct from onReady, which fires later when the remote SSH session is
+  // authenticated and a shell is live. The terminal uses the gap between the
+  // two to show a "登录主机" phase.
+  onOpen?: () => void
   onReady?: () => void
   onClose?: (reason: string) => void
   onError?: (msg: string) => void
@@ -34,6 +39,13 @@ export class WebSSHConnection {
   private _bytesIn = 0
   private _bytesOut = 0
   private statsTimer: ReturnType<typeof setInterval> | null = null
+  // Frames produced before the socket finishes its handshake (xterm's fit
+  // addon fires a resize the moment the terminal mounts, well before `open`)
+  // are buffered here and flushed on open. Without this, `ws.send` throws
+  // `InvalidStateError: Still in CONNECTING state`. Bounded so a socket stuck
+  // in CONNECTING can't grow the buffer without limit.
+  private outbox: string[] = []
+  private static readonly MAX_OUTBOX = 256
 
   constructor(private path: string, private handlers: WSSshHandler) {}
 
@@ -50,6 +62,18 @@ export class WebSSHConnection {
     }
     ws.onerror = () => this.handlers.onError?.("connection error")
     ws.onopen = () => {
+      this.handlers.onOpen?.()
+      // Flush anything queued during the handshake (the initial resize), in
+      // order, now that the socket accepts sends.
+      const queued = this.outbox
+      this.outbox = []
+      for (const frame of queued) {
+        try {
+          ws.send(frame)
+        } catch {
+          /* socket died between open and flush; onclose will surface it */
+        }
+      }
       this.pingTimer = setInterval(() => this.sendPing(), PING_INTERVAL_MS)
       // Stats poll publishes the byte counters at a sane cadence so the UI
       // doesn't redraw on every keystroke. 1Hz is fast enough to feel live
@@ -120,6 +144,7 @@ export class WebSSHConnection {
 
   close() {
     this.stopTimers()
+    this.outbox = []
     this.ws?.close()
     this.ws = null
   }
@@ -144,7 +169,18 @@ export class WebSSHConnection {
   }
 
   private send(frame: Record<string, unknown>) {
-    this.ws?.send(JSON.stringify(frame))
+    const ws = this.ws
+    if (!ws) return
+    const data = JSON.stringify(frame)
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(data)
+      return
+    }
+    // CONNECTING: queue and flush on open. CLOSING/CLOSED: drop.
+    if (ws.readyState === WebSocket.CONNECTING) {
+      if (this.outbox.length >= WebSSHConnection.MAX_OUTBOX) this.outbox.shift()
+      this.outbox.push(data)
+    }
   }
 }
 

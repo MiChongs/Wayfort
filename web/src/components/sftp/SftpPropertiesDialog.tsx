@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { Copy, Loader2 } from "lucide-react"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -133,14 +133,16 @@ function Row({
       <div className="min-w-0">{children}</div>
       <div>
         {copy && copyValue && (
-          <button
+          <Button
             type="button"
-            className="text-muted-foreground hover:text-foreground"
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 text-muted-foreground"
             onClick={copy}
             title="复制"
           >
-            <Copy className="w-3.5 h-3.5" />
-          </button>
+            <Copy className="h-3.5 w-3.5" />
+          </Button>
         )}
       </div>
     </>

@@ -1,9 +1,11 @@
 "use client"
 
-import { motion, useReducedMotion } from "motion/react"
 import { AgentAvatar } from "./agent-avatar"
 import type { AIAgent } from "@/lib/api/types"
 
+// Pre-first-token state, modelled on Claude.ai: a calm shimmering label next to
+// a softly breathing avatar — no busy bouncing dots. The shimmer sweep is the
+// signature "thinking" motion; it reads as alive but unhurried.
 export function ThinkingIndicator({
   label = "正在思考",
   agent,
@@ -11,32 +13,13 @@ export function ThinkingIndicator({
   label?: string
   agent?: AIAgent
 }) {
-  const reduce = useReducedMotion()
   return (
-    <div className="flex gap-3 items-start">
-      <motion.div
-        animate={reduce ? undefined : { scale: [1, 1.05, 1] }}
-        transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
-      >
+    <div className="flex items-start gap-3">
+      <div className="motion-safe:[animation:ai-breathe_2.6s_ease-in-out_infinite]">
         <AgentAvatar agent={agent} />
-      </motion.div>
-      <div className="flex items-center gap-2 pt-2 text-xs text-muted-foreground">
-        {[0, 1, 2].map((i) => (
-          <motion.span
-            key={i}
-            className="inline-block w-1.5 h-1.5 rounded-full bg-current"
-            animate={
-              reduce ? undefined : { scale: [1, 1.6, 1], opacity: [0.4, 1, 0.4] }
-            }
-            transition={{
-              duration: 0.9,
-              repeat: Infinity,
-              ease: "easeInOut",
-              delay: i * 0.12,
-            }}
-          />
-        ))}
-        <span className="ml-1">{label}…</span>
+      </div>
+      <div className="flex items-center pt-1.5">
+        <span className="ai-shimmer-brand text-sm font-medium tracking-tight">{label}…</span>
       </div>
     </div>
   )

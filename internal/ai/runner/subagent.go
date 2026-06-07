@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,20 @@ func (f *Factory) RunSub(ctx context.Context, parentConvID string, callerUserID 
 		mode = aimodel.PermModeNormal
 	}
 
+	// Relay coarse sub-agent milestones to the PARENT's live SSE stream so the
+	// operator sees what the delegated agent is doing. We deliberately do NOT
+	// relay text deltas (the parent would get one card per token) — only start,
+	// each tool call, tool errors, and completion. The sub-agent's final text
+	// still returns as the call_subagent tool result.
+	parentSink := f.Stream(parentConvID)
+	relay := func(kind, text string) {
+		if parentSink != nil {
+			parentSink.Emit(Event{Kind: KindSubAgent, Data: map[string]any{
+				"agent": agent.Name, "kind_inner": kind, "text": text,
+			}})
+		}
+	}
+
 	conv := &aimodel.AIConversation{
 		ID:                 "subc_" + uuid.NewString(),
 		UserID:             callerUserID,
@@ -44,18 +59,29 @@ func (f *Factory) RunSub(ctx context.Context, parentConvID string, callerUserID 
 		return "", err
 	}
 
-	sink, err := f.Run(ctx, conv, prompt)
+	relay("start", "开始执行子任务")
+	sink, err := f.Run(ctx, conv, prompt, nil)
 	if err != nil {
 		return "", err
 	}
-	// Drain the sink, accumulate the assistant text.
-	var assistant string
+	// Drain the sink: accumulate assistant text, relay milestones.
+	var assistant strings.Builder
 	for ev := range sink.C() {
-		if ev.Kind == KindTextDelta {
+		switch ev.Kind {
+		case KindTextDelta:
 			if m, ok := ev.Data.(map[string]string); ok {
-				assistant += m["text"]
+				assistant.WriteString(m["text"])
 			}
+		case KindToolCall:
+			if m, ok := ev.Data.(map[string]any); ok {
+				if name, _ := m["name"].(string); name != "" {
+					relay("tool_call", "调用 "+name)
+				}
+			}
+		case KindToolError:
+			relay("tool_error", "工具执行失败")
 		}
 	}
-	return assistant, nil
+	relay("done", "子任务完成")
+	return assistant.String(), nil
 }

@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { setTokens } from "@/lib/auth/tokens"
-import { toast } from "sonner"
+import { toast } from "@/components/ui/sonner"
 
 export const dynamic = "force-dynamic"
 

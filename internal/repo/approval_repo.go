@@ -38,6 +38,22 @@ func (r *ApprovalRepo) FindRequest(ctx context.Context, id string) (*model.Appro
 	return &req, err
 }
 
+// FindPendingRequestForResource returns the requester's most recent still-pending
+// request for a (resource, business type), or nil. Lets the workspace gate
+// resume an in-flight request instead of opening a duplicate.
+func (r *ApprovalRepo) FindPendingRequestForResource(ctx context.Context, requesterID uint64,
+	resType, resID string, biz model.ApprovalBusinessType) (*model.ApprovalRequest, error) {
+	var req model.ApprovalRequest
+	err := r.db.WithContext(ctx).
+		Where("requester_id = ? AND resource_type = ? AND resource_id = ? AND business_type = ? AND status = ?",
+			requesterID, resType, resID, biz, model.ApprovalReqPending).
+		Order("created_at DESC").First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &req, err
+}
+
 // UpdateRequestStatus compare-and-swaps via the optimistic Version counter so
 // two reconcilers can't both finalise the same request and double-issue a
 // grant. The caller must pre-load .Version into oldVersion.
@@ -338,7 +354,7 @@ func (r *ApprovalRepo) FindActiveGrants(ctx context.Context, beneficiaryID uint6
 	err := r.db.WithContext(ctx).Where(
 		"beneficiary_id = ? AND resource_type = ? AND resource_id = ? AND status = ? AND not_before <= ? AND not_after >= ?",
 		beneficiaryID, resourceType, resourceID, model.ApprovalGrantActive, now, now,
-	).Find(&out).Error
+	).Order("not_after DESC").Find(&out).Error // latest-expiring grant wins (honours renewals)
 	return out, err
 }
 
