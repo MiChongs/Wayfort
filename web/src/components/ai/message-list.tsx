@@ -3,7 +3,7 @@
 import * as React from "react"
 import { motion, AnimatePresence, useReducedMotion } from "motion/react"
 import { ArrowDown, Sparkles } from "lucide-react"
-import { ScrollArea } from "@/components/ui/scroll-area"
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import { EmptyState } from "@/components/common/empty-state"
 import { UserBubble } from "./message-user"
 import { AssistantBubble } from "./message-assistant"
@@ -19,6 +19,7 @@ import { ToolGroupCard } from "./tool-group-card"
 import { AgentInfoCard } from "./agent-info-card"
 import { AskUserCard } from "./ask-user-card"
 import { PlanCard } from "./plan-card"
+import { cn } from "@/lib/utils"
 import { groupTools, type ToolLike } from "@/lib/ai/group-tools"
 import type { AIAgent, AIMessage, AIToolInvocation } from "@/lib/api/types"
 
@@ -90,89 +91,95 @@ interface MessageListProps {
   onRetry?: () => void
   onRegenerateFrom?: (msg: AIMessage) => void
   onEditUser?: (msg: AIMessage, newText: string) => void
+  // Transient highlight for an in-conversation search hit (scroll-to + ring).
+  highlightMsgId?: number | null
 }
 
-export function MessageList({
-  messages,
-  invocations,
-  live,
-  running,
-  thinking,
-  loading,
-  agent,
-  onApprove,
-  onReject,
-  onAnswer,
-  onRetry,
-  onRegenerateFrom,
-  onEditUser,
-}: MessageListProps) {
-  const scrollRef = React.useRef<HTMLDivElement | null>(null)
-  const contentRef = React.useRef<HTMLDivElement | null>(null)
+export interface MessageListHandle {
+  scrollToMessageId: (id: number) => void
+  scrollToBottom: () => void
+}
+
+type GroupEntry = { __kind: "group"; name: string; groupKey: string; items: ToolLike[] }
+
+// Everything the virtualized list's Header/Footer (rendered by Virtuoso) need.
+// Passed via Virtuoso's `context` so the Header/Footer component identities stay
+// stable (recreating them each render would remount + jank the scroller).
+interface MLContext {
+  onFooterRef: (el: HTMLDivElement | null) => void
+  reduce: boolean
+  liveGrouped: Array<LiveBubble | GroupEntry>
+  thinking: boolean
+  agent?: AIAgent
+  onApprove: (id: string) => void
+  onReject: (id: string) => void
+  onAnswer?: (id: string, text: string) => void
+  onRetry?: () => void
+  showSkeleton: boolean
+  emptyState: boolean
+  highlightMsgId?: number | null
+}
+
+const COLUMN = "mx-auto w-full min-w-0 max-w-3xl px-4 md:px-6"
+
+export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(function MessageList(
+  {
+    messages,
+    invocations,
+    live,
+    running,
+    thinking,
+    loading,
+    agent,
+    onApprove,
+    onReject,
+    onAnswer,
+    onRetry,
+    onRegenerateFrom,
+    onEditUser,
+    highlightMsgId,
+  },
+  ref,
+) {
   const reduce = useReducedMotion()
+  const virtuosoRef = React.useRef<VirtuosoHandle>(null)
+  const scrollerElRef = React.useRef<HTMLElement | null>(null)
   const [autoFollow, setAutoFollow] = React.useState(true)
-  // Mirror of `autoFollow` we can read synchronously inside observers/handlers
-  // without waiting for a React re-render — prevents the pin loop from lagging
-  // a frame behind the user's scroll.
+  // Read synchronously inside observers without waiting for a React re-render.
   const pinnedRef = React.useRef(true)
 
-  const pin = React.useCallback((smooth = false) => {
-    const el = scrollRef.current
-    if (!el) return
-    if (smooth) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" })
-    else el.scrollTop = el.scrollHeight
-  }, [])
-
-  // Bottom-pinning. A one-shot effect keyed on `messages`/`live` lands BEFORE
-  // the `layout` springs finish animating height and BEFORE the streamed-text
-  // throttle paints, so it always falls short of the true bottom. Instead we
-  // observe the content element's size: every time it grows (spring tick,
-  // token arrival, image load) we re-glue to the bottom — but only while the
-  // user is following. This is the same "stick to bottom" mechanic Claude.ai
-  // uses and it stays smooth because the growth itself is gradual.
-  React.useEffect(() => {
-    const content = contentRef.current
-    if (!content || typeof ResizeObserver === "undefined") return
+  // Live-turn (Footer) sticky-bottom: the Footer is NOT virtualized, so its
+  // height grows as tokens stream. A ResizeObserver attached the moment the
+  // Footer element mounts re-glues to the bottom on every growth while the user
+  // is following — the same mechanic the non-virtual list used, scoped to the
+  // footer. (History scroll-follow is handled by Virtuoso's followOutput.)
+  const footerObsRef = React.useRef<ResizeObserver | null>(null)
+  const onFooterRef = React.useCallback((el: HTMLDivElement | null) => {
+    footerObsRef.current?.disconnect()
+    if (!el || typeof ResizeObserver === "undefined") return
     const ro = new ResizeObserver(() => {
-      if (pinnedRef.current) pin(false)
+      if (!pinnedRef.current) return
+      const s = scrollerElRef.current
+      if (s) s.scrollTop = s.scrollHeight
     })
-    ro.observe(content)
-    return () => ro.disconnect()
-  }, [pin])
-
-  // Track whether the user sits at the bottom; drives follow-state + the
-  // floating "jump to latest" affordance. rAF-debounced so a burst of scroll
-  // events (momentum / programmatic pin) collapses to one state update.
-  React.useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-    let raf = 0
-    const handle = () => {
-      cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(() => {
-        const atBottom =
-          el.scrollHeight - el.scrollTop - el.clientHeight < 120
-        pinnedRef.current = atBottom
-        setAutoFollow((prev) => (prev === atBottom ? prev : atBottom))
-      })
-    }
-    el.addEventListener("scroll", handle, { passive: true })
-    return () => {
-      el.removeEventListener("scroll", handle)
-      cancelAnimationFrame(raf)
-    }
+    ro.observe(el)
+    footerObsRef.current = ro
   }, [])
-
-  function jumpLatest() {
-    pinnedRef.current = true
-    setAutoFollow(true)
-    pin(true)
-  }
+  React.useEffect(() => () => footerObsRef.current?.disconnect(), [])
 
   const historyBubbles = React.useMemo(
     () => renderHistory(messages, invocations, agent, onRegenerateFrom, onEditUser),
     [messages, invocations, agent, onRegenerateFrom, onEditUser],
   )
+
+  // msg.id → history index, for in-conversation search jump.
+  const idToIndex = React.useMemo(() => {
+    const m = new Map<number, number>()
+    historyBubbles.forEach((b, i) => {
+      if (b.msgId != null && !m.has(b.msgId)) m.set(b.msgId, i)
+    })
+    return m
+  }, [historyBubbles])
 
   // Group consecutive ≥3 same-name tools in the live stream for visual density.
   const liveGrouped = React.useMemo(
@@ -195,7 +202,7 @@ export function MessageList({
     [live],
   )
 
-  const showSkeleton = loading && historyBubbles.length === 0 && live.length === 0
+  const showSkeleton = !!loading && historyBubbles.length === 0 && live.length === 0
   const emptyState =
     !showSkeleton &&
     historyBubbles.length === 0 &&
@@ -203,119 +210,98 @@ export function MessageList({
     !running &&
     !thinking
 
+  const scrollToBottomInstant = React.useCallback(() => {
+    const s = scrollerElRef.current
+    if (s) s.scrollTop = s.scrollHeight
+  }, [])
+
+  function jumpLatest() {
+    pinnedRef.current = true
+    setAutoFollow(true)
+    const s = scrollerElRef.current
+    if (s) s.scrollTo({ top: s.scrollHeight, behavior: "smooth" })
+  }
+
+  React.useImperativeHandle(
+    ref,
+    () => ({
+      scrollToBottom: scrollToBottomInstant,
+      scrollToMessageId: (mid: number) => {
+        const idx = idToIndex.get(mid)
+        if (idx != null) {
+          virtuosoRef.current?.scrollToIndex({ index: idx, align: "center", behavior: "smooth" })
+        }
+      },
+    }),
+    [idToIndex, scrollToBottomInstant],
+  )
+
+  const context = React.useMemo<MLContext>(
+    () => ({
+      onFooterRef,
+      reduce: !!reduce,
+      liveGrouped,
+      thinking,
+      agent,
+      onApprove,
+      onReject,
+      onAnswer,
+      onRetry,
+      showSkeleton,
+      emptyState,
+      highlightMsgId,
+    }),
+    [
+      onFooterRef,
+      reduce,
+      liveGrouped,
+      thinking,
+      agent,
+      onApprove,
+      onReject,
+      onAnswer,
+      onRetry,
+      showSkeleton,
+      emptyState,
+      highlightMsgId,
+    ],
+  )
+
   return (
-    // Natural flex column instead of absolute-positioned ScrollArea. The
-    // wrapper keeps `relative` only so the floating "jump-to-latest" button
-    // can position over it; everything else is plain flex so Radix's
-    // Viewport gets a fully-determined height and its internal scroll
-    // engages reliably.
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
-      <ScrollArea
-        viewportRef={scrollRef}
-        className="min-h-0 w-full flex-1"
-      >
-        <div
-          ref={contentRef}
-          className="mx-auto w-full min-w-0 max-w-3xl space-y-6 px-4 py-8 md:px-6"
-        >
-        {showSkeleton && <MessageSkeleton />}
-
-        {emptyState && (
-          <div className="py-8 max-w-3xl mx-auto w-full space-y-4">
-            {agent ? (
-              <AgentInfoCard agent={agent} />
-            ) : (
-              <EmptyState
-                icon={Sparkles}
-                title="开始一段对话"
-                description="在下方输入指令，Agent 会按当前模式协助你；高危工具会请求你的确认。"
-              />
-            )}
-          </div>
-        )}
-
-        <AnimatePresence initial={false}>
-          {historyBubbles.map((b) => (
-            // History bubbles are the settled state — they must NOT replay an
-            // entrance animation. Without `initial={false}` a message that just
-            // finished streaming (live key `l-…`) re-mounts as history (key
-            // `h-…`) and animates in a SECOND time. We keep only `layout` so
-            // positions still ease when the list above changes.
-            <motion.div
-              key={`h-${b.key}`}
-              layout={reduce ? false : "position"}
-              initial={false}
-              animate={{ opacity: 1, y: 0 }}
-              transition={
-                reduce
-                  ? { duration: 0 }
-                  : { type: "spring", stiffness: 380, damping: 36, mass: 0.5 }
-              }
-              className="min-w-0"
+      <Virtuoso<RenderedBubble, MLContext>
+        ref={virtuosoRef}
+        data={historyBubbles}
+        context={context}
+        computeItemKey={(_i, b) => `h-${b.key}`}
+        itemContent={(_i, b) => (
+          <div className={COLUMN}>
+            <div
+              className={cn(
+                "min-w-0 rounded-lg py-3 transition-shadow",
+                highlightMsgId != null &&
+                  b.msgId === highlightMsgId &&
+                  "ring-2 ring-primary/30",
+              )}
             >
               {b.node}
-            </motion.div>
-          ))}
-
-          {liveGrouped.map((entry, i) => {
-            // Skip the eagerly-pushed empty assistant placeholders so they don't
-            // occupy a (gap-producing) motion.div slot before any text arrives.
-            if (
-              !isGroup(entry) &&
-              (entry as LiveBubble).kind === "assistant" &&
-              (entry as Extract<LiveBubble, { kind: "assistant" }>).chunks.length === 0
-            ) {
-              return null
-            }
-            const key = entryKey(entry, i)
-            return (
-              <motion.div
-                key={`l-${key}`}
-                layout={reduce ? false : "position"}
-                initial={reduce ? false : { opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                // Plain opacity exit: a live bubble that just settled is about to
-                // re-mount as an identical history bubble. A scale/translate exit
-                // would make that seamless handoff flicker — a quiet fade doesn't.
-                exit={{ opacity: 0, transition: { duration: 0.12 } }}
-                transition={
-                  reduce
-                    ? { duration: 0 }
-                    : { type: "spring", stiffness: 380, damping: 36, mass: 0.5 }
-                }
-                className="min-w-0"
-              >
-                {isGroup(entry) ? (
-                  <ToolGroupCard name={entry.name} items={entry.items} />
-                ) : (
-                  <LiveBubbleView
-                    b={entry as LiveBubble}
-                    lead={liveLead(liveGrouped, i)}
-                    agent={agent}
-                    onApprove={onApprove}
-                    onReject={onReject}
-                    onAnswer={onAnswer}
-                    onRetry={onRetry}
-                  />
-                )}
-              </motion.div>
-            )
-          })}
-
-          {thinking && (
-            <motion.div
-              key="thinking"
-              initial={reduce ? false : { opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0 }}
-              transition={reduce ? { duration: 0 } : { duration: 0.2 }}
-            >
-              <ThinkingIndicator agent={agent} />
-            </motion.div>
-          )}
-        </AnimatePresence>
-        </div>
-      </ScrollArea>
+            </div>
+          </div>
+        )}
+        components={{ Header: MLHeader, Footer: MLFooter }}
+        followOutput={(atBottom) => (atBottom ? "auto" : false)}
+        atBottomThreshold={120}
+        atBottomStateChange={(atBottom) => {
+          pinnedRef.current = atBottom
+          setAutoFollow((prev) => (prev === atBottom ? prev : atBottom))
+        }}
+        scrollerRef={(el) => {
+          scrollerElRef.current = (el as HTMLElement) ?? null
+        }}
+        increaseViewportBy={{ top: 600, bottom: 1200 }}
+        initialTopMostItemIndex={Math.max(0, historyBubbles.length - 1)}
+        className="no-scrollbar h-full w-full"
+      />
 
       <AnimatePresence>
         {!autoFollow && (
@@ -324,9 +310,7 @@ export function MessageList({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.8, y: 10 }}
             transition={
-              reduce
-                ? { duration: 0 }
-                : { type: "spring", stiffness: 380, damping: 28 }
+              reduce ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 28 }
             }
             className="absolute bottom-5 left-1/2 z-10 -translate-x-1/2"
           >
@@ -341,6 +325,100 @@ export function MessageList({
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+})
+
+// Virtuoso Header: skeleton / empty state / agent intro + top breathing room.
+function MLHeader({ context }: { context?: MLContext }) {
+  if (!context) return <div className="h-6" />
+  const { showSkeleton, emptyState, agent } = context
+  return (
+    <div className={cn(COLUMN, "pt-6")}>
+      {showSkeleton && <MessageSkeleton />}
+      {emptyState &&
+        (agent ? (
+          <AgentInfoCard agent={agent} />
+        ) : (
+          <EmptyState
+            icon={Sparkles}
+            title="开始一段对话"
+            description="在下方输入指令，Agent 会按当前模式协助你；高危工具会请求你的确认。"
+          />
+        ))}
+    </div>
+  )
+}
+
+// Virtuoso Footer: the in-flight (live) turn. Non-virtualized so the streaming
+// bubble stays mounted with stable identity for the whole turn — this is what
+// keeps token streaming, the caret, and the live entrance animation intact.
+function MLFooter({ context }: { context?: MLContext }) {
+  if (!context) return null
+  const { onFooterRef, liveGrouped, thinking, agent, reduce, onApprove, onReject, onAnswer, onRetry } =
+    context
+  const hasLive = liveGrouped.some(
+    (e) =>
+      isGroup(e) ||
+      (e as LiveBubble).kind !== "assistant" ||
+      (e as Extract<LiveBubble, { kind: "assistant" }>).chunks.length > 0,
+  )
+  return (
+    <div ref={onFooterRef} className={cn(COLUMN, "space-y-6 pb-8 pt-3")}>
+      <AnimatePresence initial={false}>
+        {liveGrouped.map((entry, i) => {
+          if (
+            !isGroup(entry) &&
+            (entry as LiveBubble).kind === "assistant" &&
+            (entry as Extract<LiveBubble, { kind: "assistant" }>).chunks.length === 0
+          ) {
+            return null
+          }
+          const key = entryKey(entry, i)
+          return (
+            <motion.div
+              key={`l-${key}`}
+              layout={reduce ? false : "position"}
+              initial={reduce ? false : { opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, transition: { duration: 0.12 } }}
+              transition={
+                reduce ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 36, mass: 0.5 }
+              }
+              className="min-w-0"
+            >
+              {isGroup(entry) ? (
+                <ToolGroupCard name={entry.name} items={entry.items} />
+              ) : (
+                <LiveBubbleView
+                  b={entry as LiveBubble}
+                  lead={liveLead(liveGrouped, i)}
+                  agent={agent}
+                  onApprove={onApprove}
+                  onReject={onReject}
+                  onAnswer={onAnswer}
+                  onRetry={onRetry}
+                />
+              )}
+            </motion.div>
+          )
+        })}
+
+        {thinking && (
+          <motion.div
+            key="thinking"
+            initial={reduce ? false : { opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={reduce ? { duration: 0 } : { duration: 0.2 }}
+          >
+            <ThinkingIndicator agent={agent} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {/* Keep the footer measurable even when empty so the ResizeObserver fires
+          on the very first token. */}
+      {!hasLive && !thinking && <div className="h-px" />}
     </div>
   )
 }
@@ -364,9 +442,6 @@ function LiveBubbleView({
 }) {
   if (b.kind === "user") return <UserBubble text={b.text} images={b.images} />
   if (b.kind === "assistant") {
-    // Hide totally empty assistant bubbles (we eagerly push one after every
-    // tool_output to anticipate the continuation; if none arrives we don't
-    // want a blank card sitting there).
     if (b.chunks.length === 0) return null
     return (
       <AssistantBubble chunks={b.chunks} streaming={b.streaming} agent={agent} lead={lead} />
@@ -472,17 +547,10 @@ function liveKey(b: LiveBubble, _i: number): string {
   }
 }
 
-// `groupTools` returns either a passthrough LiveBubble or a synthetic group.
-// Helpers to discriminate + key.
-function isGroup(
-  e: LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] },
-): e is { __kind: "group"; name: string; groupKey: string; items: ToolLike[] } {
+function isGroup(e: LiveBubble | GroupEntry): e is GroupEntry {
   return (e as { __kind?: string }).__kind === "group"
 }
-function entryKey(
-  e: LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] },
-  i: number,
-): string {
+function entryKey(e: LiveBubble | GroupEntry, i: number): string {
   if (isGroup(e)) return `g-${e.groupKey}`
   return liveKey(e, i)
 }
@@ -491,12 +559,7 @@ function entryKey(
 // rendered bubble before it is a user message — or there is none. Continuations
 // after a tool / reasoning / group align under the gutter instead. Empty
 // assistant placeholders are skipped so they never count as the predecessor.
-function liveLead(
-  entries: Array<
-    LiveBubble | { __kind: "group"; name: string; groupKey: string; items: ToolLike[] }
-  >,
-  i: number,
-): boolean {
+function liveLead(entries: Array<LiveBubble | GroupEntry>, i: number): boolean {
   for (let k = i - 1; k >= 0; k--) {
     const e = entries[k]
     if (isGroup(e)) return false
@@ -509,7 +572,7 @@ function liveLead(
 
 // ---------- Persisted history rendering ----------
 
-type RenderedBubble = { key: string; node: React.ReactNode }
+type RenderedBubble = { key: string; node: React.ReactNode; msgId?: number }
 
 function renderHistory(
   messages: AIMessage[],
@@ -518,8 +581,6 @@ function renderHistory(
   onRegenerateFrom?: (msg: AIMessage) => void,
   onEditUser?: (msg: AIMessage, newText: string) => void,
 ): RenderedBubble[] {
-  // First pass: build flat list of either AIMessage-derived ToolLike entries
-  // (with tool meta) or other bubbles, so groupTools can fold runs.
   type HistoryItem =
     | { kind: "user"; msg: AIMessage; text: string }
     | { kind: "assistant"; msg: AIMessage; text: string }
@@ -544,6 +605,9 @@ function renderHistory(
             arguments: string
           }[]
           for (const tc of tcs) {
+            // update_plan drives the task panel, not a tool card — skip it in
+            // the transcript (matches the live stream's skip).
+            if (tc.name === "update_plan") continue
             let result = ""
             for (let j = i + 1; j < messages.length; j++) {
               if (
@@ -554,9 +618,6 @@ function renderHistory(
                 break
               }
             }
-            // Correlate by the exact tool_call id (a tool called N times in one
-            // turn has N distinct ids). Fall back to message_id + name for
-            // rows persisted before tool_call_id existed.
             const inv =
               invocations.find((iv) => iv.tool_call_id && iv.tool_call_id === tc.id) ??
               invocations.find((iv) => iv.message_id === m.id && iv.tool_name === tc.name)
@@ -590,7 +651,6 @@ function renderHistory(
     }
   }
 
-  // Second pass: group runs of ≥3 consecutive tools with the same name.
   const grouped = groupTools<HistoryItem>(
     flat,
     (it) => it.kind === "tool",
@@ -598,8 +658,6 @@ function renderHistory(
   )
 
   const out: RenderedBubble[] = []
-  // Track the previously emitted bubble kind so an assistant block can tell
-  // whether it leads a turn (avatar) or continues one (gutter spacer).
   let prevKind: "user" | "assistant" | "tool" | undefined
   for (const entry of grouped) {
     if ((entry as { __kind?: string }).__kind === "group") {
@@ -620,6 +678,7 @@ function renderHistory(
     if (it.kind === "user") {
       out.push({
         key: `u-${it.msg.id}`,
+        msgId: it.msg.id,
         node: (
           <UserBubble
             text={it.text}
@@ -634,6 +693,7 @@ function renderHistory(
       const lead = prevKind === undefined || prevKind === "user"
       out.push({
         key: `a-${it.msg.id}`,
+        msgId: it.msg.id,
         node: (
           <AssistantBubble
             text={it.text}
@@ -648,6 +708,7 @@ function renderHistory(
     } else {
       out.push({
         key: it.key,
+        msgId: it.tool.msgId,
         node: (
           <ToolCard
             name={it.tool.name}

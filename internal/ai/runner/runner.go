@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,13 @@ type Config struct {
 	// StreamRetries is how many times a failed Stream() *establishment* is
 	// retried (transient connection / 5xx). Mid-stream errors are not retried.
 	StreamRetries int
+	// MaxAgenticIterations is the hard step ceiling for a long-horizon run (one
+	// that has engaged the plan via update_plan). Turn-based runs that never
+	// touch the plan stay capped at the agent's MaxIterations. WallClockBudget
+	// bounds the same run by elapsed time. Both are circuit breakers against
+	// runaway loops, alongside no-progress detection.
+	MaxAgenticIterations int
+	WallClockBudget      time.Duration
 }
 
 func (c Config) withDefaults() Config {
@@ -61,6 +69,12 @@ func (c Config) withDefaults() Config {
 	if c.StreamRetries == 0 {
 		c.StreamRetries = 2
 	}
+	if c.MaxAgenticIterations <= 0 {
+		c.MaxAgenticIterations = 60
+	}
+	if c.WallClockBudget <= 0 {
+		c.WallClockBudget = 20 * time.Minute
+	}
 	return c
 }
 
@@ -71,6 +85,7 @@ type Factory struct {
 	Conv          *airepo.ConversationRepo
 	Msg           *airepo.MessageRepo
 	Inv           *airepo.InvocationRepo
+	Tasks         *airepo.TaskRepo
 	Agents        *airepo.AgentRepo
 	Audit         *audit.Writer
 	Logger        *zap.Logger
@@ -92,10 +107,10 @@ type activeRun struct {
 }
 
 func NewFactory(p *provider.Registry, tr *tools.Registry, conv *airepo.ConversationRepo,
-	msg *airepo.MessageRepo, inv *airepo.InvocationRepo, agents *airepo.AgentRepo,
+	msg *airepo.MessageRepo, inv *airepo.InvocationRepo, tasks *airepo.TaskRepo, agents *airepo.AgentRepo,
 	aud *audit.Writer, logger *zap.Logger, cfg Config) *Factory {
 	return &Factory{
-		Provider: p, Tools: tr, Conv: conv, Msg: msg, Inv: inv,
+		Provider: p, Tools: tr, Conv: conv, Msg: msg, Inv: inv, Tasks: tasks,
 		Agents: agents, Audit: aud, Logger: logger,
 		Cfg: cfg.withDefaults(), running: map[string]*activeRun{},
 		toolCaps: map[string]bool{},
@@ -171,16 +186,54 @@ func (f *Factory) Stream(convID string) *ChannelSink {
 	return nil
 }
 
-// Run kicks off one turn for the conversation and returns a Sink the caller
-// can drain. The Sink closes when the turn is over.
+// Run kicks off one turn for the conversation (appending the user message) and
+// returns a Sink the caller can drain. The Sink closes when the turn is over.
 func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInput string, images []string) (*ChannelSink, error) {
+	agent, prov, mode, err := f.resolveRun(ctx, conv)
+	if err != nil {
+		return nil, err
+	}
+	return f.launch(conv, func(runCtx context.Context, sink *ChannelSink, active *activeRun) error {
+		return f.execute(runCtx, conv, agent, prov, userInput, images, nil, sink, active, mode, 0)
+	}), nil
+}
+
+// Rerun re-runs the conversation's current tail WITHOUT appending a new user
+// message (regenerate). The caller must have trimmed the prior assistant turn so
+// the tail ends at a user message.
+func (f *Factory) Rerun(ctx context.Context, conv *aimodel.AIConversation) (*ChannelSink, error) {
+	agent, prov, mode, err := f.resolveRun(ctx, conv)
+	if err != nil {
+		return nil, err
+	}
+	return f.launch(conv, func(runCtx context.Context, sink *ChannelSink, active *activeRun) error {
+		return f.executeLoop(runCtx, conv, agent, prov, sink, active, mode, 0)
+	}), nil
+}
+
+// Branch appends `text` as a new user message that is a sibling of branchParentID
+// (i.e. ParentID = the edited message's ParentID), sets the active leaf, and
+// runs — forking the conversation without destroying the original branch.
+func (f *Factory) Branch(ctx context.Context, conv *aimodel.AIConversation, text string, branchParentID *uint64) (*ChannelSink, error) {
+	agent, prov, mode, err := f.resolveRun(ctx, conv)
+	if err != nil {
+		return nil, err
+	}
+	return f.launch(conv, func(runCtx context.Context, sink *ChannelSink, active *activeRun) error {
+		return f.execute(runCtx, conv, agent, prov, text, nil, branchParentID, sink, active, mode, 0)
+	}), nil
+}
+
+// resolveRun loads the agent + provider and resolves the effective model/mode,
+// filling provider/model defaults onto the conversation. Shared by Run/Rerun/Branch.
+func (f *Factory) resolveRun(ctx context.Context, conv *aimodel.AIConversation) (*aimodel.AIAgent, provider.Provider, aimodel.PermissionMode, error) {
 	agent, err := f.Agents.FindByID(ctx, conv.AgentID)
 	if err != nil || agent == nil {
-		return nil, fmt.Errorf("agent not found: %w", err)
+		return nil, nil, "", fmt.Errorf("agent not found: %w", err)
 	}
 	prov, provRow, err := f.Provider.Resolve(ctx, conv.UserID, ptrOrNil(conv.ProviderID), agent)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
 	if conv.ProviderID == 0 {
 		conv.ProviderID = provRow.ID
@@ -195,7 +248,13 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 	if mode == "" {
 		mode = aimodel.PermModeNormal
 	}
+	return agent, prov, mode, nil
+}
 
+// launch registers the live run, spawns the work goroutine, and returns the
+// sink. Shared by Run/Rerun/Branch so the running-map + done/error emission are
+// identical across entry points.
+func (f *Factory) launch(conv *aimodel.AIConversation, work func(ctx context.Context, sink *ChannelSink, active *activeRun) error) *ChannelSink {
 	sink := NewChannelSink(128)
 	runCtx, cancel := context.WithCancel(context.Background())
 	active := &activeRun{
@@ -204,7 +263,6 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 		pending: map[string]chan bool{},
 		answers: map[string]chan string{},
 	}
-
 	f.mu.Lock()
 	f.running[conv.ID] = active
 	f.mu.Unlock()
@@ -216,20 +274,32 @@ func (f *Factory) Run(ctx context.Context, conv *aimodel.AIConversation, userInp
 			f.mu.Unlock()
 			sink.Close()
 		}()
-		if err := f.execute(runCtx, conv, agent, prov, userInput, images, sink, active, mode, 0); err != nil {
+		if err := work(runCtx, sink, active); err != nil {
 			f.Logger.Warn("ai runner failed", zap.String("conv", conv.ID), zap.Error(err))
 			sink.Emit(Event{Kind: KindError, Data: map[string]string{"error": err.Error()}})
 		}
 		sink.Emit(Event{Kind: KindDone, Data: map[string]any{}})
 	}()
-	return sink, nil
+	return sink
 }
 
-// execute runs the actual model + tool loop. depth is increased when invoked
-// as a sub-agent — top-level calls pass 0.
+// IsRunning reports whether a live run already exists for the conversation —
+// callers (regenerate/branch) 409 instead of spawning a second run that would
+// overwrite the activeRun slot and orphan its channels.
+func (f *Factory) IsRunning(convID string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.running[convID]
+	return ok
+}
+
+// execute persists the incoming user message (linking it into the active branch
+// when one exists), then runs the model+tool loop. depth is increased when
+// invoked as a sub-agent — top-level calls pass 0. branchParentID, when set,
+// makes the new user message a sibling branch of that parent.
 func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent,
-	prov provider.Provider, userInput string, images []string, sink *ChannelSink, active *activeRun,
-	mode aimodel.PermissionMode, depth int) error {
+	prov provider.Provider, userInput string, images []string, branchParentID *uint64,
+	sink *ChannelSink, active *activeRun, mode aimodel.PermissionMode, depth int) error {
 	// Persist the user message first so resume / replay works. Vision input is
 	// carried as image_url content parts alongside the text.
 	parts := []provider.ContentPart{{Type: "text", Text: userInput}}
@@ -243,17 +313,47 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 		Content:   jsonEncode(parts),
 		CreatedAt: time.Now(),
 	}
+	// Branch linkage: an explicit branch parent forks a sibling; otherwise chain
+	// onto the current leaf when the conversation is already branched. Linear
+	// conversations leave ParentID nil (id-order history), unchanged behavior.
+	if branchParentID != nil {
+		userMsg.ParentID = branchParentID
+	} else if conv.ActiveLeafMessageID != nil {
+		userMsg.ParentID = conv.ActiveLeafMessageID
+	}
 	if err := f.Msg.Append(ctx, userMsg); err != nil {
 		return err
 	}
 	conv.MessageCount++
+	if branchParentID != nil || conv.ActiveLeafMessageID != nil {
+		leaf := userMsg.ID
+		conv.ActiveLeafMessageID = &leaf
+	}
 	conv.Status = aimodel.ConvStatusRunning
 	_ = f.Conv.Update(ctx, conv)
 
+	return f.executeLoop(ctx, conv, agent, prov, sink, active, mode, depth)
+}
+
+// executeLoop runs the model+tool loop over the conversation's current tail. It
+// is shared by execute (after appending a user message), Rerun (regenerate, no
+// new user message), and Branch.
+func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent,
+	prov provider.Provider, sink *ChannelSink, active *activeRun, mode aimodel.PermissionMode, depth int) error {
+	conv.Status = aimodel.ConvStatusRunning
+	_ = f.Conv.Update(ctx, conv)
 	sink.Emit(Event{Kind: KindMessageStart, Data: map[string]any{"conversation_id": conv.ID, "model": conv.Model}})
 
-	// Load full history (system_prompt + prior turns) to feed the model.
-	history, err := f.Msg.ListByConv(ctx, conv.ID)
+	// Load history (system_prompt + prior turns) to feed the model — the active
+	// branch path when the conversation is branched, else the full linear list.
+	branched := conv.ActiveLeafMessageID != nil
+	var history []aimodel.AIMessage
+	var err error
+	if branched {
+		history, err = f.Msg.ListBranch(ctx, conv.ID, *conv.ActiveLeafMessageID)
+	} else {
+		history, err = f.Msg.ListByConv(ctx, conv.ID)
+	}
 	if err != nil {
 		return err
 	}
@@ -265,7 +365,7 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	case aimodel.CtxStrategyNone:
 		// keep full history
 	case aimodel.CtxStrategySummarize:
-		messages = f.summarizeOverflow(ctx, prov, conv.Model, messages, f.Cfg.HistoryTokenBudget)
+		messages = f.applyRollingSummary(ctx, prov, conv, history, f.Cfg.HistoryTokenBudget)
 	default:
 		messages = condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
 	}
@@ -281,6 +381,9 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	// input there would deadlock — never expose them below depth 0.
 	if depth == 0 {
 		allowedTools = ensureTool(allowedTools, tools.AskUserToolName)
+		// The plan/task tracker drives long-horizon self-execution; only the
+		// top-level agent has a panel consumer (sub-agents run headless).
+		allowedTools = ensureTool(allowedTools, tools.UpdatePlanToolName)
 		if mode == aimodel.PermModePlan {
 			allowedTools = ensureTool(allowedTools, tools.ExitPlanModeToolName)
 		} else {
@@ -289,6 +392,7 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	} else {
 		allowedTools = stripTool(allowedTools, tools.AskUserToolName)
 		allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
+		allowedTools = stripTool(allowedTools, tools.UpdatePlanToolName)
 	}
 	toolSchemas := f.Tools.ProviderSchemas(allowedTools)
 	// Capability gating: don't send tool schemas to a model that can't do tool
@@ -319,9 +423,41 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	gate.Asset = ToolDepsView.Asset
 	gate.RBAC = ToolDepsView.RBAC
 
-	for iter := 0; iter < agent.MaxIterations; iter++ {
+	// Long-horizon execution state. planEngaged flips when the agent calls
+	// update_plan, which lifts the step ceiling from the agent's MaxIterations to
+	// the hard agentic cap and enables the self-drive nudge. Four circuit
+	// breakers bound the run: step cap, wall-clock, no-progress fingerprint, and
+	// a single continuation nudge.
+	hardCap := f.Cfg.MaxAgenticIterations
+	if hardCap < agent.MaxIterations {
+		hardCap = agent.MaxIterations
+	}
+	deadline := time.Now().Add(f.Cfg.WallClockBudget)
+	planEngaged := false
+	nudged := false
+	needTitle := titleIsDefault(conv.Title)
+	var lastFingerprint string
+	repeatRuns := 0
+
+	for iter := 0; ; iter++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		stepCap := agent.MaxIterations
+		if planEngaged {
+			stepCap = hardCap
+		}
+		if iter >= stepCap {
+			return f.finishTurn(ctx, conv, sink, "max_iterations")
+		}
+		if time.Now().After(deadline) {
+			return f.finishTurn(ctx, conv, sink, "wall_clock_budget")
+		}
+		// Keep the context window bounded across a long run (cheap; a no-op when
+		// already under budget). The strategy-aware condense ran once before the
+		// loop; this guards unbounded growth as tool results accumulate.
+		if iter > 0 {
+			messages = condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, f.Cfg.HistoryTokenBudget)
 		}
 		req := provider.Request{
 			Model:    conv.Model,
@@ -365,27 +501,68 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 			Content:       jsonEncode([]provider.ContentPart{{Type: "text", Text: assistant}}),
 			Reasoning:     reasoning,
 			ToolCalls:     string(toolCallsJSON),
-			InputTokens:   usage.in, OutputTokens: usage.out, FinishReason: finish,
-			CreatedAt: time.Now(),
+			InputTokens:   usage.in, OutputTokens: usage.out,
+			CacheReadTokens: usage.cacheRead, CacheWriteTokens: usage.cacheWrite,
+			FinishReason: finish,
+			CreatedAt:    time.Now(),
+		}
+		turnCost := costMicros(conv.Model, usage.in, usage.out, usage.cacheRead, usage.cacheWrite)
+		asstMsg.CostMicros = turnCost
+		if branched && conv.ActiveLeafMessageID != nil {
+			asstMsg.ParentID = conv.ActiveLeafMessageID
 		}
 		if err := f.Msg.Append(ctx, asstMsg); err != nil {
 			return err
 		}
 		conv.MessageCount++
+		if branched {
+			leaf := asstMsg.ID
+			conv.ActiveLeafMessageID = &leaf
+		}
 		conv.TotalInputTokens += uint64(usage.in)
 		conv.TotalOutputTokens += uint64(usage.out)
-		conv.TotalCostMicros += costMicros(conv.Model, usage.in, usage.out)
+		conv.TotalCacheReadTokens += uint64(usage.cacheRead)
+		conv.TotalCacheWriteTokens += uint64(usage.cacheWrite)
+		conv.TotalCostMicros += turnCost
 		_ = f.Conv.Update(ctx, conv)
+		// Auto-name an untitled conversation after its first assistant turn — a
+		// detached, best-effort cheap model call (must never delay/fail the turn).
+		if needTitle && conv.MessageCount >= 2 {
+			needTitle = false
+			cid := conv.ID
+			go func() { _, _ = f.GenerateTitle(context.Background(), cid) }()
+		}
 		messages = append(messages, provider.Message{
 			Role: provider.RoleAssistant,
 			Content: []provider.ContentPart{{Type: "text", Text: assistant}},
 			ToolCalls: toolCalls,
 		})
 		if len(toolCalls) == 0 {
-			sink.Emit(Event{Kind: KindMessageEnd, Data: map[string]any{"finish_reason": finish}})
-			conv.Status = aimodel.ConvStatusIdle
-			_ = f.Conv.Update(ctx, conv)
-			return nil
+			// Self-drive: if the plan still has open steps but the model stopped
+			// emitting tools, nudge it to continue — exactly once — then let it
+			// finish if it stalls again.
+			if planEngaged && !nudged && f.planHasIncomplete(ctx, conv.ID) {
+				nudged = true
+				messages = append(messages, provider.Message{
+					Role: provider.RoleUser,
+					Content: []provider.ContentPart{{Type: "text",
+						Text: "计划中仍有未完成的步骤。请继续执行下一步；若已确认全部完成，请调用 update_plan 标记完成，并给出最终结论。"}},
+				})
+				continue
+			}
+			return f.finishTurn(ctx, conv, sink, finish)
+		}
+		// No-progress circuit breaker: identical assistant output + tool calls for
+		// three consecutive iterations means the agent is stuck looping.
+		fp := runFingerprint(assistant, toolCalls)
+		if fp == lastFingerprint {
+			repeatRuns++
+		} else {
+			repeatRuns = 0
+			lastFingerprint = fp
+		}
+		if repeatRuns >= 2 {
+			return f.finishTurn(ctx, conv, sink, "no_progress")
 		}
 		// Run the tool calls (concurrently when safe), then persist + feed their
 		// results back in call order for the next round.
@@ -397,21 +574,67 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 				Content:        jsonEncode([]provider.ContentPart{{Type: "text", Text: results[i]}}),
 				CreatedAt:      time.Now(),
 			}
+			if branched && conv.ActiveLeafMessageID != nil {
+				toolMsg.ParentID = conv.ActiveLeafMessageID
+			}
 			_ = f.Msg.Append(ctx, toolMsg)
 			conv.MessageCount++
+			if branched {
+				leaf := toolMsg.ID
+				conv.ActiveLeafMessageID = &leaf
+			}
 			messages = append(messages, provider.Message{
 				Role: provider.RoleTool, ToolCallID: tc.ID, Name: tc.Name,
 				Content: []provider.ContentPart{{Type: "text", Text: results[i]}},
 			})
+			if tc.Name == tools.UpdatePlanToolName {
+				planEngaged = true
+			}
 		}
 	}
-	sink.Emit(Event{Kind: KindMessageEnd, Data: map[string]any{"finish_reason": "max_iterations"}})
+}
+
+// finishTurn emits the terminal message_end, flips the conversation to idle, and
+// returns nil. Shared by every loop exit (normal completion + each circuit
+// breaker) so the SSE stream always closes with a finish_reason.
+func (f *Factory) finishTurn(ctx context.Context, conv *aimodel.AIConversation, sink *ChannelSink, reason string) error {
+	sink.Emit(Event{Kind: KindMessageEnd, Data: map[string]any{"finish_reason": reason}})
 	conv.Status = aimodel.ConvStatusIdle
 	_ = f.Conv.Update(ctx, conv)
 	return nil
 }
 
-type usageAcc struct{ in, out uint32 }
+// planHasIncomplete reports whether the conversation's plan still has pending or
+// active tasks — used to decide the one-shot self-drive nudge.
+func (f *Factory) planHasIncomplete(ctx context.Context, convID string) bool {
+	if f.Tasks == nil {
+		return false
+	}
+	tasks, err := f.Tasks.ListByConv(ctx, convID)
+	if err != nil {
+		return false
+	}
+	for _, t := range tasks {
+		if t.Status == aimodel.TaskPending || t.Status == aimodel.TaskActive {
+			return true
+		}
+	}
+	return false
+}
+
+// runFingerprint hashes an iteration's assistant text + tool calls so the runner
+// can detect a stuck loop (identical output three times running).
+func runFingerprint(assistant string, calls []provider.ToolCall) string {
+	h := sha256.New()
+	h.Write([]byte(assistant))
+	for _, tc := range calls {
+		h.Write([]byte(tc.Name))
+		h.Write([]byte(tc.Arguments))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+type usageAcc struct{ in, out, cacheRead, cacheWrite uint32 }
 
 // consumeStream drains a provider.Event channel, forwards events to the sink,
 // and returns the accumulated assistant text + tool calls.
@@ -474,7 +697,14 @@ func (f *Factory) consumeStream(ctx context.Context, stream <-chan provider.Even
 		case provider.EvtUsage:
 			usage.in += ev.InputTokens
 			usage.out += ev.OutputTokens
-			sink.Emit(Event{Kind: KindUsage, Data: map[string]any{"input_tokens": ev.InputTokens, "output_tokens": ev.OutputTokens}})
+			usage.cacheRead += ev.CacheReadTokens
+			usage.cacheWrite += ev.CacheWriteTokens
+			sink.Emit(Event{Kind: KindUsage, Data: map[string]any{
+				"input_tokens":       ev.InputTokens,
+				"output_tokens":      ev.OutputTokens,
+				"cache_read_tokens":  ev.CacheReadTokens,
+				"cache_write_tokens": ev.CacheWriteTokens,
+			}})
 		case provider.EvtMessageEnd:
 			finish = ev.FinishReason
 		case provider.EvtError:
@@ -510,7 +740,9 @@ func (f *Factory) runToolBatch(ctx context.Context, conv *aimodel.AIConversation
 	results := make([]string, len(calls))
 	interactive := false
 	for _, tc := range calls {
-		if tc.Name == tools.AskUserToolName || tc.Name == tools.ExitPlanModeToolName {
+		// ask_user / exit_plan_mode pause for input; update_plan mutates the
+		// shared plan table — all three must run on the sequential lane.
+		if tc.Name == tools.AskUserToolName || tc.Name == tools.ExitPlanModeToolName || tc.Name == tools.UpdatePlanToolName {
 			interactive = true
 			break
 		}
@@ -544,6 +776,8 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		return f.handleAskUser(ctx, conv, tc, sink, active, parentMsgID)
 	case tools.ExitPlanModeToolName:
 		return f.handleExitPlanMode(ctx, conv, tc, sink, active, gate, parentMsgID)
+	case tools.UpdatePlanToolName:
+		return f.handleUpdatePlan(ctx, conv, tc, sink)
 	}
 	tool := f.Tools.Get(tc.Name)
 	if tool == nil {
@@ -836,6 +1070,68 @@ func (f *Factory) handleExitPlanMode(ctx context.Context, conv *aimodel.AIConver
 	}
 }
 
+// handleUpdatePlan persists the long-horizon agent's full task list (full-array
+// replace) and broadcasts it to the task panel via KindPlanUpdate. It mutates
+// shared state but does not pause, so it runs on the sequential tool lane. The
+// returned echo nudges the model to keep executing.
+func (f *Factory) handleUpdatePlan(ctx context.Context, conv *aimodel.AIConversation, tc provider.ToolCall, sink *ChannelSink) string {
+	if f.Tasks == nil {
+		return "[error] 计划存储未初始化"
+	}
+	var p struct {
+		Tasks []struct {
+			Title  string `json:"title"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(tc.Arguments), &p); err != nil {
+		return "[error] update_plan 参数解析失败：" + err.Error()
+	}
+	tasks := make([]aimodel.AITask, 0, len(p.Tasks))
+	for _, t := range p.Tasks {
+		title := strings.TrimSpace(t.Title)
+		if title == "" {
+			continue
+		}
+		st := aimodel.TaskStatus(strings.TrimSpace(t.Status))
+		if !aimodel.ValidTaskStatus(st) {
+			st = aimodel.TaskPending
+		}
+		tasks = append(tasks, aimodel.AITask{Title: title, Status: st, Detail: strings.TrimSpace(t.Detail)})
+	}
+	saved, err := f.Tasks.ReplaceAll(ctx, conv.ID, tasks)
+	if err != nil {
+		return "[error] 计划保存失败：" + err.Error()
+	}
+	done, active, total := 0, 0, len(saved)
+	var activeTitle string
+	for _, t := range saved {
+		switch t.Status {
+		case aimodel.TaskDone, aimodel.TaskSkipped:
+			done++
+		case aimodel.TaskActive:
+			active++
+			if activeTitle == "" {
+				activeTitle = t.Title
+			}
+		}
+	}
+	sink.Emit(Event{Kind: KindPlanUpdate, Data: map[string]any{
+		"conversation_id": conv.ID,
+		"tasks":           saved,
+		"summary":         map[string]int{"total": total, "done": done, "active": active},
+	}})
+	msg := fmt.Sprintf("计划已更新：共 %d 步，已完成 %d", total, done)
+	if activeTitle != "" {
+		msg += "，进行中：" + activeTitle
+	}
+	if done < total {
+		msg += "。请继续执行下一步。"
+	}
+	return msg
+}
+
 func ensureTool(in []string, name string) []string {
 	for _, s := range in {
 		if s == name {
@@ -848,12 +1144,15 @@ func ensureTool(in []string, name string) []string {
 func interactionGuidance(mode aimodel.PermissionMode) string {
 	base := "【向用户提问】当关键信息缺失、存在多个可选方案、或动作有歧义时，调用 ask_user 工具向用户提问" +
 		"（可附单选/多选选项与可选自由文本），不要凭空假设。"
+	plan := "\n\n【执行计划 / 长程自主】当任务包含多个步骤时，先调用 update_plan 把目标拆解为完整的有序步骤清单（status=pending）；" +
+		"开始执行某一步前把它标为 active，完成后标 done（失败 failed / 跳过 skipped），随做随更新——同一时刻只一个 active。" +
+		"计划会作为任务面板实时展示给用户。请连续自主地执行各步骤（依次调用所需工具），直到全部完成再给出最终结论，不要做一步就停下等待用户。"
 	if mode == aimodel.PermModePlan {
 		return base + "\n\n【计划模式】你当前处于只读计划模式：只能用只读工具调研，禁止任何写操作。" +
 			"调研完成后必须调用 exit_plan_mode 工具，把一份分步骤、含前置检查 / 风险 / 回滚的完整执行计划呈现给用户审批。" +
-			"用户批准后系统会自动切换到执行模式，你再逐步执行（高危动作仍逐项确认）。"
+			"用户批准后系统会自动切换到执行模式；届时请先用 update_plan 把已批准的计划落为任务清单，再逐步自主执行（高危动作仍逐项确认）。"
 	}
-	return base
+	return base + plan
 }
 
 // --- helpers ---
@@ -886,6 +1185,7 @@ func jsonEncode(parts []provider.ContentPart) string {
 // on the wire).
 func (f *Factory) streamWithRetry(ctx context.Context, prov provider.Provider, req provider.Request) (<-chan provider.Event, error) {
 	var lastErr error
+	const base = 300 * time.Millisecond
 	for attempt := 0; attempt <= f.Cfg.StreamRetries; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -895,15 +1195,42 @@ func (f *Factory) streamWithRetry(ctx context.Context, prov provider.Provider, r
 			return stream, nil
 		}
 		lastErr = err
+		// Don't waste retries on a permanent error (bad key, unknown model, 400).
+		if !isTransientErr(err) {
+			return nil, err
+		}
 		if attempt < f.Cfg.StreamRetries {
+			backoff := base * time.Duration(1<<attempt) // exponential
+			if backoff > 3*time.Second {
+				backoff = 3 * time.Second
+			}
 			select {
-			case <-time.After(time.Duration(300*(attempt+1)) * time.Millisecond):
+			case <-time.After(backoff):
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
 		}
 	}
 	return nil, lastErr
+}
+
+// isTransientErr classifies a Stream() establishment error as worth retrying
+// (transient network / rate-limit / 5xx) vs. permanent (auth / bad request).
+func isTransientErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{
+		"timeout", "deadline", "eof", "connection reset", "connection refused",
+		"temporary", "overloaded", "rate limit", "too many requests",
+		"429", "500", "502", "503", "504", "529",
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // condenseHistory keeps the transcript within a token budget. truncate_oldest
@@ -958,30 +1285,57 @@ func splitHistoryAtBudget(msgs []provider.Message, budget int) (kept, dropped []
 	return msgs[start:], msgs[:start]
 }
 
-// summarizeOverflow implements the "summarize" context strategy: when the
-// transcript exceeds the budget, the dropped (older) turns are condensed into a
-// single recap message via a cheap model call, prepended to the recent suffix.
-// Any failure degrades to truncate_oldest.
-func (f *Factory) summarizeOverflow(ctx context.Context, prov provider.Provider, model string, msgs []provider.Message, budget int) []provider.Message {
-	if budget <= 0 || len(msgs) == 0 {
-		return msgs
+// applyRollingSummary implements a stateful "summarize" context strategy: when
+// the transcript exceeds the budget, the older turns are dropped and folded into
+// a persisted RunningSummary on the conversation. Only the NEWLY-dropped span
+// (id > SummarizedUpToMessageID) is summarized each time, so cost stays bounded
+// instead of re-summarizing from scratch. Any failure degrades to truncate.
+func (f *Factory) applyRollingSummary(ctx context.Context, prov provider.Provider, conv *aimodel.AIConversation,
+	history []aimodel.AIMessage, budget int) []provider.Message {
+	messages := mapHistoryToProvider(history)
+	if budget <= 0 || len(messages) == 0 {
+		return messages
 	}
 	total := 0
-	for i := range msgs {
-		total += estimateTokens(msgs[i])
+	for i := range messages {
+		total += estimateTokens(messages[i])
 	}
 	if total <= budget {
-		return msgs
+		return messages // everything fits — no drop, no summary needed
 	}
-	kept, dropped := splitHistoryAtBudget(msgs, budget*3/4) // reserve room for the recap
-	if len(dropped) == 0 {
+	kept, dropped := splitHistoryAtBudget(messages, budget*3/4) // reserve room for the recap
+	droppedCount := len(dropped)
+	if droppedCount == 0 || droppedCount > len(history) {
 		return kept
 	}
-	summary, err := f.summarizeMessages(ctx, prov, model, dropped)
-	if err != nil || strings.TrimSpace(summary) == "" {
-		if f.Logger != nil && err != nil {
-			f.Logger.Warn("context summarize failed; truncating instead", zap.Error(err))
+	// history and messages are index-aligned (one provider.Message per row).
+	droppedHistory := history[:droppedCount]
+	var newlyDropped []aimodel.AIMessage
+	maxID := conv.SummarizedUpToMessageID
+	for _, m := range droppedHistory {
+		if m.ID > conv.SummarizedUpToMessageID {
+			newlyDropped = append(newlyDropped, m)
 		}
+		if m.ID > maxID {
+			maxID = m.ID
+		}
+	}
+	summary := conv.RunningSummary
+	if len(newlyDropped) > 0 {
+		folded, err := f.foldSummary(ctx, prov, conv.Model, conv.RunningSummary, mapHistoryToProvider(newlyDropped))
+		if err != nil || strings.TrimSpace(folded) == "" {
+			if f.Logger != nil && err != nil {
+				f.Logger.Warn("rolling summarize failed; truncating instead", zap.Error(err))
+			}
+			return condenseHistory(messages, aimodel.CtxStrategyTruncateOldest, budget)
+		}
+		summary = folded
+		conv.RunningSummary = summary
+		conv.SummarizedUpToMessageID = maxID
+		conv.SummaryTokenEstimate = len(summary)/4 + 8
+		_ = f.Conv.Update(ctx, conv)
+	}
+	if strings.TrimSpace(summary) == "" {
 		return kept
 	}
 	out := make([]provider.Message, 0, len(kept)+1)
@@ -992,6 +1346,19 @@ func (f *Factory) summarizeOverflow(ctx context.Context, prov provider.Provider,
 	})
 	out = append(out, kept...)
 	return out
+}
+
+// foldSummary merges the prior running summary with the newly-dropped turns into
+// an updated summary via one cheap model call.
+func (f *Factory) foldSummary(ctx context.Context, prov provider.Provider, model, prior string, newMsgs []provider.Message) (string, error) {
+	msgs := newMsgs
+	if strings.TrimSpace(prior) != "" {
+		msgs = append([]provider.Message{{
+			Role:    provider.RoleAssistant,
+			Content: []provider.ContentPart{{Type: "text", Text: "【已有摘要，请在其基础上并入下面的新增对话】\n" + prior}},
+		}}, newMsgs...)
+	}
+	return f.summarizeMessages(ctx, prov, model, msgs)
 }
 
 func (f *Factory) summarizeMessages(ctx context.Context, prov provider.Provider, model string, msgs []provider.Message) (string, error) {
@@ -1046,6 +1413,123 @@ func (f *Factory) summarizeMessages(ctx context.Context, prov provider.Provider,
 		}
 	}
 	return out.String(), nil
+}
+
+// titleIsDefault reports whether a conversation still has its placeholder title
+// (empty or the "新对话" default the create handler assigns).
+func titleIsDefault(t string) bool {
+	t = strings.TrimSpace(t)
+	return t == "" || t == "新对话"
+}
+
+// GenerateTitle names a conversation from its opening turns via a cheap one-shot
+// model call, persists just the title column (no clobbering the live run's other
+// fields), and emits KindTitleUpdate to any attached stream. Best-effort: every
+// failure path returns quietly. Also exposed via POST /conversations/:id/autotitle.
+func (f *Factory) GenerateTitle(ctx context.Context, convID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	conv, err := f.Conv.FindByID(ctx, convID)
+	if err != nil || conv == nil {
+		return "", err
+	}
+	agent, err := f.Agents.FindByID(ctx, conv.AgentID)
+	if err != nil || agent == nil {
+		return "", err
+	}
+	prov, _, err := f.Provider.Resolve(ctx, conv.UserID, ptrOrNil(conv.ProviderID), agent)
+	if err != nil {
+		return "", err
+	}
+	msgs, err := f.Msg.Last(ctx, convID, 4)
+	if err != nil {
+		return "", err
+	}
+	var sb strings.Builder
+	for _, m := range msgs {
+		if m.Role != aimodel.RoleUser && m.Role != aimodel.RoleAssistant {
+			continue
+		}
+		t := strings.TrimSpace(extractMessageText(m.Content))
+		if t == "" {
+			continue
+		}
+		sb.WriteString(string(m.Role))
+		sb.WriteString("：")
+		if len(t) > 800 {
+			t = t[:800]
+		}
+		sb.WriteString(t)
+		sb.WriteString("\n")
+	}
+	if strings.TrimSpace(sb.String()) == "" {
+		return "", nil
+	}
+	req := provider.Request{
+		Model:  conv.Model,
+		System: "给下面这段对话起一个简短的中文标题，概括主题。只输出标题本身：不超过 16 个字，不要引号、标点、前后缀或解释。",
+		Messages: []provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.ContentPart{{Type: "text", Text: sb.String()}},
+		}},
+		MaxTokens: 32,
+	}
+	stream, err := prov.Stream(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	var out strings.Builder
+	for ev := range stream {
+		switch ev.Type {
+		case provider.EvtTextDelta:
+			out.WriteString(ev.Text)
+		case provider.EvtError:
+			return "", ev.Err
+		}
+	}
+	title := sanitizeTitle(out.String())
+	if title == "" {
+		return "", nil
+	}
+	if err := f.Conv.UpdateTitle(ctx, convID, title); err != nil {
+		return "", err
+	}
+	if s := f.Stream(convID); s != nil {
+		s.Emit(Event{Kind: KindTitleUpdate, Data: map[string]any{"conversation_id": convID, "title": title}})
+	}
+	return title, nil
+}
+
+// sanitizeTitle trims the model's title output to a single clean line, stripping
+// wrapping quotes and clamping the length.
+func sanitizeTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.Trim(s, " \t\"'“”『』「」【】*#")
+	s = strings.TrimSpace(s)
+	// Clamp to a sane length (count runes, not bytes).
+	r := []rune(s)
+	if len(r) > 40 {
+		s = string(r[:40])
+	}
+	return s
+}
+
+// extractMessageText pulls the text out of an AIMessage.Content JSON blob.
+func extractMessageText(content string) string {
+	var parts []provider.ContentPart
+	if err := json.Unmarshal([]byte(content), &parts); err != nil {
+		return content
+	}
+	var sb strings.Builder
+	for _, p := range parts {
+		if p.Type == "text" || p.Type == "" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
 }
 
 func messageText(m provider.Message) string {

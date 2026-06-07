@@ -91,7 +91,7 @@ export default function AIAgentsPage() {
           onCreated={() => qc.invalidateQueries({ queryKey: ["ai", "agents"] })}
         />
       </div>
-      <DataTable columns={cols} rows={list.data?.agents} loading={list.isLoading} />
+      <DataTable columns={cols} rows={list.data?.agents} loading={list.isLoading} virtualize />
       {editing && (
         <EditAgentSheet
           agent={editing}

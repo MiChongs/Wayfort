@@ -114,6 +114,12 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 	if req.MaxTokens > 0 {
 		params.MaxTokens = param.NewOpt(int64(req.MaxTokens))
 	}
+	// Without include_usage the streaming API never emits a usage chunk, so
+	// token counts (and therefore cost / context-budget accounting) silently
+	// stay at zero. Ask for the final usage frame on every stream.
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+		IncludeUsage: param.NewOpt(true),
+	}
 
 	stream := p.client.Chat.Completions.NewStreaming(ctx, params)
 	out := make(chan Event, 32)
@@ -139,6 +145,24 @@ func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 
 		for stream.Next() {
 			chunk := stream.Current()
+			// The usage frame arrives as a final chunk with an empty Choices
+			// array, so it must be read BEFORE the choices guard below. OpenAI's
+			// PromptTokens INCLUDES cached tokens; normalize InputTokens to the
+			// fresh (uncached) remainder so cost accounting matches Anthropic's
+			// split (fresh input + cache reads billed separately).
+			if chunk.Usage.TotalTokens > 0 {
+				cached := chunk.Usage.PromptTokensDetails.CachedTokens
+				fresh := chunk.Usage.PromptTokens - cached
+				if fresh < 0 {
+					fresh = 0
+				}
+				emit(out, ctx, Event{
+					Type:            EvtUsage,
+					InputTokens:     uint32(fresh),
+					OutputTokens:    uint32(chunk.Usage.CompletionTokens),
+					CacheReadTokens: uint32(cached),
+				})
+			}
 			if len(chunk.Choices) == 0 {
 				continue
 			}

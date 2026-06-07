@@ -36,14 +36,20 @@ export function ConversationListItem({
   agent,
   active,
   onSelect,
+  virtualized,
 }: {
   conv: AIConversation
   agent?: AIAgent
   active: boolean
   onSelect?: () => void
+  // Inside a virtualized list rows recycle, so enter/exit springs + the
+  // shared-layoutId active bar misbehave. When true we render a plain <li> with
+  // a static active bar.
+  virtualized?: boolean
 }) {
   const qc = useQueryClient()
   const reduce = useReducedMotion()
+  const isRunning = conv.status === "running"
   const [editing, setEditing] = React.useState(false)
   const [draft, setDraft] = React.useState(conv.title || "新对话")
 
@@ -99,8 +105,8 @@ export function ConversationListItem({
 
   return (
     <motion.li
-      layout="position"
-      initial={reduce ? false : { opacity: 0, x: -8 }}
+      layout={virtualized || reduce ? false : "position"}
+      initial={virtualized || reduce ? false : { opacity: 0, x: -8 }}
       animate={{ opacity: 1, x: 0 }}
       exit={reduce ? { opacity: 0 } : { opacity: 0, x: -16, scale: 0.95 }}
       transition={
@@ -111,15 +117,18 @@ export function ConversationListItem({
         active ? "bg-accent" : "hover:bg-accent/50",
       )}
     >
-      {active && (
-        <motion.span
-          layoutId="sidebar-active-bar"
-          className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-primary"
-          transition={
-            reduce ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 30 }
-          }
-        />
-      )}
+      {active &&
+        (virtualized ? (
+          <span className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-primary" />
+        ) : (
+          <motion.span
+            layoutId="sidebar-active-bar"
+            className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r bg-primary"
+            transition={
+              reduce ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 30 }
+            }
+          />
+        ))}
       {editing ? (
         <div className="px-3 py-2">
           <Input
@@ -148,6 +157,12 @@ export function ConversationListItem({
               <Pin className="w-3 h-3 text-primary shrink-0" aria-label="置顶" />
             )}
             <span className="truncate">{conv.title || "新对话"}</span>
+            {isRunning && (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning motion-safe:animate-pulse"
+                aria-label="生成中"
+              />
+            )}
             {conv.archived && (
               <Archive className="w-3 h-3 text-muted-foreground shrink-0" aria-label="已归档" />
             )}

@@ -116,7 +116,7 @@ export default function ProxiesPage() {
         <SummaryCard label="HTTP" value={summary?.by_kind?.http_connect ?? 0} tone="http_connect" />
       </div>
 
-      <DataTable columns={cols} rows={list.data?.proxies} loading={list.isLoading} />
+      <DataTable columns={cols} rows={list.data?.proxies} loading={list.isLoading} virtualize />
       {(list.data?.proxies?.length ?? 0) === 0 && !list.isLoading && (
         <Card className="border-dashed">
           <CardContent className="flex flex-col items-center justify-center gap-2 py-10 text-center text-sm text-muted-foreground">

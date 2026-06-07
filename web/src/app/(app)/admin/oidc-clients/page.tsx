@@ -30,7 +30,7 @@ export default function OIDCClientsPage() {
         <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><ShieldCheck className="w-5 h-5" /> OIDC 客户端</h1>
         <CreateOIDC onCreated={() => qc.invalidateQueries({ queryKey: ["admin", "oidc"] })} />
       </div>
-      <DataTable columns={cols} rows={list.data?.oidc_clients} loading={list.isLoading} />
+      <DataTable columns={cols} rows={list.data?.oidc_clients} loading={list.isLoading} virtualize />
     </div>
   )
 }

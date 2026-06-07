@@ -828,9 +828,18 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		aiGroup.DELETE("/conversations/:id", perm(auth.PermAIUse), rt.AI.Conversation.Delete)
 		aiGroup.POST("/conversations/:id/cancel", perm(auth.PermAIUse), rt.AI.Conversation.Cancel)
 		aiGroup.GET("/conversations/:id/export.md", perm(auth.PermAIUse), rt.AI.Conversation.ExportMarkdown)
+		aiGroup.GET("/conversations/:id/tasks", perm(auth.PermAIUse), rt.AI.Conversation.GetPlan)
+		aiGroup.GET("/conversations/:id/search", perm(auth.PermAIUse), rt.AI.Conversation.SearchMessages)
+		aiGroup.GET("/conversations/:id/branches", perm(auth.PermAIUse), rt.AI.Conversation.ListBranches)
+		aiGroup.POST("/conversations/:id/active-leaf", perm(auth.PermAIUse), rt.AI.Conversation.SetActiveLeaf)
+		aiGroup.POST("/conversations/:id/fork", perm(auth.PermAIUse), rt.AI.Conversation.Fork)
+		aiGroup.POST("/conversations/:id/autotitle", perm(auth.PermAIUse), rt.AI.Conversation.Autotitle)
 		aiGroup.PATCH("/conversations/:id/messages/:msg_id", perm(auth.PermAIUse), rt.AI.Conversation.EditMessage)
 
+		aiGroup.GET("/conversations/:id/messages", perm(auth.PermAIUse), rt.AI.Conversation.ListMessages)
 		aiGroup.POST("/conversations/:id/messages", perm(auth.PermAIUse), rt.AI.SSE.SendMessage)
+		aiGroup.POST("/conversations/:id/messages/:msg_id/branch", perm(auth.PermAIUse), rt.AI.SSE.BranchMessage)
+		aiGroup.POST("/conversations/:id/regenerate", perm(auth.PermAIUse), rt.AI.SSE.Regenerate)
 		aiGroup.GET("/conversations/:id/stream", perm(auth.PermAIUse), rt.AI.SSE.Stream)
 
 		aiGroup.POST("/conversations/:id/invocations/:inv_id/approve", perm(auth.PermAIUse), rt.AI.Invocation.Approve)

@@ -19,12 +19,23 @@ func (r *ConversationRepo) Create(ctx context.Context, c *aimodel.AIConversation
 func (r *ConversationRepo) Update(ctx context.Context, c *aimodel.AIConversation) error {
 	return r.db.WithContext(ctx).Save(c).Error
 }
+
+// UpdateTitle persists only the title column — used by the auto-title generator,
+// which runs concurrently with a live turn and must not clobber the run's other
+// in-flight column writes (token totals, status, active leaf).
+func (r *ConversationRepo) UpdateTitle(ctx context.Context, id, title string) error {
+	return r.db.WithContext(ctx).Model(&aimodel.AIConversation{}).
+		Where("id = ?", id).Update("title", title).Error
+}
 func (r *ConversationRepo) Delete(ctx context.Context, id string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("conversation_id = ?", id).Delete(&aimodel.AIMessage{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("conversation_id = ?", id).Delete(&aimodel.AIToolInvocation{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("conversation_id = ?", id).Delete(&aimodel.AITask{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&aimodel.AIConversation{}, "id = ?", id).Error
@@ -84,6 +95,115 @@ func (r *ConversationRepo) Search(ctx context.Context, userID uint64, q string, 
 	return out, err
 }
 
+// Clone forks a conversation into a new one (newID), copying the active branch's
+// messages up to and including throughMsgID (0 = copy everything). ParentID
+// links are remapped to the new message ids; tool invocations and the plan are
+// NOT copied (the clone starts a fresh execution context). The new conversation
+// is linear (ActiveLeafMessageID nil) regardless of the source's branch state.
+func (r *ConversationRepo) Clone(ctx context.Context, srcID string, throughMsgID uint64, newID, title string) (*aimodel.AIConversation, error) {
+	var src aimodel.AIConversation
+	if err := r.db.WithContext(ctx).First(&src, "id = ?", srcID).Error; err != nil {
+		return nil, err
+	}
+	var msgs []aimodel.AIMessage
+	if err := r.db.WithContext(ctx).
+		Where("conversation_id = ?", srcID).Order("id").Find(&msgs).Error; err != nil {
+		return nil, err
+	}
+	pathIDs := branchPathIDs(msgs, src.ActiveLeafMessageID)
+	if throughMsgID > 0 {
+		for i, id := range pathIDs {
+			if id == throughMsgID {
+				pathIDs = pathIDs[:i+1]
+				break
+			}
+		}
+	}
+	keep := make(map[uint64]bool, len(pathIDs))
+	for _, id := range pathIDs {
+		keep[id] = true
+	}
+	now := time.Now()
+	newConv := &aimodel.AIConversation{
+		ID: newID, UserID: src.UserID, AgentID: src.AgentID, Title: title,
+		ProviderID: src.ProviderID, Model: src.Model, PermissionMode: src.PermissionMode,
+		Status: aimodel.ConvStatusActive, Temperature: src.Temperature, TopP: src.TopP,
+		MaxTokens: src.MaxTokens, ThinkingBudget: src.ThinkingBudget,
+		ParentConversation: &srcID, CreatedAt: now, UpdatedAt: now,
+	}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(newConv).Error; err != nil {
+			return err
+		}
+		idMap := map[uint64]uint64{}
+		count := 0
+		for i := range msgs {
+			m := msgs[i]
+			if !keep[m.ID] {
+				continue
+			}
+			nm := m
+			nm.ID = 0
+			nm.ConversationID = newID
+			if m.ParentID != nil {
+				if np, ok := idMap[*m.ParentID]; ok {
+					nm.ParentID = &np
+				} else {
+					nm.ParentID = nil
+				}
+			}
+			if err := tx.Create(&nm).Error; err != nil {
+				return err
+			}
+			idMap[m.ID] = nm.ID
+			count++
+		}
+		newConv.MessageCount = count
+		return tx.Model(newConv).Update("message_count", count).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return newConv, nil
+}
+
+// branchPathIDs returns the ordered message ids to follow: the path from the
+// branch leaf up to the root (root→leaf) when leaf is set, else every message
+// in linear id order.
+func branchPathIDs(msgs []aimodel.AIMessage, leaf *uint64) []uint64 {
+	if leaf == nil {
+		ids := make([]uint64, len(msgs))
+		for i := range msgs {
+			ids[i] = msgs[i].ID
+		}
+		return ids
+	}
+	byID := make(map[uint64]*aimodel.AIMessage, len(msgs))
+	for i := range msgs {
+		byID[msgs[i].ID] = &msgs[i]
+	}
+	cur, ok := byID[*leaf]
+	if !ok {
+		ids := make([]uint64, len(msgs))
+		for i := range msgs {
+			ids[i] = msgs[i].ID
+		}
+		return ids
+	}
+	var rev []uint64
+	for steps := 0; cur != nil && steps <= len(msgs); steps++ {
+		rev = append(rev, cur.ID)
+		if cur.ParentID == nil {
+			break
+		}
+		cur = byID[*cur.ParentID]
+	}
+	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
+		rev[i], rev[j] = rev[j], rev[i]
+	}
+	return rev
+}
+
 func escapeLike(q string) string {
 	// minimal escape so the user's _ and % don't act as wildcards
 	out := make([]byte, 0, len(q))
@@ -118,6 +238,9 @@ func (r *ConversationRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time)
 			return err
 		}
 		if err := tx.Where("conversation_id IN ?", ids).Delete(&aimodel.AIToolInvocation{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("conversation_id IN ?", ids).Delete(&aimodel.AITask{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("id IN ?", ids).Delete(&aimodel.AIConversation{}).Error

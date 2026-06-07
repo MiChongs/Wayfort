@@ -94,6 +94,7 @@ func New(cfg Config, deps Deps) *Set {
 	convRepo := airepo.NewConversationRepo(deps.DB)
 	msgRepo := airepo.NewMessageRepo(deps.DB)
 	invRepo := airepo.NewInvocationRepo(deps.DB)
+	taskRepo := airepo.NewTaskRepo(deps.DB)
 
 	providerReg := provider.NewRegistry(providerRepo, deps.Sealer)
 
@@ -134,8 +135,10 @@ func New(cfg Config, deps Deps) *Set {
 	// each one's AllowedTools.
 	tools.RegisterAskUserTool(toolReg)
 	tools.RegisterExitPlanModeTool(toolReg)
+	// update_plan drives the long-horizon agent's live task panel (runner-handled).
+	tools.RegisterUpdatePlanTool(toolReg)
 
-	factory := runner.NewFactory(providerReg, toolReg, convRepo, msgRepo, invRepo,
+	factory := runner.NewFactory(providerReg, toolReg, convRepo, msgRepo, invRepo, taskRepo,
 		agentRepo, deps.AuditWriter, deps.Logger, runner.Config{
 			MaxIterations:    cfg.MaxIterations,
 			MaxSubAgentDepth: cfg.MaxSubAgentDepth,
@@ -162,10 +165,10 @@ func New(cfg Config, deps Deps) *Set {
 		Provider: &handler.ProviderHandler{Repo: providerRepo, Sealer: deps.Sealer, Registry: providerReg},
 		Agent:    &handler.AgentHandler{Repo: agentRepo, Tools: toolReg},
 		Conversation: &handler.ConversationHandler{
-			Repo: convRepo, Msg: msgRepo, Inv: invRepo,
+			Repo: convRepo, Msg: msgRepo, Inv: invRepo, Tasks: taskRepo,
 			Agents: agentRepo, Factory: factory,
 		},
-		SSE:        &handler.SSEHandler{Conv: convRepo, Factory: factory},
+		SSE:        &handler.SSEHandler{Conv: convRepo, Msg: msgRepo, Inv: invRepo, Factory: factory},
 		Invocation: &handler.InvocationHandler{Conv: convRepo, Inv: invRepo, Factory: factory},
 		Factory:    factory,
 		ProviderRepo: providerRepo,

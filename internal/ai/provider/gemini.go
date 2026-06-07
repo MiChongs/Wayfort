@@ -110,7 +110,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		defer close(out)
 		emit(out, ctx, Event{Type: EvtMessageStart})
 		finish := ""
-		var totalIn, totalOut int32
+		var totalIn, totalOut, cached int32
 		toolIdx := 0
 		for resp, err := range p.client.Models.GenerateContentStream(ctx, model, contents, cfg) {
 			if err != nil {
@@ -147,10 +147,22 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 			if resp.UsageMetadata != nil {
 				totalIn = resp.UsageMetadata.PromptTokenCount
 				totalOut = resp.UsageMetadata.CandidatesTokenCount
+				cached = resp.UsageMetadata.CachedContentTokenCount
 			}
 		}
 		if totalIn > 0 || totalOut > 0 {
-			emit(out, ctx, Event{Type: EvtUsage, InputTokens: uint32(totalIn), OutputTokens: uint32(totalOut)})
+			// PromptTokenCount includes cached tokens; report the fresh remainder
+			// as InputTokens and the cached subset separately (matches OpenAI).
+			fresh := totalIn - cached
+			if fresh < 0 {
+				fresh = 0
+			}
+			emit(out, ctx, Event{
+				Type:            EvtUsage,
+				InputTokens:     uint32(fresh),
+				OutputTokens:    uint32(totalOut),
+				CacheReadTokens: uint32(cached),
+			})
 		}
 		emit(out, ctx, Event{Type: EvtMessageEnd, FinishReason: finish})
 	}()

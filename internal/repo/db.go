@@ -123,6 +123,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&aimodel.AIConversation{},
 		&aimodel.AIMessage{},
 		&aimodel.AIToolInvocation{},
+		&aimodel.AITask{},
 
 		// Phase 11 — terminal snippets / history / profile
 		&model.Snippet{},

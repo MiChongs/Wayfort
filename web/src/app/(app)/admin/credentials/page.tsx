@@ -161,6 +161,7 @@ export default function CredentialsPage() {
             rows={rows}
             loading={q.isLoading}
             empty={search ? "没有匹配的凭据" : "暂无凭据"}
+            virtualize
           />
         </>
       )}

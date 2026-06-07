@@ -133,6 +133,10 @@ func (r *Registry) ProviderSchemas(allowed []string) []provider.ToolSchema {
 			})
 		}
 	}
+	// Deterministic order: the tool array forms the head of the Anthropic prompt
+	// cache prefix, which is byte-compared. Any reordering (allow-list shuffles,
+	// runner tool injection) would silently invalidate the cache, so sort by name.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

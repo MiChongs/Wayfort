@@ -14,6 +14,7 @@ import type {
   AIConversation,
   AIMessage,
   AIProvider,
+  AITask,
   AITool,
   AIToolInvocation,
   AccessExplanation,
@@ -1017,10 +1018,12 @@ export const aiConversationService = {
   create: (body: { agent_id: number; provider_id?: number; model?: string; permission_mode?: string; title?: string }) =>
     api<AIConversation>("POST", "/ai/conversations", { body }),
   get: (id: string) =>
-    api<{ conversation: AIConversation; messages: AIMessage[]; invocations: AIToolInvocation[] }>(
+    api<{ conversation: AIConversation; messages: AIMessage[]; invocations: AIToolInvocation[]; plan?: AITask[] }>(
       "GET",
       `/ai/conversations/${id}`
     ),
+  // The long-horizon agent's live task plan (panel state).
+  tasks: (id: string) => api<{ plan: AITask[] }>("GET", `/ai/conversations/${id}/tasks`),
   update: (
     id: string,
     body: Partial<AIConversation> & { reset_overrides?: boolean },
@@ -1042,6 +1045,37 @@ export const aiConversationService = {
     ),
   exportMarkdownURL: (id: string) =>
     withTokenQuery(`/api/proxy/api/v1/ai/conversations/${id}/export.md`),
+  // In-conversation full-text search → matching message ids + snippets to jump to.
+  searchMessages: (id: string, q: string) =>
+    api<{ hits: { message_id: number; role: string; snippet: string; created_at: string }[]; count: number }>(
+      "GET",
+      `/ai/conversations/${id}/search`,
+      { query: { q } },
+    ),
+  // Cursor-paginated history (oldest-first page; next_before_id is the cursor).
+  listMessages: (id: string, beforeId?: number, limit = 50) =>
+    api<{ messages: AIMessage[]; next_before_id: number; has_more: boolean }>(
+      "GET",
+      `/ai/conversations/${id}/messages`,
+      { query: { before_id: beforeId, limit } },
+    ),
+  // Fork the conversation (active branch up to upto_message_id; omit = all).
+  fork: (id: string, uptoMessageId?: number) =>
+    api<AIConversation>("POST", `/ai/conversations/${id}/fork`, {
+      body: { upto_message_id: uptoMessageId },
+    }),
+  // Branch points (parents with >1 child) for the sibling switcher.
+  branches: (id: string) =>
+    api<{ branches: { parent_id: number; siblings: number[] }[]; active_leaf: number | null }>(
+      "GET",
+      `/ai/conversations/${id}/branches`,
+    ),
+  setActiveLeaf: (id: string, messageId: number | null) =>
+    api<AIConversation>("POST", `/ai/conversations/${id}/active-leaf`, {
+      body: { message_id: messageId },
+    }),
+  autotitle: (id: string) =>
+    api<{ title: string }>("POST", `/ai/conversations/${id}/autotitle`),
 }
 
 // ----- insights (Plan 14) -----

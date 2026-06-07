@@ -52,6 +52,118 @@ func (r *MessageRepo) CountByConv(ctx context.Context, convID string) (int, erro
 	return int(n), err
 }
 
+// BackfillParents chains the ParentID of every message that lacks one to the
+// message before it (in id order). Linear conversations carry nil ParentIDs;
+// the first time one is branched we materialize the implicit chain so ListBranch
+// can walk it. Idempotent — already-chained messages are left untouched.
+func (r *MessageRepo) BackfillParents(ctx context.Context, convID string) error {
+	msgs, err := r.ListByConv(ctx, convID)
+	if err != nil {
+		return err
+	}
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i := 1; i < len(msgs); i++ {
+			if msgs[i].ParentID == nil {
+				pid := msgs[i-1].ID
+				if err := tx.Model(&aimodel.AIMessage{}).
+					Where("id = ?", msgs[i].ID).Update("parent_id", pid).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// LastUserMessage returns the most recent user-role message in the conversation
+// (nil if none). Used by regenerate to find the turn to re-run.
+func (r *MessageRepo) LastUserMessage(ctx context.Context, convID string) (*aimodel.AIMessage, error) {
+	var m aimodel.AIMessage
+	err := r.db.WithContext(ctx).
+		Where("conversation_id = ? AND role = ?", convID, aimodel.RoleUser).
+		Order("id DESC").First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &m, err
+}
+
+// Children returns the messages whose ParentID == parentID (the sibling set used
+// to surface a "‹2/3›" branch switcher).
+func (r *MessageRepo) Children(ctx context.Context, convID string, parentID uint64) ([]aimodel.AIMessage, error) {
+	var out []aimodel.AIMessage
+	err := r.db.WithContext(ctx).
+		Where("conversation_id = ? AND parent_id = ?", convID, parentID).
+		Order("id").Find(&out).Error
+	return out, err
+}
+
+// ListBranch assembles the message path from the branch leaf up to the root via
+// ParentID, returned root→leaf. Falls back to the full linear list when leafID
+// is missing/dangling (so a stale ActiveLeafMessageID never breaks a turn). The
+// walk is bounded by the message count as a cycle defense.
+func (r *MessageRepo) ListBranch(ctx context.Context, convID string, leafID uint64) ([]aimodel.AIMessage, error) {
+	all, err := r.ListByConv(ctx, convID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uint64]*aimodel.AIMessage, len(all))
+	for i := range all {
+		byID[all[i].ID] = &all[i]
+	}
+	cur, ok := byID[leafID]
+	if !ok {
+		return all, nil // dangling leaf → linear fallback
+	}
+	path := make([]aimodel.AIMessage, 0, len(all))
+	for steps := 0; cur != nil && steps <= len(all); steps++ {
+		path = append(path, *cur)
+		if cur.ParentID == nil {
+			break
+		}
+		cur = byID[*cur.ParentID]
+	}
+	// Reverse to root→leaf order.
+	for i, j := 0, len(path)-1; i < j; i, j = i+1, j-1 {
+		path[i], path[j] = path[j], path[i]
+	}
+	return path, nil
+}
+
+// ListByConvBefore returns up to `limit` messages with id < beforeID (beforeID
+// == 0 means "from the newest"), in natural ascending order — cursor pagination
+// for lazy-loading older messages in the UI.
+func (r *MessageRepo) ListByConvBefore(ctx context.Context, convID string, beforeID uint64, limit int) ([]aimodel.AIMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	q := r.db.WithContext(ctx).Where("conversation_id = ?", convID)
+	if beforeID > 0 {
+		q = q.Where("id < ?", beforeID)
+	}
+	var rows []aimodel.AIMessage
+	if err := q.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+	return rows, nil
+}
+
+// SearchInConv runs a LIKE over one conversation's message content for the
+// in-conversation search/jump feature.
+func (r *MessageRepo) SearchInConv(ctx context.Context, convID, q string, limit int) ([]aimodel.AIMessage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []aimodel.AIMessage
+	err := r.db.WithContext(ctx).
+		Where("conversation_id = ? AND content LIKE ?", convID, "%"+escapeLike(q)+"%").
+		Order("id").Limit(limit).Find(&out).Error
+	return out, err
+}
+
 func (r *MessageRepo) Last(ctx context.Context, convID string, limit int) ([]aimodel.AIMessage, error) {
 	if limit <= 0 {
 		limit = 50

@@ -106,7 +106,7 @@ export default function AIProvidersPage() {
         />
       </div>
 
-      <DataTable columns={cols} rows={list.data?.providers} loading={list.isLoading} />
+      <DataTable columns={cols} rows={list.data?.providers} loading={list.isLoading} virtualize />
 
       {editing && (
         <EditProviderSheet

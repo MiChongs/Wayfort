@@ -27,6 +27,10 @@ type AIMessage struct {
 	ToolCalls      string      `gorm:"type:text" json:"tool_calls,omitempty"`
 	InputTokens    uint32      `json:"input_tokens"`
 	OutputTokens   uint32      `json:"output_tokens"`
+	// Prompt-cache breakdown + estimated spend for this turn (assistant rows).
+	CacheReadTokens  uint32    `json:"cache_read_tokens"`
+	CacheWriteTokens uint32    `json:"cache_write_tokens"`
+	CostMicros       uint64    `json:"cost_micros"`
 	FinishReason   string      `gorm:"size:32" json:"finish_reason,omitempty"`
 	CreatedAt      time.Time   `gorm:"index" json:"created_at"`
 }

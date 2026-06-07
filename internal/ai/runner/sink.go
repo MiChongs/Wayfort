@@ -43,6 +43,12 @@ const (
 	// existing /approve|/reject endpoints.
 	KindAskUser       EventKind = "ask_user"
 	KindPlanPresented EventKind = "plan_presented"
+
+	// KindPlanUpdate carries the long-horizon agent's full task list whenever it
+	// calls update_plan; the frontend renders it as the live TODO/task panel.
+	// KindTitleUpdate pushes an auto-generated conversation title.
+	KindPlanUpdate  EventKind = "plan_update"
+	KindTitleUpdate EventKind = "title_update"
 )
 
 // Event is the payload pushed through the Sink. Data marshals to JSON for SSE.

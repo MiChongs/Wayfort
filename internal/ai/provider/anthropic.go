@@ -62,9 +62,9 @@ func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error)
 	// Anthropic exposes a Models.List on the beta endpoint; fall back to a
 	// hard-coded baseline if discovery fails so the UI is always populated.
 	return []ModelInfo{
-		{ID: "claude-opus-4-5", Label: "Claude Opus 4.5", Tools: true, Vision: true, ContextWindow: 1_000_000},
-		{ID: "claude-sonnet-4-5", Label: "Claude Sonnet 4.5", Tools: true, Vision: true, ContextWindow: 1_000_000},
-		{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5", Tools: true, Vision: true, ContextWindow: 200_000},
+		{ID: "claude-opus-4-8", Label: "Claude Opus 4.8", Tools: true, Vision: true, ContextWindow: 1_000_000, MaxOutput: 64_000},
+		{ID: "claude-sonnet-4-6", Label: "Claude Sonnet 4.6", Tools: true, Vision: true, ContextWindow: 1_000_000, MaxOutput: 64_000},
+		{ID: "claude-haiku-4-5", Label: "Claude Haiku 4.5", Tools: true, Vision: true, ContextWindow: 200_000, MaxOutput: 32_000},
 	}, nil
 }
 
@@ -107,7 +107,13 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 		Tools:     tools,
 	}
 	if req.System != "" {
-		params.System = []anthropic.TextBlockParam{{Text: req.System}}
+		// Cache the system prompt: it (plus the tools, which render before it) is
+		// the largest stable prefix re-sent every turn. A breakpoint here caches
+		// tools+system together.
+		params.System = []anthropic.TextBlockParam{{
+			Text:         req.System,
+			CacheControl: anthropic.NewCacheControlEphemeralParam(),
+		}}
 	}
 	if thinkingOn {
 		// Extended thinking: enable the thinking config. Temperature / top_p
@@ -187,11 +193,14 @@ func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Eve
 				if ev.Delta.StopReason != "" {
 					finish = string(ev.Delta.StopReason)
 				}
-				if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 {
+				if ev.Usage.OutputTokens > 0 || ev.Usage.InputTokens > 0 ||
+					ev.Usage.CacheReadInputTokens > 0 || ev.Usage.CacheCreationInputTokens > 0 {
 					emit(out, ctx, Event{
-						Type:         EvtUsage,
-						InputTokens:  uint32(ev.Usage.InputTokens),
-						OutputTokens: uint32(ev.Usage.OutputTokens),
+						Type:             EvtUsage,
+						InputTokens:      uint32(ev.Usage.InputTokens),
+						OutputTokens:     uint32(ev.Usage.OutputTokens),
+						CacheReadTokens:  uint32(ev.Usage.CacheReadInputTokens),
+						CacheWriteTokens: uint32(ev.Usage.CacheCreationInputTokens),
 					})
 				}
 			case "message_stop":
@@ -248,6 +257,7 @@ func buildAnthropicMessages(req Request) []anthropic.MessageParam {
 			))
 		}
 	}
+	markAnthropicRollingCache(out)
 	return out
 }
 
@@ -283,7 +293,39 @@ func buildAnthropicTools(tools []ToolSchema) []anthropic.ToolUnionParam {
 			},
 		})
 	}
+	// Cache breakpoint on the last tool: tools render first, so this caches the
+	// whole (deterministically-ordered) tool array. Requires byte-stable tool
+	// ordering — guaranteed by Registry.ProviderSchemas's name sort.
+	if n := len(out); n > 0 && out[n-1].OfTool != nil {
+		out[n-1].OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
 	return out
+}
+
+// markAnthropicRollingCache puts a cache breakpoint on the last content block of
+// the message just before the final (volatile) turn. Each turn then re-reads the
+// growing cached prefix and only writes the new delta — incremental caching that
+// pays off on long agentic runs.
+func markAnthropicRollingCache(out []anthropic.MessageParam) {
+	if len(out) < 2 {
+		return
+	}
+	blocks := out[len(out)-2].Content
+	if len(blocks) == 0 {
+		return
+	}
+	cc := anthropic.NewCacheControlEphemeralParam()
+	b := &blocks[len(blocks)-1]
+	switch {
+	case b.OfText != nil:
+		b.OfText.CacheControl = cc
+	case b.OfToolResult != nil:
+		b.OfToolResult.CacheControl = cc
+	case b.OfToolUse != nil:
+		b.OfToolUse.CacheControl = cc
+	case b.OfImage != nil:
+		b.OfImage.CacheControl = cc
+	}
 }
 
 func orDefaultStr(s, def string) string {

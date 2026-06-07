@@ -41,7 +41,7 @@ export default function RolesPage() {
         <h1 className="text-2xl font-semibold tracking-tight flex items-center gap-2"><ShieldCheck className="w-5 h-5" /> 角色与权限</h1>
         <CreateRole perms={perms.data?.permissions || []} onCreated={() => qc.invalidateQueries({ queryKey: ["admin", "roles"] })} />
       </div>
-      <DataTable columns={cols} rows={roles.data?.roles} loading={roles.isLoading} />
+      <DataTable columns={cols} rows={roles.data?.roles} loading={roles.isLoading} virtualize />
       <PermissionList perms={perms.data?.permissions || []} />
     </div>
   )

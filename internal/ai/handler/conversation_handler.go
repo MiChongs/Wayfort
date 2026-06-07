@@ -19,6 +19,7 @@ type ConversationHandler struct {
 	Repo    *airepo.ConversationRepo
 	Msg     *airepo.MessageRepo
 	Inv     *airepo.InvocationRepo
+	Tasks   *airepo.TaskRepo
 	Agents  *airepo.AgentRepo
 	Factory *runner.Factory
 }
@@ -88,11 +89,29 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 	}
 	msgs, _ := h.Msg.ListByConv(c.Request.Context(), conv.ID)
 	invs, _ := h.Inv.ListByConv(c.Request.Context(), conv.ID)
+	var tasks []aimodel.AITask
+	if h.Tasks != nil {
+		tasks, _ = h.Tasks.ListByConv(c.Request.Context(), conv.ID)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"conversation": conv,
 		"messages":     msgs,
 		"invocations":  invs,
+		"plan":         tasks,
 	})
+}
+
+// GetPlan returns the conversation's live execution plan (task panel state).
+func (h *ConversationHandler) GetPlan(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	var tasks []aimodel.AITask
+	if h.Tasks != nil {
+		tasks, _ = h.Tasks.ListByConv(c.Request.Context(), conv.ID)
+	}
+	c.JSON(http.StatusOK, gin.H{"plan": tasks})
 }
 
 type updateConvReq struct {
@@ -257,6 +276,13 @@ func (h *ConversationHandler) ExportMarkdown(c *gin.Context) {
 		return
 	}
 	msgs, _ := h.Msg.ListByConv(c.Request.Context(), conv.ID)
+	invs, _ := h.Inv.ListByConv(c.Request.Context(), conv.ID)
+	invByCall := map[string]*aimodel.AIToolInvocation{}
+	for i := range invs {
+		if invs[i].ToolCallID != "" {
+			invByCall[invs[i].ToolCallID] = &invs[i]
+		}
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# %s\n\n", strings.TrimSpace(orStr(conv.Title, "对话")))
 	fmt.Fprintf(&sb, "- **ID**: `%s`\n", conv.ID)
@@ -273,6 +299,9 @@ func (h *ConversationHandler) ExportMarkdown(c *gin.Context) {
 			fmt.Fprintf(&sb, "## 🧑 用户 · %s\n\n%s\n\n", m.CreatedAt.Format("2006-01-02 15:04:05"), text)
 		case aimodel.RoleAssistant:
 			fmt.Fprintf(&sb, "## 🤖 助手 · %s\n\n", m.CreatedAt.Format("2006-01-02 15:04:05"))
+			if strings.TrimSpace(m.Reasoning) != "" {
+				fmt.Fprintf(&sb, "<details><summary>🧠 思考</summary>\n\n%s\n\n</details>\n\n", m.Reasoning)
+			}
 			if text != "" {
 				sb.WriteString(text)
 				sb.WriteString("\n\n")
@@ -285,9 +314,19 @@ func (h *ConversationHandler) ExportMarkdown(c *gin.Context) {
 				}
 				if err := json.Unmarshal([]byte(m.ToolCalls), &tcs); err == nil {
 					for _, tc := range tcs {
+						if tc.Name == "update_plan" {
+							continue
+						}
 						fmt.Fprintf(&sb, "### 🛠️ 工具调用 · `%s`\n\n", tc.Name)
 						if tc.Arguments != "" {
 							fmt.Fprintf(&sb, "**参数**:\n\n```json\n%s\n```\n\n", indentJSON(tc.Arguments))
+						}
+						if iv := invByCall[tc.ID]; iv != nil {
+							if iv.ErrorMessage != "" {
+								fmt.Fprintf(&sb, "**结果**（%s）:\n\n```\n%s\n```\n\n", iv.Status, iv.ErrorMessage)
+							} else if iv.OutputText != "" {
+								fmt.Fprintf(&sb, "**结果**:\n\n```\n%s\n```\n\n", iv.OutputText)
+							}
 						}
 					}
 				}
@@ -360,6 +399,189 @@ func (h *ConversationHandler) Cancel(c *gin.Context) {
 	}
 	h.Factory.Cancel(conv.ID)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ListMessages is cursor-paginated history: GET /conversations/:id/messages?before_id=&limit=
+// (oldest-first page; next_before_id is the cursor for the previous page). Lets
+// long conversations open cheaply and lazy-load older messages on scroll-up.
+func (h *ConversationHandler) ListMessages(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	beforeID, _ := parseUint64(c.Query("before_id"))
+	limit := 50
+	if n, err := parseUint64(c.Query("limit")); err == nil && n > 0 && n <= 200 {
+		limit = int(n)
+	}
+	rows, err := h.Msg.ListByConvBefore(c.Request.Context(), conv.ID, beforeID, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var next uint64
+	if len(rows) > 0 {
+		next = rows[0].ID
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"messages":       rows,
+		"next_before_id": next,
+		"has_more":       len(rows) == limit && next > 1,
+	})
+}
+
+// SearchMessages is the in-conversation full-text search/jump:
+// GET /conversations/:id/search?q= → matching message ids + snippets.
+func (h *ConversationHandler) SearchMessages(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	q := strings.TrimSpace(c.Query("q"))
+	if q == "" {
+		c.JSON(http.StatusOK, gin.H{"hits": []any{}, "count": 0})
+		return
+	}
+	rows, err := h.Msg.SearchInConv(c.Request.Context(), conv.ID, q, 100)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	type hit struct {
+		MessageID uint64    `json:"message_id"`
+		Role      string    `json:"role"`
+		Snippet   string    `json:"snippet"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	hits := make([]hit, 0, len(rows))
+	for _, m := range rows {
+		hits = append(hits, hit{
+			MessageID: m.ID,
+			Role:      string(m.Role),
+			Snippet:   snippetAround(extractText(m.Content), q, 90),
+			CreatedAt: m.CreatedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"hits": hits, "count": len(hits), "query": q})
+}
+
+// Fork clones the conversation (active branch up to upto_message_id, 0 = all)
+// into a new independent conversation.
+func (h *ConversationHandler) Fork(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		UptoMessageID uint64 `json:"upto_message_id"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	title := strings.TrimSpace(orStr(conv.Title, "新对话")) + " (副本)"
+	nc, err := h.Repo.Clone(c.Request.Context(), conv.ID, body.UptoMessageID, "conv_"+uuid.NewString(), title)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, nc)
+}
+
+// ListBranches returns the conversation's branch points (parents with >1 child)
+// so the UI can render a "‹2/3›" sibling switcher.
+func (h *ConversationHandler) ListBranches(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	msgs, _ := h.Msg.ListByConv(c.Request.Context(), conv.ID)
+	byParent := map[uint64][]uint64{}
+	for _, m := range msgs {
+		if m.ParentID != nil {
+			byParent[*m.ParentID] = append(byParent[*m.ParentID], m.ID)
+		}
+	}
+	type group struct {
+		ParentID uint64   `json:"parent_id"`
+		Siblings []uint64 `json:"siblings"`
+	}
+	groups := make([]group, 0)
+	for pid, kids := range byParent {
+		if len(kids) > 1 {
+			groups = append(groups, group{ParentID: pid, Siblings: kids})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"branches": groups, "active_leaf": conv.ActiveLeafMessageID})
+}
+
+// SetActiveLeaf switches the displayed branch (message_id = the leaf to follow;
+// null clears back to the default). Does not run a turn.
+func (h *ConversationHandler) SetActiveLeaf(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		MessageID *uint64 `json:"message_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if body.MessageID != nil {
+		m, err := h.Msg.FindByID(c.Request.Context(), *body.MessageID)
+		if err != nil || m == nil || m.ConversationID != conv.ID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
+			return
+		}
+	}
+	conv.ActiveLeafMessageID = body.MessageID
+	if err := h.Repo.Update(c.Request.Context(), conv); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, conv)
+}
+
+// Autotitle (re)generates the conversation title from its opening turns.
+func (h *ConversationHandler) Autotitle(c *gin.Context) {
+	conv, ok := h.requireOwn(c)
+	if !ok {
+		return
+	}
+	title, err := h.Factory.GenerateTitle(c.Request.Context(), conv.ID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"title": title})
+}
+
+// snippetAround returns a short window of `text` centered on the first
+// case-insensitive occurrence of `q` (whole text if short / no match).
+func snippetAround(text, q string, window int) string {
+	if len(text) <= window*2 {
+		return strings.TrimSpace(text)
+	}
+	lower := strings.ToLower(text)
+	idx := strings.Index(lower, strings.ToLower(q))
+	if idx < 0 {
+		return strings.TrimSpace(text[:window*2]) + "…"
+	}
+	start := idx - window
+	if start < 0 {
+		start = 0
+	}
+	end := idx + len(q) + window
+	if end > len(text) {
+		end = len(text)
+	}
+	out := text[start:end]
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(text) {
+		out += "…"
+	}
+	return strings.TrimSpace(out)
 }
 
 func (h *ConversationHandler) requireOwn(c *gin.Context) (*aimodel.AIConversation, bool) {

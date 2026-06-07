@@ -107,8 +107,15 @@ type Event struct {
 	ToolArgs     string // accumulated argument JSON (for tool_call_end)
 	InputTokens  uint32
 	OutputTokens uint32
-	FinishReason string
-	Err          error
+	// CacheReadTokens / CacheWriteTokens report prompt-cache hits/writes when the
+	// provider surfaces them (Anthropic cache_read/creation_input_tokens, OpenAI
+	// prompt_tokens_details.cached_tokens, Gemini cached_content_token_count).
+	// Cache reads are billed cheaper than fresh input; the runner uses these for
+	// accurate cost accounting. Zero when the provider doesn't report caching.
+	CacheReadTokens  uint32
+	CacheWriteTokens uint32
+	FinishReason     string
+	Err              error
 }
 
 // ModelInfo is returned by ListModels for UI display + capability gating.

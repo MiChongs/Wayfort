@@ -15,9 +15,13 @@ import { streamSSE } from "@/lib/sse/eventsource"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { ConversationHeader } from "@/components/ai/conversation-header"
 import { Composer } from "@/components/ai/composer"
-import { MessageList, type LiveBubble } from "@/components/ai/message-list"
+import { MessageList, type LiveBubble, type MessageListHandle } from "@/components/ai/message-list"
 import { InvocationTimeline } from "@/components/ai/invocation-timeline"
+import { TaskPanel } from "@/components/ai/task-panel"
+import { ConversationSearch } from "@/components/ai/conversation-search"
 import { isDangerName } from "@/components/ai/tool-icons"
+import { useMediaQuery } from "@/lib/hooks/use-media-query"
+import { EMPTY_PLAN, mergePlanUpdate, type AgentPlan, type AgentTask } from "@/lib/ai/plan"
 import type { PermissionMode } from "@/lib/api/types"
 
 type StreamEvent =
@@ -63,6 +67,13 @@ type StreamEvent =
       allow_text?: boolean
     }
   | { kind: "plan_presented"; invocation_id: string; id?: string; plan: string }
+  | {
+      kind: "plan_update"
+      conversation_id?: string
+      tasks: AgentTask[]
+      summary?: { total: number; done: number; active: number }
+    }
+  | { kind: "title_update"; conversation_id?: string; title: string }
   | { kind: "done" }
   | { kind: "ping" }
 
@@ -137,6 +148,9 @@ export default function ConversationPage({
   const [draft, setDraft] = React.useState("")
   const [attachments, setAttachments] = React.useState<string[]>([])
   const [live, setLive] = React.useState<LiveBubble[]>([])
+  const [plan, setPlan] = React.useState<AgentPlan>(EMPTY_PLAN)
+  const [planCollapsed, setPlanCollapsed] = React.useState(false)
+  const isDesktop = useMediaQuery("(min-width: 1024px)")
   const [running, setRunning] = React.useState(false)
   const [thinking, setThinking] = React.useState(false)
   const [usageIn, setUsageIn] = React.useState(0)
@@ -146,6 +160,17 @@ export default function ConversationPage({
   const lastEventAtRef = React.useRef<number>(0)
   const [tab, setTab] = React.useState<"chat" | "invocations">("chat")
   const composerRef = React.useRef<HTMLTextAreaElement | null>(null)
+  const messageListRef = React.useRef<MessageListHandle | null>(null)
+  const [searchOpen, setSearchOpen] = React.useState(false)
+  const [highlightMsgId, setHighlightMsgId] = React.useState<number | null>(null)
+  const highlightTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const jumpToMessage = React.useCallback((mid: number) => {
+    messageListRef.current?.scrollToMessageId(mid)
+    setHighlightMsgId(mid)
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
+    highlightTimerRef.current = setTimeout(() => setHighlightMsgId(null), 1600)
+  }, [])
 
   // Monotonic id for live user/assistant bubbles. Stable identity is what lets
   // React keep a streaming bubble mounted as the list above it changes (tools
@@ -333,7 +358,8 @@ export default function ConversationPage({
       ev.kind === "tool_output" ||
       ev.kind === "permission_required" ||
       ev.kind === "ask_user" ||
-      ev.kind === "plan_presented"
+      ev.kind === "plan_presented" ||
+      ev.kind === "plan_update"
     ) {
       setThinking(false)
     }
@@ -377,6 +403,20 @@ export default function ConversationPage({
           return next
         })
         return
+      case "plan_update":
+        // The live task panel is driven entirely by these full-array updates
+        // (separate from the bubble list, so handle it here and return).
+        setThinking(false)
+        setPlan(mergePlanUpdate(ev.tasks || []))
+        return
+      case "title_update": {
+        type ConvDetail = Awaited<ReturnType<typeof aiConversationService.get>>
+        qc.setQueryData<ConvDetail>(["ai", "conv", id], (old) =>
+          old ? { ...old, conversation: { ...old.conversation, title: ev.title } } : old,
+        )
+        qc.invalidateQueries({ queryKey: ["ai", "convs"] })
+        return
+      }
       case "message_start":
       case "ping":
         return
@@ -473,10 +513,9 @@ export default function ConversationPage({
       const next = l.slice()
       switch (ev.kind) {
         case "tool_call":
-          // ask_user / exit_plan_mode are interaction primitives — their
-          // dedicated cards (ask / plan) represent them, so skip the generic
-          // tool bubble.
-          if (ev.name === "ask_user" || ev.name === "exit_plan_mode") break
+          // ask_user / exit_plan_mode are interaction primitives, and
+          // update_plan drives the task panel — none get a generic tool bubble.
+          if (ev.name === "ask_user" || ev.name === "exit_plan_mode" || ev.name === "update_plan") break
           next.push({
             kind: "tool",
             id: ev.id,
@@ -582,19 +621,29 @@ export default function ConversationPage({
     })
   }
 
-  async function send(textOverride?: string) {
-    const text = (textOverride ?? draft).trim()
-    // Images ride along only on a fresh draft send (retry/regenerate re-send
-    // text only).
-    const images = textOverride ? [] : attachments
-    if ((!text && images.length === 0) || running) return
-    setDraft("")
-    if (!textOverride) setAttachments([])
-    if (await handleSlash(text)) return
+  // streamRun is the shared SSE-turn driver: it optimistically pushes the live
+  // bubbles, opens the stream at `path`, dispatches events, and finalizes. send
+  // (append), regenerate (/regenerate), and edit-to-branch (/messages/:id/branch)
+  // all flow through it.
+  async function streamRun(opts: {
+    path: string
+    body: Record<string, unknown>
+    userBubble?: { text: string; images?: string[] }
+  }) {
+    if (running) return
     setLive((l) => [
       ...l,
-      { kind: "user", id: mkLiveId(), text, images: images.length ? images : undefined },
-      { kind: "assistant", id: mkLiveId(), chunks: [], streaming: true },
+      ...(opts.userBubble
+        ? [
+            {
+              kind: "user",
+              id: mkLiveId(),
+              text: opts.userBubble.text,
+              images: opts.userBubble.images?.length ? opts.userBubble.images : undefined,
+            } as LiveBubble,
+          ]
+        : []),
+      { kind: "assistant", id: mkLiveId(), chunks: [], streaming: true } as LiveBubble,
     ])
     setRunning(true)
     setThinking(true)
@@ -605,8 +654,8 @@ export default function ConversationPage({
     abortRef.current = ctrl
     try {
       await streamSSE(
-        `/api/proxy/api/v1/ai/conversations/${id}/messages`,
-        { method: "POST", body: { text, images }, signal: ctrl.signal },
+        `/api/proxy/api/v1/ai/conversations/${id}${opts.path}`,
+        { method: "POST", body: opts.body, signal: ctrl.signal },
         (kind, data) => {
           const ev = { kind, ...(data as object) } as StreamEvent
           dispatchEvent(ev)
@@ -614,23 +663,15 @@ export default function ConversationPage({
       )
     } catch (e: unknown) {
       if (ctrl.signal.aborted) {
-        pushNotice(
-          "info",
-          "已中止生成",
-          "用户取消了本轮回复，可点重新发送上一条消息。",
-          true,
-        )
+        pushNotice("info", "已中止生成", "用户取消了本轮回复，可点重新发送上一条消息。", true)
       } else {
         pushNotice("error", "连接失败", (e as Error).message, true)
       }
     } finally {
       setRunning(false)
       setThinking(false)
-      // Flush any pending text/reasoning before finalising.
       if (pendingTextRef.current) flushText()
       if (pendingReasoningRef.current) flushReasoning()
-      // Mark trailing assistant + any still-open reasoning as no-longer-streaming
-      // so caret hides and reasoning collapses to its "已思考 Xs" form.
       setLive((l) => {
         if (l.length === 0) return l
         const next = l.slice()
@@ -644,9 +685,24 @@ export default function ConversationPage({
         }
         return next
       })
+      // The server is now the source of truth — clear the live overlay once the
+      // post-run refetch lands (handles regenerate/branch where message_count
+      // may not strictly grow).
+      pendingClearRef.current = true
       qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
       qc.invalidateQueries({ queryKey: ["ai", "convs"] })
     }
+  }
+
+  async function send(textOverride?: string) {
+    const text = (textOverride ?? draft).trim()
+    // Images ride along only on a fresh draft send (retry re-sends text only).
+    const images = textOverride ? [] : attachments
+    if ((!text && images.length === 0) || running) return
+    setDraft("")
+    if (!textOverride) setAttachments([])
+    if (await handleSlash(text)) return
+    await streamRun({ path: "/messages", body: { text, images }, userBubble: { text, images } })
   }
 
   const approve = React.useCallback(
@@ -712,10 +768,9 @@ export default function ConversationPage({
 
   function regenerate() {
     if (running) return
-    const t = lastUserText()
-    if (!t) return
-    setDraft(t)
-    setTimeout(() => composerRef.current?.focus(), 50)
+    if (!lastUserText()) return
+    // Real regenerate: the backend trims the last assistant turn + reruns.
+    streamRun({ path: "/regenerate", body: {} })
   }
 
   function retry() {
@@ -799,15 +854,24 @@ export default function ConversationPage({
       toast.error("正在生成中，请先停止")
       return
     }
-    try {
-      await aiConversationService.editMessage(id, msg.id, newText)
-      qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
-      // Auto-trigger the next turn with the edited text.
-      setTimeout(() => send(newText), 50)
-    } catch (e: unknown) {
-      toast.error("编辑失败", { description: (e as Error).message })
-    }
+    // Edit-and-resend forks a new branch (the original is preserved) and streams
+    // the new turn — the backend creates a sibling of the edited message.
+    await streamRun({
+      path: `/messages/${msg.id}/branch`,
+      body: { text: newText },
+      userBubble: { text: newText },
+    })
   }
+
+  const forkConversation = useMutation({
+    mutationFn: () => aiConversationService.fork(id),
+    onSuccess: (conv) => {
+      qc.invalidateQueries({ queryKey: ["ai", "convs"] })
+      toast.success("已克隆对话")
+      router.push(`/ai/conversations/${conv.id}` as Parameters<typeof router.push>[0])
+    },
+    onError: (e: unknown) => toast.error("克隆失败", { description: (e as Error).message }),
+  })
 
   // Live bubbles mirror the current turn's SSE stream. Once the persisted
   // history catches up (refetch lands with a higher message_count), the
@@ -816,6 +880,7 @@ export default function ConversationPage({
   // wipe in-flight output. We also keep system_notice/subagent bubbles
   // around: those are transient diagnostics not persisted by the backend.
   const prevCountRef = React.useRef(0)
+  const pendingClearRef = React.useRef(false)
   React.useEffect(() => {
     const cur = detail.data?.conversation.message_count ?? 0
     const prev = prevCountRef.current
@@ -827,17 +892,39 @@ export default function ConversationPage({
     }
   }, [detail.data?.conversation.message_count, running])
 
+  // After a completed run (any kind), drop the live overlay once the refetch
+  // lands — covers regenerate/branch where message_count alone doesn't grow.
+  React.useEffect(() => {
+    if (running || !pendingClearRef.current) return
+    pendingClearRef.current = false
+    setLive((l) => l.filter((b) => b.kind === "system_notice" || b.kind === "subagent"))
+  }, [detail.data, running])
+
+  // Hydrate the task panel from the persisted plan on the conversation GET.
+  // Guarded by !running so an in-flight plan_update isn't clobbered by a
+  // background refetch (same principle as the live→history merge above).
+  React.useEffect(() => {
+    if (running) return
+    const incoming = detail.data?.plan
+    if (incoming && incoming.length) setPlan(mergePlanUpdate(incoming))
+    else setPlan(EMPTY_PLAN)
+  }, [detail.data?.plan, running])
+
   // Reset transient UI when switching between conversations.
   React.useEffect(() => {
     abortRef.current?.abort()
     abortRef.current = null
     setLive([])
+    setPlan(EMPTY_PLAN)
+    setPlanCollapsed(false)
     setDraft("")
     setAttachments([])
     setRunning(false)
     setThinking(false)
     setUsageIn(0)
     setUsageOut(0)
+    setSearchOpen(false)
+    setHighlightMsgId(null)
     prevCountRef.current = 0
   }, [id])
 
@@ -859,15 +946,28 @@ export default function ConversationPage({
     return () => clearInterval(t)
   }, [running])
 
-  // Esc cancels an in-flight generation.
+  // Esc cancels an in-flight generation (but not while the search overlay is
+  // open — there Esc closes the overlay).
   React.useEffect(() => {
     if (!running) return
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") cancel()
+      if (e.key === "Escape" && !searchOpen) cancel()
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [running])
+  }, [running, searchOpen, cancel])
+
+  // Cmd/Ctrl+F opens the in-conversation search overlay.
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "f" || e.key === "F")) {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
 
   // If the API returned 404 (or any error) and we have no cached detail,
   // render a friendly not-found screen instead of an empty header + composer
@@ -896,6 +996,8 @@ export default function ConversationPage({
         onExport={exportJSON}
         onExportMarkdown={exportMarkdown}
         onModelChange={changeModel}
+        onSearch={() => setSearchOpen(true)}
+        onFork={() => forkConversation.mutate()}
         running={running}
       />
 
@@ -920,42 +1022,67 @@ export default function ConversationPage({
 
         <TabsContent
           value="chat"
-          className="flex-1 min-h-0 m-0 flex flex-col overflow-hidden data-[state=inactive]:hidden"
+          className="flex-1 min-h-0 m-0 flex overflow-hidden data-[state=inactive]:hidden"
           forceMount
         >
-          <MessageList
-            messages={detail.data?.messages || []}
-            invocations={detail.data?.invocations || []}
-            live={live}
-            running={running}
-            thinking={
-              thinking &&
-              live.every(
-                (b) => b.kind !== "assistant" || b.chunks.length === 0,
-              )
-            }
-            loading={detail.isLoading}
-            agent={agent}
-            onApprove={approve}
-            onReject={reject}
-            onAnswer={answer}
-            onRetry={retry}
-            onRegenerateFrom={regenerateFromMessage}
-            onEditUser={editUserMessage}
-          />
-          <Composer
-            ref={composerRef}
-            draft={draft}
-            setDraft={setDraft}
-            send={() => send()}
-            cancel={cancel}
-            running={running}
-            attachments={attachments}
-            onAttachmentsChange={setAttachments}
-            vision={modelVision}
-            thinkingBudget={thinkingBudget}
-            onSetThinkingBudget={setThinkingBudget}
-          />
+          <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+            {searchOpen && (
+              <ConversationSearch
+                conversationId={id}
+                onClose={() => setSearchOpen(false)}
+                onJump={jumpToMessage}
+              />
+            )}
+            {!isDesktop && plan.tasks.length > 0 && (
+              <TaskPanel
+                variant="inline"
+                tasks={plan.tasks}
+                running={running}
+                collapsed={planCollapsed}
+                onToggleCollapsed={() => setPlanCollapsed((v) => !v)}
+              />
+            )}
+            <MessageList
+              ref={messageListRef}
+              messages={detail.data?.messages || []}
+              invocations={detail.data?.invocations || []}
+              live={live}
+              running={running}
+              thinking={
+                thinking &&
+                live.every(
+                  (b) => b.kind !== "assistant" || b.chunks.length === 0,
+                )
+              }
+              loading={detail.isLoading}
+              agent={agent}
+              highlightMsgId={highlightMsgId}
+              onApprove={approve}
+              onReject={reject}
+              onAnswer={answer}
+              onRetry={retry}
+              onRegenerateFrom={regenerateFromMessage}
+              onEditUser={editUserMessage}
+            />
+            <Composer
+              ref={composerRef}
+              draft={draft}
+              setDraft={setDraft}
+              send={() => send()}
+              cancel={cancel}
+              running={running}
+              attachments={attachments}
+              onAttachmentsChange={setAttachments}
+              vision={modelVision}
+              thinkingBudget={thinkingBudget}
+              onSetThinkingBudget={setThinkingBudget}
+            />
+          </div>
+          {isDesktop && plan.tasks.length > 0 && (
+            <div className="w-[300px] shrink-0 xl:w-[340px]">
+              <TaskPanel variant="rail" tasks={plan.tasks} running={running} />
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent

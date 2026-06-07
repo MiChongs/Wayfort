@@ -5,13 +5,14 @@ import { motion } from "motion/react"
 import {
   MoreHorizontal,
   RefreshCw,
+  Search,
   Sparkles,
   Trash2,
-  Download,
   Edit3,
   FileJson,
   FileText as FileTextIcon,
   Wand2,
+  GitFork,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -49,6 +50,8 @@ export function ConversationHeader({
   onExport,
   onExportMarkdown,
   onModelChange,
+  onSearch,
+  onFork,
   running,
 }: {
   conversation?: AIConversation
@@ -63,6 +66,8 @@ export function ConversationHeader({
   onExport: () => void
   onExportMarkdown?: () => void
   onModelChange?: (providerID: number, model: string) => void
+  onSearch?: () => void
+  onFork?: () => void
   running: boolean
 }) {
   const [tuningOpen, setTuningOpen] = React.useState(false)
@@ -194,7 +199,7 @@ export function ConversationHeader({
               <motion.span
                 animate={{ opacity: [0.5, 1, 0.5] }}
                 transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut" }}
-                className="ml-1 inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"
+                className="ml-1 inline-flex items-center gap-1 text-success"
               >
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-current" />
                 生成中
@@ -219,19 +224,36 @@ export function ConversationHeader({
           onChange={onModeChange}
           size="sm"
         />
+        {onSearch && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={onSearch}
+                aria-label="搜索本对话"
+                className="h-8 w-8"
+              >
+                <Search className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>搜索本对话 (⌘F)</TooltipContent>
+          </Tooltip>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
               onClick={onRegenerate}
-              aria-label="重发最后一条用户消息"
+              disabled={running}
+              aria-label="重新生成最后一条回复"
               className="h-8 w-8"
             >
               <RefreshCw className="w-4 h-4" />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>重发最后一条</TooltipContent>
+          <TooltipContent>重新生成</TooltipContent>
         </Tooltip>
         <DropdownMenu>
           <Tooltip>
@@ -256,6 +278,11 @@ export function ConversationHeader({
             <DropdownMenuItem onClick={() => setTuningOpen(true)} disabled={!conversation}>
               <Wand2 className="w-3.5 h-3.5" /> 模型调参
             </DropdownMenuItem>
+            {onFork && (
+              <DropdownMenuItem onClick={onFork} disabled={!conversation}>
+                <GitFork className="w-3.5 h-3.5" /> 克隆对话
+              </DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="text-[10px] uppercase tracking-wider text-muted-foreground py-1">
               导出

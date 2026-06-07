@@ -1358,6 +1358,17 @@ export interface AIMessage {
   created_at: string
 }
 
+export interface AITask {
+  id: number
+  conversation_id: string
+  ordinal: number
+  title: string
+  status: "pending" | "active" | "done" | "skipped" | "failed"
+  detail?: string
+  created_at?: string
+  updated_at?: string
+}
+
 export interface AIToolInvocation {
   id: string
   conversation_id: string
