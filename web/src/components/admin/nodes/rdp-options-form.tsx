@@ -234,7 +234,7 @@ export function RdpOptionsForm({ value, onChange }: Props) {
 
           <Field
             label="GFX 编解码偏好"
-            hint="位图路径的 RDPGFX 编解码倾向,仅当浏览器支持对应解码时生效。AVC444 为 4:4:4 全彩(彩色文字最锐利,需双流解码器);AVC420 单流;自动 = 当前行为。"
+            hint="位图路径的 RDPGFX 编解码倾向。AVC444 为 4:4:4 全彩(彩色文字最锐利):由服务器端 FreeRDP 解码后以无损/位图发给浏览器,无需浏览器支持、颜色正确,代价是服务器 CPU 解码 + 带宽略增。AVC420 单流(浏览器硬解);自动 = 当前行为。"
           >
             <Select
               value={opts.gfx_codec ?? "auto"}

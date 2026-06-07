@@ -103,6 +103,11 @@ type Client struct {
 	rdpgfxMu             sync.Mutex
 	rdpgfxSurfaces       map[uint16]rdpgfxSurfaceState
 	rdpgfxGDIInitialized atomic.Bool
+	// gfxServerDecode = AVC444 mode: don't forward the raw GFX stream (the browser
+	// can't decode AVC444's dual-stream); instead let FreeRDP's own FFmpeg decoder
+	// composite the 4:4:4 result into primary_buffer and emit the decoded BGRA via
+	// the GDI end-frame path — correct colours, no browser-side reconstruction.
+	gfxServerDecode atomic.Bool
 
 	cliprdrCapsSent           atomic.Bool
 	cliprdrFormatListSent     atomic.Bool
@@ -707,7 +712,14 @@ func (c *Client) applySettings() error {
 
 	enableGFX := !webrtc && !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
 	enableH264 := enableGFX && !c.gfxCompatProfile && goBool(cBoolDefault(opts.EnableH264, true))
-	enableAVC444 := false
+	// AVC444 (4:4:4 full-chroma H.264) — sharpest coloured text. The browser can't
+	// decode AVC444's dual luma+chroma stream, so we do NOT forward it raw; instead
+	// FreeRDP's own FFmpeg H.264 decoder (WITH_GFX_H264) composites the 4:4:4 result
+	// into primary_buffer and we emit the decoded BGRA via the GDI end-frame path
+	// (gfxServerDecode). Opt-in per node via gfx_codec=avc444; bitmap path only
+	// (enableH264 already implies the non-WebRTC GFX path).
+	enableAVC444 := enableH264 && opts.GfxCodec == "avc444"
+	c.gfxServerDecode.Store(enableAVC444)
 	enableRFX := enableGFX && goBool(cBoolDefault(opts.EnableRemoteFx, false))
 	enableNSCodec := !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableNSCodec, true))
 	if enableGFX {

@@ -365,6 +365,14 @@ func goRdpgfxSurfaceCommand(ctx *C.RdpgfxClientContext, cmd *C.RDPGFX_SURFACE_CO
 			zap.Uint32("height", uint32(cmd.height)),
 			zap.Uint32("bytes", uint32(cmd.length)))
 	}
+	if c.gfxServerDecode.Load() {
+		// AVC444 mode: skip the raw forward. The surface-command count above still
+		// advanced (so goRdpgfxEndFrameAfter knows GFX activity happened) but we
+		// emit no per-command frame here — FreeRDP's decoder (invoked right after
+		// this in wRdpgfxSurfaceCommand) writes the 4:4:4 result into primary_buffer,
+		// and goRdpgfxEndFrameAfter emits the decoded full frame to the browser.
+		return 0
+	}
 	c.forwardRdpgfxSurfaceCommand(cmd)
 	return 0
 }

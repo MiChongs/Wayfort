@@ -100,8 +100,11 @@ type RdpOptions struct {
 	// matching decode capability — otherwise the worker falls back to a codec
 	// the client can render. "" / "auto" = current behaviour (H.264/AVC420 when
 	// supported). Values:
-	//   "avc444" → 4:4:4 full-chroma H.264 (sharpest coloured text; needs the
-	//              browser dual-stream WebCodecs decoder — Phase 2)
+	//   "avc444" → 4:4:4 full-chroma H.264 (sharpest coloured text). FreeRDP
+	//              decodes it server-side (WITH_GFX_H264/FFmpeg) into the
+	//              framebuffer and the worker emits the decoded BGRA — correct
+	//              colours, no browser AVC444 decoder needed (costs server CPU +
+	//              some bandwidth). Bitmap path only.
 	//   "avc420" → single-stream H.264 (4:2:0)
 	//   "rfx"    → RemoteFX progressive
 	//   "nsc"    → NSCodec
