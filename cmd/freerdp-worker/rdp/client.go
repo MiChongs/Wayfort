@@ -98,6 +98,7 @@ type Client struct {
 	cliprdr unsafe.Pointer // *CliprdrClientContext
 	rdpsnd  unsafe.Pointer // *RdpsndClientContext
 	rdpgfx  unsafe.Pointer // *RdpgfxClientContext
+	disp    unsafe.Pointer // *DispClientContext (RDPEDISP; set when dynamic_resolution opted in + server supports it)
 
 	rdpgfxMu             sync.Mutex
 	rdpgfxSurfaces       map[uint16]rdpgfxSurfaceState
@@ -474,6 +475,20 @@ func (c *Client) applySettings() error {
 	C.freerdp_settings_set_bool(s, C.FreeRDP_CompressionEnabled, cBool(bulkCompression))
 	if bulkCompression {
 		C.freerdp_settings_set_uint32(s, C.FreeRDP_CompressionLevel, C.UINT32(opts.CompressionLevelOrDefault()))
+	}
+
+	// Dynamic resolution (RDPEDISP / Display Control). When the node opts in, the
+	// remote desktop resolution follows the browser window live: SupportDisplayControl
+	// makes FreeRDP register the "disp" dynamic channel (→ DynamicChannelCount > 0
+	// → drdynvc loads it, see wLoadChannels), the disp context is captured on
+	// connect (goOnChannelConnected), and input.go sends a DISPLAY_CONTROL monitor
+	// layout PDU on each browser resize. Off by default — the disp dynamic channel
+	// is otherwise kept off the wired path for stability. Falls back gracefully: if
+	// the server doesn't bring up disp, resizes just update the next-reconnect size.
+	dynamicResolution := opts.DynamicResolution != nil && *opts.DynamicResolution
+	if dynamicResolution {
+		C.freerdp_settings_set_bool(s, C.FreeRDP_SupportDisplayControl, C.TRUE)
+		C.freerdp_settings_set_bool(s, C.FreeRDP_DynamicResolutionUpdate, C.TRUE)
 	}
 
 	// Multitransport / network autodetect / heartbeat / batched channel join:

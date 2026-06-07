@@ -23,8 +23,34 @@ package rdp
 #include <freerdp/channels/rdpsnd.h>
 #include <freerdp/channels/rdpdr.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/channels/disp.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/rdpgfx.h>
+#include <freerdp/client/disp.h>
+#include <string.h>
+
+// wDispSendMonitorLayout pushes a single-monitor desktop resolution to the
+// server over RDPEDISP (dynamic resolution). Defined locally because only this
+// translation unit calls it. Returns the channel's UINT status (0 = success).
+static UINT wDispSendMonitorLayout(DispClientContext* disp, UINT32 width, UINT32 height,
+                                   UINT32 desktopScale, UINT32 deviceScale) {
+    if (!disp || !disp->SendMonitorLayout) {
+        return 1;
+    }
+    DISPLAY_CONTROL_MONITOR_LAYOUT layout;
+    memset(&layout, 0, sizeof(layout));
+    layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+    layout.Left = 0;
+    layout.Top = 0;
+    layout.Width = width;
+    layout.Height = height;
+    layout.PhysicalWidth = 0;  // unspecified — let the server keep its DPI mapping
+    layout.PhysicalHeight = 0;
+    layout.Orientation = 0;    // ORIENTATION_LANDSCAPE
+    layout.DesktopScaleFactor = desktopScale;
+    layout.DeviceScaleFactor = deviceScale;
+    return disp->SendMonitorLayout(disp, 1, &layout);
+}
 
 // All helpers live in cgo_wrappers.go; re-declare as extern here.
 extern void wInstallCliprdr(CliprdrClientContext* ctx);
@@ -254,6 +280,55 @@ func (c *Client) attachAudio(iface unsafe.Pointer) {
 // ----- RDPGFX (RemoteFX / AVC444) -----
 
 const maxRdpgfxEncodedPayloadBytes = 64 * 1024 * 1024
+
+// sendMonitorLayout pushes a new desktop resolution to the server over RDPEDISP
+// (dynamic resolution). It is a no-op when the disp channel isn't connected (the
+// node didn't opt into dynamic_resolution, or the server didn't bring up Display
+// Control) — the caller has already recorded the new size for the next reconnect
+// as the graceful fallback. width/height are the target physical dims; scale is
+// the session's desktop scale factor (percent). Returns true if a layout PDU was
+// sent. Runs on the input goroutine.
+func (c *Client) sendMonitorLayout(width, height, scale uint32) bool {
+	if c.disp == nil {
+		return false
+	}
+	// RDPEDISP requires even, in-range dimensions (MS-RDPEDISP 2.2.2.2).
+	w := width &^ 1
+	h := height &^ 1
+	if w < C.DISPLAY_CONTROL_MIN_MONITOR_WIDTH {
+		w = C.DISPLAY_CONTROL_MIN_MONITOR_WIDTH
+	} else if w > C.DISPLAY_CONTROL_MAX_MONITOR_WIDTH {
+		w = C.DISPLAY_CONTROL_MAX_MONITOR_WIDTH
+	}
+	if h < C.DISPLAY_CONTROL_MIN_MONITOR_HEIGHT {
+		h = C.DISPLAY_CONTROL_MIN_MONITOR_HEIGHT
+	} else if h > C.DISPLAY_CONTROL_MAX_MONITOR_HEIGHT {
+		h = C.DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
+	}
+	// DesktopScaleFactor valid 100..500; DeviceScaleFactor restricted to
+	// {100,140,180} (mirrors applySettings' high-DPI snapping). scale<=100 →
+	// unscaled (100/100).
+	desktopScale := scale
+	if desktopScale < 100 || desktopScale > 500 {
+		desktopScale = 100
+	}
+	deviceScale := uint32(100)
+	if desktopScale >= 160 {
+		deviceScale = 180
+	} else if desktopScale >= 120 {
+		deviceScale = 140
+	}
+	rc := C.wDispSendMonitorLayout((*C.DispClientContext)(c.disp),
+		C.UINT32(w), C.UINT32(h), C.UINT32(desktopScale), C.UINT32(deviceScale))
+	if rc != 0 {
+		c.logger.Warn("disp monitor layout send failed",
+			zap.Uint32("rc", uint32(rc)), zap.Uint32("w", uint32(w)), zap.Uint32("h", uint32(h)))
+		return false
+	}
+	c.logger.Info("disp monitor layout sent (dynamic resolution)",
+		zap.Uint32("w", uint32(w)), zap.Uint32("h", uint32(h)), zap.Uint32("desktop_scale", desktopScale))
+	return true
+}
 
 func (c *Client) attachGraphicsPipeline(iface unsafe.Pointer) {
 	ctx := (*C.RdpgfxClientContext)(iface)
@@ -697,6 +772,16 @@ func goRdpgfxMapSurfaceToScaledOutput(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_
 func goRdpgfxStartFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_START_FRAME_PDU) C.UINT {
 	if c, _ := clientFromRdpgfx(ctx); c != nil {
 		c.rdpgfxStartFrames.Add(1)
+		// Snapshot the surface-command and forwarded-frame counters at the
+		// START of the GFX frame. goRdpgfxEndFrameAfter compares against these
+		// to decide whether this frame had surface commands that libfreerdp
+		// decoded into the primary buffer but which we forwarded nothing for
+		// (a non-AVC/non-CAPROGRESSIVE codec — clearcodec/planar/uncompressed),
+		// and must therefore be flushed as a full GDI frame. Capturing at
+		// EndFrame (the previous behaviour) was always equal to the post-frame
+		// value, so the fallback never fired and those frames were lost.
+		c.rdpgfxEndFrameSeqBase.Store(c.frameSeq.Load())
+		c.rdpgfxEndFrameCmdBase.Store(c.rdpgfxSurfaceCommands.Load())
 	}
 	return 0
 }
@@ -705,8 +790,6 @@ func goRdpgfxStartFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_START_FRAME_PD
 func goRdpgfxEndFrame(ctx *C.RdpgfxClientContext, pdu *C.RDPGFX_END_FRAME_PDU) C.UINT {
 	if c, _ := clientFromRdpgfx(ctx); c != nil {
 		c.rdpgfxEndFrames.Add(1)
-		c.rdpgfxEndFrameSeqBase.Store(c.frameSeq.Load())
-		c.rdpgfxEndFrameCmdBase.Store(c.rdpgfxSurfaceCommands.Load())
 		c.rdpgfxFrameAcks.Add(1)
 	}
 	return 0
@@ -895,10 +978,19 @@ func rdpgfxCapVersionName(version uint32) string {
 // ----- RDPDR (drive redirection / file transfer) -----
 
 func (c *Client) attachDriveRedirection(iface unsafe.Pointer) {
-	// libfreerdp's rdpdr is currently exposed through CHANNEL_EVENT pubsub
-	// rather than a typed Client context. For Plan 17 M2 we simply note
-	// that the channel was negotiated; full IRP wiring lands in M2.x.
-	c.logger.Info("rdpdr channel attached (forwarding deferred to M2.x)")
+	// rdpdr is up. The redirected drive device was registered into the
+	// settings collection in applySettings; libfreerdp's built-in rdpdr +
+	// drive sub-addin handle the file IRPs against the host folder, so there
+	// is no Go-side IRP wiring to do here. If a drive path was configured but
+	// the drive never appears in the remote desktop, the cause is downstream:
+	// a server-side group policy disabling drive redirection.
+	if c.params.DrivePath != "" {
+		c.logger.Info("rdpdr channel up — redirected drive announced",
+			zap.String("drive_name", c.params.DriveName),
+			zap.String("drive_path", c.params.DrivePath))
+	} else {
+		c.logger.Info("rdpdr channel up (no drive configured)")
+	}
 }
 
 // ----- helpers shared with cgo_exports.go -----

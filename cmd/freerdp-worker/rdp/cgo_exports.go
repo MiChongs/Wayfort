@@ -25,16 +25,37 @@ extern rdpSettings* wContextSettings(rdpContext* ctx);
 extern rdpUpdate*   wContextUpdate(rdpContext* ctx);
 extern void wInstallUpdateCallbacks(rdpUpdate* update);
 extern void wInstallPointerCallbacks(rdpPointer* pt);
+extern BOOL wDecodePointerBGRA(rdpContext* ctx, rdpPointer* p, BYTE* dst);
 */
 import "C"
 
 import (
+	"encoding/base64"
 	"hash/fnv"
 	"unsafe"
 
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"go.uber.org/zap"
 )
+
+//export goRdpsndAudio
+func goRdpsndAudio(ctx *C.rdpContext, sampleRate, channels, bits C.UINT32, data unsafe.Pointer, size C.int) {
+	c := registry.get(unsafe.Pointer(ctx))
+	if c == nil || data == nil || size <= 0 {
+		return
+	}
+	// Copy the PCM out of the libfreerdp-owned buffer before it's reused, then
+	// hand it to the browser. emit() is non-blocking and drops audio (not
+	// frames) under backpressure, so a slow client just glitches rather than
+	// stalling the RDP thread.
+	pcm := C.GoBytes(data, C.int(size))
+	c.emit(desktop.ServerMessage{Audio: &desktop.AudioData{
+		SampleRate: uint32(sampleRate),
+		Channels:   uint32(channels),
+		Bits:       uint32(bits),
+		PCM:        base64.StdEncoding.EncodeToString(pcm),
+	}})
+}
 
 // ----- instance-level callbacks -----
 
@@ -224,6 +245,11 @@ func goOnChannelConnected(ctx *C.rdpContext, name *C.char, iface unsafe.Pointer)
 		if cname == "rdpgfx" || cname == "Microsoft::Windows::RDS::Graphics" {
 			c.rdpgfx = iface
 			c.attachGraphicsPipeline(iface)
+		} else if cname == "disp" || cname == "Microsoft::Windows::RDS::DisplayControl" {
+			// RDPEDISP — dynamic resolution. Capture the context so input.go can
+			// push a monitor-layout PDU on browser resize.
+			c.disp = iface
+			c.logger.Info("disp (RDPEDISP) channel attached — dynamic resolution live")
 		}
 	}
 	c.emit(desktop.ServerMessage{Status: &desktop.SessionStatus{
@@ -249,6 +275,8 @@ func goOnChannelDisconnected(ctx *C.rdpContext, name *C.char, iface unsafe.Point
 		if cname == "rdpgfx" || cname == "Microsoft::Windows::RDS::Graphics" {
 			c.rdpgfx = nil
 			c.rdpgfxGDIInitialized.Store(false)
+		} else if cname == "disp" || cname == "Microsoft::Windows::RDS::DisplayControl" {
+			c.disp = nil
 		}
 	}
 }
@@ -348,6 +376,18 @@ func flushGDIInvalidRegions(c *Client, ctx *C.rdpContext, fallback *gdiRect) {
 	}
 	hwnd := gdiHwnd(ctx)
 	if hwnd == nil {
+		return
+	}
+
+	// WebRTC mode: FreeRDP has already composited this update into
+	// primary_buffer; the run loop VP8-encodes that for the video track. Just
+	// flag it dirty and drop the dirty rects — no per-region bitmap frames.
+	if c.webrtcMode.Load() {
+		c.markVideoDirty()
+		if hwnd.invalid != nil {
+			hwnd.invalid.null = C.TRUE
+		}
+		hwnd.ninvalid = 0
 		return
 	}
 
@@ -551,12 +591,16 @@ func goOnPointerSet(ctx *C.rdpContext, pointer *C.rdpPointer) C.BOOL {
 	if w == 0 || h == 0 || pointer.xorMaskData == nil {
 		return C.TRUE
 	}
-	// 32-bit BGRA cursor. Keep the wire encoding explicit so the browser
-	// does not attempt to treat raw pixels as PNG data.
-	stride := uint32(pointer.lengthXorMask) / max32(h, 1)
-	_ = stride
-	xor := C.GoBytes(unsafe.Pointer(pointer.xorMaskData), C.int(pointer.lengthXorMask))
-	if dedup := hash64(xor); dedup == c.lastCursorHash {
+	// Decode the pointer's xor/and masks into tightly-packed top-down BGRA32.
+	// Shipping raw xorMaskData only rendered 32bpp opaque cursors correctly;
+	// freerdp_image_copy_from_pointer_data handles 1/16/24/32bpp, the AND
+	// transparency mask, and the RDP bottom-up→top-down flip. Wire encoding
+	// stays raw_bgra so the browser path is unchanged.
+	bgra := make([]byte, int(w)*int(h)*4)
+	if !goBool(C.wDecodePointerBGRA(ctx, pointer, (*C.BYTE)(unsafe.Pointer(&bgra[0])))) {
+		return C.TRUE
+	}
+	if dedup := hash64(bgra); dedup == c.lastCursorHash {
 		return C.TRUE
 	} else {
 		c.lastCursorHash = dedup
@@ -567,7 +611,7 @@ func goOnPointerSet(ctx *C.rdpContext, pointer *C.rdpPointer) C.BOOL {
 		Width:    w,
 		Height:   h,
 		Encoding: desktop.CursorEncodingRawBGRA,
-		Payload:  xor,
+		Payload:  bgra,
 	}})
 	return C.TRUE
 }

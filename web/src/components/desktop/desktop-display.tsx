@@ -188,6 +188,45 @@ function LegacyDesktopDisplay({
     settingsRef.current = settings
   }, [settings])
 
+  // Dynamic resolution: when enabled, push the live viewport size to the worker
+  // as the stage resizes so the remote desktop reflows at native 1:1 (RDPEDISP),
+  // no scaling blur. Debounced so a window drag doesn't flood the channel. This
+  // only takes effect when the node also enabled rdp.dynamic_resolution (the
+  // worker brings up the disp channel + acts on resize then); otherwise the
+  // worker just records the size for the next reconnect — a harmless no-op here.
+  React.useEffect(() => {
+    if (!settings.dynamicResolution) return
+    const host = hostRef.current
+    if (typeof ResizeObserver === "undefined" || !host) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let lastW = 0
+    let lastH = 0
+    const send = () => {
+      const client = clientRef.current
+      if (!client) return
+      const scale = effectiveDpiScale(settingsRef.current)
+      // Physical pixels = CSS size × scale/100 (matches the connect-time physical
+      // resolution), snapped even + clamped to RDPEDISP's [200, 8192] range.
+      let w = Math.max(200, Math.min(8192, Math.round((host.clientWidth * scale) / 100))) & ~1
+      let h = Math.max(200, Math.min(8192, Math.round((host.clientHeight * scale) / 100))) & ~1
+      if (w < 200) w = 200
+      if (h < 200) h = 200
+      if (w === lastW && h === lastH) return
+      lastW = w
+      lastH = h
+      client.send({ resize: { width: w, height: h } })
+    }
+    const ro = new ResizeObserver(() => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(send, 350)
+    })
+    ro.observe(host)
+    return () => {
+      ro.disconnect()
+      if (timer) clearTimeout(timer)
+    }
+  }, [settings.dynamicResolution])
+
   // Fullscreen subscription.
   React.useEffect(() => {
     const onChange = () => setFullscreen(document.fullscreenElement === wrapRef.current)

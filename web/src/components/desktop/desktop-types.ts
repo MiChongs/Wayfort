@@ -30,6 +30,12 @@ export type DpiScale = "auto" | "100" | "125" | "150" | "175" | "200" | "250" | 
 export interface DesktopSettings {
   // Display
   scaleMode: ScaleMode
+  // Dynamic resolution: when on (and the node enabled rdp.dynamic_resolution),
+  // the remote desktop resolution follows the browser window live via RDPEDISP —
+  // always native 1:1, no scaling blur. Off = smart-sizing: the remote stays at
+  // the connect-time resolution and `scaleMode` scales the canvas to fit. Off by
+  // default; only the freerdp backend honours it.
+  dynamicResolution: boolean
   // Video transport + WebRTC quality. Changing either reconnects (the codec /
   // GFX choice is fixed at connect time).
   videoTransport: VideoTransport

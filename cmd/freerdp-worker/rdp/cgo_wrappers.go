@@ -30,8 +30,11 @@ package rdp
 #include <freerdp/channels/rdpsnd.h>
 #include <freerdp/channels/rdpdr.h>
 #include <freerdp/channels/rdpgfx.h>
+#include <freerdp/channels/disp.h>
 #include <freerdp/client/cliprdr.h>
 #include <freerdp/client/rdpgfx.h>
+#include <freerdp/client/rdpsnd.h>
+#include <freerdp/codec/audio.h>
 #include <freerdp/event.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
@@ -119,6 +122,23 @@ BOOL wPointerSetNull(rdpContext* ctx)                   { return goOnPointerSetN
 BOOL wPointerSetDefault(rdpContext* ctx)                { return goOnPointerSetDefault(ctx); }
 BOOL wPointerSetPosition(rdpContext* ctx, UINT32 x, UINT32 y) { (void)ctx; (void)x; (void)y; return TRUE; }
 
+// wDecodePointerBGRA decodes a server pointer's xor/and masks (any bpp, with
+// the AND transparency mask) into a tightly-packed top-down BGRA32 buffer the
+// browser renders directly. dst must hold p->width*p->height*4 bytes. nDstStep
+// 0 lets FreeRDP compute width*4. Replaces shipping raw xorMaskData, which only
+// renders correctly for 32bpp opaque cursors and is otherwise garbled / has
+// wrong transparency / is vertically flipped. Palette is NULL — only 8bpp
+// indexed cursors (effectively extinct) would need it.
+BOOL wDecodePointerBGRA(rdpContext* ctx, rdpPointer* p, BYTE* dst) {
+    (void)ctx;
+    if (!p || !dst) return FALSE;
+    return freerdp_image_copy_from_pointer_data(
+        dst, PIXEL_FORMAT_BGRA32, 0, 0, 0, p->width, p->height,
+        p->xorMaskData, p->lengthXorMask,
+        p->andMaskData, p->lengthAndMask,
+        p->xorBpp, NULL);
+}
+
 // ----- context accessors -----
 rdpSettings* wContextSettings(rdpContext* ctx) { return ctx->settings; }
 rdpInput*    wContextInput(rdpContext* ctx)    { return ctx->input; }
@@ -192,6 +212,44 @@ static BOOL wLoadStaticChannelAddin(rdpChannels* channels, rdpSettings* settings
     return FALSE;
 }
 
+// wDeviceCount reports how many redirected devices are in the settings
+// collection — used to confirm the drive actually registered.
+UINT32 wDeviceCount(rdpSettings* settings) {
+    return freerdp_settings_get_uint32(settings, FreeRDP_DeviceCount);
+}
+
+// wAddDriveRedirect mounts a host directory into the session as a redirected
+// drive (rdpdr filesystem device) so files can move between the browser host
+// and the remote desktop.
+//
+// We build the RDPDR_DTYP_FILESYSTEM device directly instead of going through
+// freerdp_client_add_device_channel → freerdp_client_add_drive: that helper
+// runs freerdp_path_valid() and *silently drops the device* ("Invalid drive to
+// redirect ... skipping") when the path isn't resolvable from the worker's cwd
+// at PreConnect time, which is exactly the failure we hit. Building the device
+// ourselves and adding it to the collection skips that fragile check (the
+// gateway already created and owns the folder). It flips DeviceRedirection +
+// RedirectDrives on so wLoadChannels brings up the rdpdr channel, which in turn
+// loads the "drive" sub-addin against the collection. Returns TRUE on success.
+BOOL wAddDriveRedirect(rdpSettings* settings, const char* name, const char* path) {
+    if (!settings || !name || !path) {
+        return FALSE;
+    }
+    const char* args[] = { name, path };
+    RDPDR_DEVICE* device = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, args);
+    if (!device) {
+        return FALSE;
+    }
+    if (!freerdp_device_collection_add(settings, device)) {
+        freerdp_device_free(device);
+        return FALSE;
+    }
+    if (!freerdp_settings_set_bool(settings, FreeRDP_DeviceRedirection, TRUE)) {
+        return FALSE;
+    }
+    return freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, TRUE);
+}
+
 BOOL wLoadChannels(freerdp* instance) {
     BOOL ok = TRUE;
     rdpContext* ctx = instance ? instance->context : NULL;
@@ -211,12 +269,42 @@ BOOL wLoadChannels(freerdp* instance) {
         ok = freerdp_client_add_static_channel(settings, ARRAYSIZE(p), p);
     }
 
+    // Device redirection (rdpdr) dependency: Windows servers couple their RDPDR
+    // subsystem with RDPSND — mstsc always offers rdpsnd alongside rdpdr, and
+    // without it some servers never initialise rdpdr at all (the channel joins
+    // but the server never sends the Server Announce, so the redirected drive
+    // never appears). Offer a fake/null-backend rdpsnd ("sys:fake") purely to
+    // satisfy that dependency — no real audio is played. This mirrors exactly
+    // what FreeRDP's own freerdp_client_load_addins does when DeviceRedirection
+    // is set. Added as both a static and a dynamic channel like the canonical.
+    if (ok && freerdp_settings_get_bool(settings, FreeRDP_DeviceRedirection)) {
+        // "sys:jsaudio" routes rdpsnd to our custom device (wAudioAddinProvider)
+        // which streams the PCM to the browser. Added both static and dynamic:
+        // legacy servers use the static rdpsnd channel, modern Windows delivers
+        // audio over the dynamic AUDIO_PLAYBACK_DVC — either way our device gets
+        // it, and rdpsnd's mere presence satisfies the server's RDPDR coupling.
+        const char* const p[] = { RDPSND_CHANNEL_NAME, "sys:jsaudio" };
+        ok = freerdp_client_add_static_channel(settings, ARRAYSIZE(p), p);
+        if (ok) {
+            ok = freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p);
+        }
+    }
+
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (ok && freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline)) {
         const char* const p[] = { RDPGFX_CHANNEL_NAME };
         ok = freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p);
     }
 #endif
+
+    // Dynamic resolution (RDPEDISP): register the "disp" dynamic channel so the
+    // server brings up Display Control and we can push monitor-layout PDUs on
+    // browser resize. Gated on SupportDisplayControl (set only when the node opted
+    // into dynamic_resolution), so default sessions keep the minimal channel set.
+    if (ok && freerdp_settings_get_bool(settings, FreeRDP_SupportDisplayControl)) {
+        const char* const p[] = { DISP_CHANNEL_NAME };
+        ok = freerdp_client_add_dynamic_channel(settings, ARRAYSIZE(p), p);
+    }
 
     if (ok) {
         for (UINT32 i = 0; i < freerdp_settings_get_uint32(settings, FreeRDP_StaticChannelCount); i++) {
@@ -227,6 +315,17 @@ BOOL wLoadChannels(freerdp* instance) {
                 break;
             }
         }
+    }
+
+    // Drive redirection: load rdpdr exactly like FreeRDP's own
+    // freerdp_client_load_addins does — load_static_channel_addin with the
+    // SETTINGS as the init data, NOT via the FreeRDP_StaticChannelArray + the
+    // generic loop above (which passes the ADDIN_ARGV as init data). rdpdr is
+    // sensitive to this: with the array/args path the server joins the channel
+    // but never sends the Server Announce, so the drive never appears. drdynvc
+    // (below) already uses this same direct-with-settings load and works.
+    if (ok && freerdp_settings_get_bool(settings, FreeRDP_DeviceRedirection)) {
+        ok = wLoadStaticChannelAddin(channels, settings, RDPDR_SVC_CHANNEL_NAME, settings);
     }
 
     if (ok && (freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount) > 0)) {
@@ -760,8 +859,112 @@ UINT wSendCliprdrFormatDataRequest(CliprdrClientContext* ctx, UINT32 formatId) {
 // plugins (CLIPRDR / RDPSND / RDPGFX / RDPDR) at runtime. Doing this
 // from Go is awkward because cgo can't easily pass a Go-side fn pointer
 // to a C function taking another C function pointer — wrap once here.
+// ----- rdpsnd: custom audio device that streams the remote desktop's audio
+// to the browser instead of a local speaker on the bastion host -----
+//
+// The real rdpsnd. Windows couples its RDPDR (device redirection) subsystem
+// with RDPSND, and modern Windows delivers audio over the AUDIO_PLAYBACK_DVC
+// dynamic channel. We register rdpsnd with a private "jsaudio" subsystem whose
+// device captures the negotiated PCM in Play() and hands it to Go, which emits
+// it to the browser. Capturing PCM (rather than a local backend) is required
+// because the worker runs on the bastion, not the user's machine.
+extern void goRdpsndAudio(rdpContext* ctx, UINT32 sampleRate, UINT32 channels,
+                          UINT32 bits, const void* data, int size);
+
+typedef struct {
+    rdpsndDevicePlugin device; // base — must be first for the (jsAudioDevice*) cast
+    AUDIO_FORMAT fmt;          // last format negotiated via Open()
+} jsAudioDevice;
+
+static BOOL jsAudioFormatSupported(rdpsndDevicePlugin* device, const AUDIO_FORMAT* format) {
+    (void)device;
+    // Advertise PCM support only, so the rdpsnd negotiation settles on raw PCM
+    // and we never have to decode a compressed codec browser-side.
+    return format && format->wFormatTag == WAVE_FORMAT_PCM;
+}
+
+static BOOL jsAudioDefaultFormat(rdpsndDevicePlugin* device, const AUDIO_FORMAT* desired,
+                                 AUDIO_FORMAT* out) {
+    (void)device;
+    if (!out) return FALSE;
+    if (desired) *out = *desired;
+    out->wFormatTag = WAVE_FORMAT_PCM;
+    out->cbSize = 0;
+    out->data = NULL;
+    if (out->nChannels == 0) out->nChannels = 2;
+    if (out->nSamplesPerSec == 0) out->nSamplesPerSec = 44100;
+    if (out->wBitsPerSample == 0) out->wBitsPerSample = 16;
+    out->nBlockAlign = (UINT16)(out->nChannels * (out->wBitsPerSample / 8));
+    out->nAvgBytesPerSec = out->nSamplesPerSec * out->nBlockAlign;
+    return TRUE;
+}
+
+static BOOL jsAudioOpen(rdpsndDevicePlugin* device, const AUDIO_FORMAT* format, UINT32 latency) {
+    (void)latency;
+    jsAudioDevice* dev = (jsAudioDevice*)device;
+    if (format) dev->fmt = *format;
+    return TRUE;
+}
+
+static UINT jsAudioPlay(rdpsndDevicePlugin* device, const BYTE* data, size_t size) {
+    jsAudioDevice* dev = (jsAudioDevice*)device;
+    if (device && device->rdpsnd && data && size > 0) {
+        rdpContext* ctx = freerdp_rdpsnd_get_context(device->rdpsnd);
+        if (ctx) {
+            goRdpsndAudio(ctx, dev->fmt.nSamplesPerSec, dev->fmt.nChannels,
+                          dev->fmt.wBitsPerSample, data, (int)size);
+        }
+    }
+    return 0; // reported playback latency (ms) — we forward immediately
+}
+
+static UINT32 jsAudioGetVolume(rdpsndDevicePlugin* device) { (void)device; return 0xFFFFFFFF; }
+static BOOL   jsAudioSetVolume(rdpsndDevicePlugin* device, UINT32 v) { (void)device; (void)v; return TRUE; }
+static void   jsAudioClose(rdpsndDevicePlugin* device) { (void)device; }
+static void   jsAudioFree(rdpsndDevicePlugin* device) { free(device); }
+
+// jsAudioDeviceEntry is what our addin provider hands back for "rdpsnd/jsaudio".
+// Matches PFREERDP_RDPSND_DEVICE_ENTRY.
+static UINT jsAudioDeviceEntry(PFREERDP_RDPSND_DEVICE_ENTRY_POINTS pEntryPoints) {
+    if (!pEntryPoints || !pEntryPoints->pRegisterRdpsndDevice) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    jsAudioDevice* dev = (jsAudioDevice*)calloc(1, sizeof(jsAudioDevice));
+    if (!dev) return CHANNEL_RC_NO_MEMORY;
+    dev->device.FormatSupported     = jsAudioFormatSupported;
+    dev->device.Open                = jsAudioOpen;
+    dev->device.GetVolume           = jsAudioGetVolume;
+    dev->device.SetVolume           = jsAudioSetVolume;
+    dev->device.Play                = jsAudioPlay;
+    dev->device.Close               = jsAudioClose;
+    dev->device.Free                = jsAudioFree;
+    dev->device.DefaultFormat       = jsAudioDefaultFormat;
+    pEntryPoints->pRegisterRdpsndDevice(pEntryPoints->rdpsnd, &dev->device);
+    return CHANNEL_RC_OK;
+}
+
+// wAudioAddinProvider intercepts the rdpsnd "jsaudio" subsystem lookup and
+// returns our device entry; everything else delegates to the previously
+// registered provider (the static-addin table).
+static FREERDP_LOAD_CHANNEL_ADDIN_ENTRY_FN g_prevAddinProvider = NULL;
+
+static PVIRTUALCHANNELENTRY wAudioAddinProvider(LPCSTR name, LPCSTR subsystem,
+                                                LPCSTR type, DWORD flags) {
+    if (name && subsystem &&
+        strcmp(name, RDPSND_CHANNEL_NAME) == 0 && strcmp(subsystem, "jsaudio") == 0) {
+        return (PVIRTUALCHANNELENTRY)jsAudioDeviceEntry;
+    }
+    if (g_prevAddinProvider) {
+        return g_prevAddinProvider(name, subsystem, type, flags);
+    }
+    return NULL;
+}
+
 void wRegisterStaticAddins(void) {
     freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0);
+    // Chain our audio provider on top so rdpsnd can resolve "jsaudio".
+    g_prevAddinProvider = freerdp_get_current_addin_provider();
+    freerdp_register_addin_provider(wAudioAddinProvider, 0);
 }
 
 // ----- outbound INPUT helpers -----

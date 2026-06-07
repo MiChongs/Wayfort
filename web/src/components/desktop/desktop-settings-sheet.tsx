@@ -1,6 +1,14 @@
 "use client"
 
 import * as React from "react"
+import {
+  ClipboardList,
+  Keyboard,
+  Monitor,
+  ShieldCheck,
+  SlidersHorizontal,
+  Video,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -23,8 +31,15 @@ import {
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import type { DesktopSettings, ScaleMode, ClipboardDirection } from "./desktop-types"
-import { KEYBOARD_LAYOUTS } from "./use-desktop-settings"
+import type {
+  DesktopSettings,
+  DpiScale,
+  ScaleMode,
+  ClipboardDirection,
+  VideoTransport,
+  VideoQuality,
+} from "./desktop-types"
+import { KEYBOARD_LAYOUTS, effectiveDpiScale } from "./use-desktop-settings"
 
 type Props = {
   open: boolean
@@ -39,13 +54,54 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[420px] sm:max-w-[420px] flex flex-col gap-0 p-0">
         <SheetHeader className="px-5 pt-5 pb-3">
-          <SheetTitle>桌面设置</SheetTitle>
-          <SheetDescription>所有设置实时生效并自动保存到本地。</SheetDescription>
+          <SheetTitle className="flex items-center gap-2.5 text-base">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/12 text-primary">
+              <SlidersHorizontal className="h-4 w-4" />
+            </span>
+            桌面设置
+          </SheetTitle>
+          <SheetDescription>改动实时生效并保存在本机，下次连接沿用。</SheetDescription>
         </SheetHeader>
         <Separator />
         <ScrollArea className="flex-1">
-          <div className="px-5 py-4 space-y-6">
-            <Section title="显示">
+          <div className="px-5 py-4 space-y-7">
+            <Section title="视频" icon={Video}>
+              <Field label="传输方式">
+                <ToggleGroup
+                  type="single"
+                  value={settings.videoTransport}
+                  onValueChange={(v) => v && onChange({ videoTransport: v as VideoTransport })}
+                  size="sm"
+                  className="justify-start"
+                >
+                  <ToggleGroupItem value="auto" className="text-xs">自动</ToggleGroupItem>
+                  <ToggleGroupItem value="webrtc" className="text-xs">WebRTC</ToggleGroupItem>
+                  <ToggleGroupItem value="bitmap" className="text-xs">JS 解码</ToggleGroupItem>
+                </ToggleGroup>
+                <p className="text-[10px] text-muted-foreground">
+                  WebRTC:浏览器硬件解码视频流,低延迟、低内存(推荐);JS 解码:逐帧位图,兼容性最好但更吃 CPU/内存;自动:能用 WebRTC 就用,失败回退。切换后下次连接生效。
+                </p>
+              </Field>
+
+              <Field label="画质 (WebRTC)">
+                <ToggleGroup
+                  type="single"
+                  value={settings.videoQuality}
+                  onValueChange={(v) => v && onChange({ videoQuality: v as VideoQuality })}
+                  size="sm"
+                  className="justify-start"
+                >
+                  <ToggleGroupItem value="smooth" className="text-xs">流畅</ToggleGroupItem>
+                  <ToggleGroupItem value="balanced" className="text-xs">均衡</ToggleGroupItem>
+                  <ToggleGroupItem value="sharp" className="text-xs">高清</ToggleGroupItem>
+                </ToggleGroup>
+                <p className="text-[10px] text-muted-foreground">
+                  流畅:低码率省带宽;均衡:默认;高清:高码率,文字更锐利。仅影响 WebRTC,下次连接生效。
+                </p>
+              </Field>
+            </Section>
+
+            <Section title="显示" icon={Monitor}>
               <Field label="缩放模式">
                 <ToggleGroup
                   type="single"
@@ -59,6 +115,22 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
                   <ToggleGroupItem value="center" className="text-xs">居中</ToggleGroupItem>
                   <ToggleGroupItem value="stretch" className="text-xs">拉伸</ToggleGroupItem>
                 </ToggleGroup>
+              </Field>
+
+              <Field label="分辨率模式">
+                <ToggleGroup
+                  type="single"
+                  value={settings.dynamicResolution ? "dynamic" : "smart"}
+                  onValueChange={(v) => v && onChange({ dynamicResolution: v === "dynamic" })}
+                  size="sm"
+                  className="justify-start"
+                >
+                  <ToggleGroupItem value="smart" className="text-xs">智能缩放</ToggleGroupItem>
+                  <ToggleGroupItem value="dynamic" className="text-xs">动态分辨率</ToggleGroupItem>
+                </ToggleGroup>
+                <p className="text-[10px] text-muted-foreground">
+                  智能缩放:远端分辨率固定,按上面的缩放模式贴合窗口。动态分辨率:远端跟随窗口实时改、始终 1:1 清晰(需节点开启 dynamic_resolution 且远端支持;否则下次连接生效)。
+                </p>
               </Field>
 
               <Field label="期望分辨率">
@@ -112,6 +184,36 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
               </Field>
 
               <SwitchField
+                label="高 DPI"
+                description="按设备像素比渲染:远端以物理像素分辨率绘制,文字与界面在高分屏上保持锐利,而非细小或放大模糊(FreeRDP 后端)。下次连接生效。"
+                checked={settings.highDpi}
+                onChange={(v) => onChange({ highDpi: v })}
+              />
+
+              {settings.highDpi && (
+                <Field label="缩放比例">
+                  <Select value={settings.dpiScale} onValueChange={(v) => onChange({ dpiScale: v as DpiScale })}>
+                    <SelectTrigger className="h-8 text-xs w-36"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto" className="text-xs">自动 (跟随设备)</SelectItem>
+                      <SelectItem value="100" className="text-xs">100%</SelectItem>
+                      <SelectItem value="125" className="text-xs">125%</SelectItem>
+                      <SelectItem value="150" className="text-xs">150%</SelectItem>
+                      <SelectItem value="175" className="text-xs">175%</SelectItem>
+                      <SelectItem value="200" className="text-xs">200%</SelectItem>
+                      <SelectItem value="250" className="text-xs">250%</SelectItem>
+                      <SelectItem value="300" className="text-xs">300%</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[10px] text-muted-foreground">
+                    {settings.dpiScale === "auto" ? `当前设备约 ${effectiveDpiScale(settings)}%,` : ""}
+                    远端将以 {Math.round((settings.preferredWidth * effectiveDpiScale(settings)) / 100)}×
+                    {Math.round((settings.preferredHeight * effectiveDpiScale(settings)) / 100)} 物理像素渲染。下次连接生效。
+                  </p>
+                </Field>
+              )}
+
+              <SwitchField
                 label="平滑缩放"
                 description="窗口缩放时启用画布抗锯齿。关闭后像素更锐利但锯齿可见。"
                 checked={settings.smoothScaling}
@@ -137,7 +239,7 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
               </Field>
             </Section>
 
-            <Section title="输入">
+            <Section title="输入" icon={Keyboard}>
               <Field label="键盘布局">
                 <Select
                   value={settings.keyboardLayout}
@@ -169,7 +271,7 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
               />
             </Section>
 
-            <Section title="剪贴板 / 音频">
+            <Section title="剪贴板 / 音频" icon={ClipboardList}>
               <Field label="剪贴板方向">
                 <ToggleGroup
                   type="single"
@@ -219,7 +321,7 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
               />
             </Section>
 
-            <Section title="稳定性">
+            <Section title="稳定性" icon={ShieldCheck}>
               <SwitchField
                 label="自动重连"
                 description="WebSocket 意外断开时按 1s/2s/4s 退避重试 3 次。"
@@ -239,13 +341,22 @@ export function DesktopSettingsSheet({ open, onOpenChange, settings, onChange, o
   )
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  icon: Icon,
+  children,
+}: {
+  title: string
+  icon: React.ComponentType<{ className?: string }>
+  children: React.ReactNode
+}) {
   return (
     <section className="space-y-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <h3 className="eyebrow flex items-center gap-1.5">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/80" />
         {title}
       </h3>
-      <div className="space-y-3">{children}</div>
+      <div className="space-y-3.5">{children}</div>
     </section>
   )
 }

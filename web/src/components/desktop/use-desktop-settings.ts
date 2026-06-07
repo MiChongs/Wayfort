@@ -5,10 +5,15 @@ import type { DesktopSettings } from "./desktop-types"
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   scaleMode: "fit",
+  dynamicResolution: false,
+  videoTransport: "auto",
+  videoQuality: "balanced",
   preferredWidth: 1280,
   preferredHeight: 720,
   colorDepth: 32,
   smoothScaling: true,
+  highDpi: true,
+  dpiScale: "auto",
   keyboardLayout: "us",
   syncLocks: true,
   swapMiddleButton: false,
@@ -52,6 +57,20 @@ export function useDesktopSettings() {
   const reset = React.useCallback(() => setSettings(DEFAULT_DESKTOP_SETTINGS), [])
 
   return { settings, update, reset } as const
+}
+
+// effectiveDpiScale resolves the high-DPI setting to a concrete percentage the
+// gateway applies to the remote desktop. "auto" follows the browser's
+// devicePixelRatio (snapped to 25% steps, clamped 100–300); off = 100.
+export function effectiveDpiScale(s: Pick<DesktopSettings, "highDpi" | "dpiScale">): number {
+  if (!s.highDpi) return 100
+  if (s.dpiScale !== "auto") {
+    const n = parseInt(s.dpiScale, 10)
+    return Number.isFinite(n) ? n : 100
+  }
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1
+  const pct = Math.round((dpr * 100) / 25) * 25
+  return Math.max(100, Math.min(300, pct))
 }
 
 export const KEYBOARD_LAYOUTS: ReadonlyArray<{ value: string; label: string }> = [
