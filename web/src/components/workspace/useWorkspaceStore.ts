@@ -22,7 +22,25 @@ export type ExpiryInfo = { ms: number; deadline: string; low: boolean }
 
 // SideDock sub-tab key — which server-management panel is open inside a
 // connection tab. Persisted per-tab so refresh restores the user's last view.
-export type SubTab = "dashboard" | "services" | "firewall" | "docker" | "sessions" | "info"
+export type SubTab =
+  | "dashboard"
+  | "processes"
+  | "performance"
+  | "logs"
+  | "services"
+  | "docker"
+  | "cron"
+  | "packages"
+  | "runner"
+  | "network"
+  | "storage"
+  | "kernel"
+  | "hardware"
+  | "firewall"
+  | "users"
+  | "security"
+  | "sessions"
+  | "info"
 
 // Chrome-style group palette. Eight muted tones keep the strip visually
 // quiet even with three or four groups open simultaneously. Names live in
@@ -150,6 +168,10 @@ type State = {
   splitId: string | null
   splitDir: "row" | "col"
   splitRatio: number
+  // dock → terminal command bridge. The ops dock writes a command here for a
+  // given tab; that tab's live WebSSH terminal consumes it (sendInput) once the
+  // session is ready, then clears it by nonce. Not persisted (ephemeral signal).
+  pendingCmd: Record<string, { text: string; run: boolean; nonce: number }>
 }
 
 type Actions = {
@@ -197,6 +219,9 @@ type Actions = {
   swapSplit: () => void
   setSplitDir: (dir: "row" | "col") => void
   setSplitRatio: (ratio: number) => void
+  // dock → terminal bridge.
+  sendToTerminal: (tabId: string, text: string, run?: boolean) => void
+  consumePendingCmd: (tabId: string, nonce: number) => void
 }
 
 export type WorkspaceStore = State & Actions
@@ -249,6 +274,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       splitId: null,
       splitDir: "row",
       splitRatio: 0.5,
+      pendingCmd: {},
 
       open: ({ nodeId, protocol, rdpBackend, title, host, port, groupId, pinned }) => {
         const id = genId()
@@ -551,6 +577,26 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
       setSplitRatio: (ratio) =>
         set({ splitRatio: Math.max(0.2, Math.min(0.8, ratio)) }),
+
+      // dock → terminal: stamp a command for the tab's live terminal to drain.
+      // `run` appends a newline so the shell executes it; otherwise it's only
+      // typed at the prompt for the user to review and press Enter.
+      sendToTerminal: (tabId, text, run = true) =>
+        set((s) => ({
+          pendingCmd: {
+            ...s.pendingCmd,
+            [tabId]: { text, run, nonce: Date.now() + Math.floor(Math.random() * 1000) },
+          },
+        })),
+
+      consumePendingCmd: (tabId, nonce) =>
+        set((s) => {
+          const cur = s.pendingCmd[tabId]
+          if (!cur || cur.nonce !== nonce) return {}
+          const next = { ...s.pendingCmd }
+          delete next[tabId]
+          return { pendingCmd: next }
+        }),
     }),
     {
       name: "workspace:v1",

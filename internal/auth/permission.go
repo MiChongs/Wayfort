@@ -53,6 +53,13 @@ const (
 	PermFirewallManage = "firewall:manage"
 	PermDockerManage   = "docker:manage"
 	PermServiceManage  = "service:manage"
+	PermProcessManage  = "process:manage"
+	PermCronManage     = "cron:manage"
+	PermPackageManage  = "package:manage"
+	PermStorageManage  = "storage:manage"
+	PermKernelManage   = "kernel:manage"
+	PermSysUserManage  = "sysuser:manage"
+	PermNetworkManage  = "network:manage"
 
 	// Phase 15 — Approval Service.
 	// Any authenticated user can OPEN a request for themselves, so we do not
@@ -104,6 +111,13 @@ var AllPermissions = []struct {
 	{PermFirewallManage, "ops", "修改节点防火墙规则"},
 	{PermDockerManage, "ops", "启停 / 删除节点 Docker 容器"},
 	{PermServiceManage, "ops", "启停 / 启用节点 systemd 服务"},
+	{PermProcessManage, "ops", "管理节点进程（信号 / renice / kill）"},
+	{PermCronManage, "ops", "管理节点定时任务（cron / timers）"},
+	{PermPackageManage, "ops", "管理节点软件包（安装 / 卸载 / 升级）"},
+	{PermStorageManage, "ops", "管理节点存储（挂载 / 卸载）"},
+	{PermKernelManage, "ops", "修改节点内核参数（sysctl）"},
+	{PermSysUserManage, "ops", "管理节点系统用户（锁定 / 解锁 / 改组）"},
+	{PermNetworkManage, "ops", "修改节点网络（接口启停）"},
 	{PermApprovalDecide, "approval", "审批：批准 / 驳回 / 委托分配到自己的任务"},
 	{PermApprovalAdmin, "approval", "审批：撤销请求 / 吊销 grant（管理员）"},
 	{PermApprovalTemplateManage, "approval", "审批：管理审批模板（管理员）"},
@@ -156,6 +170,8 @@ var adminTierPerms = []string{
 	PermSessionTerminate, PermAuditRead,
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
 	PermFirewallManage, PermDockerManage, PermServiceManage,
+	PermProcessManage, PermCronManage, PermPackageManage, PermStorageManage,
+	PermKernelManage, PermSysUserManage, PermNetworkManage,
 	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
 	PermApprovalSubscribeManage, PermApprovalAuditRead,
 	PermAIAgentGlobal, PermAIProviderGlobal,

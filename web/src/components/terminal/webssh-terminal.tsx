@@ -9,6 +9,7 @@ import { useTheme } from "next-themes"
 import { toast } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WebSSHConnection, type SessionStats } from "@/lib/ws/webssh-client"
+import { useWorkspaceStore } from "@/components/workspace/useWorkspaceStore"
 import {
   renderConnectBanner,
   renderDisconnectBanner,
@@ -45,6 +46,10 @@ const RECONNECT_BACKOFFS_MS = [1000, 2000, 4000]
 type Props = {
   protocol: "ssh" | "telnet" | "dbcli"
   nodeId: number
+  // Workspace tab id — when present, the terminal drains commands the ops dock
+  // pushes via the store's pendingCmd bridge (sendInput once the session is
+  // ready). Absent for the node-less anonymous sandbox.
+  tabId?: string
   displayName?: string
   username?: string
   host?: string
@@ -118,6 +123,7 @@ interface TerminalHandle {
 export function WebSSHTerminal({
   protocol,
   nodeId,
+  tabId,
   displayName,
   username,
   host,
@@ -178,6 +184,21 @@ export function WebSSHTerminal({
   React.useEffect(() => {
     onStatusChangeRef.current?.(status)
   }, [status])
+
+  // dock → terminal bridge. When the ops dock stamps a command for this tab,
+  // type/run it in the live PTY once the session is ready. Covers both orders
+  // (command queued before ready, or arriving while open). No-op in the
+  // node-less sandbox (no tabId). See useWorkspaceStore.sendToTerminal.
+  const pendingCmd = useWorkspaceStore((s) => (tabId ? s.pendingCmd[tabId] : undefined))
+  const consumePendingCmd = useWorkspaceStore((s) => s.consumePendingCmd)
+  React.useEffect(() => {
+    if (!tabId || !pendingCmd || status !== "open") return
+    const conn = connRef.current
+    if (!conn) return
+    conn.sendInput(pendingCmd.run ? `${pendingCmd.text}\n` : pendingCmd.text)
+    handleRef.current?.scrollToBottom()
+    consumePendingCmd(tabId, pendingCmd.nonce)
+  }, [tabId, pendingCmd, status, consumePendingCmd])
   // Backoff bookkeeping for auto-reconnect — component refs so they persist
   // across the bumpKey-driven effect re-runs that a reconnect triggers.
   const reconnectAttemptRef = React.useRef(0)

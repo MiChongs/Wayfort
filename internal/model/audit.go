@@ -29,6 +29,13 @@ const (
 	AuditFirewallChange  AuditEventKind = "firewall.change"
 	AuditDockerAction    AuditEventKind = "docker.action"
 	AuditServiceAction   AuditEventKind = "service.action"
+	AuditProcessAction   AuditEventKind = "process.action"
+	AuditCronChange      AuditEventKind = "cron.change"
+	AuditPackageAction   AuditEventKind = "package.action"
+	AuditStorageAction   AuditEventKind = "storage.action"
+	AuditKernelChange    AuditEventKind = "kernel.change"
+	AuditSysUserAction   AuditEventKind = "sysuser.action"
+	AuditNetworkAction   AuditEventKind = "network.action"
 	// Object-storage (OSS) bastion operations.
 	AuditOSSList     AuditEventKind = "oss.list"
 	AuditOSSDownload AuditEventKind = "oss.download"

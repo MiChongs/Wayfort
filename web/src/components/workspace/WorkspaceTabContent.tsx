@@ -160,6 +160,7 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
             <WebSSHTerminal
               protocol={tab.protocol}
               nodeId={tab.nodeId}
+              tabId={tab.id}
               displayName={tab.title}
               host={tab.host}
               port={tab.port}
