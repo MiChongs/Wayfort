@@ -174,6 +174,15 @@ export function WebSSHTerminal({
     onStatusChangeRef.current = onStatusChange
   }, [onStatusChange])
 
+  // The login user is often resolved asynchronously (node detail query) and can
+  // arrive after the connect effect has captured props. The banner is written
+  // once, inside onReady, so read the user through a ref to get the live value
+  // at READY time rather than the (possibly undefined) value captured at mount.
+  const usernameRef = React.useRef(username)
+  React.useEffect(() => {
+    usernameRef.current = username
+  }, [username])
+
   // Connection state machine — owns the phased timeline, reconnect countdown,
   // link quality and disconnect classification. `tc` (not `conn`, which is the
   // local WebSSHConnection inside the effect) so the two don't shadow.
@@ -575,7 +584,7 @@ export function WebSSHTerminal({
           term.write(
             renderConnectBanner(term.cols, {
               host: bannerLabel || host || displayName || `node #${nodeId}`,
-              user: username || "",
+              user: usernameRef.current || username || "",
               protocol,
               t,
             }),

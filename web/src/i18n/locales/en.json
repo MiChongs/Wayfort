@@ -44,7 +44,7 @@
       "clipboardReadDenied": "Clipboard read denied by browser"
     },
     "banner": {
-      "slogan": "Secure Web Bastion  ·  S e c u r e   B a s t i o n",
+      "slogan": "Secure Operations Bastion  ·  Privileged Access",
       "connectedTo": "Connected to",
       "asUser": "User",
       "sessionLabel": "Session",

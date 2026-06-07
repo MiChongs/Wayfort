@@ -16,10 +16,10 @@ import {
   History,
   Maximize,
   Minimize,
+  MoreHorizontal,
   Plug,
   RotateCw,
   Search as SearchIcon,
-  Send,
   Settings as SettingsIcon,
   TerminalSquare,
   Zap,
@@ -32,6 +32,7 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Separator } from "@/components/ui/separator"
@@ -75,7 +76,13 @@ type Props = {
   searchTrigger: React.RefObject<HTMLButtonElement | null>
 }
 
+// Toolbar layout: identity on the left (status pill + name + protocol + link
+// quality), the four highest-frequency actions on the right, and everything
+// else folded into a single "⋯ more" menu. The dense 15-button strip was the
+// main source of the cramped, mechanical feel; collapsing the long tail keeps
+// the bar legible and overflow-safe at any panel width.
 export function TerminalToolbar(p: Props) {
+  const connected = p.status === "open"
   return (
     <header
       className={cn(
@@ -91,26 +98,26 @@ export function TerminalToolbar(p: Props) {
         </span>
         <Badge
           variant="outline"
-          className="h-4 px-1.5 text-[10px] uppercase border-border/70 bg-muted/40"
+          className="h-4 shrink-0 px-1.5 text-[10px] uppercase border-border/70 bg-muted/40"
         >
           {p.protocol}
         </Badge>
         {p.subtitle && (
-          <span className="text-[11px] text-muted-foreground font-mono truncate min-w-0">
+          <span className="hidden text-[11px] text-muted-foreground font-mono truncate min-w-0 sm:inline">
             {p.subtitle}
           </span>
         )}
         {p.liveTitle && (
-          <span className="text-[11px] text-muted-foreground/70 font-mono truncate min-w-0 hidden md:inline">
+          <span className="text-[11px] text-muted-foreground/70 font-mono truncate min-w-0 hidden lg:inline">
             · {p.liveTitle}
           </span>
         )}
       </div>
 
-      {p.status === "open" && p.quality && (
+      {connected && p.quality && (
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="ml-1 hidden items-center gap-1.5 text-muted-foreground sm:inline-flex">
+            <span className="ml-1 hidden items-center gap-1.5 text-muted-foreground md:inline-flex">
               <SignalBars level={p.quality.level} tone={p.quality.tone} />
               <span className="text-[11px] text-muted-foreground/80">{p.quality.label}</span>
             </span>
@@ -119,7 +126,8 @@ export function TerminalToolbar(p: Props) {
         </Tooltip>
       )}
 
-      <div className="ml-auto flex items-center gap-0.5">
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        {/* Primary actions — always visible (copy/paste fold away on very narrow panels). */}
         <IconBtn
           icon={SearchIcon}
           onClick={p.onSearchToggle}
@@ -127,104 +135,122 @@ export function TerminalToolbar(p: Props) {
           active={p.searchActive}
           ref={p.searchTrigger}
         />
-        <IconBtn icon={Copy} onClick={p.onCopy} title="复制选区 (Ctrl/⌘+Shift+C)" />
-        <IconBtn icon={Clipboard} onClick={p.onPaste} title="粘贴 (Ctrl/⌘+Shift+V)" />
-        <IconBtn icon={Eraser} onClick={p.onClear} title="清屏" />
-        {p.onOpenSnippets && (
-          <IconBtn icon={TerminalSquare} onClick={p.onOpenSnippets} title="命令片段 (Ctrl/⌘+Shift+I)" />
-        )}
-        {p.onOpenHistory && (
-          <IconBtn icon={History} onClick={p.onOpenHistory} title="命令历史 (Ctrl/⌘+Shift+H)" />
-        )}
+        <IconBtn icon={Copy} onClick={p.onCopy} title="复制选区 (Ctrl/⌘+Shift+C)" className="hidden sm:inline-flex" />
+        <IconBtn icon={Clipboard} onClick={p.onPaste} title="粘贴 (Ctrl/⌘+Shift+V)" className="hidden sm:inline-flex" />
 
+        {/* Overflow — the long tail of less-frequent controls. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               size="icon"
               variant="ghost"
               className="h-7 w-7 text-muted-foreground hover:text-foreground"
-              aria-label="发送控制信号"
-              title="发送控制信号"
+              aria-label="更多操作"
+              title="更多操作"
             >
-              <Send className="h-3.5 w-3.5" />
+              <MoreHorizontal className="h-3.5 w-3.5" />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-48">
-            <DropdownMenuLabel className="text-xs">发送控制字符</DropdownMenuLabel>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem onSelect={p.onCopy} className="text-xs sm:hidden">
+              <Copy className="h-3.5 w-3.5" /> 复制选区
+              <DropdownMenuShortcut>⇧C</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={p.onPaste} className="text-xs sm:hidden">
+              <Clipboard className="h-3.5 w-3.5" /> 粘贴
+              <DropdownMenuShortcut>⇧V</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator className="sm:hidden" />
+
+            <DropdownMenuItem onSelect={p.onClear} className="text-xs">
+              <Eraser className="h-3.5 w-3.5" /> 清屏
+            </DropdownMenuItem>
+            {p.onOpenSnippets && (
+              <DropdownMenuItem onSelect={p.onOpenSnippets} className="text-xs">
+                <TerminalSquare className="h-3.5 w-3.5" /> 命令片段
+                <DropdownMenuShortcut>⇧I</DropdownMenuShortcut>
+              </DropdownMenuItem>
+            )}
+            {p.onOpenHistory && (
+              <DropdownMenuItem onSelect={p.onOpenHistory} className="text-xs">
+                <History className="h-3.5 w-3.5" /> 命令历史
+                <DropdownMenuShortcut>⇧H</DropdownMenuShortcut>
+              </DropdownMenuItem>
+            )}
+
             <DropdownMenuSeparator />
+            {/* Font size — kept open while the user nudges it. */}
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <span className="text-xs text-muted-foreground">字号</span>
+              <div className="flex items-center gap-0.5">
+                <MenuStepBtn icon={AArrowDown} onClick={p.onFontDec} title="字号 −" />
+                <button
+                  type="button"
+                  onClick={p.onFontReset}
+                  title="点击重置字号"
+                  className="h-6 w-7 rounded font-mono text-[11px] text-foreground/80 hover:bg-muted"
+                >
+                  {p.fontSize}
+                </button>
+                <MenuStepBtn icon={AArrowUp} onClick={p.onFontInc} title="字号 +" />
+              </div>
+            </div>
+
+            <DropdownMenuItem onSelect={p.onToggleBell} className="text-xs">
+              {p.bellEnabled ? <BellOff className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
+              {p.bellEnabled ? "关闭蜂鸣" : "启用蜂鸣"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={p.onExport} className="text-xs">
+              <Download className="h-3.5 w-3.5" /> 导出会话日志
+            </DropdownMenuItem>
+            {p.protocol === "ssh" &&
+              (p.onOpenSftp ? (
+                <DropdownMenuItem onSelect={p.onOpenSftp} className="text-xs">
+                  <FolderTree className="h-3.5 w-3.5" /> SFTP 文件管理
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem asChild className="text-xs">
+                  <Link href={{ pathname: `/nodes/${p.nodeId}/sftp` }}>
+                    <FolderTree className="h-3.5 w-3.5" /> SFTP 文件管理
+                  </Link>
+                </DropdownMenuItem>
+              ))}
+
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Zap className="h-3 w-3" /> 发送控制字符
+            </DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => p.onSendSignal("\x03")} className="text-xs">
-              <Zap className="w-3.5 h-3.5" />
-              Ctrl+C — 中断 (SIGINT)
+              中断 <DropdownMenuShortcut>Ctrl C</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => p.onSendSignal("\x04")} className="text-xs">
-              <Zap className="w-3.5 h-3.5" />
-              Ctrl+D — EOF / 退出
+              EOF / 退出 <DropdownMenuShortcut>Ctrl D</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => p.onSendSignal("\x1a")} className="text-xs">
-              <Zap className="w-3.5 h-3.5" />
-              Ctrl+Z — 挂起 (SIGTSTP)
+              挂起 <DropdownMenuShortcut>Ctrl Z</DropdownMenuShortcut>
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => p.onSendSignal("\x0c")} className="text-xs">
-              <Zap className="w-3.5 h-3.5" />
-              Ctrl+L — 清屏
+              清屏 <DropdownMenuShortcut>Ctrl L</DropdownMenuShortcut>
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={p.onSettings} className="text-xs">
+              <SettingsIcon className="h-3.5 w-3.5" /> 终端设置
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={p.onPalette} className="text-xs">
+              <CommandIcon className="h-3.5 w-3.5" /> 命令面板
+              <DropdownMenuShortcut>⇧P</DropdownMenuShortcut>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={p.onFullscreen} className="text-xs">
+              {p.fullscreen ? <Minimize className="h-3.5 w-3.5" /> : <Maximize className="h-3.5 w-3.5" />}
+              {p.fullscreen ? "退出全屏" : "全屏"}
+              <DropdownMenuShortcut>F11</DropdownMenuShortcut>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <IconBtn
-          icon={p.bellEnabled ? Bell : BellOff}
-          onClick={p.onToggleBell}
-          title={p.bellEnabled ? "关闭蜂鸣" : "启用蜂鸣"}
-          active={p.bellEnabled}
-        />
-        <IconBtn icon={Download} onClick={p.onExport} title="导出当前会话为 .log" />
-
-        {p.protocol === "ssh" &&
-          (p.onOpenSftp ? (
-            <IconBtn icon={FolderTree} onClick={p.onOpenSftp} title="在工作台打开 SFTP 文件管理" />
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Link
-                  href={{ pathname: `/nodes/${p.nodeId}/sftp` }}
-                  className={btnCls(false)}
-                  aria-label="打开 SFTP 文件管理"
-                >
-                  <FolderTree className="w-3.5 h-3.5" />
-                </Link>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">打开 SFTP 文件管理</TooltipContent>
-            </Tooltip>
-          ))}
-
         <Separator orientation="vertical" className="mx-0.5 h-5" />
 
-        <IconBtn icon={AArrowDown} onClick={p.onFontDec} title="字号 −" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={p.onFontReset}
-              aria-label="重置字号"
-              className="h-7 px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground"
-            >
-              {p.fontSize}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom">点击重置字号</TooltipContent>
-        </Tooltip>
-        <IconBtn icon={AArrowUp} onClick={p.onFontInc} title="字号 +" />
-
-        <Separator orientation="vertical" className="mx-0.5 h-5" />
-
-        <IconBtn icon={SettingsIcon} onClick={p.onSettings} title="终端设置" />
-        <IconBtn icon={CommandIcon} onClick={p.onPalette} title="命令面板 (Ctrl/⌘+Shift+P)" />
-        <IconBtn
-          icon={p.fullscreen ? Minimize : Maximize}
-          onClick={p.onFullscreen}
-          title={p.fullscreen ? "退出全屏 (F11)" : "全屏 (F11)"}
-        />
         {p.status === "closed" || p.status === "error" ? (
           <IconBtn icon={RotateCw} onClick={p.onReconnect} title="重新连接" variant="success" />
         ) : (
@@ -251,7 +277,7 @@ const STATUS_UI: Record<
 function StatusDot({ status }: { status: Status }) {
   const ui = STATUS_UI[status]
   return (
-    <div className={cn("mr-0.5 flex h-6 items-center gap-1.5 rounded-full pl-2 pr-2.5", ui.bg)}>
+    <div className={cn("mr-0.5 flex h-6 shrink-0 items-center gap-1.5 rounded-full pl-2 pr-2.5", ui.bg)}>
       <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", ui.dot)} />
         {ui.pulse && <span className={cn("absolute inset-0 animate-ping rounded-full", ui.dot)} />}
@@ -261,13 +287,27 @@ function StatusDot({ status }: { status: Status }) {
   )
 }
 
-function btnCls(active?: boolean, variant?: "success" | "danger") {
-  return cn(
-    "inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors outline-none",
-    "text-muted-foreground hover:text-foreground hover:bg-muted/60 focus-visible:ring-1 focus-visible:ring-ring",
-    active && "bg-muted text-foreground",
-    variant === "success" && "text-[#4c9b62] hover:text-[#4c9b62] dark:text-[#5db872]",
-    variant === "danger" && "text-destructive hover:text-destructive",
+// Small +/- stepper used inside the font-size menu row. Plain button (not a
+// menu item) so clicking it does not close the dropdown.
+function MenuStepBtn({
+  icon: Icon,
+  onClick,
+  title,
+}: {
+  icon: React.ComponentType<{ className?: string }>
+  onClick: () => void
+  title: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={title}
+      title={title}
+      className="grid h-6 w-6 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </button>
   )
 }
 
@@ -279,8 +319,9 @@ const IconBtn = React.forwardRef<
     title: string
     active?: boolean
     variant?: "success" | "danger"
+    className?: string
   }
->(function IconBtn({ icon: Icon, onClick, title, active, variant }, ref) {
+>(function IconBtn({ icon: Icon, onClick, title, active, variant, className }, ref) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -295,6 +336,7 @@ const IconBtn = React.forwardRef<
             active && "bg-muted text-foreground",
             variant === "success" && "text-[#4c9b62] hover:text-[#4c9b62] dark:text-[#5db872]",
             variant === "danger" && "text-destructive hover:text-destructive",
+            className,
           )}
         >
           <Icon className="h-3.5 w-3.5" />

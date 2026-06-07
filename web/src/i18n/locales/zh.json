@@ -44,7 +44,7 @@
       "clipboardReadDenied": "剪贴板读取被浏览器拒绝"
     },
     "banner": {
-      "slogan": "安全 Web 跳板机  ·  S e c u r e   B a s t i o n",
+      "slogan": "安全运维堡垒  ·  Secure Operations Bastion",
       "connectedTo": "已连接到",
       "asUser": "登录用户",
       "sessionLabel": "本次会话",

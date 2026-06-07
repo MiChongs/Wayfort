@@ -2,8 +2,10 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
+import { useQuery } from "@tanstack/react-query"
 import { ArrowDownToLine, ExternalLink, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { nodeService } from "@/lib/api/services"
 import { cn } from "@/lib/utils"
 import { SftpWorkspace } from "@/components/sftp/SftpWorkspace"
 import { OssWorkspace } from "@/components/oss/OssWorkspace"
@@ -53,6 +55,20 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
   const setLatency = useRuntimeStore((s) => s.setLatency)
   const setPoppedOut = useWorkspaceStore((s) => s.setPoppedOut)
   const open = useWorkspaceStore((s) => s.open)
+
+  // The SSH/telnet/dbcli login user lives on the node record, not on the tab
+  // model — so the standalone pages pass `node.username` but the workspace
+  // historically didn't, leaving the connect banner's "登录用户" blank. Resolve
+  // it here from the (shared, cached) node detail query. Declared before the
+  // poppedOut early-return so the hook order stays stable.
+  const needsUser = tab.protocol === "ssh" || tab.protocol === "telnet" || tab.protocol === "dbcli"
+  const nodeQuery = useQuery({
+    queryKey: ["node", tab.nodeId],
+    queryFn: () => nodeService.get(tab.nodeId),
+    enabled: needsUser && tab.nodeId > 0,
+    staleTime: 5 * 60_000,
+  })
+  const username = nodeQuery.data?.username
 
   // While the tab is showing in a standalone browser window, the main
   // window renders a placeholder instead of a second live renderer — two
@@ -164,6 +180,7 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
               nodeId={tab.nodeId}
               tabId={tab.id}
               displayName={tab.title}
+              username={username}
               host={tab.host}
               port={tab.port}
               onStatusChange={onSshStatusChange}
@@ -178,6 +195,7 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
             protocol={tab.protocol}
             nodeId={tab.nodeId}
             displayName={tab.title}
+            username={username}
             host={tab.host}
             port={tab.port}
             onStatusChange={onSshStatusChange}

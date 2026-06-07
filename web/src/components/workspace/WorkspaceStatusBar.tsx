@@ -86,11 +86,12 @@ export function WorkspaceStatusBar() {
           </span>
         )}
         <span className="inline-flex items-center gap-1" title="本会话全程审计录制">
-          <ShieldCheck className="h-3.5 w-3.5 text-success" /> 审计中
+          <ShieldCheck className="h-3.5 w-3.5 text-success" /> <span className="hidden sm:inline">审计中</span>
         </span>
         {me?.usr && (
-          <span className="inline-flex items-center gap-1">
-            <User className="h-3.5 w-3.5 text-muted-foreground/70" /> {me.usr}
+          <span className="inline-flex items-center gap-1" title={me.usr}>
+            <User className="h-3.5 w-3.5 text-muted-foreground/70" />
+            <span className="hidden max-w-[120px] truncate sm:inline">{me.usr}</span>
           </span>
         )}
       </div>

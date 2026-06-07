@@ -2,8 +2,9 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { motion, useReducedMotion } from "motion/react"
 import { useQuery } from "@tanstack/react-query"
-import { ArrowRight, Clock, Command, Plus, Star } from "lucide-react"
+import { ArrowRight, Clock, Plus, Search, Star } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
@@ -36,6 +37,10 @@ export function WorkspaceWelcome({ onNewTab }: Props) {
     .filter((n): n is Node => !!n)
     .slice(0, 6)
 
+  const assetCount = nodes.data?.nodes?.filter((n) => !n.disabled).length ?? 0
+  const favCount = favorites.data?.node_ids?.length ?? 0
+  const recentCount = recent.data?.recent?.length ?? 0
+
   const openWith = (n: Node, choice: ProtocolChoice) =>
     open({
       nodeId: n.id,
@@ -48,67 +53,120 @@ export function WorkspaceWelcome({ onNewTab }: Props) {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center gap-9 px-6 py-12">
+      <div className="mx-auto flex min-h-full max-w-3xl flex-col justify-center gap-8 px-6 py-12">
         {/* Hero */}
-        <div className="space-y-4">
-          <span className="eyebrow">工作台</span>
-          <h1 className="display-title text-[2.5rem] leading-[1.1]">
-            在一处，接入所有机器
-          </h1>
-          <p className="max-w-xl text-[15px] leading-relaxed text-muted-foreground">
-            SSH、远程桌面、数据库、文件传输都在这里。切换会话不会断开后台连接，每一步操作都在审计记录里。
-          </p>
-          <div className="flex flex-wrap items-center gap-2.5 pt-1">
-            <Button onClick={onNewTab} className="h-9">
-              <Plus className="h-4 w-4" /> 新建会话
-              <kbd className="ml-1.5 rounded bg-white/20 px-1.5 py-0.5 font-mono text-[10px]">Ctrl T</kbd>
-            </Button>
-            <Button variant="outline" asChild className="h-9">
-              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-              <Link href={"/nodes" as any}>
-                资产列表 <ArrowRight className="h-4 w-4" />
-              </Link>
-            </Button>
-            <span className="ml-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Command className="h-3.5 w-3.5" />
-              <kbd className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">Ctrl K</kbd>
-              快速搜索 · 左侧资产树双击直连
-            </span>
+        <Reveal>
+          <div className="space-y-4">
+            <span className="eyebrow">工作台</span>
+            <h1 className="display-title text-[2.5rem] leading-[1.1]">在一处，接入所有机器</h1>
+            <p className="max-w-xl text-[15px] leading-relaxed text-muted-foreground">
+              SSH、远程桌面、数据库、文件传输都在这里。切换会话不会断开后台连接，每一步操作都在审计记录里。
+            </p>
           </div>
-        </div>
+        </Reveal>
+
+        {/* Command bar — a search-styled entry that opens the full launcher. */}
+        <Reveal delay={0.05}>
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={onNewTab}
+              aria-label="打开命令面板"
+              className="group flex h-12 w-full items-center gap-3 rounded-xl border bg-card/60 px-4 text-left transition-all hover:border-primary/40 hover:bg-card hover:shadow-[0_2px_14px_-8px_rgba(20,20,19,0.25)]"
+            >
+              <Search className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-primary" />
+              <span className="min-w-0 flex-1 truncate text-sm text-muted-foreground">
+                搜索节点 · 输入 <span className="font-mono text-foreground/75">ssh:web01</span> 直连 · 或动作（分屏 / 主题…）
+              </span>
+              <kbd className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground sm:inline">
+                Ctrl K
+              </kbd>
+            </button>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <Button onClick={onNewTab} className="h-9">
+                <Plus className="h-4 w-4" /> 新建会话
+                <kbd className="ml-1.5 rounded bg-white/20 px-1.5 py-0.5 font-mono text-[10px]">Ctrl T</kbd>
+              </Button>
+              <Button variant="outline" asChild className="h-9">
+                {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                <Link href={"/nodes" as any}>
+                  资产列表 <ArrowRight className="h-4 w-4" />
+                </Link>
+              </Button>
+              {assetCount > 0 && (
+                <span className="ml-auto hidden items-center gap-2 text-xs text-muted-foreground sm:inline-flex">
+                  <Stat label="可访问" value={assetCount} />
+                  {favCount > 0 && <Stat label="收藏" value={favCount} />}
+                  {recentCount > 0 && <Stat label="最近" value={recentCount} />}
+                </span>
+              )}
+            </div>
+          </div>
+        </Reveal>
 
         {favNodes.length > 0 && (
-          <Section title="收藏" icon={Star} iconClass="text-[#bf6f33] dark:text-[#e8a55a]">
-            {favNodes.map((n) => (
-              <NodeQuickCard key={n.id} node={n} onOpen={openWith} />
-            ))}
-          </Section>
+          <Reveal delay={0.1}>
+            <Section title="收藏" icon={Star} iconClass="text-[#bf6f33] dark:text-[#e8a55a]">
+              {favNodes.map((n) => (
+                <NodeQuickCard key={n.id} node={n} onOpen={openWith} />
+              ))}
+            </Section>
+          </Reveal>
         )}
 
         {recentNodes.length > 0 && (
-          <Section title="最近访问" icon={Clock} iconClass="text-[#4f9d8f] dark:text-[#5db8a6]">
-            {recentNodes.map((n) => (
-              <NodeQuickCard key={n.id} node={n} onOpen={openWith} />
-            ))}
-          </Section>
+          <Reveal delay={0.14}>
+            <Section title="最近访问" icon={Clock} iconClass="text-[#4f9d8f] dark:text-[#5db8a6]">
+              {recentNodes.map((n) => (
+                <NodeQuickCard key={n.id} node={n} onOpen={openWith} />
+              ))}
+            </Section>
+          </Reveal>
         )}
 
         {/* Shortcuts */}
-        <div className="rounded-xl border bg-card/40 p-4">
-          <div className="eyebrow mb-3">键盘速查</div>
-          <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-            <Kbd combo="Ctrl T" desc="新建会话" />
-            <Kbd combo="Ctrl W" desc="关闭当前会话" />
-            <Kbd combo="Ctrl ⇧ T" desc="撤销关闭" />
-            <Kbd combo="Ctrl Tab" desc="切换上一 / 下一个" />
-            <Kbd combo="Ctrl 1…9" desc="跳到第 N 个" />
-            <Kbd combo="Ctrl K" desc="命令面板" />
-            <Kbd combo="Ctrl B" desc="切换侧边栏" />
-            <Kbd combo="Ctrl \\" desc="分屏 / 取消分屏" />
+        <Reveal delay={0.18}>
+          <div className="rounded-xl border bg-card/40 p-4">
+            <div className="eyebrow mb-3">键盘速查</div>
+            <div className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+              <Kbd combo="Ctrl T" desc="新建会话" />
+              <Kbd combo="Ctrl W" desc="关闭当前会话" />
+              <Kbd combo="Ctrl ⇧ T" desc="撤销关闭" />
+              <Kbd combo="Ctrl Tab" desc="切换上一 / 下一个" />
+              <Kbd combo="Ctrl 1…9" desc="跳到第 N 个" />
+              <Kbd combo="Ctrl K" desc="命令面板" />
+              <Kbd combo="Ctrl B" desc="切换侧边栏" />
+              <Kbd combo="Ctrl \\" desc="分屏 / 取消分屏" />
+            </div>
           </div>
-        </div>
+        </Reveal>
       </div>
     </div>
+  )
+}
+
+// Fade-and-rise entrance. Honours reduced-motion by rendering statically.
+function Reveal({ children, delay = 0 }: { children: React.ReactNode; delay?: number }) {
+  const reduced = useReducedMotion()
+  if (reduced) return <>{children}</>
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.34, ease: [0.22, 1, 0.36, 1], delay }}
+    >
+      {children}
+    </motion.div>
+  )
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="font-mono font-medium text-foreground/75">{value}</span>
+      {label}
+    </span>
   )
 }
 

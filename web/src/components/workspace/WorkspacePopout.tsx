@@ -7,9 +7,11 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
+import { useQuery } from "@tanstack/react-query"
 import { ArrowLeftToLine, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { SftpWorkspace } from "@/components/sftp/SftpWorkspace"
+import { nodeService } from "@/lib/api/services"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 import { TcpForwardPanel } from "./TcpForwardPanel"
 import { metaOf } from "./protocolMeta"
@@ -117,6 +119,15 @@ export function WorkspacePopout({ tabId }: Props) {
 }
 
 function Body({ tab }: { tab: NonNullable<ReturnType<typeof useWorkspaceStore.getState>["tabs"][number]> }) {
+  // Resolve the login user from the node record so the connect banner's
+  // "登录用户" isn't blank in the popout window (mirrors WorkspaceTabContent).
+  const needsUser = tab.protocol === "ssh" || tab.protocol === "telnet" || tab.protocol === "dbcli"
+  const nodeQuery = useQuery({
+    queryKey: ["node", tab.nodeId],
+    queryFn: () => nodeService.get(tab.nodeId),
+    enabled: needsUser && tab.nodeId > 0,
+    staleTime: 5 * 60_000,
+  })
   switch (tab.protocol) {
     case "ssh":
     case "telnet":
@@ -126,6 +137,7 @@ function Body({ tab }: { tab: NonNullable<ReturnType<typeof useWorkspaceStore.ge
           protocol={tab.protocol}
           nodeId={tab.nodeId}
           displayName={tab.title}
+          username={nodeQuery.data?.username}
           host={tab.host}
           port={tab.port}
         />

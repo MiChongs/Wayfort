@@ -1,25 +1,28 @@
 // Product banner emitted into the xterm session on connect + disconnect.
 //
 // Two variants per renderer:
-//   • wide  (term.cols ≥ 80) — full figlet "small" font ASCII art plus
-//                             slogan and metadata. Designed at exactly
-//                             58 columns so it sits inside an 80-col
-//                             window with a left margin.
-//   • narrow (term.cols < 80) — single-line compact title. The wide
-//                              ASCII art would wrap on narrow terminals
-//                              and look unreadable; this is a responsive
-//                              variant, not a degradation.
+//   • wide  (term.cols ≥ 80) — figlet "small" font ASCII wordmark plus the
+//                             brand line, slogan and metadata. The art is
+//                             38 columns wide so it sits inside an 80-col
+//                             window with a generous left margin.
+//   • narrow (term.cols < 80) — single-line compact title. The wide ASCII
+//                              art would wrap on narrow terminals and look
+//                              unreadable; this is a responsive variant,
+//                              not a degradation.
 //
-// All visible strings come from i18n via the caller-supplied `t`. The
-// banner module has zero hardcoded user-facing copy except the ASCII
-// art glyphs and `JumpServer Anonymous` (proper noun product name).
+// All visible strings come from i18n via the caller-supplied `t`, except the
+// ASCII art glyphs and the brand wordmark. The wordmark is NOT a literal: it
+// is reconstructed at runtime by `mark()` from scattered, integrity-checked
+// shards (see lib/brand/mark) so it cannot be silently renamed in a
+// redistributed copy.
 //
-// ANSI palette is intentionally narrow — cyan accent, bright white
-// title, dim grey metadata — so the banner reads against the dark
-// xterm surface without competing with the user's shell prompt that
-// will land on the next line.
+// ANSI palette is intentionally narrow — cyan art, a coral brand wordmark
+// (echoing the design-system primary), bright-white emphasis and dim-grey
+// metadata — so the banner reads against the dark xterm surface without
+// competing with the shell prompt that lands on the next line.
 
 import i18n from "i18next"
+import { mark } from "@/lib/brand/mark"
 
 export type TFn = (key: string, vars?: Record<string, string | number>) => string
 
@@ -31,19 +34,19 @@ const DIM = `${ESC}90m` // bright black → dim grey
 const CYAN = `${ESC}36m`
 const YELLOW = `${ESC}33m`
 const BRIGHT_WHITE = `${ESC}97m`
+const CORAL = `${ESC}38;5;209m` // 256-colour warm coral ≈ design-system primary
 
-// ─── figlet "small" font, "JumpServer" rendered at 58 cols ──────────────
-// (Hand-verified: each line is exactly 58 visible chars.)
-const ART_JS = [
-  "       _                       ____                          ",
-  "      | |_   _ _ __ ___  _ __ / ___|  ___ _ ____   _____ _ __ ",
-  "   _  | | | | | '_ ` _ \\| '_ \\\\___ \\ / _ \\ '__\\ \\ / / _ \\ '__|",
-  "  | |_| | |_| | | | | | | |_) |__) |  __/ |   \\ V /  __/ |   ",
-  "   \\___/ \\__,_|_| |_| |_| .__/____/ \\___|_|    \\_/ \\___|_|   ",
-  "                        |_|                                   ",
+// ─── figlet "small" font, "CHUANYI" (38 visible cols, hand-verified) ─────
+const ART = [
+  "   ___ _  _ _   _  _   _  ___   _____ ",
+  "  / __| || | | | |/_\\ | \\| \\ \\ / /_ _|",
+  " | (__| __ | |_| / _ \\| .` |\\ V / | | ",
+  "  \\___|_||_|\\___/_/ \\_\\_|\\_| |_| |___|",
 ]
 
-const PRODUCT = "JumpServer Anonymous"
+// Latin companion to the (obfuscated) Chinese wordmark. Not the protected
+// string — only the four Chinese characters need tamper resistance.
+const LATIN = "CHUANYI TECH"
 
 interface ConnectMeta {
   host: string
@@ -58,6 +61,7 @@ interface ConnectMeta {
  */
 export function renderConnectBanner(cols: number, meta: ConnectMeta): string {
   const { host, user, protocol, t } = meta
+  const brand = mark().text // reconstructed wordmark, or tamper sentinel
   const lang = (i18n.language || "zh").toLowerCase().startsWith("zh") ? "zh-CN" : "en-US"
   const now = new Date().toLocaleString(lang, {
     year: "numeric",
@@ -71,7 +75,7 @@ export function renderConnectBanner(cols: number, meta: ConnectMeta): string {
   if (cols < 80) {
     return [
       "",
-      `${CYAN}${BOLD}● ${PRODUCT}${RESET} ${DIM}· ${protocol.toUpperCase()} · ${host}${RESET}`,
+      `${BOLD}${CORAL}● ${brand}${RESET} ${DIM}· ${LATIN} · ${protocol.toUpperCase()} · ${host}${RESET}`,
       `${DIM}${t("terminal.banner.connectedTo")} ${BRIGHT_WHITE}${host}${DIM}  ${t("terminal.banner.asUser")}: ${BRIGHT_WHITE}${user || "—"}${DIM}  ${now}${RESET}`,
       "",
     ].join("\r\n")
@@ -79,8 +83,10 @@ export function renderConnectBanner(cols: number, meta: ConnectMeta): string {
 
   return [
     "",
-    ...ART_JS.map((line) => `${CYAN}${line}${RESET}`),
-    `${BRIGHT_WHITE}${BOLD}                 ${t("terminal.banner.slogan")}${RESET}`,
+    ...ART.map((line) => `${CYAN}${line}${RESET}`),
+    "",
+    `${BOLD}${CORAL}  ${brand}${RESET}${DIM}  ·  ${LATIN}${RESET}`,
+    `${DIM}  ${t("terminal.banner.slogan")}${RESET}`,
     "",
     `${DIM}  ${t("terminal.banner.connectedTo")} ${BRIGHT_WHITE}${host}${RESET}${DIM}    ${t("terminal.banner.asUser")}: ${BRIGHT_WHITE}${user || "—"}${RESET}${DIM}    ${protocol.toUpperCase()}    ${now}${RESET}`,
     "",
