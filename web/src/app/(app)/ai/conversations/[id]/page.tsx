@@ -1106,9 +1106,14 @@ export default function ConversationPage({
             />
           </div>
           {isDesktop && plan.tasks.length > 0 && (
-            <div className="w-[300px] shrink-0 xl:w-[340px]">
+            <motion.div
+              initial={{ opacity: 0, x: 16 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ type: "spring", stiffness: 320, damping: 32 }}
+              className="w-[300px] shrink-0 xl:w-[340px]"
+            >
               <TaskPanel variant="rail" tasks={plan.tasks} running={running} />
-            </div>
+            </motion.div>
           )}
         </TabsContent>
 
