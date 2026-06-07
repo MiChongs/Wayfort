@@ -13,6 +13,7 @@ import { useConfirm } from "@/components/admin/use-confirm"
 import { usersService } from "@/lib/api/services"
 import type { SysUser } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
+import { VirtualTable } from "@/components/common/virtual-table"
 import { codeOf, type ApiError } from "./_shared"
 
 type Props = { nodeId: number; tabId: string; active: boolean }
@@ -96,22 +97,30 @@ export function UsersTab({ nodeId, active }: Props) {
             </div>
             <Button size="sm" variant={showSystem ? "default" : "outline"} className="h-7 text-[11px]" onClick={() => setShowSystem((v) => !v)}>系统账户</Button>
           </div>
-          <div className="flex-1 overflow-auto">
+          <div className="min-h-0 flex-1">
             {!d ? (
-              <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div>
+              <div className="inline-flex items-center gap-2 p-6 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> 加载…</div>
             ) : (
-              <table className="w-full text-[11px]">
-                <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
-                  <tr><th className="text-left px-3 py-1.5">用户</th><th className="text-right px-2 py-1.5">UID</th><th className="text-left px-2 py-1.5">Shell</th><th className="text-right px-3 py-1.5">操作</th></tr>
-                </thead>
-                <tbody className="divide-y divide-border/40">
-                  {users.map((u) => (
-                    <UserRow key={u.name} u={u} busy={lock.isPending || addGroup.isPending}
-                      onLock={async (l) => { if (!l || await confirm({ title: `锁定 ${u.name}？`, description: "锁定后该账户无法登录。", confirmLabel: "锁定" })) lock.mutate({ user: u.name, lock: l }) }}
-                      onAddGroup={(group) => addGroup.mutate({ user: u.name, group })} />
-                  ))}
-                </tbody>
-              </table>
+              <VirtualTable
+                rows={users}
+                empty="无匹配用户"
+                header={
+                  <>
+                    <th className="px-3 py-1.5 text-left">用户</th>
+                    <th className="px-2 py-1.5 text-right">UID</th>
+                    <th className="px-2 py-1.5 text-left">Shell</th>
+                    <th className="px-3 py-1.5 text-right">操作</th>
+                  </>
+                }
+                renderRow={(u) => (
+                  <UserRow
+                    u={u}
+                    busy={lock.isPending || addGroup.isPending}
+                    onLock={async (l) => { if (!l || await confirm({ title: `锁定 ${u.name}？`, description: "锁定后该账户无法登录。", confirmLabel: "锁定" })) lock.mutate({ user: u.name, lock: l }) }}
+                    onAddGroup={(group) => addGroup.mutate({ user: u.name, group })}
+                  />
+                )}
+              />
             )}
           </div>
         </TabsContent>
@@ -178,7 +187,7 @@ function UserRow({ u, busy, onLock, onAddGroup }: { u: SysUser; busy: boolean; o
   const [grp, setGrp] = React.useState("")
   const nologin = (u.shell || "").includes("nologin") || (u.shell || "").endsWith("/false")
   return (
-    <tr className="hover:bg-muted/50">
+    <>
       <td className="px-3 py-1">
         <span className="font-medium">{u.name}</span>
         {u.system && <Badge variant="secondary" className="text-[9px] ml-1.5 px-1 h-4">系统</Badge>}
@@ -202,6 +211,6 @@ function UserRow({ u, busy, onLock, onAddGroup }: { u: SysUser; busy: boolean; o
           <Button variant="ghost" size="icon" className="h-6 w-6" title="解锁" disabled={busy} onClick={() => onLock(false)}><Unlock className="w-3 h-3" /></Button>
         </div>
       </td>
-    </tr>
+    </>
   )
 }

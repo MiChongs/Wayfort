@@ -1,16 +1,15 @@
 "use client"
 
 import * as React from "react"
-import { useQuery } from "@tanstack/react-query"
-import { Activity, AlertTriangle, Gauge, HardDrive, Loader2, RefreshCw } from "lucide-react"
+import { Activity, AlertTriangle, Gauge, HardDrive, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
-import { perfService } from "@/lib/api/services"
 import type { PerfPressureMetric, PerfSnapshot } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
-import { RunInTerminalButton, codeOf, type ApiError } from "./_shared"
+import { useSseSnapshot } from "@/lib/hooks/use-sse-snapshot"
+import { RunInTerminalButton } from "./_shared"
+import { LiveKpiStrip, perfStreamURL } from "./_live"
 
 type Props = { nodeId: number; tabId: string; active: boolean }
 
@@ -27,49 +26,37 @@ function pressBg(v: number): string {
 }
 
 export function PerformanceTab({ nodeId, tabId, active }: Props) {
-  const snap = useQuery({
-    queryKey: ["perf", nodeId, "snapshot"],
-    queryFn: () => perfService.snapshot(nodeId),
-    enabled: active,
-    refetchInterval: 5000,
-    retry: false,
-  })
+  // PSI / vmstat / iostat / dmesg snapshot, pushed live over SSE.
+  const url = React.useMemo(() => perfStreamURL(nodeId), [nodeId])
+  const { data: d, status, error } = useSseSnapshot<PerfSnapshot>(url, { enabled: active })
 
   if (!active) return null
 
-  if (snap.isError) {
-    const e = snap.error as ApiError
+  if (status === "error" && !d) {
     return (
       <div className="p-6 text-center text-sm text-muted-foreground space-y-2">
         <Gauge className="w-8 h-8 mx-auto opacity-50" />
         <div className="font-medium text-foreground">无法采集性能数据</div>
-        <div className="text-xs">{e?.message}</div>
-        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => snap.refetch()}>
-          <RefreshCw className="w-3 h-3" /> 重试
-        </Button>
+        <div className="text-xs">{error}</div>
       </div>
     )
   }
 
-  const d: PerfSnapshot | undefined = snap.data
-
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">
-        <div className="flex items-center gap-2 min-w-0">
-          <Activity className="w-4 h-4 text-primary shrink-0" />
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="border-b px-2 pb-1.5 pt-2">
+        <LiveKpiStrip nodeId={nodeId} active={active} />
+      </div>
+      <header className="flex items-center justify-between gap-2 border-b bg-card px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <Activity className="h-4 w-4 shrink-0 text-primary" />
           <span className="text-xs font-medium">性能诊断</span>
           {d && <span className="text-[10px] text-muted-foreground">load {d.load_avg.map((x) => x.toFixed(2)).join(" / ")}</span>}
         </div>
-        <div className="flex items-center gap-1">
-          <RunInTerminalButton tabId={tabId} command="dmesg -Tw" label="在终端 dmesg -w（实时）" />
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => snap.refetch()} title="刷新">
-            <RefreshCw className={cn("w-3 h-3", snap.isFetching && "animate-spin")} />
-          </Button>
-        </div>
+        <RunInTerminalButton tabId={tabId} command="dmesg -Tw" label="在终端 dmesg -w（实时）" />
       </header>
 
-      <div className="flex-1 overflow-auto p-3 space-y-3">
+      <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
         {!d ? (
           <div className="text-xs text-muted-foreground inline-flex items-center gap-2 py-4">
             <Loader2 className="w-3 h-3 animate-spin" /> 采样中（约 1–2 秒）…

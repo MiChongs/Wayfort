@@ -1,14 +1,13 @@
 "use client"
 
 import * as React from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation } from "@tanstack/react-query"
 import {
   Loader2,
   Network,
   Play,
   Power,
   PowerOff,
-  RefreshCw,
   Search as SearchIcon,
   TerminalSquare,
 } from "lucide-react"
@@ -26,10 +25,12 @@ import {
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useConfirm } from "@/components/admin/use-confirm"
+import { VirtualTable } from "@/components/common/virtual-table"
+import { useSseSnapshot } from "@/lib/hooks/use-sse-snapshot"
 import { networkService } from "@/lib/api/services"
 import type { NetDiagResult, NetDiagTool, NetInfo } from "@/lib/api/types"
-import { cn } from "@/lib/utils"
 import { useSendToTerminal, codeOf, type ApiError } from "./_shared"
+import { LiveKpiStrip, networkStreamURL } from "./_live"
 
 type Props = { nodeId: number; tabId: string; active: boolean }
 
@@ -49,22 +50,14 @@ function errorHint(code: string | undefined, msg: string): string {
 }
 
 export function NetworkToolsTab({ nodeId, tabId, active }: Props) {
-  const qc = useQueryClient()
   const { confirm, dialog } = useConfirm()
-  const info = useQuery({
-    queryKey: ["network", nodeId],
-    queryFn: () => networkService.info(nodeId),
-    enabled: active,
-    refetchInterval: 8000,
-    retry: false,
-  })
+  // Live network snapshot (interfaces + counters + connections) over SSE.
+  const url = React.useMemo(() => networkStreamURL(nodeId), [nodeId])
+  const { data: d, status, error } = useSseSnapshot<NetInfo>(url, { enabled: active })
 
   const setIface = useMutation({
     mutationFn: ({ name, up }: { name: string; up: boolean }) => networkService.setIface(nodeId, name, up),
-    onSuccess: (_d, v) => {
-      toast.success(`${v.name} 已${v.up ? "启用" : "停用"}`)
-      void qc.invalidateQueries({ queryKey: ["network", nodeId] })
-    },
+    onSuccess: (_d, v) => toast.success(`${v.name} 已${v.up ? "启用" : "停用"}`),
     onError: (e: ApiError) => toast.error("操作失败", { description: errorHint(codeOf(e), e?.message || "") || e?.message }),
   })
 
@@ -78,32 +71,23 @@ export function NetworkToolsTab({ nodeId, tabId, active }: Props) {
 
   if (!active) return null
 
-  if (info.isError) {
+  if (status === "error" && !d) {
     return (
       <div className="p-6 text-center text-sm text-muted-foreground space-y-2">
         <Network className="w-8 h-8 mx-auto opacity-50" />
         <div className="font-medium text-foreground">无法读取网络信息</div>
-        <div className="text-xs">{(info.error as ApiError)?.message}</div>
-        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => info.refetch()}><RefreshCw className="w-3 h-3" /> 重试</Button>
+        <div className="text-xs">{error}</div>
       </div>
     )
   }
-  const d: NetInfo | undefined = info.data
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col">
       {dialog}
-      <header className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">
-        <div className="flex items-center gap-2 min-w-0">
-          <Network className="w-4 h-4 text-primary shrink-0" />
-          <span className="text-xs font-medium">网络工具箱</span>
-        </div>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => info.refetch()} title="刷新">
-          <RefreshCw className={cn("w-3 h-3", info.isFetching && "animate-spin")} />
-        </Button>
-      </header>
-
-      <Tabs defaultValue="ifaces" className="flex-1 flex flex-col min-h-0">
+      <div className="border-b px-2 pb-1.5 pt-2">
+        <LiveKpiStrip nodeId={nodeId} active={active} />
+      </div>
+      <Tabs defaultValue="ifaces" className="flex min-h-0 flex-1 flex-col">
         <TabsList className="mx-2 mt-2 h-8 bg-transparent border-b rounded-none p-0 self-start">
           <TabsTrigger value="ifaces" className="text-xs">接口</TabsTrigger>
           <TabsTrigger value="conns" className="text-xs">连接</TabsTrigger>
@@ -188,26 +172,32 @@ function ConnList({ conns, loading }: { conns: NetInfo["conns"]; loading: boolea
         </div>
         <Badge variant="outline" className="text-[10px]">{rows.length}</Badge>
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 font-mono">
         {loading ? (
-          <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div>
+          <div className="inline-flex items-center gap-2 p-6 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> 加载…</div>
         ) : (
-          <table className="w-full text-[10px] font-mono">
-            <thead className="bg-muted/40 sticky top-0 text-[9px] uppercase text-muted-foreground">
-              <tr><th className="text-left px-2 py-1">协议</th><th className="text-left px-2 py-1">状态</th><th className="text-left px-2 py-1">本地</th><th className="text-left px-2 py-1">对端</th><th className="text-left px-2 py-1">进程</th></tr>
-            </thead>
-            <tbody className="divide-y divide-border/40">
-              {rows.map((c, i) => (
-                <tr key={i} className="hover:bg-muted/50">
-                  <td className="px-2 py-0.5">{c.proto}</td>
-                  <td className="px-2 py-0.5 text-muted-foreground">{c.state}</td>
-                  <td className="px-2 py-0.5 truncate max-w-[9rem]" title={c.local}>{c.local}</td>
-                  <td className="px-2 py-0.5 truncate max-w-[9rem]" title={c.peer}>{c.peer}</td>
-                  <td className="px-2 py-0.5 text-primary">{c.process || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <VirtualTable<NetInfo["conns"][number]>
+            rows={rows}
+            empty="无连接"
+            header={
+              <>
+                <th className="px-2 py-1 text-left">协议</th>
+                <th className="px-2 py-1 text-left">状态</th>
+                <th className="px-2 py-1 text-left">本地</th>
+                <th className="px-2 py-1 text-left">对端</th>
+                <th className="px-2 py-1 text-left">进程</th>
+              </>
+            }
+            renderRow={(c) => (
+              <>
+                <td className="px-2 py-0.5 text-[10px]">{c.proto}</td>
+                <td className="px-2 py-0.5 text-[10px] text-muted-foreground">{c.state}</td>
+                <td className="max-w-[9rem] truncate px-2 py-0.5 text-[10px]" title={c.local}>{c.local}</td>
+                <td className="max-w-[9rem] truncate px-2 py-0.5 text-[10px]" title={c.peer}>{c.peer}</td>
+                <td className="px-2 py-0.5 text-[10px] text-primary">{c.process || "—"}</td>
+              </>
+            )}
+          />
         )}
       </div>
     </>

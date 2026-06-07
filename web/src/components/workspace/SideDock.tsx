@@ -4,10 +4,13 @@ import * as React from "react"
 import { Group, Panel, Separator } from "react-resizable-panels"
 import {
   Activity,
+  Archive,
   Box,
   Clock,
   Cog,
   Cpu,
+  FileSearch,
+  FolderOpen,
   Gauge,
   HardDrive,
   History,
@@ -15,6 +18,7 @@ import {
   Network,
   Package,
   PanelRightClose,
+  Radio,
   PanelRightOpen,
   ScrollText,
   Shield,
@@ -22,6 +26,7 @@ import {
   SlidersHorizontal,
   TerminalSquare,
   UsersRound,
+  Waypoints,
   Zap,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -44,6 +49,11 @@ import { CronTab } from "./server/CronTab"
 import { PackagesTab } from "./server/PackagesTab"
 import { UsersTab } from "./server/UsersTab"
 import { SecurityTab } from "./server/SecurityTab"
+import { WireGuardTab } from "./server/WireGuardTab"
+import { FilesTab } from "./server/FilesTab"
+import { LogAnalyticsTab } from "./server/LogAnalyticsTab"
+import { BackupTab } from "./server/BackupTab"
+import { CaptureTab } from "./server/CaptureTab"
 import { useWorkspaceStore, type SubTab as SubTabKey } from "./useWorkspaceStore"
 
 type Props = {
@@ -74,6 +84,7 @@ const DOCK_TABS: DockTab[] = [
   { key: "processes", label: "进程", group: "观测", icon: Activity, render: ({ nodeId, tabId, active }) => <ProcessesTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "performance", label: "性能", group: "观测", icon: Zap, render: ({ nodeId, tabId, active }) => <PerformanceTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "logs", label: "日志", group: "观测", icon: ScrollText, render: ({ nodeId, tabId, active }) => <LogsTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "loganalytics", label: "日志分析", group: "观测", icon: FileSearch, render: ({ nodeId, tabId, active }) => <LogAnalyticsTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 运行
   { key: "services", label: "服务", group: "运行", icon: Cog, render: ({ nodeId, active }) => <ServicesTab nodeId={nodeId} active={active} /> },
   { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, tabId, active }) => <DockerTab nodeId={nodeId} tabId={tabId} active={active} /> },
@@ -85,10 +96,14 @@ const DOCK_TABS: DockTab[] = [
   { key: "storage", label: "存储", group: "系统", icon: HardDrive, render: ({ nodeId, tabId, active }) => <StorageTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "kernel", label: "内核", group: "系统", icon: SlidersHorizontal, render: ({ nodeId, tabId, active }) => <KernelTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "hardware", label: "硬件", group: "系统", icon: Cpu, render: ({ nodeId, active }) => <HardwareTab nodeId={nodeId} active={active} /> },
+  { key: "wireguard", label: "WireGuard", group: "系统", icon: Waypoints, render: ({ nodeId, tabId, active }) => <WireGuardTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "files", label: "文件", group: "系统", icon: FolderOpen, render: ({ nodeId, tabId, active }) => <FilesTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "capture", label: "抓包", group: "系统", icon: Radio, render: ({ nodeId, tabId, active }) => <CaptureTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 治理
   { key: "firewall", label: "防火墙", group: "治理", icon: Shield, render: ({ nodeId, active }) => <FirewallTab nodeId={nodeId} active={active} /> },
   { key: "users", label: "用户", group: "治理", icon: UsersRound, render: ({ nodeId, tabId, active }) => <UsersTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "security", label: "安全", group: "治理", icon: ShieldCheck, render: ({ nodeId, tabId, active }) => <SecurityTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "backup", label: "备份", group: "治理", icon: Archive, render: ({ nodeId, tabId, active }) => <BackupTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "sessions", label: "会话", group: "治理", icon: History, render: ({ nodeId }) => <SessionsTab nodeId={nodeId} /> },
   { key: "info", label: "信息", group: "治理", icon: Info, render: ({ nodeId }) => <NodeInfoTab nodeId={nodeId} /> },
 ]
@@ -134,7 +149,7 @@ export function SideDock({ tabId, nodeId, children }: Props) {
         {dockOpen ? (
           <div className="h-full flex min-h-0">
             {/* Grouped vertical icon rail */}
-            <nav className="w-11 shrink-0 border-r flex flex-col overflow-y-auto py-1 bg-muted/20">
+            <nav className="no-scrollbar w-11 shrink-0 border-r flex flex-col overflow-y-auto py-1 bg-muted/20">
               <RailButton
                 icon={PanelRightClose}
                 label="折叠面板"

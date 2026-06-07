@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Virtuoso } from "react-virtuoso"
 import { logsService } from "@/lib/api/services"
 import { cn } from "@/lib/utils"
 import { RunInTerminalButton } from "./_shared"
@@ -42,7 +43,6 @@ export function LogsTab({ nodeId, tabId, active }: Props) {
   const [following, setFollowing] = React.useState(false)
   const [followLines, setFollowLines] = React.useState<string[]>([])
   const esRef = React.useRef<EventSource | null>(null)
-  const preRef = React.useRef<HTMLPreElement | null>(null)
 
   const files = useQuery({
     queryKey: ["logs", nodeId, "files"],
@@ -106,12 +106,6 @@ export function LogsTab({ nodeId, tabId, active }: Props) {
   }, [following, effectiveRef, source, lines, nodeId])
 
   React.useEffect(() => () => esRef.current?.close(), [])
-
-  // Auto-scroll to bottom on new follow lines.
-  React.useEffect(() => {
-    const el = preRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [followLines])
 
   const allLines = React.useMemo(() => {
     if (following) return followLines
@@ -232,23 +226,36 @@ export function LogsTab({ nodeId, tabId, active }: Props) {
           <span className="truncate font-mono">{effectiveRef || "未选择来源"}</span>
           <span className="ml-auto tabular-nums">{shown.length}{filter ? `/${allLines.length}` : ""} 行</span>
         </div>
-        <pre
-          ref={preRef}
-          className="flex-1 overflow-auto bg-muted/40 px-3 py-2 font-mono text-[11px] leading-5 whitespace-pre-wrap break-words"
-        >
+        <div className="min-h-0 flex-1 bg-muted/40">
           {!effectiveRef ? (
-            <span className="text-muted-foreground">选择一个文件或输入 journald 单元开始查看。</span>
+            <LogHint>选择一个文件或输入 journald 单元开始查看。</LogHint>
           ) : !following && tail.isLoading ? (
-            <span className="text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</span>
+            <LogHint><Loader2 className="w-3 h-3 animate-spin" /> 加载…</LogHint>
           ) : !following && tail.isError ? (
-            <span className="text-destructive">{(tail.error as { message?: string })?.message || "加载失败"}</span>
+            <LogHint className="text-destructive">{(tail.error as { message?: string })?.message || "加载失败"}</LogHint>
           ) : shown.length === 0 ? (
-            <span className="text-muted-foreground">{filter ? "无匹配行" : "（空）"}</span>
+            <LogHint>{filter ? "无匹配行" : "（空）"}</LogHint>
           ) : (
-            shown.join("\n")
+            <Virtuoso
+              data={shown}
+              className="no-scrollbar h-full font-mono text-[11px] leading-5"
+              followOutput={following ? "auto" : false}
+              initialTopMostItemIndex={Math.max(0, shown.length - 1)}
+              itemContent={(_i, line) => (
+                <div className="whitespace-pre-wrap break-words px-3 py-px">{line || " "}</div>
+              )}
+            />
           )}
-        </pre>
+        </div>
       </div>
+    </div>
+  )
+}
+
+function LogHint({ children, className }: { children: React.ReactNode; className?: string }) {
+  return (
+    <div className={cn("inline-flex items-center gap-2 p-3 font-mono text-[11px] text-muted-foreground", className)}>
+      {children}
     </div>
   )
 }

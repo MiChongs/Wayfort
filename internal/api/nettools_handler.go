@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/nettools"
+	"github.com/michongs/jumpserver-anonymous/internal/sse"
 )
 
 // NetToolsHandler exposes network inspection + diagnostics + interface control.
@@ -34,6 +37,25 @@ func (h *NetToolsHandler) Info(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, info)
+}
+
+// Stream pushes the full network snapshot (interfaces + counters + connections)
+// over SSE every few seconds, feeding the live per-interface traffic mini-charts
+// and a self-updating connection list.
+func (h *NetToolsHandler) Stream(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	produce := func(ctx context.Context) (any, error) {
+		return h.Mgr.Info(ctx, claims.UserID, nodeID)
+	}
+	first, err := produce(c.Request.Context())
+	if err != nil {
+		respondNetErr(c, err)
+		return
+	}
+	sse.Snapshots(c, 5*time.Second, first, produce)
 }
 
 type netDiagBody struct {

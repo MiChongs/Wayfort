@@ -38,6 +38,11 @@ export type SubTab =
   | "security"
   | "sessions"
   | "info"
+  | "wireguard"
+  | "files"
+  | "loganalytics"
+  | "backup"
+  | "capture"
 
 // Chrome-style group palette. Eight muted tones keep the strip visually
 // quiet even with three or four groups open simultaneously. Names live in

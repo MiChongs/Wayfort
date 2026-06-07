@@ -14,6 +14,7 @@ import { hardwareService } from "@/lib/api/services"
 import type { Hardware } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 import { type ApiError } from "./_shared"
+import { LiveKpiStrip } from "./_live"
 
 type Props = { nodeId: number; active: boolean }
 
@@ -56,6 +57,7 @@ export function HardwareTab({ nodeId, active }: Props) {
       </header>
 
       <div className="flex-1 overflow-auto p-3 space-y-3">
+        <LiveKpiStrip nodeId={nodeId} active={active} />
         {!d ? (
           <div className="text-xs text-muted-foreground inline-flex items-center gap-2 py-4"><Loader2 className="w-3 h-3 animate-spin" /> 采集中…</div>
         ) : (

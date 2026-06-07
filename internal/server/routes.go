@@ -93,6 +93,36 @@ func cronHandler(rt *Routes) *api.CronHandler {
 	}
 	return api.NewCronHandlerStub(opsStubReason)
 }
+func wireguardHandler(rt *Routes) *api.WireGuardHandler {
+	if rt.WireGuard != nil {
+		return rt.WireGuard
+	}
+	return api.NewWireGuardHandlerStub(opsStubReason)
+}
+func filesHandler(rt *Routes) *api.FilesHandler {
+	if rt.Files != nil {
+		return rt.Files
+	}
+	return api.NewFilesHandlerStub(opsStubReason)
+}
+func loganalyticsHandler(rt *Routes) *api.LogAnalyticsHandler {
+	if rt.LogAnalytics != nil {
+		return rt.LogAnalytics
+	}
+	return api.NewLogAnalyticsHandlerStub(opsStubReason)
+}
+func backupHandler(rt *Routes) *api.BackupHandler {
+	if rt.Backup != nil {
+		return rt.Backup
+	}
+	return api.NewBackupHandlerStub(opsStubReason)
+}
+func captureHandler(rt *Routes) *api.CaptureHandler {
+	if rt.Capture != nil {
+		return rt.Capture
+	}
+	return api.NewCaptureHandlerStub(opsStubReason)
+}
 func pkgHandler(rt *Routes) *api.PkgHandler {
 	if rt.Pkg != nil {
 		return rt.Pkg
@@ -209,8 +239,13 @@ type Routes struct {
 	NetTools *api.NetToolsHandler
 	Cron     *api.CronHandler
 	Pkg      *api.PkgHandler
-	SysUser  *api.SysUserHandler
-	SecAudit *api.SecAuditHandler
+	SysUser   *api.SysUserHandler
+	SecAudit  *api.SecAuditHandler
+	WireGuard    *api.WireGuardHandler
+	Files        *api.FilesHandler
+	LogAnalytics *api.LogAnalyticsHandler
+	Backup       *api.BackupHandler
+	Capture      *api.CaptureHandler
 
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
@@ -498,6 +533,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// gin's no-route fallback, which is impossible to distinguish on
 		// the client side from "the deploy is one version behind".
 		ops.GET("/nodes/:id/insights/system", insightsHandler(rt).System)
+		ops.GET("/nodes/:id/insights/system/stream", insightsHandler(rt).SystemStream)
 		ops.GET("/nodes/:id/insights/processes", insightsHandler(rt).Processes)
 		ops.GET("/nodes/:id/insights/network", insightsHandler(rt).Network)
 		// Workspace v2 — firewall & docker management. Reads are open to
@@ -522,6 +558,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/docker/containers/:cid/inspect", dockerHandler(rt).Inspect)
 		ops.GET("/nodes/:id/docker/containers/:cid/top", dockerHandler(rt).Top)
 		ops.GET("/nodes/:id/docker/stats", dockerHandler(rt).Stats)
+		ops.GET("/nodes/:id/docker/stats/stream", dockerHandler(rt).StatsStream)
 		ops.GET("/nodes/:id/docker/networks", dockerHandler(rt).Networks)
 		ops.GET("/nodes/:id/docker/volumes", dockerHandler(rt).Volumes)
 		ops.POST("/nodes/:id/docker/containers/:cid/pause", perm(auth.PermDockerManage), dockerHandler(rt).Pause)
@@ -540,11 +577,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/systemd/action", perm(auth.PermServiceManage), systemdHandler(rt).Action)
 		// Ops dock — process management. Reads ActionConnect; signal/renice PermProcessManage.
 		ops.GET("/nodes/:id/process/list", processHandler(rt).List)
+		ops.GET("/nodes/:id/process/list/stream", processHandler(rt).Stream)
 		ops.GET("/nodes/:id/process/detail", processHandler(rt).Detail)
 		ops.POST("/nodes/:id/process/signal", perm(auth.PermProcessManage), processHandler(rt).Signal)
 		ops.POST("/nodes/:id/process/renice", perm(auth.PermProcessManage), processHandler(rt).Renice)
 		// Ops dock — performance diagnostics (read-only).
 		ops.GET("/nodes/:id/perf/snapshot", perfHandler(rt).Snapshot)
+		ops.GET("/nodes/:id/perf/snapshot/stream", perfHandler(rt).Stream)
 		ops.GET("/nodes/:id/perf/dmesg", perfHandler(rt).Dmesg)
 		// Ops dock — log viewer (read-only; follow streams over SSE).
 		ops.GET("/nodes/:id/logs/files", logsHandler(rt).Files)
@@ -561,6 +600,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/storage/umount", perm(auth.PermStorageManage), storageHandler(rt).Unmount)
 		// Ops dock — network. Read+diagnose ActionConnect; iface up/down PermNetworkManage.
 		ops.GET("/nodes/:id/network", nettoolsHandler(rt).Info)
+		ops.GET("/nodes/:id/network/stream", nettoolsHandler(rt).Stream)
 		ops.POST("/nodes/:id/network/diagnose", nettoolsHandler(rt).Diagnose)
 		ops.POST("/nodes/:id/network/iface", perm(auth.PermNetworkManage), nettoolsHandler(rt).SetIface)
 		// Ops dock — scheduled tasks. Read ActionConnect; edits PermCronManage.
@@ -585,6 +625,29 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// Ops dock — security posture. Report read ActionConnect; Apply PermSecurityManage.
 		ops.GET("/nodes/:id/security", secauditHandler(rt).Report)
 		ops.POST("/nodes/:id/security/apply", perm(auth.PermSecurityManage), secauditHandler(rt).Apply)
+		// Ops dock — WireGuard. Status/stream read ActionConnect; iface up/down PermNetworkManage.
+		ops.GET("/nodes/:id/wireguard", wireguardHandler(rt).Status)
+		ops.GET("/nodes/:id/wireguard/stream", wireguardHandler(rt).Stream)
+		ops.POST("/nodes/:id/wireguard/iface", perm(auth.PermNetworkManage), wireguardHandler(rt).SetInterface)
+		// Ops dock — file manager + config editor. List/read ActionConnect;
+		// write/chmod gated by storage:manage (filesystem mutations).
+		ops.GET("/nodes/:id/files/list", filesHandler(rt).List)
+		ops.GET("/nodes/:id/files/read", filesHandler(rt).Read)
+		ops.POST("/nodes/:id/files/write", perm(auth.PermStorageManage), filesHandler(rt).Write)
+		ops.POST("/nodes/:id/files/chmod", perm(auth.PermStorageManage), filesHandler(rt).Chmod)
+		// Ops dock — log analytics (read-only cross-file / journald search).
+		ops.POST("/nodes/:id/loganalytics/search", loganalyticsHandler(rt).Search)
+		// Ops dock — backup snapshots + `at` scheduling. Info ActionConnect;
+		// snapshot/job mutations gated by storage:manage.
+		ops.GET("/nodes/:id/backup", backupHandler(rt).Info)
+		ops.POST("/nodes/:id/backup/snapshot", perm(auth.PermStorageManage), backupHandler(rt).Snapshot)
+		ops.POST("/nodes/:id/backup/at", perm(auth.PermStorageManage), backupHandler(rt).AddAt)
+		ops.POST("/nodes/:id/backup/at/remove", perm(auth.PermStorageManage), backupHandler(rt).RemoveAt)
+		// Ops dock — bounded packet capture. Interfaces ActionConnect; capture/pcap
+		// (run tcpdump) gated by network:manage (sniffing is privileged).
+		ops.GET("/nodes/:id/capture/interfaces", captureHandler(rt).Interfaces)
+		ops.POST("/nodes/:id/capture/run", perm(auth.PermNetworkManage), captureHandler(rt).Capture)
+		ops.POST("/nodes/:id/capture/pcap", perm(auth.PermNetworkManage), captureHandler(rt).Pcap)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

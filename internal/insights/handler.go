@@ -1,12 +1,15 @@
 package insights
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/sse"
 )
 
 // Handler serves the three insights endpoints under /api/v1/nodes/:id/insights/*.
@@ -29,6 +32,26 @@ func (h *Handler) System(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, snap)
+}
+
+// SystemStream: GET /api/v1/nodes/:id/insights/system/stream
+// Pushes a fresh system snapshot every few seconds over SSE so the dock's
+// in-place live KPI strip (CPU / memory / load / disk mini-charts) updates
+// continuously without per-tick request setup.
+func (h *Handler) SystemStream(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	produce := func(ctx context.Context) (any, error) {
+		return h.Manager.System(ctx, claims.UserID, nodeID)
+	}
+	first, err := produce(c.Request.Context())
+	if err != nil {
+		respondError(c, err)
+		return
+	}
+	sse.Snapshots(c, 5*time.Second, first, produce)
 }
 
 // Processes: GET /api/v1/nodes/:id/insights/processes?sort=cpu|mem|rss|pid&limit=50

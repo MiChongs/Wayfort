@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/sse"
 )
 
 type DockerHandler struct {
@@ -98,6 +101,27 @@ func (h *DockerHandler) Stats(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"stats": out})
+}
+
+// StatsStream pushes per-container cpu/mem stats over SSE for live mini-charts.
+func (h *DockerHandler) StatsStream(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	produce := func(ctx context.Context) (any, error) {
+		out, err := h.Mgr.Stats(ctx, claims.UserID, nodeID)
+		if err != nil {
+			return nil, err
+		}
+		return gin.H{"stats": out}, nil
+	}
+	first, err := produce(c.Request.Context())
+	if err != nil {
+		respondDockerErr(c, err)
+		return
+	}
+	sse.Snapshots(c, 5*time.Second, first, produce)
 }
 
 func (h *DockerHandler) Top(c *gin.Context) {

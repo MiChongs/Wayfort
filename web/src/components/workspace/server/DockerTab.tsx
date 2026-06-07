@@ -39,6 +39,9 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useConfirm } from "@/components/admin/use-confirm"
 import { usagePctTone } from "@/components/insights/format"
+import { VirtualTable } from "@/components/common/virtual-table"
+import { useSseSnapshot } from "@/lib/hooks/use-sse-snapshot"
+import { dockerStatsStreamURL } from "./_live"
 import { dockerService } from "@/lib/api/services"
 import type { DockerContainer, DockerImage, DockerStats } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
@@ -65,11 +68,11 @@ export function DockerTab({ nodeId, tabId, active }: Props) {
     enabled: active && !!status.data?.available,
     refetchInterval: 15_000,
   })
-  const stats = useQuery({
-    queryKey: ["docker", nodeId, "stats"],
-    queryFn: () => dockerService.stats(nodeId),
+  // Live per-container CPU/mem over SSE — pushed every few seconds without a
+  // per-tick request, so the container table's stats columns tick on their own.
+  const statsUrl = React.useMemo(() => dockerStatsStreamURL(nodeId), [nodeId])
+  const statsStream = useSseSnapshot<{ stats: DockerStats[] }>(statsUrl, {
     enabled: active && !!status.data?.available,
-    refetchInterval: 5_000,
   })
 
   const invalidate = React.useCallback(() => void qc.invalidateQueries({ queryKey: ["docker", nodeId] }), [nodeId, qc])
@@ -98,9 +101,9 @@ export function DockerTab({ nodeId, tabId, active }: Props) {
 
   const statByShort = React.useMemo(() => {
     const m = new Map<string, DockerStats>()
-    for (const s of stats.data?.stats ?? []) m.set(s.id, s)
+    for (const s of statsStream.data?.stats ?? []) m.set(s.id, s)
     return m
-  }, [stats.data])
+  }, [statsStream.data])
 
   if (!active) return null
 
@@ -152,30 +155,36 @@ export function DockerTab({ nodeId, tabId, active }: Props) {
           <TabsTrigger value="volumes" className="text-xs">卷</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="containers" className="flex-1 min-h-0 mt-0 overflow-auto">
-          {(containers.data?.containers?.length ?? 0) === 0 ? (
-            <div className="text-xs text-muted-foreground p-6 text-center">没有容器</div>
-          ) : (
-            <table className="w-full text-xs">
-              <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
-                <tr><th className="text-left px-2 py-1.5">名称</th><th className="text-left px-2 py-1.5">状态</th><th className="text-right px-2 py-1.5">CPU</th><th className="text-right px-2 py-1.5">内存</th><th className="text-right px-2 py-1.5 w-16"></th></tr>
-              </thead>
-              <tbody className="divide-y">
-                {(containers.data?.containers ?? []).map((c) => (
-                  <ContainerRow key={c.id} c={c} tabId={tabId} stat={statByShort.get(c.id.slice(0, 12))} busy={action.isPending}
-                    onAction={async (verb) => {
-                      if (verb === "remove" || verb === "kill") {
-                        if (!(await confirm({ title: `${verbLabel(verb)} ${c.names || c.id.slice(0, 12)}？`, description: verb === "remove" ? "强制删除容器（持久卷不受影响）。" : "立即 SIGKILL 容器进程。", confirmLabel: verbLabel(verb) }))) return
-                      }
-                      action.mutate({ verb, cid: c.id })
-                    }}
-                    onDetail={() => setDetailCid(c.id)}
-                    onRename={async (name) => { try { await dockerService.rename(nodeId, c.id, name); toast.success("已重命名"); invalidate() } catch (e) { toast.error("重命名失败", { description: (e as ApiError)?.message }) } }}
-                  />
-                ))}
-              </tbody>
-            </table>
-          )}
+        <TabsContent value="containers" className="mt-0 flex min-h-0 flex-1 flex-col">
+          <VirtualTable
+            rows={containers.data?.containers ?? []}
+            empty="没有容器"
+            header={
+              <>
+                <th className="px-2 py-1.5 text-left">名称</th>
+                <th className="px-2 py-1.5 text-left">状态</th>
+                <th className="w-12 px-2 py-1.5 text-right">CPU</th>
+                <th className="w-12 px-2 py-1.5 text-right">内存</th>
+                <th className="w-16 px-2 py-1.5 text-right"></th>
+              </>
+            }
+            renderRow={(c) => (
+              <ContainerRow
+                c={c}
+                tabId={tabId}
+                stat={statByShort.get(c.id.slice(0, 12))}
+                busy={action.isPending}
+                onAction={async (verb) => {
+                  if (verb === "remove" || verb === "kill") {
+                    if (!(await confirm({ title: `${verbLabel(verb)} ${c.names || c.id.slice(0, 12)}？`, description: verb === "remove" ? "强制删除容器（持久卷不受影响）。" : "立即 SIGKILL 容器进程。", confirmLabel: verbLabel(verb) }))) return
+                  }
+                  action.mutate({ verb, cid: c.id })
+                }}
+                onDetail={() => setDetailCid(c.id)}
+                onRename={async (name) => { try { await dockerService.rename(nodeId, c.id, name); toast.success("已重命名"); invalidate() } catch (e) { toast.error("重命名失败", { description: (e as ApiError)?.message }) } }}
+              />
+            )}
+          />
         </TabsContent>
 
         <TabsContent value="images" className="flex-1 min-h-0 mt-0 flex flex-col">
@@ -209,8 +218,8 @@ function ContainerRow({ c, tabId, stat, busy, onAction, onDetail, onRename }: {
   const running = c.state === "running"
   const paused = c.state === "paused"
   return (
-    <tr className="hover:bg-accent/40">
-      <td className="px-2 py-1.5 min-w-0">
+    <>
+      <td className="px-2 py-1.5 min-w-0 align-top">
         <button type="button" onClick={onDetail} className="font-medium truncate max-w-[10rem] hover:text-primary text-left block" title={c.command}>{c.names || c.id.slice(0, 12)}</button>
         <div className="text-[10px] text-muted-foreground font-mono truncate max-w-[10rem]">{c.image}</div>
       </td>
@@ -246,7 +255,7 @@ function ContainerRow({ c, tabId, stat, busy, onAction, onDetail, onRename }: {
           </DropdownMenu>
         </div>
       </td>
-    </tr>
+    </>
   )
 }
 
@@ -283,32 +292,34 @@ function ImagesPanel({ nodeId, onMutated, confirm, setPruneOut }: {
         <Input value={pullRef} onChange={(e) => setPullRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && pullRef.trim()) pull.mutate() }} placeholder="拉取镜像，如 nginx:latest" className="h-7 text-xs font-mono flex-1" />
         <Button size="sm" className="h-7 text-xs" disabled={!pullRef.trim() || pull.isPending} onClick={() => pull.mutate()}>{pull.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} 拉取</Button>
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1">
         {images.isLoading ? (
-          <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载镜像…</div>
-        ) : (images.data?.images?.length ?? 0) === 0 ? (
-          <div className="text-xs text-muted-foreground p-6 text-center">没有镜像</div>
+          <div className="inline-flex items-center gap-2 p-6 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> 加载镜像…</div>
         ) : (
-          <table className="w-full text-xs">
-            <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
-              <tr><th className="text-left px-2 py-1.5">仓库:标签</th><th className="text-left px-2 py-1.5">大小</th><th className="text-right px-2 py-1.5 w-8"></th></tr>
-            </thead>
-            <tbody className="divide-y">
-              {(images.data?.images ?? []).map((i: DockerImage) => {
-                const ref = i.repository && i.repository !== "<none>" ? `${i.repository}:${i.tag}` : i.id
-                return (
-                  <tr key={i.id} className="hover:bg-accent/40">
-                    <td className="px-2 py-1.5 font-mono truncate max-w-[14rem]" title={ref}>{i.repository}:{i.tag}</td>
-                    <td className="px-2 py-1.5 font-mono text-muted-foreground">{i.size}</td>
-                    <td className="px-2 py-1.5 text-right">
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="删除镜像" disabled={rmi.isPending}
-                        onClick={async () => { if (await confirm({ title: `删除镜像 ${ref}？`, confirmLabel: "删除" })) rmi.mutate(ref) }}><Trash2 className="w-3 h-3" /></Button>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <VirtualTable
+            rows={images.data?.images ?? []}
+            empty="没有镜像"
+            header={
+              <>
+                <th className="px-2 py-1.5 text-left">仓库:标签</th>
+                <th className="px-2 py-1.5 text-left">大小</th>
+                <th className="w-8 px-2 py-1.5 text-right"></th>
+              </>
+            }
+            renderRow={(i: DockerImage) => {
+              const ref = i.repository && i.repository !== "<none>" ? `${i.repository}:${i.tag}` : i.id
+              return (
+                <>
+                  <td className="max-w-[14rem] truncate px-2 py-1.5 font-mono" title={ref}>{i.repository}:{i.tag}</td>
+                  <td className="px-2 py-1.5 font-mono text-muted-foreground">{i.size}</td>
+                  <td className="px-2 py-1.5 text-right">
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="删除镜像" disabled={rmi.isPending}
+                      onClick={async () => { if (await confirm({ title: `删除镜像 ${ref}？`, confirmLabel: "删除" })) rmi.mutate(ref) }}><Trash2 className="h-3 w-3" /></Button>
+                  </td>
+                </>
+              )
+            }}
+          />
         )}
       </div>
     </>

@@ -10,6 +10,7 @@ import { meService, nodeService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "../protocolMeta"
 import { useWorkspaceStore } from "../useWorkspaceStore"
+import { LiveKpiStrip } from "./_live"
 
 type Props = {
   nodeId: number
@@ -89,6 +90,9 @@ export function NodeInfoTab({ nodeId }: Props) {
           <RefreshCw className={`w-3.5 h-3.5 ${node.isFetching ? "animate-spin" : ""}`} />
         </Button>
       </div>
+
+      {/* Live system telemetry for this node. */}
+      <LiveKpiStrip nodeId={nodeId} />
 
       {/* Quick-launch */}
       <section>

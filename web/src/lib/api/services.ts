@@ -517,6 +517,106 @@ export const networkService = {
     api<{ ok: boolean }>("POST", `/nodes/${nodeId}/network/iface`, { body: { name, up } }),
 }
 
+export type WGPeer = {
+  public_key: string
+  endpoint: string
+  allowed_ips: string[] | null
+  latest_handshake: number
+  transfer_rx: number
+  transfer_tx: number
+  keepalive: string
+}
+export type WGIface = {
+  name: string
+  public_key: string
+  listen_port: number
+  peers: WGPeer[] | null
+}
+export type WGStatus = {
+  available: boolean
+  reason?: string
+  ifaces: WGIface[] | null
+  sampled_at: string
+}
+export const wireguardService = {
+  status: (nodeId: number) => api<WGStatus>("GET", `/nodes/${nodeId}/wireguard`),
+  setIface: (nodeId: number, name: string, up: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/wireguard/iface`, { body: { name, up } }),
+}
+
+export type FileEntry = {
+  name: string
+  type: "dir" | "file" | "link" | "other"
+  size: number
+  mode: string
+  mtime: number
+  owner: string
+}
+export type FileListing = { path: string; entries: FileEntry[] | null }
+export type FileContent = {
+  path: string
+  content: string
+  size: number
+  truncated: boolean
+  binary: boolean
+}
+export const filesService = {
+  list: (nodeId: number, path: string) =>
+    api<FileListing>("GET", `/nodes/${nodeId}/files/list`, { query: { path } }),
+  read: (nodeId: number, path: string) =>
+    api<FileContent>("GET", `/nodes/${nodeId}/files/read`, { query: { path } }),
+  write: (nodeId: number, path: string, content: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/files/write`, { body: { path, content } }),
+  chmod: (nodeId: number, path: string, mode: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/files/chmod`, { body: { path, mode } }),
+}
+
+export type LogLevel = "error" | "warn" | "info" | "other"
+export type LogMatch = { source: string; line: number; text: string; level: LogLevel }
+export type LogLevels = { error: number; warn: number; info: number; other: number }
+export type LogSearchResult = {
+  matches: LogMatch[] | null
+  levels: LogLevels
+  truncated: boolean
+  sampled_at: string
+}
+export type LogSearchQuery = {
+  source: "files" | "journal"
+  pattern: string
+  path?: string
+  unit?: string
+  lines?: number
+}
+export const logAnalyticsService = {
+  search: (nodeId: number, q: LogSearchQuery) =>
+    api<LogSearchResult>("POST", `/nodes/${nodeId}/loganalytics/search`, { body: q }),
+}
+
+export type BackupTools = { rsync: boolean; tar: boolean; restic: boolean; at: boolean }
+export type AtJob = { id: string; when: string; user: string }
+export type BackupInfo = { tools: BackupTools; at_jobs: AtJob[] | null; sampled_at: string }
+export const backupService = {
+  info: (nodeId: number) => api<BackupInfo>("GET", `/nodes/${nodeId}/backup`),
+  snapshot: (nodeId: number, method: "tar" | "rsync", src: string, dest: string) =>
+    api<{ output: string }>("POST", `/nodes/${nodeId}/backup/snapshot`, { body: { method, src, dest } }),
+  addAt: (nodeId: number, when: string, command: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/backup/at`, { body: { when, command } }),
+  removeAt: (nodeId: number, id: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/backup/at/remove`, { body: { id } }),
+}
+
+export type CaptureInterfaces = { has_tcpdump: boolean; ifaces: string[] | null }
+export type CaptureResult = { lines: string[] | null; count: number; sampled_at: string }
+export type PcapResult = { filename: string; base64: string; bytes: number }
+export type CaptureOpts = { iface: string; filter?: string; count?: number; seconds?: number }
+export const captureService = {
+  interfaces: (nodeId: number) => api<CaptureInterfaces>("GET", `/nodes/${nodeId}/capture/interfaces`),
+  run: (nodeId: number, opts: CaptureOpts) =>
+    api<CaptureResult>("POST", `/nodes/${nodeId}/capture/run`, { body: opts }),
+  pcap: (nodeId: number, opts: CaptureOpts) =>
+    api<PcapResult>("POST", `/nodes/${nodeId}/capture/pcap`, { body: opts }),
+}
+
 export const cronService = {
   info: (nodeId: number) => api<CronInfo>("GET", `/nodes/${nodeId}/cron`),
   add: (nodeId: number, entry: string) =>

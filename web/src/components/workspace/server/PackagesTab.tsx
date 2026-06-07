@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useConfirm } from "@/components/admin/use-confirm"
+import { VirtualTable } from "@/components/common/virtual-table"
 import { packageService } from "@/lib/api/services"
 import type { PkgActionResult, PkgVerb } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
@@ -119,31 +120,36 @@ export function PackagesTab({ nodeId, active }: Props) {
             <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy} onClick={() => action.mutate({ verb: "clean" })}>clean</Button>
             {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />}
           </div>
-          <div className="flex-1 overflow-auto">
+          <div className="min-h-0 flex-1">
             {upgradable.isLoading ? (
-              <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div>
-            ) : (upgradable.data?.updates?.length ?? 0) === 0 ? (
-              <div className="text-xs text-muted-foreground p-6 text-center">已是最新</div>
+              <div className="inline-flex items-center gap-2 p-6 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> 加载…</div>
             ) : (
-              <table className="w-full text-[11px]">
-                <tbody className="divide-y divide-border/40">
-                  {upgradable.data!.updates.map((u) => (
-                    <tr key={u.name} className="hover:bg-muted/50">
-                      <td className="px-3 py-1">
-                        <button type="button" className="font-mono hover:text-primary" onClick={() => setDetail(u.name)}>{u.name}</button>
-                        {u.security && <Badge variant="destructive" className="text-[9px] ml-1.5 px-1 h-4">安全</Badge>}
-                      </td>
-                      <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground truncate max-w-[9rem]">{u.current ? `${u.current} → ` : ""}<span className="text-success">{u.candidate}</span></td>
-                      <td className="px-3 py-1 text-right">
-                        <div className="inline-flex gap-0.5">
-                          <Button variant="ghost" size="icon" className="h-6 w-6" title="锁定版本(hold)" disabled={hold.isPending} onClick={() => hold.mutate({ name: u.name, hold: true })}><Lock className="w-3 h-3" /></Button>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" title="升级" disabled={busy} onClick={() => action.mutate({ verb: "upgrade", name: u.name })}><ArrowUpCircle className="w-3 h-3" /></Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <VirtualTable
+                rows={upgradable.data?.updates ?? []}
+                empty="已是最新"
+                header={
+                  <>
+                    <th className="px-3 py-1.5 text-left">软件包</th>
+                    <th className="px-2 py-1.5 text-left">版本</th>
+                    <th className="w-16 px-3 py-1.5 text-right"></th>
+                  </>
+                }
+                renderRow={(u) => (
+                  <>
+                    <td className="px-3 py-1">
+                      <button type="button" className="font-mono hover:text-primary" onClick={() => setDetail(u.name)}>{u.name}</button>
+                      {u.security && <Badge variant="destructive" className="ml-1.5 h-4 px-1 text-[9px]">安全</Badge>}
+                    </td>
+                    <td className="max-w-[9rem] truncate px-2 py-1 font-mono text-[10px] text-muted-foreground">{u.current ? `${u.current} → ` : ""}<span className="text-success">{u.candidate}</span></td>
+                    <td className="px-3 py-1 text-right">
+                      <div className="inline-flex gap-0.5">
+                        <Button variant="ghost" size="icon" className="h-6 w-6" title="锁定版本(hold)" disabled={hold.isPending} onClick={() => hold.mutate({ name: u.name, hold: true })}><Lock className="h-3 w-3" /></Button>
+                        <Button variant="ghost" size="icon" className="h-6 w-6" title="升级" disabled={busy} onClick={() => action.mutate({ verb: "upgrade", name: u.name })}><ArrowUpCircle className="h-3 w-3" /></Button>
+                      </div>
+                    </td>
+                  </>
+                )}
+              />
             )}
           </div>
         </TabsContent>
@@ -179,7 +185,8 @@ function InstalledPanel({ nodeId, active, onDetail, onRemove, busy }: { nodeId: 
   const rows = React.useMemo(() => {
     const all = installed.data?.packages ?? []
     const t = q.trim().toLowerCase()
-    return (t ? all.filter((p) => p.name.toLowerCase().includes(t)) : all).slice(0, 500)
+    // No cap — the list is virtualised, so the full installed set renders fine.
+    return t ? all.filter((p) => p.name.toLowerCase().includes(t)) : all
   }, [installed.data, q])
   return (
     <>
@@ -190,21 +197,28 @@ function InstalledPanel({ nodeId, active, onDetail, onRemove, busy }: { nodeId: 
         </div>
         <Badge variant="outline" className="text-[10px]">{installed.data?.packages?.length ?? 0}</Badge>
       </div>
-      <div className="flex-1 overflow-auto">
+      <div className="min-h-0 flex-1">
         {installed.isLoading ? (
-          <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div>
+          <div className="inline-flex items-center gap-2 p-6 text-xs text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> 加载…</div>
         ) : (
-          <table className="w-full text-[11px]">
-            <tbody className="divide-y divide-border/40">
-              {rows.map((p) => (
-                <tr key={p.name} className="hover:bg-muted/50">
-                  <td className="px-3 py-1"><button type="button" className="font-mono hover:text-primary" onClick={() => onDetail(p.name)}>{p.name}</button></td>
-                  <td className="px-2 py-1 font-mono text-[10px] text-muted-foreground truncate max-w-[9rem]">{p.version}</td>
-                  <td className="px-3 py-1 text-right"><Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="卸载" disabled={busy} onClick={() => onRemove(p.name)}><Trash2 className="w-3 h-3" /></Button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <VirtualTable
+            rows={rows}
+            empty="无已装包"
+            header={
+              <>
+                <th className="px-3 py-1.5 text-left">软件包</th>
+                <th className="px-2 py-1.5 text-left">版本</th>
+                <th className="w-12 px-3 py-1.5 text-right"></th>
+              </>
+            }
+            renderRow={(p) => (
+              <>
+                <td className="px-3 py-1"><button type="button" className="font-mono hover:text-primary" onClick={() => onDetail(p.name)}>{p.name}</button></td>
+                <td className="max-w-[9rem] truncate px-2 py-1 font-mono text-[10px] text-muted-foreground">{p.version}</td>
+                <td className="px-3 py-1 text-right"><Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="卸载" disabled={busy} onClick={() => onRemove(p.name)}><Trash2 className="h-3 w-3" /></Button></td>
+              </>
+            )}
+          />
         )}
       </div>
     </>
@@ -229,27 +243,31 @@ function SearchPanel({ nodeId, busy, onInstall, onRemove, onDetail }: { nodeId: 
           <div className="text-xs text-muted-foreground p-6 text-center">输入关键字搜索可安装的软件包。</div>
         ) : search.isLoading ? (
           <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 搜索…</div>
-        ) : (search.data?.packages?.length ?? 0) === 0 ? (
-          <div className="text-xs text-muted-foreground p-6 text-center">无结果</div>
         ) : (
-          <table className="w-full text-[11px]">
-            <tbody className="divide-y divide-border/40">
-              {search.data!.packages.map((p) => (
-                <tr key={p.name} className="hover:bg-muted/50">
-                  <td className="px-3 py-1 align-top">
-                    <button type="button" className="font-mono font-medium hover:text-primary" onClick={() => onDetail(p.name)}>{p.name}</button>
-                    {p.summary && <div className="text-[10px] text-muted-foreground truncate max-w-[16rem]" title={p.summary}>{p.summary}</div>}
-                  </td>
-                  <td className="px-3 py-1 text-right align-top w-16">
-                    <div className="inline-flex gap-0.5">
-                      <Button variant="ghost" size="icon" className="h-6 w-6" title="安装" disabled={busy} onClick={() => onInstall(p.name)}><Download className="w-3 h-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="卸载" disabled={busy} onClick={() => onRemove(p.name)}><Trash2 className="w-3 h-3" /></Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <VirtualTable
+            rows={search.data?.packages ?? []}
+            empty="无结果"
+            header={
+              <>
+                <th className="px-3 py-1.5 text-left">软件包</th>
+                <th className="w-16 px-3 py-1.5 text-right"></th>
+              </>
+            }
+            renderRow={(p) => (
+              <>
+                <td className="px-3 py-1 align-top">
+                  <button type="button" className="font-mono font-medium hover:text-primary" onClick={() => onDetail(p.name)}>{p.name}</button>
+                  {p.summary && <div className="max-w-[16rem] truncate text-[10px] text-muted-foreground" title={p.summary}>{p.summary}</div>}
+                </td>
+                <td className="w-16 px-3 py-1 text-right align-top">
+                  <div className="inline-flex gap-0.5">
+                    <Button variant="ghost" size="icon" className="h-6 w-6" title="安装" disabled={busy} onClick={() => onInstall(p.name)}><Download className="h-3 w-3" /></Button>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="卸载" disabled={busy} onClick={() => onRemove(p.name)}><Trash2 className="h-3 w-3" /></Button>
+                  </div>
+                </td>
+              </>
+            )}
+          />
         )}
       </div>
     </>

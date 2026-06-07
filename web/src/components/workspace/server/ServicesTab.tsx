@@ -40,6 +40,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { useConfirm } from "@/components/admin/use-confirm"
+import { VirtualTable } from "@/components/common/virtual-table"
 import { cn } from "@/lib/utils"
 import { systemdService } from "@/lib/api/services"
 import type { SystemdUnit, SystemdVerb } from "@/lib/api/types"
@@ -240,27 +241,26 @@ export function ServicesTab({ nodeId, active }: Props) {
         ) : filtered.length === 0 ? (
           <div className="text-xs text-muted-foreground p-6 text-center">无匹配服务</div>
         ) : (
-          <table className="w-full text-xs">
-            <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
-              <tr>
-                <th className="text-left px-2 py-1.5">服务</th>
-                <th className="text-left px-2 py-1.5 w-16">状态</th>
-                <th className="text-left px-2 py-1.5 w-14">自启</th>
-                <th className="text-right px-2 py-1.5 w-24">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {filtered.map((u) => (
-                <UnitRow
-                  key={u.name}
-                  u={u}
-                  busy={action.isPending}
-                  onAction={run}
-                  onDetail={() => setDetailUnit(u.name)}
-                />
-              ))}
-            </tbody>
-          </table>
+          <VirtualTable
+            rows={filtered}
+            empty="无匹配服务"
+            header={
+              <>
+                <th className="px-2 py-1.5 text-left">服务</th>
+                <th className="w-16 px-2 py-1.5 text-left">状态</th>
+                <th className="w-14 px-2 py-1.5 text-left">自启</th>
+                <th className="w-24 px-2 py-1.5 text-right">操作</th>
+              </>
+            }
+            renderRow={(u) => (
+              <UnitRow
+                u={u}
+                busy={action.isPending}
+                onAction={run}
+                onDetail={() => setDetailUnit(u.name)}
+              />
+            )}
+          />
         )}
       </div>
 
@@ -282,12 +282,12 @@ function UnitRow({
 }) {
   const running = u.active === "active"
   return (
-    <tr className="hover:bg-accent/40 align-top">
-      <td className="px-2 py-1.5 min-w-0">
+    <>
+      <td className="min-w-0 px-2 py-1.5 align-top">
         <button
           type="button"
           onClick={onDetail}
-          className="font-medium truncate max-w-[12rem] text-left hover:text-primary block"
+          className="block max-w-[12rem] truncate text-left font-medium hover:text-primary"
           title={u.name}
         >
           {u.name}
@@ -368,7 +368,7 @@ function UnitRow({
           </DropdownMenu>
         </div>
       </td>
-    </tr>
+    </>
   )
 }
 

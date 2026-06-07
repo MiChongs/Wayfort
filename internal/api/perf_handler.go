@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/perf"
+	"github.com/michongs/jumpserver-anonymous/internal/sse"
 )
 
 // PerfHandler exposes read-only performance diagnostics. All endpoints require
@@ -32,6 +35,26 @@ func (h *PerfHandler) Snapshot(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, snap)
+}
+
+// Stream pushes a fresh performance snapshot every few seconds over SSE so the
+// dock's live mini-charts update without the client re-establishing a request
+// each tick. The first snapshot is fetched synchronously so hard failures keep
+// their proper HTTP status.
+func (h *PerfHandler) Stream(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	produce := func(ctx context.Context) (any, error) {
+		return h.Mgr.Snapshot(ctx, claims.UserID, nodeID)
+	}
+	first, err := produce(c.Request.Context())
+	if err != nil {
+		respondPerfErr(c, err)
+		return
+	}
+	sse.Snapshots(c, 5*time.Second, first, produce)
 }
 
 func (h *PerfHandler) Dmesg(c *gin.Context) {

@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/process"
+	"github.com/michongs/jumpserver-anonymous/internal/sse"
 )
 
 // ProcessHandler exposes the ops-dock process surface. Reads require
@@ -35,6 +38,27 @@ func (h *ProcessHandler) List(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, list)
+}
+
+// Stream pushes a fresh process list every few seconds over SSE. The remote
+// `ps` is re-run server-side over the pooled SSH connection, so the client gets
+// pushed updates without per-tick request setup. The first list is fetched
+// synchronously to preserve proper HTTP error codes.
+func (h *ProcessHandler) Stream(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	sort := c.DefaultQuery("sort", "cpu")
+	produce := func(ctx context.Context) (any, error) {
+		return h.Mgr.List(ctx, claims.UserID, nodeID, sort)
+	}
+	first, err := produce(c.Request.Context())
+	if err != nil {
+		respondProcessErr(c, err)
+		return
+	}
+	sse.Snapshots(c, 3*time.Second, first, produce)
 }
 
 func (h *ProcessHandler) Detail(c *gin.Context) {

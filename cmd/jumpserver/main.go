@@ -50,6 +50,10 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/hardware"
 	"github.com/michongs/jumpserver-anonymous/internal/kernel"
 	"github.com/michongs/jumpserver-anonymous/internal/logs"
+	"github.com/michongs/jumpserver-anonymous/internal/backup"
+	"github.com/michongs/jumpserver-anonymous/internal/capture"
+	"github.com/michongs/jumpserver-anonymous/internal/files"
+	"github.com/michongs/jumpserver-anonymous/internal/loganalytics"
 	"github.com/michongs/jumpserver-anonymous/internal/nettools"
 	"github.com/michongs/jumpserver-anonymous/internal/perf"
 	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
@@ -60,6 +64,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
 	"github.com/michongs/jumpserver-anonymous/internal/systemd"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	"github.com/michongs/jumpserver-anonymous/internal/wireguard"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
 	"github.com/michongs/jumpserver-anonymous/pkg/kms"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
@@ -774,6 +779,26 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
 	})
 	routes.SecAudit = api.NewSecAuditHandler(secauditMgr)
+	wireguardMgr := wireguard.NewManager(wireguard.Config{Enabled: true}, wireguard.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.WireGuard = api.NewWireGuardHandler(wireguardMgr)
+	filesMgr := files.NewManager(files.Config{Enabled: true}, files.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Files = api.NewFilesHandler(filesMgr)
+	loganalyticsMgr := loganalytics.NewManager(loganalytics.Config{Enabled: true}, loganalytics.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, SSH: sshDeps,
+	})
+	routes.LogAnalytics = api.NewLogAnalyticsHandler(loganalyticsMgr)
+	backupMgr := backup.NewManager(backup.Config{Enabled: true}, backup.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Backup = api.NewBackupHandler(backupMgr)
+	captureMgr := capture.NewManager(capture.Config{Enabled: true}, capture.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Capture = api.NewCaptureHandler(captureMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{
