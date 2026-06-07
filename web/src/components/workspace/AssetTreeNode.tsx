@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { Star } from "lucide-react"
+import { useDraggable } from "@dnd-kit/core"
 import { toast } from "@/components/ui/sonner"
 import type { Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
@@ -68,6 +69,12 @@ export function LeafContent({
   const Icon = meta.icon
   const open = useWorkspaceStore((s) => s.open)
   const setSubTab = useWorkspaceStore((s) => s.setSubTab)
+  // Drag this leaf onto the session area (handled in WorkspaceShell) to open
+  // it. PointerSensor's 6px threshold keeps double-click-to-open working.
+  const { listeners, setNodeRef, isDragging } = useDraggable({
+    id: leaf.id,
+    data: { node: leaf.node },
+  })
 
   const openWithInfo = () => {
     const id = open({
@@ -91,12 +98,15 @@ export function LeafContent({
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <button
+          ref={setNodeRef}
           type="button"
+          {...listeners}
           onDoubleClick={() => onOpenTab(leaf.node, defaultProto, defaultChoice?.rdpBackend)}
-          title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接`}
+          title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接 · 可拖到右侧打开`}
           className={cn(
             "group/leaf flex w-full items-center gap-2 py-1 pr-1 text-sm",
             leaf.node.disabled && "opacity-50",
+            isDragging && "opacity-50",
           )}
         >
           <Icon className={cn("h-3.5 w-3.5 shrink-0", meta.tint)} />

@@ -126,7 +126,7 @@ export function AssetTree({ onOpenTab }: Props) {
         </div>
       </div>
       <AssetTreeViewSwitcher value={treeView} onChange={setTreeView} />
-      <div className="flex-1 min-h-0 overflow-y-auto py-1 px-1">
+      <div className="flex-1 min-h-0 overflow-hidden py-1 px-1">
         {loading ? (
           <div className="text-xs text-muted-foreground flex items-center gap-1.5 px-3 py-2">
             <Loader2 className="w-3.5 h-3.5 animate-spin" /> 加载资产…
@@ -140,6 +140,7 @@ export function AssetTree({ onOpenTab }: Props) {
           // view or search changes — matching the old per-folder defaultOpen.
           <TreeList<TreeItem>
             key={`${treeView}:${q}`}
+            virtualize
             nodes={tree}
             getId={(it) => it.id}
             getChildren={(it) => (it.type === "folder" ? it.children : undefined)}

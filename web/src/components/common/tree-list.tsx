@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { ChevronRight } from "lucide-react"
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso"
 import { cn } from "@/lib/utils"
 
 // TreeList — a custom, dependency-free hierarchical list. It owns the structural
@@ -40,6 +41,10 @@ export interface TreeListProps<T> {
   className?: string
   rowClassName?: (node: T, meta: TreeRowMeta) => string
   emptyHint?: React.ReactNode
+  /** Windowed rendering for large flat trees (react-virtuoso). The host must
+   *  give this component a bounded height. Not used with onMove drag-reparent,
+   *  so enable it only on read-only trees (e.g. the workspace asset tree). */
+  virtualize?: boolean
 }
 
 const ROOT = "__root__"
@@ -61,6 +66,7 @@ export function TreeList<T>({
   className,
   rowClassName,
   emptyHint,
+  virtualize = false,
 }: TreeListProps<T>) {
   const controlled = expandedIds !== undefined
   const [internalExpanded, setInternalExpanded] = React.useState<Set<string>>(
@@ -126,9 +132,24 @@ export function TreeList<T>({
     return ids
   }, [dragId, nodes, getId, getChildren])
 
+  const virtuosoRef = React.useRef<VirtuosoHandle>(null)
+
   function focusRow(id: string | null) {
     setFocusId(id)
-    if (id) rowRefs.current.get(id)?.focus()
+    if (!id) return
+    const el = rowRefs.current.get(id)
+    if (el) {
+      el.focus()
+      return
+    }
+    // Virtualized: the target row may be unmounted — scroll it into view first.
+    if (virtualize) {
+      const idx = flat.findIndex((r) => r.id === id)
+      if (idx >= 0) {
+        virtuosoRef.current?.scrollToIndex({ index: idx, align: "center" })
+        setTimeout(() => rowRefs.current.get(id)?.focus(), 60)
+      }
+    }
   }
 
   function onKeyDown(e: React.KeyboardEvent, idx: number) {
@@ -172,10 +193,137 @@ export function TreeList<T>({
   const dndActive = !!onMove
   const empty = flat.length === 0
 
+  // One row's full chrome (treeitem div + indent guides + chevron + content).
+  // Extracted so the virtualized and plain code paths render identically.
+  const renderTreeRow = (row: (typeof flat)[number], idx: number): React.ReactNode => {
+    const isExpanded = expanded.has(row.id)
+    const meta: TreeRowMeta = {
+      depth: row.depth,
+      expanded: isExpanded,
+      hasChildren: row.hasChildren,
+      toggle: () => toggle(row.id),
+      focused: focusId === row.id,
+      dragging: dragId === row.id,
+      dropTarget: overId === row.id,
+    }
+    const canDropHere = dndActive && dragId !== null && !blockedDrop.has(row.id)
+    const draggable = dndActive && (canDrag ? canDrag(row.node) : true)
+    const pad = 6 + row.depth * indent
+
+    return (
+      <div
+        key={row.id}
+        ref={(el) => {
+          if (el) rowRefs.current.set(row.id, el)
+          else rowRefs.current.delete(row.id)
+        }}
+        role="treeitem"
+        aria-expanded={row.hasChildren ? isExpanded : undefined}
+        aria-level={row.depth + 1}
+        tabIndex={focusId === row.id || (focusId === null && idx === 0) ? 0 : -1}
+        draggable={draggable}
+        onFocus={() => setFocusId(row.id)}
+        onKeyDown={(e) => onKeyDown(e, idx)}
+        onDoubleClick={() => onActivate?.(row.node)}
+        onDragStart={
+          draggable
+            ? (e) => {
+                e.stopPropagation()
+                setDragId(row.id)
+                e.dataTransfer.effectAllowed = "move"
+                try {
+                  e.dataTransfer.setData("text/plain", row.id)
+                } catch {
+                  /* some browsers require a payload */
+                }
+              }
+            : undefined
+        }
+        onDragEnd={() => {
+          setDragId(null)
+          setOverId(null)
+        }}
+        onDragOver={
+          dndActive
+            ? (e) => {
+                if (!canDropHere) return
+                e.preventDefault()
+                e.stopPropagation()
+                setOverId(row.id)
+              }
+            : undefined
+        }
+        onDragLeave={
+          dndActive
+            ? (e) => {
+                e.stopPropagation()
+                setOverId((cur) => (cur === row.id ? null : cur))
+              }
+            : undefined
+        }
+        onDrop={
+          dndActive
+            ? (e) => {
+                if (!canDropHere) return
+                e.preventDefault()
+                e.stopPropagation()
+                if (dragId) onMove?.(dragId, row.id)
+                setDragId(null)
+                setOverId(null)
+              }
+            : undefined
+        }
+        className={cn(
+          "group/tree relative flex items-center rounded-md outline-none transition-colors",
+          "focus-visible:ring-2 focus-visible:ring-ring/40",
+          meta.dragging && "opacity-50",
+          meta.dropTarget && canDropHere
+            ? "bg-primary/10 ring-1 ring-primary/40"
+            : "hover:bg-accent/60",
+          rowClassName?.(row.node, meta),
+        )}
+        style={{ paddingLeft: pad }}
+      >
+        {/* Indent guides (one vertical line per ancestor level). */}
+        {showGuides &&
+          Array.from({ length: row.depth }).map((_, k) => (
+            <span
+              key={k}
+              aria-hidden
+              className="pointer-events-none absolute inset-y-0 border-l border-border/40"
+              style={{ left: 6 + k * indent + 7 }}
+            />
+          ))}
+
+        {/* Chevron (or a spacer to keep leaf rows aligned). */}
+        {row.hasChildren ? (
+          <button
+            type="button"
+            tabIndex={-1}
+            onClick={(e) => {
+              e.stopPropagation()
+              toggle(row.id)
+            }}
+            className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
+            aria-label={isExpanded ? "折叠" : "展开"}
+          >
+            <ChevronRight
+              className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")}
+            />
+          </button>
+        ) : (
+          <span className="h-5 w-5 shrink-0" />
+        )}
+
+        <div className="min-w-0 flex-1">{renderRow(row.node, meta)}</div>
+      </div>
+    )
+  }
+
   return (
     <div
       role="tree"
-      className={cn("select-none", className)}
+      className={cn("select-none", virtualize && "h-full", className)}
       onDragOver={
         dndActive
           ? (e) => {
@@ -223,130 +371,17 @@ export function TreeList<T>({
 
       {empty && emptyHint}
 
-      {flat.map((row, idx) => {
-        const isExpanded = expanded.has(row.id)
-        const meta: TreeRowMeta = {
-          depth: row.depth,
-          expanded: isExpanded,
-          hasChildren: row.hasChildren,
-          toggle: () => toggle(row.id),
-          focused: focusId === row.id,
-          dragging: dragId === row.id,
-          dropTarget: overId === row.id,
-        }
-        const canDropHere = dndActive && dragId !== null && !blockedDrop.has(row.id)
-        const draggable = dndActive && (canDrag ? canDrag(row.node) : true)
-        const pad = 6 + row.depth * indent
-
-        return (
-          <div
-            key={row.id}
-            ref={(el) => {
-              if (el) rowRefs.current.set(row.id, el)
-              else rowRefs.current.delete(row.id)
-            }}
-            role="treeitem"
-            aria-expanded={row.hasChildren ? isExpanded : undefined}
-            aria-level={row.depth + 1}
-            tabIndex={focusId === row.id || (focusId === null && idx === 0) ? 0 : -1}
-            draggable={draggable}
-            onFocus={() => setFocusId(row.id)}
-            onKeyDown={(e) => onKeyDown(e, idx)}
-            onDoubleClick={() => onActivate?.(row.node)}
-            onDragStart={
-              draggable
-                ? (e) => {
-                    e.stopPropagation()
-                    setDragId(row.id)
-                    e.dataTransfer.effectAllowed = "move"
-                    try {
-                      e.dataTransfer.setData("text/plain", row.id)
-                    } catch {
-                      /* some browsers require a payload */
-                    }
-                  }
-                : undefined
-            }
-            onDragEnd={() => {
-              setDragId(null)
-              setOverId(null)
-            }}
-            onDragOver={
-              dndActive
-                ? (e) => {
-                    if (!canDropHere) return
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setOverId(row.id)
-                  }
-                : undefined
-            }
-            onDragLeave={
-              dndActive
-                ? (e) => {
-                    e.stopPropagation()
-                    setOverId((cur) => (cur === row.id ? null : cur))
-                  }
-                : undefined
-            }
-            onDrop={
-              dndActive
-                ? (e) => {
-                    if (!canDropHere) return
-                    e.preventDefault()
-                    e.stopPropagation()
-                    if (dragId) onMove?.(dragId, row.id)
-                    setDragId(null)
-                    setOverId(null)
-                  }
-                : undefined
-            }
-            className={cn(
-              "group/tree relative flex items-center rounded-md outline-none transition-colors",
-              "focus-visible:ring-2 focus-visible:ring-ring/40",
-              meta.dragging && "opacity-50",
-              meta.dropTarget && canDropHere
-                ? "bg-primary/10 ring-1 ring-primary/40"
-                : "hover:bg-accent/60",
-              rowClassName?.(row.node, meta),
-            )}
-            style={{ paddingLeft: pad }}
-          >
-            {/* Indent guides (one vertical line per ancestor level). */}
-            {showGuides &&
-              Array.from({ length: row.depth }).map((_, k) => (
-                <span
-                  key={k}
-                  aria-hidden
-                  className="pointer-events-none absolute inset-y-0 border-l border-border/40"
-                  style={{ left: 6 + k * indent + 7 }}
-                />
-              ))}
-
-            {/* Chevron (or a spacer to keep leaf rows aligned). */}
-            {row.hasChildren ? (
-              <button
-                type="button"
-                tabIndex={-1}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  toggle(row.id)
-                }}
-                className="grid h-5 w-5 shrink-0 place-items-center rounded text-muted-foreground hover:bg-foreground/10 hover:text-foreground"
-                aria-label={isExpanded ? "折叠" : "展开"}
-              >
-                <ChevronRight
-                  className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")}
-                />
-              </button>
-            ) : (
-              <span className="h-5 w-5 shrink-0" />
-            )}
-
-            <div className="min-w-0 flex-1">{renderRow(row.node, meta)}</div>
-          </div>
-        )
-      })}
+      {virtualize ? (
+        <Virtuoso
+          ref={virtuosoRef}
+          data={flat}
+          computeItemKey={(_, row) => row.id}
+          itemContent={(idx, row) => renderTreeRow(row, idx)}
+          style={{ height: "100%" }}
+        />
+      ) : (
+        flat.map((row, idx) => renderTreeRow(row, idx))
+      )}
     </div>
   )
 }
