@@ -31,6 +31,12 @@ import (
 // after Launch returns.
 type AnonymousLauncher interface {
 	Launch(ctx context.Context, sessionID string, cols, rows int) (Backend, string, error)
+	// TTL is the sandbox lifetime; the gateway arms a server-side cutoff with
+	// it so an idle-but-connected session is still destroyed on schedule.
+	TTL() time.Duration
+	// Destroy reclaims a sandbox container by id. Called when the session ends
+	// so the container does not outlive its single use.
+	Destroy(ctx context.Context, containerID string)
 }
 
 type Gateway struct {
@@ -347,6 +353,11 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 	if err != nil {
 		return err
 	}
+	// A sandbox is single-use: reclaim its container the instant the session
+	// ends, whatever the cause (clean disconnect, error, or TTL cutoff). The
+	// janitor stays the safety net for orphans a gateway crash would leave.
+	defer g.anonymous.Destroy(context.Background(), containerID)
+
 	rec, rerr := audit.NewRecorder(sessionID, g.storage, g.recorder, cols, rows, g.logger)
 	if rerr != nil {
 		g.logger.Warn("recorder init failed", zap.Error(rerr))
@@ -386,6 +397,19 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 	defer scancel()
 	ls := g.registerLive(sessionID, scancel)
 	defer g.unregisterLive(sessionID)
+
+	// Server-side TTL cutoff — authoritative. The browser shows a courtesy
+	// countdown, but the sandbox's "auto-destroy after TTL" guarantee can't
+	// depend on a client timer: arm a hard deadline here that closes the
+	// socket with a clear reason and tears the session down. The deferred
+	// Destroy above then reclaims the container.
+	if ttl := g.anonymous.TTL(); ttl > 0 {
+		timer := time.AfterFunc(ttl, func() {
+			_ = conn.Close(websocket.StatusPolicyViolation, "sandbox expired")
+			scancel()
+		})
+		defer timer.Stop()
+	}
 
 	runErr := sess.Run(sctx)
 	g.recordEnd(row, sess, claims, runErr, ls.terminated.Load())

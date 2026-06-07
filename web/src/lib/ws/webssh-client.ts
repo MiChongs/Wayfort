@@ -49,8 +49,12 @@ export class WebSSHConnection {
 
   constructor(private path: string, private handlers: WSSshHandler) {}
 
-  open(query: Record<string, string | number | undefined> = {}) {
-    const token = getAccessToken() ?? ""
+  // `tokenOverride` lets a caller authenticate the socket with a token it holds
+  // in memory instead of the persisted login token — the anonymous sandbox
+  // passes its ephemeral JWT this way so it never touches (or clobbers) a real
+  // logged-in session's localStorage.
+  open(query: Record<string, string | number | undefined> = {}, tokenOverride?: string) {
+    const token = tokenOverride ?? getAccessToken() ?? ""
     const qs = new URLSearchParams({ token, ...stringify(query) })
     const ws = new WebSocket(`${WS_BASE}/api/v1${this.path}?${qs}`, ["webssh.v1"])
     this.ws = ws

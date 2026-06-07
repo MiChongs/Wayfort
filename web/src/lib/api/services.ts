@@ -69,6 +69,8 @@ import type {
   AuditEvent,
   DriveInfo,
   DriveEntry,
+  AnonymousSession,
+  SandboxSpec,
   Snippet,
   TerminalProfileRow,
   TokenPair,
@@ -105,7 +107,12 @@ export const authService = {
   refresh: (refresh_token: string) =>
     api<TokenPair>("POST", "/auth/refresh", { body: { refresh_token } }),
   logout: () => api<void>("POST", "/auth/logout"),
-  anonymous: () => api<TokenPair>("POST", "/auth/anonymous"),
+  // Token-free probe: is the sandbox enabled, and what are its limits? Lets the
+  // landing render honest spec chips (and a disabled state) before committing.
+  sandboxInfo: () => api<{ enabled: boolean; sandbox: SandboxSpec }>("GET", "/auth/anonymous/info"),
+  // Mints a throwaway anonymous token and returns it alongside the sandbox
+  // spec (TTL + resource caps) the public sandbox page renders.
+  anonymous: () => api<AnonymousSession>("POST", "/auth/anonymous"),
   providers: () => api<{ providers: { name: string; display_name: string }[] }>("GET", "/auth/providers"),
 }
 

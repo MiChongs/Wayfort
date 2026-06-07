@@ -51,6 +51,19 @@ type Props = {
   port?: number
   onStatusChange?: (status: Status) => void
   onOpenSftp?: () => void
+  // ----- sandbox / non-node reuse hooks (Plan: anonymous Docker sandbox) -----
+  // When set, overrides the node-derived WebSocket path. The anonymous sandbox
+  // passes "/ws/ssh/anonymous" so the same polished terminal drives a container
+  // shell with no node behind it.
+  wsPath?: string
+  // Authenticates the socket with this token instead of the persisted login
+  // token — keeps an anonymous session isolated from any real session.
+  wsToken?: string
+  // Overrides the host label printed in the welcome banner.
+  bannerLabel?: string
+  // Hides node-bound affordances (command history, snippets) that have no
+  // meaning for an anonymous, node-less sandbox.
+  sandbox?: boolean
 }
 
 // xterm renders into its own DOM under our container; this scoped CSS gives
@@ -111,6 +124,10 @@ export function WebSSHTerminal({
   port,
   onStatusChange,
   onOpenSftp,
+  wsPath,
+  wsToken,
+  bannerLabel,
+  sandbox,
 }: Props) {
   const { settings, update, reset } = useTerminalSettings()
   const { resolvedTheme } = useTheme()
@@ -455,12 +472,15 @@ export function WebSSHTerminal({
       }
 
       // ---- WebSocket -----------------------------------------------------
+      // An explicit wsPath (anonymous sandbox) wins; otherwise derive it from
+      // the node + protocol the way every node-bound session does.
       const path =
-        protocol === "ssh"
+        wsPath ??
+        (protocol === "ssh"
           ? `/ws/ssh/${nodeId}`
           : protocol === "telnet"
             ? `/ws/telnet/${nodeId}`
-            : `/ws/dbcli/${nodeId}`
+            : `/ws/dbcli/${nodeId}`)
 
       // Reset lifecycle counters on every (re)connect.
       userClosedRef.current = false
@@ -533,7 +553,7 @@ export function WebSSHTerminal({
           // newlines, so write (not writeln) keeps it self-contained.
           term.write(
             renderConnectBanner(term.cols, {
-              host: host || displayName || `node #${nodeId}`,
+              host: bannerLabel || host || displayName || `node #${nodeId}`,
               user: username || "",
               protocol,
               t,
@@ -556,7 +576,10 @@ export function WebSSHTerminal({
             return
           }
           // Unexpected drop → auto-reconnect (if enabled) or surface the error.
-          if (settingsRef.current.autoReconnect) {
+          // Sandbox never auto-reconnects: a reconnect would spin up a brand
+          // new throwaway container behind the user's back. The sandbox console
+          // owns the explicit "再开一个" relaunch instead.
+          if (!sandbox && settingsRef.current.autoReconnect) {
             scheduleReconnect(m)
             return
           }
@@ -572,7 +595,7 @@ export function WebSSHTerminal({
           tc.pushLatency(ms)
         },
       })
-      conn.open({ cols: term.cols, rows: term.rows })
+      conn.open({ cols: term.cols, rows: term.rows }, wsToken)
       connRef.current = conn
 
       term.onData((d) => conn.sendInput(d))
@@ -596,13 +619,13 @@ export function WebSSHTerminal({
           setPaletteOpen(true)
           return false
         }
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "i") {
-          // Phase 11 — open snippets sheet
+        if (!sandbox && (e.ctrlKey || e.metaKey) && e.shiftKey && k === "i") {
+          // Phase 11 — open snippets sheet (node-bound; off in sandbox)
           setSnippetsOpen(true)
           return false
         }
-        if ((e.ctrlKey || e.metaKey) && e.shiftKey && k === "h") {
-          // Phase 11 — open command history sheet
+        if (!sandbox && (e.ctrlKey || e.metaKey) && e.shiftKey && k === "h") {
+          // Phase 11 — open command history sheet (node-bound; off in sandbox)
           setHistoryOpen(true)
           return false
         }
@@ -676,7 +699,7 @@ export function WebSSHTerminal({
       serializeRef.current = null
       handleRef.current = null
     }
-  }, [protocol, nodeId, bumpKey, scheduleFit, sysIsDark]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocol, nodeId, wsPath, wsToken, bumpKey, scheduleFit, sysIsDark]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-run incremental search whenever query/options change so the result
   // counter updates without requiring Enter.
@@ -882,8 +905,8 @@ export function WebSSHTerminal({
           onReconnect={handleReconnect}
           onDisconnect={handleDisconnect}
           onOpenSftp={onOpenSftp}
-          onOpenSnippets={() => setSnippetsOpen(true)}
-          onOpenHistory={() => setHistoryOpen(true)}
+          onOpenSnippets={sandbox ? undefined : () => setSnippetsOpen(true)}
+          onOpenHistory={sandbox ? undefined : () => setHistoryOpen(true)}
           searchTrigger={searchAnchorRef}
         />
 
@@ -999,28 +1022,32 @@ export function WebSSHTerminal({
           onCancel={() => setPasteConfirm(null)}
         />
 
-        <TerminalSnippetsSheet
-          open={snippetsOpen}
-          onOpenChange={setSnippetsOpen}
-          contextVars={{
-            host: host ?? "",
-            port: String(port ?? ""),
-            user: username ?? "",
-            node: displayName ?? "",
-            node_id: String(nodeId),
-          }}
-          onInsert={(resolved) => {
-            connRef.current?.sendInput(resolved)
-          }}
-        />
-        <TerminalHistorySheet
-          open={historyOpen}
-          onOpenChange={setHistoryOpen}
-          nodeId={nodeId}
-          onInsert={(cmd) => {
-            connRef.current?.sendInput(cmd)
-          }}
-        />
+        {!sandbox && (
+          <TerminalSnippetsSheet
+            open={snippetsOpen}
+            onOpenChange={setSnippetsOpen}
+            contextVars={{
+              host: host ?? "",
+              port: String(port ?? ""),
+              user: username ?? "",
+              node: displayName ?? "",
+              node_id: String(nodeId),
+            }}
+            onInsert={(resolved) => {
+              connRef.current?.sendInput(resolved)
+            }}
+          />
+        )}
+        {!sandbox && (
+          <TerminalHistorySheet
+            open={historyOpen}
+            onOpenChange={setHistoryOpen}
+            nodeId={nodeId}
+            onInsert={(cmd) => {
+              connRef.current?.sendInput(cmd)
+            }}
+          />
+        )}
       </div>
     </TooltipProvider>
   )

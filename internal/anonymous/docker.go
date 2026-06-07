@@ -138,14 +138,22 @@ func (l *DockerLauncher) Remove(ctx context.Context, containerID string) error {
 	return l.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{Force: true, RemoveVolumes: true})
 }
 
-func (l *DockerLauncher) ListManaged(ctx context.Context) ([]string, error) {
+// ManagedContainer is a reaped-candidate the janitor reconciles against Redis.
+// SessionID is read back from the label we stamp at Create time so the janitor
+// can attribute the teardown in the audit trail.
+type ManagedContainer struct {
+	ID        string
+	SessionID string
+}
+
+func (l *DockerLauncher) ListManaged(ctx context.Context) ([]ManagedContainer, error) {
 	cl, err := l.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: jumpserverFilter()})
 	if err != nil {
 		return nil, err
 	}
-	out := make([]string, 0, len(cl))
+	out := make([]ManagedContainer, 0, len(cl))
 	for _, c := range cl {
-		out = append(out, c.ID)
+		out = append(out, ManagedContainer{ID: c.ID, SessionID: c.Labels["jumpserver.session"]})
 	}
 	return out, nil
 }

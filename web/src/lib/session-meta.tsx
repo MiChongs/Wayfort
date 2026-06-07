@@ -88,6 +88,7 @@ const AUDIT_META: Record<string, AuditMeta> = {
   "graphical.start": { label: "桌面接入", icon: Monitor, group: "lifecycle", tone: "info" },
   "graphical.error": { label: "桌面错误", icon: AlertTriangle, group: "lifecycle", tone: "destructive" },
   "anonymous.launch": { label: "沙箱启动", icon: Box, group: "lifecycle", tone: "warning" },
+  "anonymous.reap": { label: "沙箱销毁", icon: Trash2, group: "lifecycle", tone: "secondary" },
   "file.upload": { label: "上传文件", icon: Upload, group: "file", tone: "info" },
   "file.download": { label: "下载文件", icon: Download, group: "file", tone: "soft" },
   "file.delete": { label: "删除文件", icon: Trash2, group: "file", tone: "destructive" },

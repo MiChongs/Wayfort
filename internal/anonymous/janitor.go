@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
+	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -14,16 +16,17 @@ import (
 type Janitor struct {
 	launcher *DockerLauncher
 	cache    *cache.Cache
+	audit    *audit.Writer // optional; reaps are audit-logged when wired
 	logger   *zap.Logger
 	interval time.Duration
 	failures int
 }
 
-func NewJanitor(l *DockerLauncher, c *cache.Cache, logger *zap.Logger, interval time.Duration) *Janitor {
+func NewJanitor(l *DockerLauncher, c *cache.Cache, audw *audit.Writer, logger *zap.Logger, interval time.Duration) *Janitor {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	return &Janitor{launcher: l, cache: c, logger: logger, interval: interval}
+	return &Janitor{launcher: l, cache: c, audit: audw, logger: logger, interval: interval}
 }
 
 func (j *Janitor) Run(ctx context.Context) error {
@@ -60,15 +63,26 @@ func (j *Janitor) sweep(ctx context.Context) {
 	for _, id := range live {
 		liveSet[id] = struct{}{}
 	}
-	for _, cid := range cl {
-		if _, ok := liveSet[cid]; ok {
+	for _, mc := range cl {
+		if _, ok := liveSet[mc.ID]; ok {
 			continue
 		}
-		if err := j.launcher.Remove(ctx, cid); err != nil {
-			j.logger.Warn("reap container failed", zap.String("id", cid), zap.Error(err))
+		if err := j.launcher.Remove(ctx, mc.ID); err != nil {
+			j.logger.Warn("reap container failed", zap.String("id", mc.ID), zap.Error(err))
 			continue
 		}
-		j.logger.Info("reaped anonymous container", zap.String("id", cid))
-		_ = j.cache.UntrackAnonymous(ctx, cid)
+		j.logger.Info("reaped anonymous container", zap.String("id", mc.ID), zap.String("session", mc.SessionID))
+		_ = j.cache.UntrackAnonymous(ctx, mc.ID)
+		// Close the audit story: the TTL guarantee is only credible if its
+		// enforcement is observable. A reap here is the sandbox's auto-destroy
+		// firing — surface it on the session's audit timeline.
+		if j.audit != nil {
+			j.audit.Log(model.AuditLog{
+				Kind:      model.AuditAnonymousReap,
+				Username:  "anonymous",
+				SessionID: mc.SessionID,
+				Payload:   mc.ID,
+			})
+		}
 	}
 }

@@ -25,6 +25,7 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import {
   AlertTriangle,
   ArrowRight,
+  Box,
   Eye,
   EyeOff,
   Fingerprint,
@@ -278,6 +279,16 @@ export default function LoginPage() {
       <p className="text-center text-[11px] text-muted-foreground">
         通过登录即表示您同意所属组织的远程访问与审计策略。
       </p>
+
+      <div className="flex items-center justify-center">
+        <Button variant="ghost" size="sm" className="text-muted-foreground" asChild>
+          <a href="/sandbox">
+            <Box className="h-3.5 w-3.5" />
+            无需注册 · 体验匿名沙箱
+            <ArrowRight className="h-3.5 w-3.5" />
+          </a>
+        </Button>
+      </div>
 
       <AuthMethodsSheet
         open={methodsOpen}

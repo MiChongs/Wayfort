@@ -965,6 +965,24 @@ export interface TokenPair {
   expires_at: string
 }
 
+// ----- Anonymous Docker sandbox -----
+// The honest spec of the throwaway container an anonymous token buys: how long
+// it lives and the walls it runs behind. Rendered as the countdown + limit
+// chips on the public sandbox page.
+export interface SandboxSpec {
+  ttl_seconds: number
+  image: string
+  memory_mb: number
+  cpu: number
+  network: string
+  shell: string[]
+}
+
+// POST /auth/anonymous response: a token pair (flattened) plus the sandbox spec.
+export interface AnonymousSession extends TokenPair {
+  sandbox: SandboxSpec
+}
+
 // ----- Phase 11 — terminal personalization -----
 
 export interface Snippet {

@@ -289,7 +289,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			logger.Warn("docker init failed; anonymous disabled", zap.Error(err))
 		} else {
 			anonService = anonymous.NewService(launcher, rc, logger)
-			anonJanitor = anonymous.NewJanitor(launcher, rc, logger, 30*time.Second)
+			anonJanitor = anonymous.NewJanitor(launcher, rc, auditWriter, logger, 30*time.Second)
 			// Live-tune the sandbox image / resource caps from the settings
 			// center; new containers pick the values up on next launch.
 			settingsCenter.OnReload(func(c *config.Config) { launcher.ApplyConfig(c.Anonymous) })
@@ -387,7 +387,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			TOTP: totpSvc, Email: emailOTP, Recovery: recoverySvc,
 			Passkey: passkeySvc, OIDC: oidcManager, OIDCRepo: oidcRepo,
 			Anomaly: anomalyDetector, Mailer: mailer,
-			AnonEna: anonService != nil,
+			AnonEna:  anonService != nil,
+			AnonSpec: cfg.Anonymous,
 		},
 		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver},
 		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Builder: chain},

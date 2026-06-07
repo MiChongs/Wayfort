@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
@@ -35,6 +36,9 @@ type AuthHandler struct {
 	Anomaly   *anomaly.Detector
 	Mailer    *notify.Mailer
 	AnonEna   bool
+	// AnonSpec carries the sandbox resource caps so the public sandbox page can
+	// render an honest spec (TTL countdown, limits) without a second endpoint.
+	AnonSpec  config.AnonymousConfig
 	OIDCRepo  *repo.OIDCClientRepo
 }
 
@@ -424,6 +428,48 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 
 // ----- Anonymous -----
 
+// sandboxSpec is the honest, client-facing description of the ephemeral
+// container a sandbox token buys: how long it lives and the resource walls it
+// runs behind. The page renders the countdown and the limit chips from this.
+type sandboxSpec struct {
+	TTLSeconds int64    `json:"ttl_seconds"`
+	Image      string   `json:"image"`
+	MemoryMB   int64    `json:"memory_mb"`
+	CPU        float64  `json:"cpu"`
+	Network    string   `json:"network"`
+	Shell      []string `json:"shell"`
+}
+
+// anonymousResponse embeds the token pair so existing access_token consumers
+// keep working, and adds the sandbox spec alongside it.
+type anonymousResponse struct {
+	auth.TokenPair
+	Sandbox sandboxSpec `json:"sandbox"`
+}
+
+// spec materialises the client-facing sandbox description from config.
+func (h *AuthHandler) spec() sandboxSpec {
+	shell := h.AnonSpec.Shell
+	if len(shell) == 0 {
+		shell = []string{"/bin/sh"}
+	}
+	return sandboxSpec{
+		TTLSeconds: int64(h.AnonSpec.TTL.Seconds()),
+		Image:      h.AnonSpec.Image,
+		MemoryMB:   h.AnonSpec.MemoryMB,
+		CPU:        h.AnonSpec.CPU,
+		Network:    h.AnonSpec.Network,
+		Shell:      shell,
+	}
+}
+
+// AnonymousInfo is a public, token-free probe so the landing page can render an
+// honest spec (and a friendly "disabled" state) before a visitor commits to
+// minting a throwaway token.
+func (h *AuthHandler) AnonymousInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"enabled": h.AnonEna, "sandbox": h.spec()})
+}
+
 func (h *AuthHandler) Anonymous(c *gin.Context) {
 	if !h.AnonEna {
 		c.JSON(http.StatusForbidden, gin.H{"error": "anonymous disabled"})
@@ -436,7 +482,7 @@ func (h *AuthHandler) Anonymous(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, pair)
+	c.JSON(http.StatusOK, anonymousResponse{TokenPair: pair, Sandbox: h.spec()})
 }
 
 // ----- common helpers -----

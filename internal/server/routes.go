@@ -154,6 +154,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ag.POST("/login/passkey/begin", rt.Auth.PasskeyBegin)
 		ag.POST("/login/passkey/finish", rt.Auth.PasskeyFinish)
 		ag.POST("/refresh", rt.Auth.Refresh)
+		ag.GET("/anonymous/info", rt.Auth.AnonymousInfo)
 		ag.POST("/anonymous", rt.Auth.Anonymous)
 		ag.GET("/providers", rt.Auth.Providers)
 		ag.GET("/oidc/:provider/login", rt.Auth.OIDCLogin)
