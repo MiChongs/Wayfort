@@ -4,15 +4,17 @@ import * as React from "react"
 import { Clock, Layers, ShieldCheck, User } from "lucide-react"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
 import { useWorkspaceStore } from "./useWorkspaceStore"
+import { useRuntimeStore } from "./useRuntimeStore"
 import { metaOf } from "./protocolMeta"
+import { STATUS_DOT, STATUS_TEXT } from "./tabStatus"
 import { fmt } from "@/lib/security/x7"
 import { cn } from "@/lib/utils"
 
 export function WorkspaceStatusBar() {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeId = useWorkspaceStore((s) => s.activeId)
-  const activeExpiry = useWorkspaceStore((s) => (s.activeId ? s.expiry[s.activeId] : undefined))
-  const requestRenew = useWorkspaceStore((s) => s.requestRenew)
+  const activeExpiry = useRuntimeStore((s) => (activeId ? s.expiry[activeId] : undefined))
+  const requestRenew = useRuntimeStore((s) => s.requestRenew)
   const me = useCurrentUser()
   const active = tabs.find((t) => t.id === activeId)
 
@@ -28,14 +30,14 @@ export function WorkspaceStatusBar() {
           {total} 个会话
         </span>
         {connected > 0 && (
-          <span className="inline-flex shrink-0 items-center gap-1 text-[#4c9b62] dark:text-[#5db872]">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#5db872]" />
+          <span className={cn("inline-flex shrink-0 items-center gap-1", STATUS_TEXT.connected)}>
+            <span className={cn("inline-block h-1.5 w-1.5 rounded-full", STATUS_DOT.connected)} />
             {connected} 在线
           </span>
         )}
         {connecting > 0 && (
-          <span className="inline-flex shrink-0 items-center gap-1 text-[#c08a2e] dark:text-[#e3b84e]">
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#d4a017] dark:bg-[#e3b84e]" />
+          <span className={cn("inline-flex shrink-0 items-center gap-1", STATUS_TEXT.connecting)}>
+            <span className={cn("inline-block h-1.5 w-1.5 rounded-full", STATUS_DOT.connecting)} />
             {connecting} 接入中
           </span>
         )}
@@ -65,7 +67,7 @@ export function WorkspaceStatusBar() {
               activeExpiry.ms <= 60_000
                 ? "text-destructive"
                 : activeExpiry.low
-                  ? "text-[#c08a2e] dark:text-[#e3b84e]"
+                  ? "text-warning"
                   : "",
             )}
             title="本次访问到期后会自动断开，需重新申请"
@@ -76,7 +78,7 @@ export function WorkspaceStatusBar() {
               <button
                 type="button"
                 onClick={() => requestRenew(activeId)}
-                className="ml-1 rounded-md border border-[#d4a017]/40 px-1.5 py-0.5 text-[11px] font-medium text-[#c08a2e] transition-colors hover:bg-[#d4a017]/10 dark:text-[#e3b84e]"
+                className="ml-1 rounded-md border border-warning/40 px-1.5 py-0.5 text-[11px] font-medium text-warning transition-colors hover:bg-warning/10"
               >
                 续期
               </button>
@@ -84,7 +86,7 @@ export function WorkspaceStatusBar() {
           </span>
         )}
         <span className="inline-flex items-center gap-1" title="本会话全程审计录制">
-          <ShieldCheck className="h-3.5 w-3.5 text-[#5db872]" /> 审计中
+          <ShieldCheck className="h-3.5 w-3.5 text-success" /> 审计中
         </span>
         {me?.usr && (
           <span className="inline-flex items-center gap-1">

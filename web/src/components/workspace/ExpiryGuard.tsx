@@ -3,7 +3,7 @@
 import * as React from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ApprovalRequestPanel } from "@/components/approvals/ApprovalRequestPanel"
-import { useWorkspaceStore } from "@/components/workspace/useWorkspaceStore"
+import { useRuntimeStore } from "@/components/workspace/useRuntimeStore"
 import { arm } from "@/lib/security/x7"
 
 const WARN_MS = 5 * 60_000
@@ -38,9 +38,9 @@ export function ExpiryGuard({
   subtitle?: string
   children: React.ReactNode
 }) {
-  const setExpiry = useWorkspaceStore((s) => s.setExpiry)
-  const requestRenew = useWorkspaceStore((s) => s.requestRenew)
-  const renewTarget = useWorkspaceStore((s) => s.renewTarget)
+  const setExpiry = useRuntimeStore((s) => s.setExpiry)
+  const requestRenew = useRuntimeStore((s) => s.requestRenew)
+  const renewTarget = useRuntimeStore((s) => s.renewTarget)
   const [renewOpen, setRenewOpen] = React.useState(false)
 
   const expRef = React.useRef(onExpire)

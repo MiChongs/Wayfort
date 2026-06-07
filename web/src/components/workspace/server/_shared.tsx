@@ -5,7 +5,7 @@ import { TerminalSquare } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { useWorkspaceStore } from "../useWorkspaceStore"
+import { useRuntimeStore } from "../useRuntimeStore"
 
 // Shared primitives for the SSH ops dock subtabs. Keeps every tool consistent:
 // the same typed-error shape, the same "run in terminal" affordance, and the
@@ -31,7 +31,7 @@ export function codeOf(e: unknown): string | undefined {
  * at the prompt for the operator to review.
  */
 export function useSendToTerminal(tabId: string | undefined) {
-  const sendToTerminal = useWorkspaceStore((s) => s.sendToTerminal)
+  const sendToTerminal = useRuntimeStore((s) => s.sendToTerminal)
   return React.useCallback(
     (text: string, run = true) => {
       if (!tabId || !text.trim()) return

@@ -40,9 +40,11 @@ export function GroupHeader({ group, count, readOnly = false }: Props) {
   const renameGroup = useWorkspaceStore((s) => s.renameGroup)
   const recolorGroup = useWorkspaceStore((s) => s.recolorGroup)
   const deleteGroup = useWorkspaceStore((s) => s.deleteGroup)
+  const moveTabToGroup = useWorkspaceStore((s) => s.moveTabToGroup)
   const reduced = useReducedMotion()
 
   const [editing, setEditing] = React.useState(false)
+  const [dropActive, setDropActive] = React.useState(false)
   const [draft, setDraft] = React.useState(group.name)
   const inputRef = React.useRef<HTMLInputElement>(null)
 
@@ -76,8 +78,29 @@ export function GroupHeader({ group, count, readOnly = false }: Props) {
             "border-r border-border/60 cursor-default",
             "text-xs font-medium",
             GROUP_PILL_BG[group.color],
+            dropActive && "ring-2 ring-inset ring-primary/50",
           )}
           onDoubleClick={() => !readOnly && setEditing(true)}
+          onDragOver={
+            readOnly
+              ? undefined
+              : (e) => {
+                  e.preventDefault()
+                  if (!dropActive) setDropActive(true)
+                }
+          }
+          onDragLeave={readOnly ? undefined : () => setDropActive(false)}
+          onDrop={
+            readOnly
+              ? undefined
+              : (e) => {
+                  e.preventDefault()
+                  setDropActive(false)
+                  // Tab strip sets text/plain to the dragged tab id.
+                  const id = e.dataTransfer.getData("text/plain")
+                  if (id) moveTabToGroup(id, group.id)
+                }
+          }
           title={readOnly ? `${group.name} · 自动分组` : `${group.name} · 双击改名`}
         >
           <button

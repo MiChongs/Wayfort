@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { WorkspaceTab as WorkspaceTabModel } from "./useWorkspaceStore"
 import { useWorkspaceStore } from "./useWorkspaceStore"
+import { useRuntimeStore } from "./useRuntimeStore"
 import { metaOf, rdpBackendShortLabel } from "./protocolMeta"
 import { GROUP_ACCENT_BG } from "./groupColors"
 import { STATUS_DOT, STATUS_LABEL, latencyTone } from "./tabStatus"
@@ -68,7 +69,9 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
   const groups = useWorkspaceStore((s) => s.groups)
   // This tab is the split's secondary pane (the primary pane is the active tab,
   // already styled as the floating card).
-  const inSplit = useWorkspaceStore((s) => s.splitId === tab.id) && !active
+  const inSplit = useWorkspaceStore(
+    (s) => s.split.layout !== "single" && s.split.slots.indexOf(tab.id) > 0,
+  )
   // Only render the group accent in manual mode — the derived modes are
   // implied by adjacency in the strip, so a coloured stripe would be
   // visual noise rather than information.
@@ -177,8 +180,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
             and dropped entirely when the user disabled the badge. */}
         {!tab.pinned &&
           prefs.showLatencyBadge &&
-          tab.status === "connected" &&
-          tab.latencyMs !== undefined && <LatencyBadge ms={tab.latencyMs} />}
+          tab.status === "connected" && <LatencyBadge tabId={tab.id} />}
 
         {/* Mute / popped-out badges — small icons that the ContextMenu can
             toggle. Hidden on pinned tabs because the row is already
@@ -243,7 +245,7 @@ export const WorkspaceTab = React.forwardRef<HTMLDivElement, Props>(function Wor
               </span>
             )}
             {tab.status === "connecting" && (
-              <Loader2 className="w-3 h-3 animate-spin text-[#c08a2e] dark:text-[#e3b84e] shrink-0" aria-hidden />
+              <Loader2 className="w-3 h-3 animate-spin text-warning shrink-0" aria-hidden />
             )}
           </span>
         )}
@@ -293,6 +295,7 @@ function TabPreview({
   rdpBackendLabel: string | null
 }) {
   const meta = metaOf(tab.protocol)
+  const ms = useRuntimeStore((s) => s.latency[tab.id])
   return (
     <div className="space-y-1 text-xs">
       <div className="text-sm font-medium leading-tight">{tab.title}</div>
@@ -309,8 +312,8 @@ function TabPreview({
       <div className="flex items-center gap-1.5 pt-0.5">
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", STATUS_DOT[tab.status])} />
         <span>{STATUS_LABEL[tab.status]}</span>
-        {tab.status === "connected" && tab.latencyMs != null ? (
-          <span className="tabular-nums text-muted-foreground">· {tab.latencyMs}ms</span>
+        {tab.status === "connected" && ms != null ? (
+          <span className="tabular-nums text-muted-foreground">· {ms}ms</span>
         ) : null}
       </div>
       {tab.pinned || tab.muted || tab.poppedOut ? (
@@ -394,7 +397,11 @@ function StatusDot({
 //   > 500 ms  → red     (painful)
 //   null      → "—"     (renderer reports the channel is up but RTT
 //                       can't be measured, e.g. IronRDP Wasm path)
-function LatencyBadge({ ms }: { ms: number | null }) {
+function LatencyBadge({ tabId }: { tabId: string }) {
+  const ms = useRuntimeStore((s) => s.latency[tabId])
+  // Never reported yet — keep the strip clean until the renderer pushes its
+  // first RTT sample.
+  if (ms === undefined) return null
   if (ms == null) {
     return (
       <span

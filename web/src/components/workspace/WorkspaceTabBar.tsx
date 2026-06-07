@@ -19,7 +19,9 @@ import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/r
 import {
   ArrowLeftRight,
   Columns2,
+  Columns3,
   ExternalLink,
+  Grid2x2,
   Pin,
   Plus,
   RotateCcw,
@@ -111,12 +113,14 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
   const createGroup = useWorkspaceStore((s) => s.createGroup)
   const moveTabToGroup = useWorkspaceStore((s) => s.moveTabToGroup)
-  const splitId = useWorkspaceStore((s) => s.splitId)
-  const splitDir = useWorkspaceStore((s) => s.splitDir)
+  const split = useWorkspaceStore((s) => s.split)
   const setSplit = useWorkspaceStore((s) => s.setSplit)
   const toggleSplit = useWorkspaceStore((s) => s.toggleSplit)
   const swapSplit = useWorkspaceStore((s) => s.swapSplit)
-  const setSplitDir = useWorkspaceStore((s) => s.setSplitDir)
+  const setLayout = useWorkspaceStore((s) => s.setLayout)
+  // A tab is a "secondary" pane when it's in the grid but not the primary slot.
+  const isSecondaryPane = (id: string) =>
+    split.layout !== "single" && split.slots.includes(id) && split.slots[0] !== id
 
   const qc = useQueryClient()
   const [renamingId, setRenamingId] = React.useState<string | null>(null)
@@ -142,7 +146,17 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
     ev.preventDefault()
     const fromIdx = tabs.findIndex((t) => t.id === drag.fromId)
     let toIdx = tabs.findIndex((t) => t.id === id)
-    if (fromIdx < 0 || toIdx < 0) return
+    if (fromIdx < 0 || toIdx < 0) {
+      setDrag(null)
+      return
+    }
+    // Cross-group drag (manual mode): dropping onto a tab in another group
+    // adopts that group before reordering, so a drag can both move and regroup.
+    if (groupingMode === "manual") {
+      const fromGroup = tabs[fromIdx].groupId ?? null
+      const toGroup = tabs[toIdx].groupId ?? null
+      if (fromGroup !== toGroup) moveTabToGroup(drag.fromId, toGroup)
+    }
     if (drag.side === "right") toIdx++
     if (fromIdx < toIdx) toIdx--
     reorder(fromIdx, toIdx)
@@ -423,14 +437,14 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
                       </ContextMenuItem>
                       <ContextMenuItem
                         onSelect={() => {
-                          if (splitId === tab.id) setSplit(null)
+                          if (isSecondaryPane(tab.id)) setSplit(null)
                           else if (tab.id === activeId) toggleSplit()
                           else setSplit(tab.id)
                         }}
                         disabled={tabs.length < 2}
                       >
                         <SplitSquareHorizontal className="w-4 h-4" />
-                        {splitId === tab.id ? "取消并排" : "并排查看"}
+                        {isSecondaryPane(tab.id) ? "取消并排" : "并排查看"}
                         <ContextMenuShortcut>Ctrl+\</ContextMenuShortcut>
                       </ContextMenuItem>
                       <ContextMenuItem
@@ -475,7 +489,7 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
                 aria-label="分屏"
                 className={cn(
                   "shrink-0 flex h-7 w-7 items-center justify-center rounded-md transition-colors",
-                  splitId
+                  split.layout !== "single"
                     ? "bg-primary/12 text-primary"
                     : "text-muted-foreground hover:bg-accent hover:text-foreground",
                 )}
@@ -484,23 +498,34 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuItem onSelect={() => toggleSplit()} disabled={!splitId && tabs.length < 2}>
+              <DropdownMenuItem
+                onSelect={() => toggleSplit()}
+                disabled={split.layout === "single" && tabs.length < 2}
+              >
                 <SplitSquareHorizontal className="h-4 w-4" />
-                {splitId ? "取消并排" : "并排查看"}
+                {split.layout === "single" ? "并排查看" : "取消并排"}
                 <span className="ml-auto font-mono text-[10px] text-muted-foreground">Ctrl \</span>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setSplitDir("row")}>
-                <Columns2 className="h-4 w-4" /> 横向并排
-                {splitDir === "row" && <span className="ml-auto text-primary">✓</span>}
+              <DropdownMenuItem onSelect={() => setLayout("row-2")} disabled={tabs.length < 2}>
+                <Columns2 className="h-4 w-4" /> 左右两栏
+                {split.layout === "row-2" && <span className="ml-auto text-primary">✓</span>}
               </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => setSplitDir("col")}>
-                <Rows2 className="h-4 w-4" /> 纵向并排
-                {splitDir === "col" && <span className="ml-auto text-primary">✓</span>}
+              <DropdownMenuItem onSelect={() => setLayout("col-2")} disabled={tabs.length < 2}>
+                <Rows2 className="h-4 w-4" /> 上下两栏
+                {split.layout === "col-2" && <span className="ml-auto text-primary">✓</span>}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setLayout("row-3")} disabled={tabs.length < 3}>
+                <Columns3 className="h-4 w-4" /> 三栏
+                {split.layout === "row-3" && <span className="ml-auto text-primary">✓</span>}
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setLayout("grid-4")} disabled={tabs.length < 4}>
+                <Grid2x2 className="h-4 w-4" /> 田字（四格）
+                {split.layout === "grid-4" && <span className="ml-auto text-primary">✓</span>}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => swapSplit()} disabled={!splitId}>
-                <ArrowLeftRight className="h-4 w-4" /> 交换两侧
+              <DropdownMenuItem onSelect={() => swapSplit()} disabled={split.layout === "single"}>
+                <ArrowLeftRight className="h-4 w-4" /> 交换主副
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>

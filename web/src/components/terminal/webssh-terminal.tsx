@@ -9,7 +9,7 @@ import { useTheme } from "next-themes"
 import { toast } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WebSSHConnection, type SessionStats } from "@/lib/ws/webssh-client"
-import { useWorkspaceStore } from "@/components/workspace/useWorkspaceStore"
+import { useRuntimeStore } from "@/components/workspace/useRuntimeStore"
 import {
   renderConnectBanner,
   renderDisconnectBanner,
@@ -188,9 +188,9 @@ export function WebSSHTerminal({
   // dock → terminal bridge. When the ops dock stamps a command for this tab,
   // type/run it in the live PTY once the session is ready. Covers both orders
   // (command queued before ready, or arriving while open). No-op in the
-  // node-less sandbox (no tabId). See useWorkspaceStore.sendToTerminal.
-  const pendingCmd = useWorkspaceStore((s) => (tabId ? s.pendingCmd[tabId] : undefined))
-  const consumePendingCmd = useWorkspaceStore((s) => s.consumePendingCmd)
+  // node-less sandbox (no tabId). See useRuntimeStore.sendToTerminal.
+  const pendingCmd = useRuntimeStore((s) => (tabId ? s.pendingCmd[tabId] : undefined))
+  const consumePendingCmd = useRuntimeStore((s) => s.consumePendingCmd)
   React.useEffect(() => {
     if (!tabId || !pendingCmd || status !== "open") return
     const conn = connRef.current

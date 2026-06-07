@@ -11,6 +11,8 @@ import { ApprovalGate } from "@/components/workspace/ApprovalGate"
 import { SideDock } from "./SideDock"
 import { TcpForwardPanel } from "./TcpForwardPanel"
 import { useWorkspaceStore, type WorkspaceTab as TabModel } from "./useWorkspaceStore"
+import { useRuntimeStore } from "./useRuntimeStore"
+import { rectForSlot, isDraggableSplit, FULL_RECT, type SplitLayout } from "./lib/splitGeometry"
 
 // Heavy / canvas-bearing protocol components — lazy so the workspace shell
 // boots fast and we don't drag Guacamole / Pixi / xterm into the initial
@@ -48,7 +50,7 @@ function LoadingShim({ label }: { label: string }) {
 // The `tab` object reference is stable unless that tab actually changes.
 const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
   const setStatus = useWorkspaceStore((s) => s.setStatus)
-  const setLatency = useWorkspaceStore((s) => s.setLatency)
+  const setLatency = useRuntimeStore((s) => s.setLatency)
   const setPoppedOut = useWorkspaceStore((s) => s.setPoppedOut)
   const open = useWorkspaceStore((s) => s.open)
 
@@ -245,47 +247,24 @@ const CONNECT_GATED = new Set(["ssh", "telnet", "dbcli", "rdp", "vnc", "rdp_next
 // the layout box but make them visually inert when inactive.
 const CANVAS_PROTOS = new Set(["rdp", "vnc", "rdp_next"])
 
-const FULL_RECT: React.CSSProperties = { left: 0, top: 0, right: 0, bottom: 0 }
-
-// rectFor positions a pane via percentage left/width (row split) or top/height
-// (column split). Single (no split) → full bleed. Every tab stays mounted at a
-// stable key; only this rect + visibility change, so canvas sessions are never
-// remounted across a split toggle.
-function rectFor(
-  pane: "primary" | "secondary",
-  dir: "row" | "col",
-  ratio: number,
-): React.CSSProperties {
-  const primary = pane === "primary"
-  if (dir === "row") {
-    return primary
-      ? { left: 0, top: 0, width: `${ratio * 100}%`, height: "100%" }
-      : { left: `${ratio * 100}%`, top: 0, width: `${(1 - ratio) * 100}%`, height: "100%" }
-  }
-  return primary
-    ? { left: 0, top: 0, width: "100%", height: `${ratio * 100}%` }
-    : { left: 0, top: `${ratio * 100}%`, width: "100%", height: `${(1 - ratio) * 100}%` }
-}
-
 export function WorkspaceTabContent() {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const activeId = useWorkspaceStore((s) => s.activeId)
-  const splitId = useWorkspaceStore((s) => s.splitId)
-  const splitDir = useWorkspaceStore((s) => s.splitDir)
-  const splitRatio = useWorkspaceStore((s) => s.splitRatio)
+  const split = useWorkspaceStore((s) => s.split)
   const containerRef = React.useRef<HTMLDivElement | null>(null)
 
-  const split = !!splitId && splitId !== activeId && tabs.some((t) => t.id === splitId)
+  const multi = split.layout !== "single"
+  // Slots drive the grid. Single view falls back to the active tab full-bleed.
+  const slots = multi ? split.slots : activeId ? [activeId] : []
 
   return (
     <div ref={containerRef} className="relative min-h-0 flex-1 overflow-hidden bg-background">
       {tabs.map((tab) => {
-        const pane: "primary" | "secondary" | "background" =
-          tab.id === activeId ? "primary" : split && tab.id === splitId ? "secondary" : "background"
-        const visible = pane !== "background"
+        const idx = slots.indexOf(tab.id)
+        const visible = idx >= 0
         const isCanvas = CANVAS_PROTOS.has(tab.protocol)
         const style: React.CSSProperties = visible
-          ? { ...(split ? rectFor(pane, splitDir, splitRatio) : FULL_RECT), visibility: "visible", pointerEvents: "auto", zIndex: 10 }
+          ? { ...rectForSlot(split.layout, idx, split.ratio), visibility: "visible", pointerEvents: "auto", zIndex: 10 }
           : isCanvas
             // Keepalive: stay laid out full-size but inert so RDP/VNC keep their
             // server dimensions and the WS connection survives in the background.
@@ -300,35 +279,57 @@ export function WorkspaceTabContent() {
             style={style}
             className={cn(
               "absolute",
-              split && pane === "primary" && "rounded-sm ring-1 ring-inset ring-primary/35",
+              multi && idx === 0 && "rounded-sm ring-1 ring-inset ring-primary/35",
             )}
           >
             <TabBody tab={tab} />
           </div>
         )
       })}
-      {split && <SplitDivider containerRef={containerRef} dir={splitDir} ratio={splitRatio} />}
+      {/* Empty slots — a grid cell whose tab was closed. */}
+      {multi &&
+        slots.map((id, idx) =>
+          id === null ? (
+            <EmptySlot key={`empty-${idx}`} style={rectForSlot(split.layout, idx, split.ratio)} />
+          ) : null,
+        )}
+      {multi && isDraggableSplit(split.layout) && (
+        <SplitDivider containerRef={containerRef} layout={split.layout} ratio={split.ratio} />
+      )}
     </div>
   )
 }
 
-// Draggable divider between split panes. Uses pointer capture so the drag keeps
-// tracking even as the cursor passes over a terminal / canvas pane.
+function EmptySlot({ style }: { style: React.CSSProperties }) {
+  return (
+    <div
+      style={style}
+      className="absolute z-[5] m-1 flex items-center justify-center rounded-md border border-dashed border-border/60 bg-muted/10 text-xs text-muted-foreground"
+    >
+      会话已关闭
+    </div>
+  )
+}
+
+// Draggable divider for the two-pane layouts. Uses pointer capture so the drag
+// keeps tracking even as the cursor passes over a terminal / canvas pane.
+// row-2 = side-by-side (vertical handle); col-2 = stacked (horizontal handle).
 function SplitDivider({
   containerRef,
-  dir,
+  layout,
   ratio,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>
-  dir: "row" | "col"
+  layout: SplitLayout
   ratio: number
 }) {
   const setSplitRatio = useWorkspaceStore((s) => s.setSplitRatio)
   const dragging = React.useRef(false)
+  const isRow = layout === "row-2"
   return (
     <div
       role="separator"
-      aria-orientation={dir === "row" ? "vertical" : "horizontal"}
+      aria-orientation={isRow ? "vertical" : "horizontal"}
       onPointerDown={(e) => {
         dragging.current = true
         ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
@@ -339,7 +340,7 @@ function SplitDivider({
         const el = containerRef.current
         if (!el) return
         const r = el.getBoundingClientRect()
-        setSplitRatio(dir === "row" ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height)
+        setSplitRatio(isRow ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height)
       }}
       onPointerUp={(e) => {
         dragging.current = false
@@ -347,14 +348,14 @@ function SplitDivider({
       }}
       className={cn(
         "group absolute z-20 flex items-center justify-center",
-        dir === "row" ? "bottom-0 top-0 w-3 -translate-x-1/2 cursor-col-resize" : "left-0 right-0 h-3 -translate-y-1/2 cursor-row-resize",
+        isRow ? "bottom-0 top-0 w-3 -translate-x-1/2 cursor-col-resize" : "left-0 right-0 h-3 -translate-y-1/2 cursor-row-resize",
       )}
-      style={dir === "row" ? { left: `${ratio * 100}%` } : { top: `${ratio * 100}%` }}
+      style={isRow ? { left: `${ratio * 100}%` } : { top: `${ratio * 100}%` }}
     >
       <span
         className={cn(
           "rounded-full bg-border transition-colors group-hover:bg-primary/60",
-          dir === "row" ? "h-10 w-[3px]" : "h-[3px] w-10",
+          isRow ? "h-10 w-[3px]" : "h-[3px] w-10",
         )}
       />
     </div>

@@ -1,6 +1,7 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import type { DesktopBackend } from "@/lib/desktop/types"
+import { SLOT_COUNT, type SplitLayout, type SplitState } from "./lib/splitGeometry"
 
 export type Protocol =
   | "ssh"
@@ -15,10 +16,6 @@ export type Protocol =
   | "tcp_forward"
 
 export type TabStatus = "fresh" | "connecting" | "connected" | "closed" | "error" | "approval"
-
-// ExpiryInfo is the per-tab approval-grant countdown the ExpiryGuard publishes
-// for the status bar to render. Ephemeral (not persisted).
-export type ExpiryInfo = { ms: number; deadline: string; low: boolean }
 
 // SideDock sub-tab key — which server-management panel is open inside a
 // connection tab. Persisted per-tab so refresh restores the user's last view.
@@ -92,12 +89,6 @@ export type WorkspaceTab = {
   // payloads load cleanly.
   subTab?: SubTab
   dockOpen?: boolean
-  // Live round-trip latency reported by the session renderer (webssh,
-  // desktop, etc.). Transient — wiped on reload via `partialize` below
-  // because the WS connection is gone anyway. `null` means
-  // "unmeasurable" (e.g. IronRDP Wasm path) and renders as a dash;
-  // `undefined` means "never reported yet" and hides the badge.
-  latencyMs?: number | null
   // Phase 7 — group assignment (manual mode only; derived modes ignore).
   groupId?: string | null
   // Pinned tabs sort to the very left and skip "close" / "close others".
@@ -115,6 +106,11 @@ export type WorkspaceTab = {
 }
 
 export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" | "all"
+
+// Which panel the activity bar has selected. The side panel renders one of
+// these at a time. "assets" is the asset tree; "sessions" / "monitor" arrive
+// in a later phase but the field ships now so persisted state is forward-ready.
+export type ActivePanel = "assets" | "sessions" | "monitor"
 
 type OpenInput = {
   nodeId: number
@@ -151,27 +147,23 @@ type State = {
   groups: TabGroup[]
   prefs: WorkspacePrefs
   activeId: string | null
+  // Side panel open/closed. The activity bar toggles this; the name stays
+  // `sidebarOpen` so every existing toggleSidebar / setSidebarOpen call site
+  // keeps working unchanged.
   sidebarOpen: boolean
   treeView: TreeView
+  // Activity-bar selection — which panel the side panel shows.
+  activePanel: ActivePanel
+  // Per-node last-used protocol so the launcher / quick-connect can default to
+  // what the user actually picks for each machine.
+  protocolMemory: Record<number, { protocol: Protocol; rdpBackend?: DesktopBackend }>
   // Not persisted — kept in memory so Ctrl+Shift+T works within a session.
   recentlyClosed: WorkspaceTab[]
-  // Ephemeral per-tab approval-grant countdown (published by ExpiryGuard, read
-  // by the status bar). Not persisted.
-  expiry: Record<string, ExpiryInfo>
-  // tabId whose renewal dialog should open — set by the status bar's "续期"
-  // button, consumed by that tab's ExpiryGuard. Not persisted.
-  renewTarget: string | null
-  // Split view — when splitId names a (different) live tab, the content area
-  // shows the active tab and splitId side by side. splitDir picks the axis;
-  // splitRatio is the primary pane's fraction (0.2–0.8). Kept at the top level
-  // (not in prefs) so dragging the divider doesn't churn prefs subscribers.
-  splitId: string | null
-  splitDir: "row" | "col"
-  splitRatio: number
-  // dock → terminal command bridge. The ops dock writes a command here for a
-  // given tab; that tab's live WebSSH terminal consumes it (sendInput) once the
-  // session is ready, then clears it by nonce. Not persisted (ephemeral signal).
-  pendingCmd: Record<string, { text: string; run: boolean; nonce: number }>
+  // Split view. `split.layout` picks the grid; `split.slots` map panes to tabs
+  // (slots[0] mirrors the active tab); `split.ratio` is the two-pane divider
+  // fraction. Kept at the top level (not in prefs) so dragging doesn't churn
+  // prefs subscribers. layout/slots reset to single on reload (sessions die).
+  split: SplitState
 }
 
 type Actions = {
@@ -180,20 +172,17 @@ type Actions = {
   closeOthers: (id: string) => void
   closeToRight: (id: string) => void
   closeAll: () => void
+  reconnectAll: () => void
+  closeErrored: () => void
   duplicate: (id: string) => string | null
   rename: (id: string, title: string) => void
   setActive: (id: string) => void
   reorder: (from: number, to: number) => void
   setStatus: (id: string, status: TabStatus) => void
-  setExpiry: (id: string, info: ExpiryInfo | null) => void
-  requestRenew: (id: string | null) => void
-  // Live latency badge on the tab strip. `null` = unmeasurable
-  // (renders as "—" so the user knows the channel is up but RTT isn't
-  // available for this transport).
-  setLatency: (id: string, latencyMs: number | null) => void
   setSidebarOpen: (open: boolean) => void
   toggleSidebar: () => void
   setTreeView: (view: TreeView) => void
+  setActivePanel: (panel: ActivePanel) => void
   reopenLastClosed: () => string | null
   cycleTab: (delta: number) => void
   activateAt: (idx: number) => void
@@ -219,9 +208,7 @@ type Actions = {
   swapSplit: () => void
   setSplitDir: (dir: "row" | "col") => void
   setSplitRatio: (ratio: number) => void
-  // dock → terminal bridge.
-  sendToTerminal: (tabId: string, text: string, run?: boolean) => void
-  consumePendingCmd: (tabId: string, nonce: number) => void
+  setLayout: (layout: SplitLayout) => void
 }
 
 export type WorkspaceStore = State & Actions
@@ -259,6 +246,38 @@ function pickNextGroupColor(groups: TabGroup[]): GroupColor {
   return GROUP_COLOR_ORDER[groups.length % GROUP_COLOR_ORDER.length]
 }
 
+// pruneSplit drops closed tabs from split slots and collapses to single when
+// fewer than two live panes remain.
+function pruneSplit(split: SplitState, valid: Set<string>): SplitState {
+  if (split.layout === "single") return split
+  const slots = split.slots.map((id) => (id && valid.has(id) ? id : null))
+  if (slots.filter(Boolean).length <= 1) return { ...split, layout: "single", slots: [] }
+  return { ...split, slots }
+}
+
+// fillSlots packs `count` panes: the active tab first, then the existing slot
+// order, then the most-recently-created remaining tabs; pads with null.
+function fillSlots(
+  tabs: WorkspaceTab[],
+  activeId: string | null,
+  existing: (string | null)[],
+  count: number,
+): (string | null)[] {
+  const out: (string | null)[] = []
+  const seen = new Set<string>()
+  const ids = new Set(tabs.map((t) => t.id))
+  const push = (id: string | null | undefined) => {
+    if (out.length >= count || !id || seen.has(id) || !ids.has(id)) return
+    out.push(id)
+    seen.add(id)
+  }
+  push(activeId)
+  for (const id of existing) push(id)
+  for (const t of [...tabs].reverse()) push(t.id)
+  while (out.length < count) out.push(null)
+  return out
+}
+
 export const useWorkspaceStore = create<WorkspaceStore>()(
   persist(
     (set, get) => ({
@@ -268,13 +287,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       activeId: null,
       sidebarOpen: true,
       treeView: "favorites",
+      activePanel: "assets",
+      protocolMemory: {},
       recentlyClosed: [],
-      expiry: {},
-      renewTarget: null,
-      splitId: null,
-      splitDir: "row",
-      splitRatio: 0.5,
-      pendingCmd: {},
+      split: { layout: "single", slots: [], ratio: 0.5 },
 
       open: ({ nodeId, protocol, rdpBackend, title, host, port, groupId, pinned }) => {
         const id = genId()
@@ -299,6 +315,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
             },
           ],
           activeId: id,
+          // Remember the protocol the user opened this node with.
+          protocolMemory: { ...s.protocolMemory, [nodeId]: { protocol, rdpBackend } },
         }))
         return id
       },
@@ -315,8 +333,9 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         set((s) => ({
           tabs: remaining,
           activeId: nextActive,
-          // Drop the split if its secondary pane (or the new primary) just closed.
-          splitId: s.splitId === id || s.splitId === nextActive ? null : s.splitId,
+          // Prune the closed tab from any split slot; collapse to single when
+          // fewer than two live panes remain.
+          split: pruneSplit(s.split, new Set(remaining.map((t) => t.id))),
           recentlyClosed: [removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
         }))
       },
@@ -331,6 +350,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         set({
           tabs: survivors,
           activeId: id,
+          split: pruneSplit(get().split, new Set(survivors.map((t) => t.id))),
           recentlyClosed: [...removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
         })
       },
@@ -349,6 +369,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         set({
           tabs: keep,
           activeId: nextActive,
+          split: pruneSplit(get().split, new Set(keep.map((t) => t.id))),
           recentlyClosed: [...removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
         })
       },
@@ -360,6 +381,33 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         set({
           tabs: pinned,
           activeId: pinned[0]?.id ?? null,
+          split: pruneSplit(get().split, new Set(pinned.map((t) => t.id))),
+          recentlyClosed: [...removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
+        })
+      },
+
+      // Bulk reconnect — nudge every connected/error/closed tab back to
+      // "connecting"; each protocol component watches its status and re-opens.
+      reconnectAll: () =>
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.status === "connected" || t.status === "error" || t.status === "closed"
+              ? { ...t, status: "connecting" as const }
+              : t,
+          ),
+        })),
+
+      // Close every errored (non-pinned) tab in one go.
+      closeErrored: () => {
+        const { tabs, activeId, recentlyClosed } = get()
+        const removed = tabs.filter((t) => t.status === "error" && !t.pinned)
+        if (removed.length === 0) return
+        const remaining = tabs.filter((t) => !(t.status === "error" && !t.pinned))
+        const valid = new Set(remaining.map((t) => t.id))
+        set({
+          tabs: remaining,
+          activeId: valid.has(activeId ?? "") ? activeId : (remaining[remaining.length - 1]?.id ?? null),
+          split: pruneSplit(get().split, valid),
           recentlyClosed: [...removed, ...recentlyClosed].slice(0, RECENT_LIMIT),
         })
       },
@@ -384,14 +432,27 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         })),
 
       setActive: (id) =>
-        set((s) => ({
-          activeId: id,
-          // Clicking the secondary pane's tab promotes it to primary and demotes
-          // the old primary to the split pane — i.e. the two panes swap.
-          splitId: s.splitId === id ? s.activeId : s.splitId,
-          // Activating a tab clears its unread / activity dot.
-          tabs: s.tabs.map((t) => (t.id === id ? { ...t, unread: false } : t)),
-        })),
+        set((s) => {
+          // slots[0] mirrors the active tab. If the tab is already a non-primary
+          // pane, swap it into the primary slot; otherwise it takes over slot 0.
+          let split = s.split
+          if (split.layout !== "single" && split.slots.length) {
+            const slots = [...split.slots]
+            const j = slots.indexOf(id)
+            if (j > 0) {
+              ;[slots[0], slots[j]] = [slots[j], slots[0]]
+            } else if (j < 0) {
+              slots[0] = id
+            }
+            split = { ...split, slots }
+          }
+          return {
+            activeId: id,
+            split,
+            // Activating a tab clears its unread / activity dot.
+            tabs: s.tabs.map((t) => (t.id === id ? { ...t, unread: false } : t)),
+          }
+        }),
 
       reorder: (from, to) =>
         set((s) => {
@@ -411,24 +472,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           return { tabs: s.tabs.map((t) => (t.id === id ? { ...t, status } : t)) }
         }),
 
-      setExpiry: (id, info) =>
-        set((s) => {
-          const next = { ...s.expiry }
-          if (info == null) delete next[id]
-          else next[id] = info
-          return { expiry: next }
-        }),
-
-      requestRenew: (id) => set({ renewTarget: id }),
-
-      setLatency: (id, latencyMs) =>
-        set((s) => ({
-          tabs: s.tabs.map((t) => (t.id === id ? { ...t, latencyMs } : t)),
-        })),
-
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       setTreeView: (treeView) => set({ treeView }),
+      setActivePanel: (activePanel) => set({ activePanel }),
 
       reopenLastClosed: () => {
         const [head, ...rest] = get().recentlyClosed
@@ -558,44 +605,63 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
       setSplit: (id) =>
         set((s) => {
-          if (!id || id === s.activeId || !s.tabs.find((t) => t.id === id)) return { splitId: null }
-          return { splitId: id }
+          if (!id || id === s.activeId || !s.activeId || !s.tabs.find((t) => t.id === id)) {
+            return { split: { ...s.split, layout: "single", slots: [] } }
+          }
+          return { split: { ...s.split, layout: "row-2", slots: [s.activeId, id] } }
         }),
 
       toggleSplit: () =>
         set((s) => {
-          if (s.splitId) return { splitId: null }
+          if (s.split.layout !== "single") {
+            return { split: { ...s.split, layout: "single", slots: [] } }
+          }
           // Split the active tab with the most-recently-created other tab.
           const other = [...s.tabs].reverse().find((t) => t.id !== s.activeId)
-          return { splitId: other ? other.id : null }
+          if (!s.activeId || !other) return s
+          return { split: { ...s.split, layout: "row-2", slots: [s.activeId, other.id] } }
         }),
 
       swapSplit: () =>
-        set((s) => (s.splitId ? { activeId: s.splitId, splitId: s.activeId } : s)),
+        set((s) => {
+          if (s.split.layout === "single" || s.split.slots.length < 2) return s
+          const slots = [...s.split.slots]
+          ;[slots[0], slots[1]] = [slots[1], slots[0]]
+          return { activeId: slots[0] ?? s.activeId, split: { ...s.split, slots } }
+        }),
 
-      setSplitDir: (dir) => set({ splitDir: dir }),
+      // Flip the current 2-/3-pane layout between row and column orientation.
+      setSplitDir: (dir) =>
+        set((s) => {
+          const l = s.split.layout
+          const next: SplitLayout =
+            dir === "row"
+              ? l === "col-2"
+                ? "row-2"
+                : l === "col-3"
+                  ? "row-3"
+                  : l
+              : l === "row-2"
+                ? "col-2"
+                : l === "row-3"
+                  ? "col-3"
+                  : l
+          return next === l ? s : { split: { ...s.split, layout: next } }
+        }),
 
       setSplitRatio: (ratio) =>
-        set({ splitRatio: Math.max(0.2, Math.min(0.8, ratio)) }),
+        set((s) => ({ split: { ...s.split, ratio: Math.max(0.2, Math.min(0.8, ratio)) } })),
 
-      // dock → terminal: stamp a command for the tab's live terminal to drain.
-      // `run` appends a newline so the shell executes it; otherwise it's only
-      // typed at the prompt for the user to review and press Enter.
-      sendToTerminal: (tabId, text, run = true) =>
-        set((s) => ({
-          pendingCmd: {
-            ...s.pendingCmd,
-            [tabId]: { text, run, nonce: Date.now() + Math.floor(Math.random() * 1000) },
-          },
-        })),
-
-      consumePendingCmd: (tabId, nonce) =>
+      setLayout: (layout) =>
         set((s) => {
-          const cur = s.pendingCmd[tabId]
-          if (!cur || cur.nonce !== nonce) return {}
-          const next = { ...s.pendingCmd }
-          delete next[tabId]
-          return { pendingCmd: next }
+          if (layout === "single") return { split: { ...s.split, layout, slots: [] } }
+          return {
+            split: {
+              ...s.split,
+              layout,
+              slots: fillSlots(s.tabs, s.activeId, s.split.slots, SLOT_COUNT[layout]),
+            },
+          }
         }),
     }),
     {
@@ -610,7 +676,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         tabs: s.tabs.map((t) => ({
           ...t,
           status: "fresh" as const,
-          latencyMs: undefined,
           poppedOut: false,
           unread: false,
           // subTab, dockOpen, groupId, pinned, muted are part of WorkspaceTab and ride along.
@@ -620,10 +685,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
         activeId: s.activeId,
         sidebarOpen: s.sidebarOpen,
         treeView: s.treeView,
-        // Remember the split axis + ratio; the split pairing itself resets to
-        // single on reload (both sessions are dead anyway).
-        splitDir: s.splitDir,
-        splitRatio: s.splitRatio,
+        activePanel: s.activePanel,
+        protocolMemory: s.protocolMemory,
+        // Remember only the divider ratio; layout/slots reset to single on
+        // reload (both sessions are dead anyway).
+        split: { layout: "single" as const, slots: [], ratio: s.split.ratio },
       }),
       // Older payloads (Phase 6 and earlier) lack the new fields. Fill in
       // defaults so consumers can rely on the new shape without runtime
@@ -638,7 +704,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           ? cast.tabs.map((t) => ({
               ...t,
               status: "fresh" as const,
-              latencyMs: undefined,
               groupId: t.groupId ?? null,
               pinned: t.pinned ?? false,
               muted: t.muted ?? false,
@@ -658,11 +723,21 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           activeId: cast.activeId ?? null,
           sidebarOpen: cast.sidebarOpen ?? true,
           treeView: cast.treeView ?? "favorites",
-          splitDir: cast.splitDir ?? "row",
-          splitRatio: typeof cast.splitRatio === "number" ? cast.splitRatio : 0.5,
+          activePanel: cast.activePanel ?? "assets",
+          protocolMemory: cast.protocolMemory ?? {},
+          split: {
+            layout: "single" as const,
+            slots: [],
+            ratio:
+              typeof cast.split?.ratio === "number"
+                ? cast.split.ratio
+                : typeof (cast as { splitRatio?: number }).splitRatio === "number"
+                  ? (cast as { splitRatio?: number }).splitRatio!
+                  : 0.5,
+          },
         }
       },
-      version: 2,
+      version: 4,
     },
   ),
 )

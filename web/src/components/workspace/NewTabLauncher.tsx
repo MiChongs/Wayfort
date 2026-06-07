@@ -28,6 +28,7 @@ import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "./protocolMeta"
+import { parseConnectCommand, matchProtocol } from "./lib/cmdParse"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 
 type Props = {
@@ -50,7 +51,7 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
   const closeAll = useWorkspaceStore((s) => s.closeAll)
   const reopenLastClosed = useWorkspaceStore((s) => s.reopenLastClosed)
   const activeId = useWorkspaceStore((s) => s.activeId)
-  const splitId = useWorkspaceStore((s) => s.splitId)
+  const isSplit = useWorkspaceStore((s) => s.split.layout !== "single")
   const openTabs = useWorkspaceStore((s) => s.tabs)
   const { theme, setTheme } = useTheme()
 
@@ -77,6 +78,26 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
     .filter((n): n is Node => !!n)
 
   const enabled = all.filter((n) => !n.disabled)
+
+  // Quick-connect: typing "ssh:web01" surfaces a "直达" group that opens that
+  // protocol on the matched node(s) in one step. Falls back to fuzzy search
+  // when the input isn't a "proto:host" command.
+  const parsed = parseConnectCommand(q)
+  const directMatches: { node: Node; choice: ProtocolChoice }[] = []
+  if (parsed) {
+    const k = parsed.host.toLowerCase()
+    for (const n of enabled) {
+      if (!n.name.toLowerCase().includes(k) && !(n.host ?? "").toLowerCase().includes(k)) continue
+      const choices = protocolChoicesForNode(n.protocol)
+      const proto = matchProtocol(
+        parsed.prefix,
+        choices.map((c) => c.protocol),
+      )
+      const choice = proto ? choices.find((c) => c.protocol === proto) : undefined
+      if (choice) directMatches.push({ node: n, choice })
+      if (directMatches.length >= 6) break
+    }
+  }
 
   const completeOpen = (node: Node, choice: ProtocolChoice) => {
     openTab({
@@ -105,17 +126,51 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
               <CommandInput
                 value={q}
                 onValueChange={setQ}
-                placeholder="搜索节点，或输入动作（分屏 / 关闭 / 主题…）"
+                placeholder="搜索节点 · 输入 ssh:web01 直连 · 或动作（分屏 / 主题…）"
                 autoFocus
               />
               <CommandList className="max-h-[60vh]">
                 <CommandEmpty>没有匹配的节点或动作</CommandEmpty>
 
+                {parsed && directMatches.length > 0 && (
+                  <>
+                    <CommandGroup heading="直达">
+                      {directMatches.map(({ node, choice }) => {
+                        const meta = metaOf(choice.protocol)
+                        const Icon = meta.icon
+                        return (
+                          <CommandItem
+                            key={`direct-${node.id}`}
+                            value={`${q} ${node.name} ${node.host ?? ""}`}
+                            onSelect={() => completeOpen(node, choice)}
+                            className="gap-2.5"
+                          >
+                            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-primary/12">
+                              <Icon className={cn("h-4 w-4", meta.tint)} />
+                            </span>
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate text-sm font-medium">{node.name}</span>
+                              <span className="truncate font-mono text-[11px] text-muted-foreground">
+                                {node.host}
+                                {node.port ? `:${node.port}` : ""}
+                              </span>
+                            </span>
+                            <span className="shrink-0 rounded bg-primary/12 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                              {meta.label}
+                            </span>
+                          </CommandItem>
+                        )
+                      })}
+                    </CommandGroup>
+                    <CommandSeparator />
+                  </>
+                )}
+
                 <CommandGroup heading="工作台动作">
                   {activeId && (
                     <ActionItem
                       icon={SplitSquareHorizontal}
-                      label={splitId ? "取消并排" : "并排查看当前会话"}
+                      label={isSplit ? "取消并排" : "并排查看当前会话"}
                       keywords="split 分屏 并排 side"
                       onSelect={() => run(toggleSplit)}
                     />
@@ -291,15 +346,28 @@ function ProtocolPicker({
   onBack: () => void
 }) {
   const choices = protocolChoicesForNode(node.protocol)
+  const remembered = useWorkspaceStore((s) => s.protocolMemory[node.id])
+  const ordered = React.useMemo(() => {
+    if (!remembered) return choices
+    const idx = choices.findIndex(
+      (c) => c.protocol === remembered.protocol && c.rdpBackend === remembered.rdpBackend,
+    )
+    if (idx <= 0) return choices
+    const copy = [...choices]
+    const [m] = copy.splice(idx, 1)
+    return [m, ...copy]
+  }, [choices, remembered])
   return (
     <>
       <CommandInput placeholder={`选一个协议打开 ${node.name}…`} autoFocus />
       <CommandList>
         <CommandEmpty>没有可用协议</CommandEmpty>
         <CommandGroup heading={`协议 — ${node.name} (${node.host}:${node.port})`}>
-          {choices.map((choice) => {
+          {ordered.map((choice) => {
             const meta = metaOf(choice.protocol)
             const Icon = meta.icon
+            const isRemembered =
+              remembered?.protocol === choice.protocol && remembered?.rdpBackend === choice.rdpBackend
             return (
               <CommandItem
                 key={choice.value}
@@ -311,6 +379,11 @@ function ProtocolPicker({
                   <Icon className={cn("h-4 w-4", meta.tint)} />
                 </span>
                 <span className="flex-1 text-sm">{choice.label}</span>
+                {isRemembered && (
+                  <span className="shrink-0 rounded bg-primary/12 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                    常用
+                  </span>
+                )}
                 {choice.description && (
                   <span className="hidden max-w-[17rem] truncate text-[10px] text-muted-foreground sm:inline">
                     {choice.description}
