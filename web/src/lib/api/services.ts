@@ -61,6 +61,12 @@ import type {
   PerfDmesg,
   LogList,
   LogTail,
+  Hardware,
+  KernelInfo,
+  StorageInfo,
+  NetInfo,
+  NetDiagResult,
+  NetDiagTool,
   LoginHistory,
   MFADevice,
   Node,
@@ -444,6 +450,32 @@ export const logsService = {
   // access token rides as a query param (backend middleware honours ?token=).
   followURL: (nodeId: number, source: "journal" | "file", ref: string, lines = 200) =>
     withTokenQuery(buildURLFromAPI(`/nodes/${nodeId}/logs/follow`, { source, ref, lines })),
+}
+
+export const hardwareService = {
+  info: (nodeId: number) => api<Hardware>("GET", `/nodes/${nodeId}/hardware`),
+}
+
+export const kernelService = {
+  info: (nodeId: number) => api<KernelInfo>("GET", `/nodes/${nodeId}/kernel`),
+  setSysctl: (nodeId: number, key: string, value: string, persist: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/kernel/sysctl`, { body: { key, value, persist } }),
+}
+
+export const storageService = {
+  info: (nodeId: number) => api<StorageInfo>("GET", `/nodes/${nodeId}/storage`),
+  mount: (nodeId: number, target: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/storage/mount`, { body: { target } }),
+  unmount: (nodeId: number, target: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/storage/umount`, { body: { target } }),
+}
+
+export const networkService = {
+  info: (nodeId: number) => api<NetInfo>("GET", `/nodes/${nodeId}/network`),
+  diagnose: (nodeId: number, tool: NetDiagTool, target: string) =>
+    api<NetDiagResult>("POST", `/nodes/${nodeId}/network/diagnose`, { body: { tool, target } }),
+  setIface: (nodeId: number, name: string, up: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/network/iface`, { body: { name, up } }),
 }
 
 export const portfwdService = {

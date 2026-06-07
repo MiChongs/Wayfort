@@ -6,13 +6,17 @@ import {
   Activity,
   Box,
   Cog,
+  Cpu,
   Gauge,
+  HardDrive,
   History,
   Info,
+  Network,
   PanelRightClose,
   PanelRightOpen,
   ScrollText,
   Shield,
+  SlidersHorizontal,
   TerminalSquare,
   Zap,
 } from "lucide-react"
@@ -28,6 +32,10 @@ import { CommandRunnerTab } from "./server/CommandRunnerTab"
 import { ProcessesTab } from "./server/ProcessesTab"
 import { PerformanceTab } from "./server/PerformanceTab"
 import { LogsTab } from "./server/LogsTab"
+import { HardwareTab } from "./server/HardwareTab"
+import { KernelTab } from "./server/KernelTab"
+import { StorageTab } from "./server/StorageTab"
+import { NetworkToolsTab } from "./server/NetworkTab"
 import { useWorkspaceStore, type SubTab as SubTabKey } from "./useWorkspaceStore"
 
 type Props = {
@@ -62,6 +70,11 @@ const DOCK_TABS: DockTab[] = [
   { key: "services", label: "服务", group: "运行", icon: Cog, render: ({ nodeId, active }) => <ServicesTab nodeId={nodeId} active={active} /> },
   { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, active }) => <DockerTab nodeId={nodeId} active={active} /> },
   { key: "runner", label: "命令", group: "运行", icon: TerminalSquare, render: ({ nodeId, tabId, active }) => <CommandRunnerTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  // 系统
+  { key: "network", label: "网络", group: "系统", icon: Network, render: ({ nodeId, tabId, active }) => <NetworkToolsTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "storage", label: "存储", group: "系统", icon: HardDrive, render: ({ nodeId, tabId, active }) => <StorageTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "kernel", label: "内核", group: "系统", icon: SlidersHorizontal, render: ({ nodeId, tabId, active }) => <KernelTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "hardware", label: "硬件", group: "系统", icon: Cpu, render: ({ nodeId, active }) => <HardwareTab nodeId={nodeId} active={active} /> },
   // 治理
   { key: "firewall", label: "防火墙", group: "治理", icon: Shield, render: ({ nodeId, active }) => <FirewallTab nodeId={nodeId} active={active} /> },
   { key: "sessions", label: "会话", group: "治理", icon: History, render: ({ nodeId }) => <SessionsTab nodeId={nodeId} /> },

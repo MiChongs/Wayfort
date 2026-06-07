@@ -63,6 +63,30 @@ func logsHandler(rt *Routes) *api.LogsHandler {
 	}
 	return api.NewLogsHandlerStub(opsStubReason)
 }
+func hardwareHandler(rt *Routes) *api.HardwareHandler {
+	if rt.Hardware != nil {
+		return rt.Hardware
+	}
+	return api.NewHardwareHandlerStub(opsStubReason)
+}
+func kernelHandler(rt *Routes) *api.KernelHandler {
+	if rt.Kernel != nil {
+		return rt.Kernel
+	}
+	return api.NewKernelHandlerStub(opsStubReason)
+}
+func storageHandler(rt *Routes) *api.StorageHandler {
+	if rt.Storage != nil {
+		return rt.Storage
+	}
+	return api.NewStorageHandlerStub(opsStubReason)
+}
+func nettoolsHandler(rt *Routes) *api.NetToolsHandler {
+	if rt.NetTools != nil {
+		return rt.NetTools
+	}
+	return api.NewNetToolsHandlerStub(opsStubReason)
+}
 
 // insightsHandler returns rt.Insights if non-nil, else a stub that always
 // responds 503. Lets us register routes unconditionally so missing /
@@ -155,6 +179,10 @@ type Routes struct {
 	Process  *api.ProcessHandler
 	Perf     *api.PerfHandler
 	Logs     *api.LogsHandler
+	Hardware *api.HardwareHandler
+	Kernel   *api.KernelHandler
+	Storage  *api.StorageHandler
+	NetTools *api.NetToolsHandler
 
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
@@ -481,6 +509,19 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/logs/files", logsHandler(rt).Files)
 		ops.GET("/nodes/:id/logs/tail", logsHandler(rt).Tail)
 		ops.GET("/nodes/:id/logs/follow", logsHandler(rt).Follow)
+		// Ops dock — hardware inventory (read-only).
+		ops.GET("/nodes/:id/hardware", hardwareHandler(rt).Info)
+		// Ops dock — kernel params. Read ActionConnect; sysctl write PermKernelManage.
+		ops.GET("/nodes/:id/kernel", kernelHandler(rt).Info)
+		ops.POST("/nodes/:id/kernel/sysctl", perm(auth.PermKernelManage), kernelHandler(rt).SetSysctl)
+		// Ops dock — storage. Read ActionConnect; mount/umount PermStorageManage.
+		ops.GET("/nodes/:id/storage", storageHandler(rt).Info)
+		ops.POST("/nodes/:id/storage/mount", perm(auth.PermStorageManage), storageHandler(rt).Mount)
+		ops.POST("/nodes/:id/storage/umount", perm(auth.PermStorageManage), storageHandler(rt).Unmount)
+		// Ops dock — network. Read+diagnose ActionConnect; iface up/down PermNetworkManage.
+		ops.GET("/nodes/:id/network", nettoolsHandler(rt).Info)
+		ops.POST("/nodes/:id/network/diagnose", nettoolsHandler(rt).Diagnose)
+		ops.POST("/nodes/:id/network/iface", perm(auth.PermNetworkManage), nettoolsHandler(rt).SetIface)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

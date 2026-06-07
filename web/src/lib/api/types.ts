@@ -904,6 +904,123 @@ export interface LogTail {
   sampled_at: string
 }
 
+// ---------------- hardware ----------------
+export interface HwMemModule {
+  locator: string
+  size: string
+  type?: string
+  speed?: string
+  manufacturer?: string
+}
+export interface Hardware {
+  cpu: Record<string, string>
+  bios: Record<string, string>
+  mem_summary: string
+  mem_modules?: HwMemModule[]
+  pci?: string[]
+  usb?: string[]
+  sensors?: string[]
+  notes?: string
+  sampled_at: string
+}
+
+// ---------------- kernel ----------------
+export interface KSysctl {
+  key: string
+  value: string
+}
+export interface KModule {
+  name: string
+  size_kb: number
+  used_by?: string
+}
+export interface KernelInfo {
+  hostname: string
+  kernel: string
+  os: string
+  timezone?: string
+  sysctls: KSysctl[]
+  modules: KModule[]
+  limits?: string
+  sampled_at: string
+}
+
+// ---------------- storage ----------------
+export interface StBlockDevice {
+  name: string
+  type: string
+  size: string
+  fstype?: string
+  mountpoint?: string
+  model?: string
+  children?: StBlockDevice[]
+}
+export interface StFilesystem {
+  source: string
+  fstype?: string
+  mount: string
+  size_kb: number
+  used_kb: number
+  avail_kb: number
+  use_pct: number
+  inode_pct: number
+}
+export interface StFstabEntry {
+  spec: string
+  mount: string
+  fstype: string
+  options: string
+}
+export interface StSmart {
+  device: string
+  health: string
+}
+export interface StorageInfo {
+  devices: StBlockDevice[]
+  filesystems: StFilesystem[]
+  fstab?: StFstabEntry[]
+  smart?: StSmart[]
+  lvm?: string
+  sampled_at: string
+}
+
+// ---------------- network tools ----------------
+export type NetDiagTool = "ping" | "traceroute" | "dig" | "curl" | "mtr"
+export interface NetIfaceInfo {
+  name: string
+  mac?: string
+  state: string
+  mtu?: number
+  ipv4?: string[]
+  ipv6?: string[]
+}
+export interface NetRoute {
+  dst: string
+  via?: string
+  dev?: string
+  proto?: string
+  src?: string
+}
+export interface NetConn {
+  proto: string
+  state: string
+  local: string
+  peer: string
+  process?: string
+}
+export interface NetInfo {
+  ifaces: NetIfaceInfo[]
+  routes: NetRoute[]
+  conns: NetConn[]
+  sampled_at: string
+}
+export interface NetDiagResult {
+  tool: string
+  target: string
+  output: string
+  sampled_at: string
+}
+
 export interface AssetGrant {
   id: number
   grantee_type: "user" | "role" | "group" | "department"

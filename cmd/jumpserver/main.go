@@ -46,10 +46,14 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
+	"github.com/michongs/jumpserver-anonymous/internal/hardware"
+	"github.com/michongs/jumpserver-anonymous/internal/kernel"
 	"github.com/michongs/jumpserver-anonymous/internal/logs"
+	"github.com/michongs/jumpserver-anonymous/internal/nettools"
 	"github.com/michongs/jumpserver-anonymous/internal/perf"
 	"github.com/michongs/jumpserver-anonymous/internal/process"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/jumpserver-anonymous/internal/storage"
 	"github.com/michongs/jumpserver-anonymous/internal/systemd"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -734,6 +738,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		SSH: sshDeps, HostKey: sshDeps.HostKey,
 	})
 	routes.Logs = api.NewLogsHandler(logsMgr)
+	hardwareMgr := hardware.NewManager(hardware.Config{Enabled: true}, hardware.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, SSH: sshDeps,
+	})
+	routes.Hardware = api.NewHardwareHandler(hardwareMgr)
+	kernelMgr := kernel.NewManager(kernel.Config{Enabled: true}, kernel.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Kernel = api.NewKernelHandler(kernelMgr)
+	storageMgr := storage.NewManager(storage.Config{Enabled: true}, storage.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Storage = api.NewStorageHandler(storageMgr)
+	nettoolsMgr := nettools.NewManager(nettools.Config{Enabled: true}, nettools.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.NetTools = api.NewNetToolsHandler(nettoolsMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{
