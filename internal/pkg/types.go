@@ -40,12 +40,25 @@ type Update struct {
 	Security  bool   `json:"security,omitempty"`
 }
 
-// Pkg is one search hit.
+// Pkg is one search hit / installed entry.
 type Pkg struct {
 	Name      string `json:"name"`
 	Version   string `json:"version,omitempty"`
 	Installed bool   `json:"installed"`
 	Summary   string `json:"summary,omitempty"`
+}
+
+// Info is the expanded detail of one package.
+type Info struct {
+	Name      string   `json:"name"`
+	Version   string   `json:"version,omitempty"`
+	Installed bool     `json:"installed"`
+	Size      string   `json:"size,omitempty"`
+	Summary   string   `json:"summary,omitempty"`
+	Homepage  string   `json:"homepage,omitempty"`
+	Section   string   `json:"section,omitempty"`
+	Depends   []string `json:"depends,omitempty"`
+	Raw       string   `json:"raw"`
 }
 
 // ActionResult carries the captured output of a write op (these can be chatty).
@@ -63,11 +76,13 @@ const (
 	VerbUpgrade    Verb = "upgrade"      // upgrade one package
 	VerbUpgradeAll Verb = "upgrade-all"  // upgrade everything
 	VerbUpdate     Verb = "update"       // refresh package index
+	VerbAutoremove Verb = "autoremove"   // drop orphaned deps
+	VerbClean      Verb = "clean"        // clear the download cache
 )
 
 func ValidVerb(v Verb) bool {
 	switch v {
-	case VerbInstall, VerbRemove, VerbUpgrade, VerbUpgradeAll, VerbUpdate:
+	case VerbInstall, VerbRemove, VerbUpgrade, VerbUpgradeAll, VerbUpdate, VerbAutoremove, VerbClean:
 		return true
 	}
 	return false
@@ -87,4 +102,5 @@ var (
 	ErrNoManager        = errors.New("pkg: no supported package manager found")
 	ErrBadName          = errors.New("pkg: invalid package name")
 	ErrBadVerb          = errors.New("pkg: unsupported action")
+	ErrUnsupported      = errors.New("pkg: action not supported by this package manager")
 )

@@ -63,4 +63,78 @@ const (
 	ActionStop    Action = "stop"
 	ActionRestart Action = "restart"
 	ActionRemove  Action = "remove"
+	ActionPause   Action = "pause"
+	ActionUnpause Action = "unpause"
+	ActionKill    Action = "kill"
 )
+
+// ValidAction reports whether a is a recognised container verb.
+func ValidAction(a Action) bool {
+	switch a {
+	case ActionStart, ActionStop, ActionRestart, ActionRemove, ActionPause, ActionUnpause, ActionKill:
+		return true
+	}
+	return false
+}
+
+// ContainerDetail is the curated view of `docker inspect <cid>` plus the raw
+// pretty-printed JSON for power users.
+type ContainerDetail struct {
+	ID            string   `json:"id"`
+	Name          string   `json:"name"`
+	Image         string   `json:"image"`
+	State         string   `json:"state"`
+	Status        string   `json:"status"`
+	Created       string   `json:"created,omitempty"`
+	StartedAt     string   `json:"started_at,omitempty"`
+	RestartPolicy string   `json:"restart_policy,omitempty"`
+	RestartCount  int      `json:"restart_count"`
+	IPAddress     string   `json:"ip_address,omitempty"`
+	Ports         []string `json:"ports,omitempty"`
+	Mounts        []string `json:"mounts,omitempty"`
+	Env           []string `json:"env,omitempty"`
+	Networks      []string `json:"networks,omitempty"`
+	Cmd           string   `json:"cmd,omitempty"`
+	Raw           string   `json:"raw"`
+	SampledAt     time.Time `json:"sampled_at"`
+}
+
+// ContainerStats is one row of `docker stats --no-stream`.
+type ContainerStats struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	CPUPct   float64 `json:"cpu_pct"`
+	MemUsage string  `json:"mem_usage"`
+	MemPct   float64 `json:"mem_pct"`
+	NetIO    string  `json:"net_io"`
+	BlockIO  string  `json:"block_io"`
+	PIDs     int     `json:"pids"`
+}
+
+// TopResult is `docker top <cid>`: a header row + process rows.
+type TopResult struct {
+	ContainerID string     `json:"container_id"`
+	Titles      []string   `json:"titles"`
+	Processes   [][]string `json:"processes"`
+}
+
+// Network mirrors `docker network ls --format '{{json .}}'`.
+type Network struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Driver string `json:"driver"`
+	Scope  string `json:"scope"`
+}
+
+// Volume mirrors `docker volume ls --format '{{json .}}'`.
+type Volume struct {
+	Name       string `json:"name"`
+	Driver     string `json:"driver"`
+	Mountpoint string `json:"mountpoint,omitempty"`
+}
+
+// ActionResult carries chatty command output (pull / prune / rmi).
+type ActionResult struct {
+	OK     bool   `json:"ok"`
+	Output string `json:"output"`
+}

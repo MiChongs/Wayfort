@@ -5,32 +5,54 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Box,
   Container as ContainerIcon,
+  Download,
   Loader2,
+  MoreHorizontal,
+  Network as NetworkIcon,
   Pause,
   Play,
   RefreshCw,
   RotateCw,
+  Square,
   Trash2,
-  X,
+  TerminalSquare,
+  Zap,
 } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useConfirm } from "@/components/admin/use-confirm"
+import { usagePctTone } from "@/components/insights/format"
 import { dockerService } from "@/lib/api/services"
-import type { DockerContainer } from "@/lib/api/types"
+import type { DockerContainer, DockerImage, DockerStats } from "@/lib/api/types"
+import { cn } from "@/lib/utils"
+import { RunInTerminalButton, useSendToTerminal, codeOf, type ApiError } from "./_shared"
 
-type Props = {
-  nodeId: number
-  active: boolean
-}
+type Props = { nodeId: number; tabId: string; active: boolean }
+type CVerb = "start" | "stop" | "restart" | "pause" | "unpause" | "kill" | "remove"
 
-// DockerTab — surfaces `docker ps -a` / `docker images` plus per-container
-// actions (start/stop/restart/rm) and log preview. State changes invalidate
-// the cache so the list reflects new container state within ~30s.
-export function DockerTab({ nodeId, active }: Props) {
+export function DockerTab({ nodeId, tabId, active }: Props) {
   const qc = useQueryClient()
+  const { confirm, dialog } = useConfirm()
+  const [detailCid, setDetailCid] = React.useState<string | null>(null)
+  const [pruneOut, setPruneOut] = React.useState<{ title: string; output: string } | null>(null)
+
   const status = useQuery({
     queryKey: ["docker", nodeId, "status"],
     queryFn: () => dockerService.status(nodeId),
@@ -41,376 +63,361 @@ export function DockerTab({ nodeId, active }: Props) {
     queryKey: ["docker", nodeId, "containers"],
     queryFn: () => dockerService.listContainers(nodeId),
     enabled: active && !!status.data?.available,
-    refetchInterval: 30_000,
+    refetchInterval: 15_000,
   })
-  const images = useQuery({
-    queryKey: ["docker", nodeId, "images"],
-    queryFn: () => dockerService.listImages(nodeId),
+  const stats = useQuery({
+    queryKey: ["docker", nodeId, "stats"],
+    queryFn: () => dockerService.stats(nodeId),
     enabled: active && !!status.data?.available,
-    refetchInterval: 60_000,
+    refetchInterval: 5_000,
   })
 
-  const [logCid, setLogCid] = React.useState<string | null>(null)
+  const invalidate = React.useCallback(() => void qc.invalidateQueries({ queryKey: ["docker", nodeId] }), [nodeId, qc])
 
-  const invalidate = React.useCallback(() => {
-    void qc.invalidateQueries({ queryKey: ["docker", nodeId] })
-  }, [nodeId, qc])
+  const action = useMutation({
+    mutationFn: ({ verb, cid }: { verb: CVerb; cid: string }) => {
+      switch (verb) {
+        case "start": return dockerService.start(nodeId, cid)
+        case "stop": return dockerService.stop(nodeId, cid)
+        case "restart": return dockerService.restart(nodeId, cid)
+        case "pause": return dockerService.pause(nodeId, cid)
+        case "unpause": return dockerService.unpause(nodeId, cid)
+        case "kill": return dockerService.kill(nodeId, cid)
+        case "remove": return dockerService.remove(nodeId, cid, true)
+      }
+    },
+    onSuccess: (_d, v) => { toast.success(`已${verbLabel(v.verb)}`); invalidate() },
+    onError: (e: ApiError, v) => toast.error(`${verbLabel(v.verb)}失败`, { description: e?.message }),
+  })
+
+  const prune = useMutation({
+    mutationFn: (what: string) => dockerService.prune(nodeId, what),
+    onSuccess: (r, what) => { setPruneOut({ title: `prune ${what}`, output: r.output }); invalidate() },
+    onError: (e: ApiError) => toast.error("清理失败", { description: e?.message }),
+  })
+
+  const statByShort = React.useMemo(() => {
+    const m = new Map<string, DockerStats>()
+    for (const s of stats.data?.stats ?? []) m.set(s.id, s)
+    return m
+  }, [stats.data])
 
   if (!active) return null
 
   if (status.isLoading) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-muted-foreground p-6">
-        <Loader2 className="w-4 h-4 animate-spin" /> 探测 Docker 守护进程…
-      </div>
-    )
+    return <div className="flex items-center gap-2 text-sm text-muted-foreground p-6"><Loader2 className="w-4 h-4 animate-spin" /> 探测 Docker 守护进程…</div>
   }
-
   if (!status.data?.available) {
     return (
       <div className="p-6 text-center text-sm text-muted-foreground space-y-2">
         <Box className="w-8 h-8 mx-auto opacity-50" />
         <div className="font-medium text-foreground">Docker 不可用</div>
-        <div className="text-xs">
-          {status.data?.reason || "节点上未找到 docker 命令"}
-        </div>
+        <div className="text-xs">{status.data?.reason || "节点上未找到 docker 命令"}</div>
+        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => status.refetch()}><RefreshCw className="w-3 h-3" /> 重试</Button>
       </div>
     )
   }
 
   return (
     <div className="flex flex-col h-full">
+      {dialog}
       <header className="flex items-center justify-between gap-2 px-3 py-2 border-b bg-card">
         <div className="flex items-center gap-2 min-w-0">
-          <Box className="w-4 h-4 text-primary" />
+          <Box className="w-4 h-4 text-primary shrink-0" />
           <span className="text-xs font-medium">Docker {status.data.version}</span>
-          <span className="text-[10px] text-muted-foreground">
-            {status.data.containers} 容器 · {status.data.images} 镜像
-          </span>
+          <span className="text-[10px] text-muted-foreground truncate">{status.data.containers} 容器 · {status.data.images} 镜像</span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          onClick={() => invalidate()}
-          title="刷新"
-        >
-          <RefreshCw
-            className={`w-3 h-3 ${
-              status.isFetching || containers.isFetching || images.isFetching ? "animate-spin" : ""
-            }`}
-          />
-        </Button>
+        <div className="flex items-center gap-1">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-7 w-7" title="清理 (prune)"><Zap className="w-3.5 h-3.5" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="text-xs">
+              <DropdownMenuItem onClick={async () => { if (await confirm({ title: "system prune？", description: "删除所有停止的容器、悬空镜像、未用网络与构建缓存。", confirmLabel: "清理" })) prune.mutate("system") }}>清理全部 (system)</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => prune.mutate("image")}>未用镜像</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => prune.mutate("container")}>停止的容器</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => prune.mutate("volume")}>未用卷</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => prune.mutate("network")}>未用网络</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => invalidate()} title="刷新"><RefreshCw className={cn("w-3 h-3", (status.isFetching || containers.isFetching) && "animate-spin")} /></Button>
+        </div>
       </header>
 
       <Tabs defaultValue="containers" className="flex-1 flex flex-col min-h-0">
-        <TabsList className="h-8 mx-3 mt-2 self-start">
-          <TabsTrigger value="containers" className="text-xs h-6">
-            <ContainerIcon className="w-3 h-3" /> 容器
-          </TabsTrigger>
-          <TabsTrigger value="images" className="text-xs h-6">
-            <Box className="w-3 h-3" /> 镜像
-          </TabsTrigger>
+        <TabsList className="mx-2 mt-2 h-8 bg-transparent border-b rounded-none p-0 self-start">
+          <TabsTrigger value="containers" className="text-xs">容器</TabsTrigger>
+          <TabsTrigger value="images" className="text-xs">镜像</TabsTrigger>
+          <TabsTrigger value="networks" className="text-xs">网络</TabsTrigger>
+          <TabsTrigger value="volumes" className="text-xs">卷</TabsTrigger>
         </TabsList>
+
         <TabsContent value="containers" className="flex-1 min-h-0 mt-0 overflow-auto">
-          <ContainersTable
-            list={containers.data?.containers ?? []}
-            loading={containers.isLoading}
-            nodeId={nodeId}
-            onShowLogs={setLogCid}
-            onMutated={invalidate}
-          />
+          {(containers.data?.containers?.length ?? 0) === 0 ? (
+            <div className="text-xs text-muted-foreground p-6 text-center">没有容器</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
+                <tr><th className="text-left px-2 py-1.5">名称</th><th className="text-left px-2 py-1.5">状态</th><th className="text-right px-2 py-1.5">CPU</th><th className="text-right px-2 py-1.5">内存</th><th className="text-right px-2 py-1.5 w-16"></th></tr>
+              </thead>
+              <tbody className="divide-y">
+                {(containers.data?.containers ?? []).map((c) => (
+                  <ContainerRow key={c.id} c={c} tabId={tabId} stat={statByShort.get(c.id.slice(0, 12))} busy={action.isPending}
+                    onAction={async (verb) => {
+                      if (verb === "remove" || verb === "kill") {
+                        if (!(await confirm({ title: `${verbLabel(verb)} ${c.names || c.id.slice(0, 12)}？`, description: verb === "remove" ? "强制删除容器（持久卷不受影响）。" : "立即 SIGKILL 容器进程。", confirmLabel: verbLabel(verb) }))) return
+                      }
+                      action.mutate({ verb, cid: c.id })
+                    }}
+                    onDetail={() => setDetailCid(c.id)}
+                    onRename={async (name) => { try { await dockerService.rename(nodeId, c.id, name); toast.success("已重命名"); invalidate() } catch (e) { toast.error("重命名失败", { description: (e as ApiError)?.message }) } }}
+                  />
+                ))}
+              </tbody>
+            </table>
+          )}
         </TabsContent>
-        <TabsContent value="images" className="flex-1 min-h-0 mt-0 overflow-auto">
-          <ImagesTable list={images.data?.images ?? []} loading={images.isLoading} />
+
+        <TabsContent value="images" className="flex-1 min-h-0 mt-0 flex flex-col">
+          <ImagesPanel nodeId={nodeId} onMutated={invalidate} confirm={confirm} setPruneOut={setPruneOut} />
+        </TabsContent>
+
+        <TabsContent value="networks" className="flex-1 min-h-0 mt-0 overflow-auto">
+          <NetworksPanel nodeId={nodeId} active={active} />
+        </TabsContent>
+        <TabsContent value="volumes" className="flex-1 min-h-0 mt-0 overflow-auto">
+          <VolumesPanel nodeId={nodeId} active={active} />
         </TabsContent>
       </Tabs>
 
-      <LogsDrawer nodeId={nodeId} containerId={logCid} onClose={() => setLogCid(null)} />
+      <DetailSheet nodeId={nodeId} tabId={tabId} cid={detailCid} onClose={() => setDetailCid(null)} />
+
+      <Sheet open={!!pruneOut} onOpenChange={(v) => !v && setPruneOut(null)}>
+        <SheetContent side="right" className="w-[min(560px,calc(100vw-2rem))] sm:max-w-none flex flex-col gap-3">
+          <SheetHeader><SheetTitle className="font-mono">{pruneOut?.title}</SheetTitle></SheetHeader>
+          <pre className="flex-1 overflow-auto bg-muted/60 rounded-md p-2 text-[11px] font-mono whitespace-pre-wrap break-words">{pruneOut?.output || "（无输出）"}</pre>
+        </SheetContent>
+      </Sheet>
     </div>
   )
 }
 
-type ContainerVerb = "start" | "stop" | "restart" | "remove"
-type ContainerActionPayload = { verb: ContainerVerb; cid: string; force?: boolean }
-
-function ContainersTable({
-  list,
-  loading,
-  nodeId,
-  onShowLogs,
-  onMutated,
-}: {
-  list: DockerContainer[]
-  loading: boolean
-  nodeId: number
-  onShowLogs: (cid: string) => void
-  onMutated: () => void
-}) {
-  // One mutation at the table level — rows dispatch by payload so we never
-  // call useMutation per-row (would violate hooks rules with variable lists).
-  const action = useMutation({
-    mutationFn: ({ verb, cid, force }: ContainerActionPayload) => {
-      switch (verb) {
-        case "start":
-          return dockerService.start(nodeId, cid)
-        case "stop":
-          return dockerService.stop(nodeId, cid)
-        case "restart":
-          return dockerService.restart(nodeId, cid)
-        case "remove":
-          return dockerService.remove(nodeId, cid, force ?? false)
-      }
-    },
-    onSuccess: (_data, vars) => {
-      toast.success(`已${labelOf(vars.verb)}`)
-      onMutated()
-    },
-    onError: (e: { message?: string }, vars) =>
-      toast.error(`${labelOf(vars.verb)}失败`, { description: e?.message }),
-  })
-
-  if (loading) {
-    return (
-      <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2">
-        <Loader2 className="w-3 h-3 animate-spin" /> 加载容器…
-      </div>
-    )
-  }
-  if (list.length === 0) {
-    return <div className="text-xs text-muted-foreground p-6 text-center">没有容器</div>
-  }
-  return (
-    <table className="w-full text-xs">
-      <thead className="bg-muted/50 sticky top-0 text-[10px] uppercase text-muted-foreground">
-        <tr>
-          <th className="text-left px-2 py-1.5">名称</th>
-          <th className="text-left px-2 py-1.5">镜像</th>
-          <th className="text-left px-2 py-1.5">状态</th>
-          <th className="text-left px-2 py-1.5">端口</th>
-          <th className="text-right px-2 py-1.5">操作</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y">
-        {list.map((c) => (
-          <ContainerRow
-            key={c.id}
-            c={c}
-            onLogs={() => onShowLogs(c.id)}
-            onAction={(verb, force) => action.mutate({ verb, cid: c.id, force })}
-            busy={action.isPending}
-          />
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function ContainerRow({
-  c,
-  onLogs,
-  onAction,
-  busy,
-}: {
-  c: DockerContainer
-  onLogs: () => void
-  onAction: (verb: ContainerVerb, force?: boolean) => void
-  busy: boolean
+function ContainerRow({ c, tabId, stat, busy, onAction, onDetail, onRename }: {
+  c: DockerContainer; tabId: string; stat?: DockerStats; busy: boolean
+  onAction: (verb: CVerb) => void; onDetail: () => void; onRename: (name: string) => void
 }) {
   const running = c.state === "running"
-  const { confirm: confirmDialog, dialog } = useConfirm()
-  const onRemove = async () => {
-    const ok = await confirmDialog({
-      title: `删除容器 “${c.names || c.id.slice(0, 12)}”？`,
-      description: "将以 force=true 立即终止并删除容器,持久卷不受影响。",
-      confirmLabel: "删除",
-    })
-    if (ok) onAction("remove", true)
-  }
+  const paused = c.state === "paused"
   return (
-    <>
-      {dialog}
-      <tr className="hover:bg-accent/40" title={c.command}>
-      <td className="px-2 py-1.5">
-        <div className="font-medium truncate max-w-[10rem]">{c.names || c.id.slice(0, 12)}</div>
-        <div className="text-[10px] text-muted-foreground font-mono">{c.id.slice(0, 12)}</div>
+    <tr className="hover:bg-accent/40">
+      <td className="px-2 py-1.5 min-w-0">
+        <button type="button" onClick={onDetail} className="font-medium truncate max-w-[10rem] hover:text-primary text-left block" title={c.command}>{c.names || c.id.slice(0, 12)}</button>
+        <div className="text-[10px] text-muted-foreground font-mono truncate max-w-[10rem]">{c.image}</div>
       </td>
-      <td className="px-2 py-1.5 truncate max-w-[12rem] font-mono">{c.image}</td>
       <td className="px-2 py-1.5">
-        <Badge variant={running ? "success" : "secondary"} className="text-[10px]">
-          {c.state}
-        </Badge>
-        <div className="text-[10px] text-muted-foreground mt-0.5 truncate max-w-[10rem]">
-          {c.status}
-        </div>
+        <Badge variant={running ? "success" : paused ? "warning" : "secondary"} className="text-[10px]">{c.state}</Badge>
       </td>
-      <td className="px-2 py-1.5 font-mono text-[10px] truncate max-w-[10rem]">{c.ports || "—"}</td>
+      <td className={cn("px-2 py-1.5 text-right tabular-nums", stat && usagePctTone(stat.cpu_pct))}>{stat ? `${stat.cpu_pct.toFixed(0)}%` : "—"}</td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-muted-foreground">{stat ? `${stat.mem_pct.toFixed(0)}%` : "—"}</td>
       <td className="px-2 py-1.5 text-right">
         <div className="inline-flex gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            title="查看日志"
-            onClick={onLogs}
-          >
-            <ContainerIcon className="w-3 h-3" />
-          </Button>
-          {running ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
-              title="停止"
-              disabled={busy}
-              onClick={() => onAction("stop")}
-            >
-              <Pause className="w-3 h-3" />
-            </Button>
+          {running || paused ? (
+            <Button variant="ghost" size="icon" className="h-6 w-6" title="停止" disabled={busy} onClick={() => onAction("stop")}><Square className="w-3 h-3" /></Button>
           ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6"
-              title="启动"
-              disabled={busy}
-              onClick={() => onAction("start")}
-            >
-              <Play className="w-3 h-3" />
-            </Button>
+            <Button variant="ghost" size="icon" className="h-6 w-6" title="启动" disabled={busy} onClick={() => onAction("start")}><Play className="w-3 h-3" /></Button>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6"
-            title="重启"
-            disabled={busy}
-            onClick={() => onAction("restart")}
-          >
-            <RotateCw className="w-3 h-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-6 w-6 text-destructive"
-            title="删除（强制）"
-            disabled={busy}
-            onClick={onRemove}
-          >
-            <Trash2 className="w-3 h-3" />
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-6 w-6" title="更多" disabled={busy}><MoreHorizontal className="w-3 h-3" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="text-xs">
+              <DropdownMenuItem onClick={() => onAction("restart")}><RotateCw className="w-3.5 h-3.5" /> 重启</DropdownMenuItem>
+              {paused ? (
+                <DropdownMenuItem onClick={() => onAction("unpause")}><Play className="w-3.5 h-3.5" /> 恢复</DropdownMenuItem>
+              ) : running ? (
+                <DropdownMenuItem onClick={() => onAction("pause")}><Pause className="w-3.5 h-3.5" /> 暂停</DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem onClick={onDetail}><ContainerIcon className="w-3.5 h-3.5" /> 详情 / 日志</DropdownMenuItem>
+              <RenameItem current={c.names} onRename={onRename} />
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onAction("kill")}>SIGKILL</DropdownMenuItem>
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => onAction("remove")}><Trash2 className="w-3.5 h-3.5" /> 删除</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </td>
     </tr>
+  )
+}
+
+function RenameItem({ current, onRename }: { current: string; onRename: (name: string) => void }) {
+  return (
+    <DropdownMenuItem onSelect={(e) => {
+      e.preventDefault()
+      const name = window.prompt("新容器名", current)
+      if (name && name.trim()) onRename(name.trim())
+    }}>重命名</DropdownMenuItem>
+  )
+}
+
+function ImagesPanel({ nodeId, onMutated, confirm, setPruneOut }: {
+  nodeId: number; onMutated: () => void
+  confirm: (o: { title: string; description?: string; confirmLabel?: string }) => Promise<boolean>
+  setPruneOut: (v: { title: string; output: string } | null) => void
+}) {
+  const [pullRef, setPullRef] = React.useState("")
+  const images = useQuery({ queryKey: ["docker", nodeId, "images"], queryFn: () => dockerService.listImages(nodeId), refetchInterval: 60_000 })
+  const pull = useMutation({
+    mutationFn: () => dockerService.pullImage(nodeId, pullRef.trim()),
+    onSuccess: (r) => { setPruneOut({ title: `pull ${pullRef}`, output: r.output }); setPullRef(""); onMutated() },
+    onError: (e: ApiError) => toast.error("拉取失败", { description: e?.message }),
+  })
+  const rmi = useMutation({
+    mutationFn: (ref: string) => dockerService.removeImage(nodeId, ref, false),
+    onSuccess: () => { toast.success("已删除镜像"); onMutated() },
+    onError: (e: ApiError) => toast.error("删除失败", { description: e?.message }),
+  })
+  return (
+    <>
+      <div className="p-2 border-b flex items-center gap-1.5">
+        <Input value={pullRef} onChange={(e) => setPullRef(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && pullRef.trim()) pull.mutate() }} placeholder="拉取镜像，如 nginx:latest" className="h-7 text-xs font-mono flex-1" />
+        <Button size="sm" className="h-7 text-xs" disabled={!pullRef.trim() || pull.isPending} onClick={() => pull.mutate()}>{pull.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} 拉取</Button>
+      </div>
+      <div className="flex-1 overflow-auto">
+        {images.isLoading ? (
+          <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载镜像…</div>
+        ) : (images.data?.images?.length ?? 0) === 0 ? (
+          <div className="text-xs text-muted-foreground p-6 text-center">没有镜像</div>
+        ) : (
+          <table className="w-full text-xs">
+            <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground">
+              <tr><th className="text-left px-2 py-1.5">仓库:标签</th><th className="text-left px-2 py-1.5">大小</th><th className="text-right px-2 py-1.5 w-8"></th></tr>
+            </thead>
+            <tbody className="divide-y">
+              {(images.data?.images ?? []).map((i: DockerImage) => {
+                const ref = i.repository && i.repository !== "<none>" ? `${i.repository}:${i.tag}` : i.id
+                return (
+                  <tr key={i.id} className="hover:bg-accent/40">
+                    <td className="px-2 py-1.5 font-mono truncate max-w-[14rem]" title={ref}>{i.repository}:{i.tag}</td>
+                    <td className="px-2 py-1.5 font-mono text-muted-foreground">{i.size}</td>
+                    <td className="px-2 py-1.5 text-right">
+                      <Button variant="ghost" size="icon" className="h-6 w-6 text-destructive" title="删除镜像" disabled={rmi.isPending}
+                        onClick={async () => { if (await confirm({ title: `删除镜像 ${ref}？`, confirmLabel: "删除" })) rmi.mutate(ref) }}><Trash2 className="w-3 h-3" /></Button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
     </>
   )
 }
 
-function labelOf(verb: string): string {
-  return { start: "启动", stop: "停止", restart: "重启", remove: "删除" }[verb] ?? verb
-}
-
-function ImagesTable({
-  list,
-  loading,
-}: {
-  list: { id: string; repository: string; tag: string; size: string; created_at: string }[]
-  loading: boolean
-}) {
-  if (loading) {
-    return (
-      <div className="text-xs text-muted-foreground p-6 inline-flex items-center gap-2">
-        <Loader2 className="w-3 h-3 animate-spin" /> 加载镜像…
-      </div>
-    )
-  }
-  if (list.length === 0) {
-    return <div className="text-xs text-muted-foreground p-6 text-center">没有镜像</div>
-  }
+function NetworksPanel({ nodeId, active }: { nodeId: number; active: boolean }) {
+  const q = useQuery({ queryKey: ["docker", nodeId, "networks"], queryFn: () => dockerService.networks(nodeId), enabled: active })
   return (
-    <table className="w-full text-xs">
-      <thead className="bg-muted/50 sticky top-0 text-[10px] uppercase text-muted-foreground">
-        <tr>
-          <th className="text-left px-2 py-1.5">仓库</th>
-          <th className="text-left px-2 py-1.5">标签</th>
-          <th className="text-left px-2 py-1.5">大小</th>
-          <th className="text-left px-2 py-1.5">创建</th>
-        </tr>
-      </thead>
-      <tbody className="divide-y">
-        {list.map((i) => (
-          <tr key={i.id} className="hover:bg-accent/40">
-            <td className="px-2 py-1.5 font-mono truncate max-w-[12rem]">{i.repository}</td>
-            <td className="px-2 py-1.5 font-mono">{i.tag}</td>
-            <td className="px-2 py-1.5 font-mono">{i.size}</td>
-            <td className="px-2 py-1.5 text-muted-foreground">{i.created_at}</td>
-          </tr>
+    <table className="w-full text-[11px]">
+      <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground"><tr><th className="text-left px-3 py-1.5">名称</th><th className="text-left px-2 py-1.5">驱动</th><th className="text-left px-3 py-1.5">范围</th></tr></thead>
+      <tbody className="divide-y divide-border/40">
+        {(q.data?.networks ?? []).map((n) => (
+          <tr key={n.id} className="hover:bg-muted/50"><td className="px-3 py-1 font-mono inline-flex items-center gap-1.5"><NetworkIcon className="w-3 h-3 text-muted-foreground" />{n.name}</td><td className="px-2 py-1 text-muted-foreground">{n.driver}</td><td className="px-3 py-1 text-muted-foreground">{n.scope}</td></tr>
         ))}
       </tbody>
     </table>
   )
 }
 
-function LogsDrawer({
-  nodeId,
-  containerId,
-  onClose,
-}: {
-  nodeId: number
-  containerId: string | null
-  onClose: () => void
-}) {
-  const logs = useQuery({
-    queryKey: ["docker", nodeId, "logs", containerId],
-    queryFn: () => dockerService.logs(nodeId, containerId as string, 500),
-    enabled: !!containerId,
-    refetchInterval: 5_000,
-  })
-
-  if (!containerId) return null
-
+function VolumesPanel({ nodeId, active }: { nodeId: number; active: boolean }) {
+  const q = useQuery({ queryKey: ["docker", nodeId, "volumes"], queryFn: () => dockerService.volumes(nodeId), enabled: active })
   return (
-    <div className="fixed inset-y-0 right-0 z-50 w-[min(640px,90vw)] bg-card border-l shadow-xl flex flex-col">
-      <header className="flex items-center justify-between gap-2 p-3 border-b">
-        <div className="min-w-0">
-          <div className="text-sm font-medium truncate">容器日志</div>
-          <div className="text-[11px] text-muted-foreground font-mono truncate">
-            {containerId.slice(0, 12)}
-          </div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={() => void logs.refetch()}
-            title="立即刷新"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${logs.isFetching ? "animate-spin" : ""}`} />
-          </Button>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
-            <X className="w-4 h-4" />
-          </Button>
-        </div>
-      </header>
-      <div className="flex-1 overflow-auto bg-muted/40 p-3 font-mono text-[11px] whitespace-pre-wrap leading-5">
-        {logs.isLoading ? (
-          <div className="inline-flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="w-3 h-3 animate-spin" /> 加载日志…
-          </div>
-        ) : logs.isError ? (
-          <div className="text-destructive">
-            {(logs.error as { message?: string })?.message || "加载失败"}
-          </div>
-        ) : logs.data?.logs ? (
-          logs.data.logs
-        ) : (
-          <span className="text-muted-foreground">（空）</span>
-        )}
-      </div>
-      <footer className="text-[10px] text-muted-foreground px-3 py-1.5 border-t">
-        最近 {logs.data?.tail ?? 500} 行 · 每 5 秒刷新
-      </footer>
-    </div>
+    <table className="w-full text-[11px]">
+      <thead className="bg-muted/40 sticky top-0 text-[10px] uppercase text-muted-foreground"><tr><th className="text-left px-3 py-1.5">卷名</th><th className="text-left px-2 py-1.5">驱动</th></tr></thead>
+      <tbody className="divide-y divide-border/40">
+        {(q.data?.volumes ?? []).map((v) => (
+          <tr key={v.name} className="hover:bg-muted/50"><td className="px-3 py-1 font-mono truncate max-w-[16rem]" title={v.mountpoint}>{v.name}</td><td className="px-2 py-1 text-muted-foreground">{v.driver}</td></tr>
+        ))}
+      </tbody>
+    </table>
   )
+}
+
+function DetailSheet({ nodeId, tabId, cid, onClose }: { nodeId: number; tabId: string; cid: string | null; onClose: () => void }) {
+  const send = useSendToTerminal(tabId)
+  const detail = useQuery({ queryKey: ["docker", nodeId, "inspect", cid], queryFn: () => dockerService.inspect(nodeId, cid as string), enabled: !!cid, retry: false })
+  const d = detail.data
+  return (
+    <Sheet open={!!cid} onOpenChange={(v) => !v && onClose()}>
+      <SheetContent side="right" className="w-[min(640px,calc(100vw-2rem))] sm:max-w-none flex flex-col gap-3">
+        <SheetHeader>
+          <SheetTitle className="truncate">{d?.name || cid?.slice(0, 12)}</SheetTitle>
+          <SheetDescription className="font-mono truncate">{d?.image}</SheetDescription>
+        </SheetHeader>
+        {cid && (
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => send(`docker exec -it ${cid} sh`, true)}><TerminalSquare className="w-3.5 h-3.5" /> exec 到终端</Button>
+            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => detail.refetch()}><RefreshCw className={cn("w-3.5 h-3.5", detail.isFetching && "animate-spin")} /></Button>
+          </div>
+        )}
+        <Tabs defaultValue="overview" className="flex-1 flex flex-col min-h-0">
+          <TabsList className="h-8 self-start"><TabsTrigger value="overview" className="text-xs">概览</TabsTrigger><TabsTrigger value="top" className="text-xs">进程</TabsTrigger><TabsTrigger value="logs" className="text-xs">日志</TabsTrigger><TabsTrigger value="raw" className="text-xs">Raw</TabsTrigger></TabsList>
+          <TabsContent value="overview" className="flex-1 min-h-0 mt-2 overflow-auto">
+            {detail.isLoading ? <div className="text-xs text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div> : d ? (
+              <dl className="text-[11px] grid grid-cols-[6rem_1fr] gap-x-3 gap-y-1.5">
+                <KV k="状态" v={`${d.state}${d.restart_count ? ` · 重启 ${d.restart_count} 次` : ""}`} />
+                <KV k="重启策略" v={d.restart_policy || "—"} />
+                <KV k="IP" v={d.ip_address || "—"} mono />
+                {d.cmd ? <KV k="命令" v={d.cmd} mono /> : null}
+                {(d.ports?.length ?? 0) > 0 ? <KV k="端口" v={d.ports!.join("\n")} mono /> : null}
+                {(d.networks?.length ?? 0) > 0 ? <KV k="网络" v={d.networks!.join(", ")} /> : null}
+                {(d.mounts?.length ?? 0) > 0 ? <KV k="挂载" v={d.mounts!.join("\n")} mono /> : null}
+                {(d.env?.length ?? 0) > 0 ? <KV k="环境" v={d.env!.join("\n")} mono /> : null}
+              </dl>
+            ) : <div className="text-xs text-destructive">{(detail.error as ApiError)?.message || "加载失败"}</div>}
+          </TabsContent>
+          <TabsContent value="top" className="flex-1 min-h-0 mt-2 overflow-auto">
+            {cid && <TopPanel nodeId={nodeId} cid={cid} />}
+          </TabsContent>
+          <TabsContent value="logs" className="flex-1 min-h-0 mt-2 overflow-auto">
+            {cid && <LogsPanel nodeId={nodeId} cid={cid} />}
+          </TabsContent>
+          <TabsContent value="raw" className="flex-1 min-h-0 mt-2 overflow-auto">
+            <pre className="bg-muted/60 rounded-md p-2 text-[10px] font-mono whitespace-pre overflow-auto">{d?.raw || ""}</pre>
+          </TabsContent>
+        </Tabs>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function TopPanel({ nodeId, cid }: { nodeId: number; cid: string }) {
+  const q = useQuery({ queryKey: ["docker", nodeId, "top", cid], queryFn: () => dockerService.top(nodeId, cid), refetchInterval: 5_000, retry: false })
+  if (q.isLoading) return <div className="text-xs text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> 加载…</div>
+  if (!q.data || q.data.processes.length === 0) return <div className="text-xs text-muted-foreground">容器未运行或无进程</div>
+  return (
+    <table className="w-full text-[10px] font-mono">
+      <thead className="text-[9px] uppercase text-muted-foreground"><tr>{q.data.titles.map((t) => <th key={t} className="text-left px-1.5 py-1">{t}</th>)}</tr></thead>
+      <tbody className="divide-y divide-border/40">
+        {q.data.processes.map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j} className="px-1.5 py-0.5 truncate max-w-[12rem]" title={cell}>{cell}</td>)}</tr>)}
+      </tbody>
+    </table>
+  )
+}
+
+function LogsPanel({ nodeId, cid }: { nodeId: number; cid: string }) {
+  const q = useQuery({ queryKey: ["docker", nodeId, "logs", cid], queryFn: () => dockerService.logs(nodeId, cid, 500), refetchInterval: 5_000, retry: false })
+  return (
+    <pre className="bg-muted/60 rounded-md p-2 text-[10px] font-mono whitespace-pre-wrap break-words leading-5">
+      {q.isLoading ? "加载日志…" : q.data?.logs || "（空）"}
+    </pre>
+  )
+}
+
+function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
+  return (<><dt className="text-muted-foreground">{k}</dt><dd className={cn("whitespace-pre-wrap break-words", mono && "font-mono")}>{v}</dd></>)
+}
+
+function verbLabel(v: CVerb): string {
+  return { start: "启动", stop: "停止", restart: "重启", pause: "暂停", unpause: "恢复", kill: "强杀", remove: "删除" }[v] ?? v
 }

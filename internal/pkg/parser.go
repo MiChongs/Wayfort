@@ -186,6 +186,10 @@ func actionCommand(k Kind, verb Verb, name string) (string, error) {
 			return base + " upgrade 2>&1", nil
 		case VerbUpdate:
 			return "apt-get update 2>&1", nil
+		case VerbAutoremove:
+			return base + " autoremove 2>&1", nil
+		case VerbClean:
+			return "apt-get clean 2>&1", nil
 		}
 	case KindDnf, KindYum:
 		bin := "dnf"
@@ -203,6 +207,10 @@ func actionCommand(k Kind, verb Verb, name string) (string, error) {
 			return bin + " -y upgrade 2>&1", nil
 		case VerbUpdate:
 			return bin + " -y makecache 2>&1", nil
+		case VerbAutoremove:
+			return bin + " -y autoremove 2>&1", nil
+		case VerbClean:
+			return bin + " clean all 2>&1", nil
 		}
 	case KindApk:
 		switch verb {
@@ -216,6 +224,10 @@ func actionCommand(k Kind, verb Verb, name string) (string, error) {
 			return "apk upgrade 2>&1", nil
 		case VerbUpdate:
 			return "apk update 2>&1", nil
+		case VerbClean:
+			return "apk cache clean 2>&1", nil
+		case VerbAutoremove:
+			return "", ErrUnsupported
 		}
 	case KindZypper:
 		switch verb {
@@ -227,9 +239,166 @@ func actionCommand(k Kind, verb Verb, name string) (string, error) {
 			return "zypper -n update" + q + " 2>&1", nil
 		case VerbUpdate:
 			return "zypper -n refresh 2>&1", nil
+		case VerbClean:
+			return "zypper clean 2>&1", nil
+		case VerbAutoremove:
+			return "", ErrUnsupported
 		}
 	}
 	return "", ErrNoManager
+}
+
+// ---- info / installed / files / history / hold ----
+
+func infoScript(k Kind, name string) (string, error) {
+	if !validName(name) {
+		return "", ErrBadName
+	}
+	q := shellQuote(name)
+	switch k {
+	case KindApt:
+		return fmt.Sprintf("LC_ALL=C apt-cache show %s 2>/dev/null | head -60; echo '__INSTALLED__'; dpkg -s %s 2>/dev/null | grep -i '^Status:'", q, q), nil
+	case KindDnf:
+		return fmt.Sprintf("LC_ALL=C dnf -q info %s 2>/dev/null", q), nil
+	case KindYum:
+		return fmt.Sprintf("LC_ALL=C yum -q info %s 2>/dev/null", q), nil
+	case KindApk:
+		return fmt.Sprintf("LC_ALL=C apk info -a %s 2>/dev/null", q), nil
+	case KindZypper:
+		return fmt.Sprintf("LC_ALL=C zypper -q info %s 2>/dev/null", q), nil
+	}
+	return "", ErrNoManager
+}
+
+// parseInfo extracts common fields from the manager's info output (key:value
+// across apt/dnf/yum/zypper; apk has its own layout but raw is always kept).
+func parseInfo(k Kind, name, out string) Info {
+	info := Info{Name: name, Raw: strings.TrimRight(out, "\n")}
+	get := func(keys ...string) string {
+		for _, line := range splitNonEmptyLines(out) {
+			kk, vv, ok := strings.Cut(line, ":")
+			if !ok {
+				continue
+			}
+			kk = strings.TrimSpace(kk)
+			for _, want := range keys {
+				if strings.EqualFold(kk, want) {
+					return strings.TrimSpace(vv)
+				}
+			}
+		}
+		return ""
+	}
+	info.Version = get("Version")
+	info.Size = get("Installed-Size", "Size", "Installed Size")
+	info.Summary = get("Description", "Summary")
+	info.Homepage = get("Homepage", "URL")
+	info.Section = get("Section", "Repository", "Repo")
+	if dep := get("Depends", "Requires"); dep != "" {
+		for _, d := range strings.Split(dep, ",") {
+			if t := strings.TrimSpace(d); t != "" {
+				info.Depends = append(info.Depends, t)
+			}
+		}
+	}
+	low := strings.ToLower(out)
+	info.Installed = strings.Contains(low, "status: install ok installed") ||
+		strings.Contains(low, "installed packages") || strings.Contains(low, "installed size")
+	return info
+}
+
+func installedScript(k Kind) string {
+	switch k {
+	case KindApt:
+		return "LC_ALL=C dpkg-query -W -f '${Package}\\t${Version}\\n' 2>/dev/null"
+	case KindDnf, KindYum, KindZypper:
+		return "LC_ALL=C rpm -qa --qf '%{NAME}\\t%{VERSION}-%{RELEASE}\\n' 2>/dev/null"
+	case KindApk:
+		return "LC_ALL=C apk info -v 2>/dev/null"
+	}
+	return ""
+}
+
+func parseInstalled(k Kind, out string) []Pkg {
+	res := []Pkg{}
+	for _, line := range splitNonEmptyLines(out) {
+		if k == KindApk {
+			// apk: name-version (split last two dash segments as version)
+			res = append(res, Pkg{Name: trimApkName(line), Version: trimApkVer(line), Installed: true})
+			continue
+		}
+		name, ver, ok := strings.Cut(line, "\t")
+		if !ok {
+			f := strings.Fields(line)
+			if len(f) == 0 {
+				continue
+			}
+			name = f[0]
+			if len(f) > 1 {
+				ver = f[1]
+			}
+		}
+		res = append(res, Pkg{Name: strings.TrimSpace(name), Version: strings.TrimSpace(ver), Installed: true})
+	}
+	return res
+}
+
+func filesScript(k Kind, name string) (string, error) {
+	if !validName(name) {
+		return "", ErrBadName
+	}
+	q := shellQuote(name)
+	switch k {
+	case KindApt:
+		return fmt.Sprintf("LC_ALL=C dpkg -L %s 2>/dev/null | head -400", q), nil
+	case KindDnf, KindYum, KindZypper:
+		return fmt.Sprintf("LC_ALL=C rpm -ql %s 2>/dev/null | head -400", q), nil
+	case KindApk:
+		return fmt.Sprintf("LC_ALL=C apk info -L %s 2>/dev/null | head -400", q), nil
+	}
+	return "", ErrNoManager
+}
+
+func historyScript(k Kind) string {
+	switch k {
+	case KindApt:
+		return "LC_ALL=C (zcat -f /var/log/apt/history.log* 2>/dev/null | grep -E '^(Start-Date|Commandline|Install|Remove|Upgrade):' | tail -120)"
+	case KindDnf:
+		return "LC_ALL=C dnf history list 2>/dev/null | head -40"
+	case KindYum:
+		return "LC_ALL=C yum history list 2>/dev/null | head -40"
+	case KindZypper:
+		return "LC_ALL=C tail -120 /var/log/zypp/history 2>/dev/null"
+	case KindApk:
+		return "LC_ALL=C tail -120 /var/log/apk.log 2>/dev/null || echo '(apk 无历史日志)'"
+	}
+	return ""
+}
+
+// holdCommand toggles a version hold (apt-mark / dnf versionlock). Returns
+// ErrUnsupported for managers without a stable hold mechanism.
+func holdCommand(k Kind, name string, hold bool) (string, error) {
+	if !validName(name) {
+		return "", ErrBadName
+	}
+	q := shellQuote(name)
+	switch k {
+	case KindApt:
+		if hold {
+			return "apt-mark hold " + q + " 2>&1", nil
+		}
+		return "apt-mark unhold " + q + " 2>&1", nil
+	case KindDnf, KindYum:
+		bin := "dnf"
+		if k == KindYum {
+			bin = "yum"
+		}
+		if hold {
+			return bin + " versionlock add " + q + " 2>&1", nil
+		}
+		return bin + " versionlock delete " + q + " 2>&1", nil
+	}
+	return "", ErrUnsupported
 }
 
 // searchScript builds the search command (installed + available).

@@ -758,6 +758,55 @@ export interface DockerLogsResponse {
   tail: number
   logs: string
 }
+export interface DockerContainerDetail {
+  id: string
+  name: string
+  image: string
+  state: string
+  status: string
+  created?: string
+  started_at?: string
+  restart_policy?: string
+  restart_count: number
+  ip_address?: string
+  ports?: string[]
+  mounts?: string[]
+  env?: string[]
+  networks?: string[]
+  cmd?: string
+  raw: string
+  sampled_at: string
+}
+export interface DockerStats {
+  id: string
+  name: string
+  cpu_pct: number
+  mem_usage: string
+  mem_pct: number
+  net_io: string
+  block_io: string
+  pids: number
+}
+export interface DockerTop {
+  container_id: string
+  titles: string[]
+  processes: string[][]
+}
+export interface DockerNetwork {
+  id: string
+  name: string
+  driver: string
+  scope: string
+}
+export interface DockerVolume {
+  name: string
+  driver: string
+  mountpoint?: string
+}
+export interface DockerActionResult {
+  ok: boolean
+  output: string
+}
 
 // ---------------- systemd service management ----------------
 export type SystemdVerb = "start" | "stop" | "restart" | "reload" | "enable" | "disable"
@@ -1044,7 +1093,18 @@ export interface CronInfo {
 }
 
 // ---------------- packages ----------------
-export type PkgVerb = "install" | "remove" | "upgrade" | "upgrade-all" | "update"
+export type PkgVerb = "install" | "remove" | "upgrade" | "upgrade-all" | "update" | "autoremove" | "clean"
+export interface PkgInfo {
+  name: string
+  version?: string
+  installed: boolean
+  size?: string
+  summary?: string
+  homepage?: string
+  section?: string
+  depends?: string[]
+  raw: string
+}
 export interface PkgStatus {
   manager: string
   available: boolean
@@ -1111,11 +1171,13 @@ export interface SysUserInfo {
 export type SecStatus = "ok" | "warn" | "danger" | "info" | "unknown"
 export interface SecCheck {
   id: string
+  category: string
   title: string
   status: SecStatus
   detail?: string
   items?: string[]
   fix?: string
+  applicable: boolean
 }
 export interface SecReport {
   score: number

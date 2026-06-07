@@ -36,6 +36,7 @@ const (
 	AuditKernelChange    AuditEventKind = "kernel.change"
 	AuditSysUserAction   AuditEventKind = "sysuser.action"
 	AuditNetworkAction   AuditEventKind = "network.action"
+	AuditSecurityAction  AuditEventKind = "security.action"
 	// Object-storage (OSS) bastion operations.
 	AuditOSSList     AuditEventKind = "oss.list"
 	AuditOSSDownload AuditEventKind = "oss.download"

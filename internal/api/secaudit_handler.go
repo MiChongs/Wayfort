@@ -44,6 +44,37 @@ func (h *SecAuditHandler) Report(c *gin.Context) {
 	c.JSON(http.StatusOK, r)
 }
 
+func (h *SecAuditHandler) Apply(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Check string `json:"check" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	out, err := h.Mgr.Apply(c.Request.Context(), claims.UserID, nodeID, secaudit.AuditClaims{
+		UserID: claims.UserID, Username: claims.Username, ClientIP: c.ClientIP(),
+	}, body.Check)
+	if err != nil {
+		switch {
+		case errors.Is(err, secaudit.ErrPermissionDenied):
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "code": "permission_denied"})
+		case errors.Is(err, secaudit.ErrNotApplicable), errors.Is(err, secaudit.ErrBadCheck):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "bad_request"})
+		case errors.Is(err, secaudit.ErrUnauthorized):
+			c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "code": "unauthorized"})
+		default:
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "output": out})
+}
+
 func (h *SecAuditHandler) ctx(c *gin.Context) (uint64, *auth.Claims, bool) {
 	if h == nil || h.Mgr == nil {
 		msg := "secaudit subsystem unavailable"

@@ -771,7 +771,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	})
 	routes.SysUser = api.NewSysUserHandler(sysuserMgr)
 	secauditMgr := secaudit.NewManager(secaudit.Config{Enabled: true}, secaudit.Deps{
-		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, SSH: sshDeps,
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
 	})
 	routes.SecAudit = api.NewSecAuditHandler(secauditMgr)
 

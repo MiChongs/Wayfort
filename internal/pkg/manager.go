@@ -168,6 +168,142 @@ func (m *Manager) Search(ctx context.Context, userID, nodeID uint64, query strin
 	return parseSearch(e.status.Manager, res.Stdout), nil
 }
 
+// Info returns expanded detail of one package.
+func (m *Manager) Info(ctx context.Context, userID, nodeID uint64, name string) (*Info, error) {
+	e, err := m.snapshot(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if !e.status.Available {
+		return nil, ErrNoManager
+	}
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	script, err := infoScript(e.status.Manager, name)
+	if err != nil {
+		return nil, err
+	}
+	res, err := m.run(ctx, loaded, script)
+	if err != nil {
+		return nil, err
+	}
+	info := parseInfo(e.status.Manager, name, res)
+	return &info, nil
+}
+
+// Installed lists installed packages (filtered by query substring).
+func (m *Manager) Installed(ctx context.Context, userID, nodeID uint64, query string) ([]Pkg, error) {
+	e, err := m.snapshot(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if !e.status.Available {
+		return nil, ErrNoManager
+	}
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := m.run(ctx, loaded, installedScript(e.status.Manager))
+	if err != nil {
+		return nil, err
+	}
+	all := parseInstalled(e.status.Manager, res)
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return all, nil
+	}
+	out := make([]Pkg, 0, 64)
+	for _, p := range all {
+		if strings.Contains(strings.ToLower(p.Name), q) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// Files lists the files a package owns.
+func (m *Manager) Files(ctx context.Context, userID, nodeID uint64, name string) ([]string, error) {
+	e, err := m.snapshot(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	script, err := filesScript(e.status.Manager, name)
+	if err != nil {
+		return nil, err
+	}
+	res, err := m.run(ctx, loaded, script)
+	if err != nil {
+		return nil, err
+	}
+	return splitNonEmptyLines(res), nil
+}
+
+// History returns recent package-manager transactions.
+func (m *Manager) History(ctx context.Context, userID, nodeID uint64) ([]string, error) {
+	e, err := m.snapshot(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	res, err := m.run(ctx, loaded, historyScript(e.status.Manager))
+	if err != nil {
+		return nil, err
+	}
+	return splitNonEmptyLines(res), nil
+}
+
+// Hold pins/unpins a package version (package:manage).
+func (m *Manager) Hold(ctx context.Context, userID, nodeID uint64, claims AuditClaims, name string, hold bool) error {
+	e, err := m.snapshot(ctx, userID, nodeID)
+	if err != nil {
+		return err
+	}
+	loaded, err := m.gateAndLoad(ctx, userID, nodeID)
+	if err != nil {
+		return err
+	}
+	cmd, err := holdCommand(e.status.Manager, name, hold)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	defer cancel()
+	res, err := sshrun.Run(cctx, m.deps, loaded.node, loaded.cred, cmd, m.cfg.SSHTimeout)
+	if err != nil {
+		return classifyWrite(err, res.Stderr+res.Stdout, "hold")
+	}
+	if e := classifyOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return e
+	}
+	verb := "hold"
+	if !hold {
+		verb = "unhold"
+	}
+	m.recordAudit(claims, nodeID, fmt.Sprintf("pkg %s %s", verb, name))
+	return nil
+}
+
+// run is a small read helper used by Info/Installed/Files/History.
+func (m *Manager) run(ctx context.Context, l *nodeAndCred, script string) (string, error) {
+	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
+	defer cancel()
+	res, err := sshrun.Run(cctx, m.deps, l.node, l.cred, script, m.cfg.SSHTimeout)
+	if err != nil && res.Stdout == "" {
+		return "", classifySSHError(err, "pkg query")
+	}
+	return res.Stdout, nil
+}
+
 // Do runs a write action (install/remove/upgrade/upgrade-all/update) and audits.
 func (m *Manager) Do(ctx context.Context, userID, nodeID uint64, claims AuditClaims, verb Verb, name string) (*ActionResult, error) {
 	e, err := m.snapshot(ctx, userID, nodeID)

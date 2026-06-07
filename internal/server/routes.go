@@ -518,6 +518,19 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/docker/containers/:cid/stop", perm(auth.PermDockerManage), dockerHandler(rt).Stop)
 		ops.POST("/nodes/:id/docker/containers/:cid/restart", perm(auth.PermDockerManage), dockerHandler(rt).Restart)
 		ops.DELETE("/nodes/:id/docker/containers/:cid", perm(auth.PermDockerManage), dockerHandler(rt).Remove)
+		// Docker — expanded: inspect / stats / top / networks / volumes + more verbs.
+		ops.GET("/nodes/:id/docker/containers/:cid/inspect", dockerHandler(rt).Inspect)
+		ops.GET("/nodes/:id/docker/containers/:cid/top", dockerHandler(rt).Top)
+		ops.GET("/nodes/:id/docker/stats", dockerHandler(rt).Stats)
+		ops.GET("/nodes/:id/docker/networks", dockerHandler(rt).Networks)
+		ops.GET("/nodes/:id/docker/volumes", dockerHandler(rt).Volumes)
+		ops.POST("/nodes/:id/docker/containers/:cid/pause", perm(auth.PermDockerManage), dockerHandler(rt).Pause)
+		ops.POST("/nodes/:id/docker/containers/:cid/unpause", perm(auth.PermDockerManage), dockerHandler(rt).Unpause)
+		ops.POST("/nodes/:id/docker/containers/:cid/kill", perm(auth.PermDockerManage), dockerHandler(rt).Kill)
+		ops.POST("/nodes/:id/docker/containers/:cid/rename", perm(auth.PermDockerManage), dockerHandler(rt).Rename)
+		ops.POST("/nodes/:id/docker/images/pull", perm(auth.PermDockerManage), dockerHandler(rt).PullImage)
+		ops.POST("/nodes/:id/docker/images/remove", perm(auth.PermDockerManage), dockerHandler(rt).RemoveImage)
+		ops.POST("/nodes/:id/docker/prune", perm(auth.PermDockerManage), dockerHandler(rt).Prune)
 		// Workspace ops dock — systemd service management. Reads gated by
 		// ActionConnect; control actions by PermServiceManage.
 		ops.GET("/nodes/:id/systemd/status", systemdHandler(rt).Status)
@@ -559,13 +572,19 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/packages/status", pkgHandler(rt).Status)
 		ops.GET("/nodes/:id/packages/upgradable", pkgHandler(rt).Upgradable)
 		ops.GET("/nodes/:id/packages/search", pkgHandler(rt).Search)
+		ops.GET("/nodes/:id/packages/info", pkgHandler(rt).Info)
+		ops.GET("/nodes/:id/packages/installed", pkgHandler(rt).Installed)
+		ops.GET("/nodes/:id/packages/files", pkgHandler(rt).Files)
+		ops.GET("/nodes/:id/packages/history", pkgHandler(rt).History)
+		ops.POST("/nodes/:id/packages/hold", perm(auth.PermPackageManage), pkgHandler(rt).Hold)
 		ops.POST("/nodes/:id/packages/action", perm(auth.PermPackageManage), pkgHandler(rt).Do)
 		// Ops dock — local users. Read ActionConnect; lock/group PermSysUserManage.
 		ops.GET("/nodes/:id/users", sysuserHandler(rt).Info)
 		ops.POST("/nodes/:id/users/lock", perm(auth.PermSysUserManage), sysuserHandler(rt).Lock)
 		ops.POST("/nodes/:id/users/group", perm(auth.PermSysUserManage), sysuserHandler(rt).AddToGroup)
-		// Ops dock — security posture (read-only).
+		// Ops dock — security posture. Report read ActionConnect; Apply PermSecurityManage.
 		ops.GET("/nodes/:id/security", secauditHandler(rt).Report)
+		ops.POST("/nodes/:id/security/apply", perm(auth.PermSecurityManage), secauditHandler(rt).Apply)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

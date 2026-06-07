@@ -67,6 +67,94 @@ func (h *PkgHandler) Search(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"packages": res})
 }
 
+func (h *PkgHandler) Info(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing name"})
+		return
+	}
+	info, err := h.Mgr.Info(c.Request.Context(), claims.UserID, nodeID, name)
+	if err != nil {
+		respondPkgErr(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, info)
+}
+
+func (h *PkgHandler) Installed(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	out, err := h.Mgr.Installed(c.Request.Context(), claims.UserID, nodeID, c.Query("q"))
+	if err != nil {
+		respondPkgErr(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"packages": out})
+}
+
+func (h *PkgHandler) Files(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing name"})
+		return
+	}
+	files, err := h.Mgr.Files(c.Request.Context(), claims.UserID, nodeID, name)
+	if err != nil {
+		respondPkgErr(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"files": files})
+}
+
+func (h *PkgHandler) History(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	lines, err := h.Mgr.History(c.Request.Context(), claims.UserID, nodeID)
+	if err != nil {
+		respondPkgErr(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"lines": lines})
+}
+
+func (h *PkgHandler) Hold(c *gin.Context) {
+	nodeID, claims, ok := h.ctx(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name string `json:"name" binding:"required"`
+		Hold bool   `json:"hold"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Mgr.Hold(c.Request.Context(), claims.UserID, nodeID, pkg.AuditClaims{
+		UserID: claims.UserID, Username: claims.Username, ClientIP: c.ClientIP(),
+	}, body.Name, body.Hold); err != nil {
+		respondPkgErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func (h *PkgHandler) Do(c *gin.Context) {
 	nodeID, claims, ok := h.ctx(c)
 	if !ok {
@@ -124,6 +212,8 @@ func respondPkgErr(c *gin.Context, err error) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "code": "unreachable"})
 	case errors.Is(err, pkg.ErrNoManager):
 		c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error(), "code": "no_manager"})
+	case errors.Is(err, pkg.ErrUnsupported):
+		c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error(), "code": "unsupported"})
 	case errors.Is(err, pkg.ErrBadName), errors.Is(err, pkg.ErrBadVerb):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "code": "bad_request"})
 	default:

@@ -23,12 +23,21 @@ const (
 
 // Check is one posture finding.
 type Check struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Status Status   `json:"status"`
-	Detail string   `json:"detail,omitempty"`
-	Items  []string `json:"items,omitempty"` // supporting evidence (files, ports…)
-	Fix    string   `json:"fix,omitempty"`   // suggested command for "run in terminal"
+	ID         string   `json:"id"`
+	Category   string   `json:"category"`
+	Title      string   `json:"title"`
+	Status     Status   `json:"status"`
+	Detail     string   `json:"detail,omitempty"`
+	Items      []string `json:"items,omitempty"` // supporting evidence (files, ports…)
+	Fix        string   `json:"fix,omitempty"`   // suggested command for "run in terminal"
+	Applicable bool     `json:"applicable"`      // a safe blanket server-side fix exists (Apply)
+}
+
+// AuditClaims carries the acting principal for the audit log on Apply.
+type AuditClaims struct {
+	UserID   uint64
+	Username string
+	ClientIP string
 }
 
 // Report is the scored checklist.
@@ -39,7 +48,10 @@ type Report struct {
 }
 
 var (
-	ErrDisabled     = errors.New("secaudit: disabled by config")
-	ErrUnauthorized = errors.New("secaudit: not authorised on node")
-	ErrUnreachable  = errors.New("secaudit: node unreachable over ssh")
+	ErrDisabled         = errors.New("secaudit: disabled by config")
+	ErrUnauthorized     = errors.New("secaudit: not authorised on node")
+	ErrUnreachable      = errors.New("secaudit: node unreachable over ssh")
+	ErrPermissionDenied = errors.New("secaudit: fix requires root / sudo")
+	ErrBadCheck         = errors.New("secaudit: unknown check")
+	ErrNotApplicable    = errors.New("secaudit: this check has no automatic fix")
 )

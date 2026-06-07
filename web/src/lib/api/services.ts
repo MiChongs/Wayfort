@@ -43,6 +43,12 @@ import type {
   DockerImage,
   DockerLogsResponse,
   DockerStatus,
+  DockerContainerDetail,
+  DockerStats,
+  DockerTop,
+  DockerNetwork,
+  DockerVolume,
+  DockerActionResult,
   FirewallDiagnostics,
   FirewallRule,
   FirewallRuleSpec,
@@ -73,6 +79,7 @@ import type {
   PkgSearchItem,
   PkgActionResult,
   PkgVerb,
+  PkgInfo,
   SysUserInfo,
   SecReport,
   LoginHistory,
@@ -409,6 +416,30 @@ export const dockerService = {
     api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/docker/containers/${cid}`, {
       query: force ? { force: "true" } : undefined,
     }),
+  pause: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/pause`),
+  unpause: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/unpause`),
+  kill: (nodeId: number, cid: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/kill`),
+  rename: (nodeId: number, cid: string, name: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/docker/containers/${cid}/rename`, { body: { name } }),
+  inspect: (nodeId: number, cid: string) =>
+    api<DockerContainerDetail>("GET", `/nodes/${nodeId}/docker/containers/${cid}/inspect`),
+  top: (nodeId: number, cid: string) =>
+    api<DockerTop>("GET", `/nodes/${nodeId}/docker/containers/${cid}/top`),
+  stats: (nodeId: number) =>
+    api<{ stats: DockerStats[] }>("GET", `/nodes/${nodeId}/docker/stats`),
+  networks: (nodeId: number) =>
+    api<{ networks: DockerNetwork[] }>("GET", `/nodes/${nodeId}/docker/networks`),
+  volumes: (nodeId: number) =>
+    api<{ volumes: DockerVolume[] }>("GET", `/nodes/${nodeId}/docker/volumes`),
+  pullImage: (nodeId: number, ref: string) =>
+    api<DockerActionResult>("POST", `/nodes/${nodeId}/docker/images/pull`, { body: { ref } }),
+  removeImage: (nodeId: number, ref: string, force = false) =>
+    api<DockerActionResult>("POST", `/nodes/${nodeId}/docker/images/remove`, { body: { ref, force } }),
+  prune: (nodeId: number, what: string) =>
+    api<DockerActionResult>("POST", `/nodes/${nodeId}/docker/prune`, { body: { what } }),
 }
 
 export const systemdService = {
@@ -504,6 +535,16 @@ export const packageService = {
     api<{ packages: PkgSearchItem[] }>("GET", `/nodes/${nodeId}/packages/search`, { query: { q } }),
   action: (nodeId: number, verb: PkgVerb, name?: string) =>
     api<PkgActionResult>("POST", `/nodes/${nodeId}/packages/action`, { body: { verb, name } }),
+  info: (nodeId: number, name: string) =>
+    api<PkgInfo>("GET", `/nodes/${nodeId}/packages/info`, { query: { name } }),
+  installed: (nodeId: number, q = "") =>
+    api<{ packages: PkgSearchItem[] }>("GET", `/nodes/${nodeId}/packages/installed`, { query: q ? { q } : undefined }),
+  files: (nodeId: number, name: string) =>
+    api<{ files: string[] }>("GET", `/nodes/${nodeId}/packages/files`, { query: { name } }),
+  history: (nodeId: number) =>
+    api<{ lines: string[] }>("GET", `/nodes/${nodeId}/packages/history`),
+  hold: (nodeId: number, name: string, hold: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/packages/hold`, { body: { name, hold } }),
 }
 
 export const usersService = {
@@ -516,6 +557,8 @@ export const usersService = {
 
 export const securityService = {
   report: (nodeId: number) => api<SecReport>("GET", `/nodes/${nodeId}/security`),
+  apply: (nodeId: number, check: string) =>
+    api<{ ok: boolean; output: string }>("POST", `/nodes/${nodeId}/security/apply`, { body: { check } }),
 }
 
 export const portfwdService = {

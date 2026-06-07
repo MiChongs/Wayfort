@@ -76,7 +76,7 @@ const DOCK_TABS: DockTab[] = [
   { key: "logs", label: "日志", group: "观测", icon: ScrollText, render: ({ nodeId, tabId, active }) => <LogsTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 运行
   { key: "services", label: "服务", group: "运行", icon: Cog, render: ({ nodeId, active }) => <ServicesTab nodeId={nodeId} active={active} /> },
-  { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, active }) => <DockerTab nodeId={nodeId} active={active} /> },
+  { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, tabId, active }) => <DockerTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "cron", label: "定时", group: "运行", icon: Clock, render: ({ nodeId, tabId, active }) => <CronTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "packages", label: "软件包", group: "运行", icon: Package, render: ({ nodeId, tabId, active }) => <PackagesTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "runner", label: "命令", group: "运行", icon: TerminalSquare, render: ({ nodeId, tabId, active }) => <CommandRunnerTab nodeId={nodeId} tabId={tabId} active={active} /> },
