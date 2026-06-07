@@ -87,6 +87,30 @@ func nettoolsHandler(rt *Routes) *api.NetToolsHandler {
 	}
 	return api.NewNetToolsHandlerStub(opsStubReason)
 }
+func cronHandler(rt *Routes) *api.CronHandler {
+	if rt.Cron != nil {
+		return rt.Cron
+	}
+	return api.NewCronHandlerStub(opsStubReason)
+}
+func pkgHandler(rt *Routes) *api.PkgHandler {
+	if rt.Pkg != nil {
+		return rt.Pkg
+	}
+	return api.NewPkgHandlerStub(opsStubReason)
+}
+func sysuserHandler(rt *Routes) *api.SysUserHandler {
+	if rt.SysUser != nil {
+		return rt.SysUser
+	}
+	return api.NewSysUserHandlerStub(opsStubReason)
+}
+func secauditHandler(rt *Routes) *api.SecAuditHandler {
+	if rt.SecAudit != nil {
+		return rt.SecAudit
+	}
+	return api.NewSecAuditHandlerStub(opsStubReason)
+}
 
 // insightsHandler returns rt.Insights if non-nil, else a stub that always
 // responds 503. Lets us register routes unconditionally so missing /
@@ -183,6 +207,10 @@ type Routes struct {
 	Kernel   *api.KernelHandler
 	Storage  *api.StorageHandler
 	NetTools *api.NetToolsHandler
+	Cron     *api.CronHandler
+	Pkg      *api.PkgHandler
+	SysUser  *api.SysUserHandler
+	SecAudit *api.SecAuditHandler
 
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
@@ -522,6 +550,22 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/network", nettoolsHandler(rt).Info)
 		ops.POST("/nodes/:id/network/diagnose", nettoolsHandler(rt).Diagnose)
 		ops.POST("/nodes/:id/network/iface", perm(auth.PermNetworkManage), nettoolsHandler(rt).SetIface)
+		// Ops dock — scheduled tasks. Read ActionConnect; edits PermCronManage.
+		ops.GET("/nodes/:id/cron", cronHandler(rt).Info)
+		ops.POST("/nodes/:id/cron/add", perm(auth.PermCronManage), cronHandler(rt).AddEntry)
+		ops.POST("/nodes/:id/cron/remove", perm(auth.PermCronManage), cronHandler(rt).RemoveEntry)
+		ops.POST("/nodes/:id/cron/timer", perm(auth.PermCronManage), cronHandler(rt).SetTimer)
+		// Ops dock — packages. Read ActionConnect; install/remove/upgrade PermPackageManage.
+		ops.GET("/nodes/:id/packages/status", pkgHandler(rt).Status)
+		ops.GET("/nodes/:id/packages/upgradable", pkgHandler(rt).Upgradable)
+		ops.GET("/nodes/:id/packages/search", pkgHandler(rt).Search)
+		ops.POST("/nodes/:id/packages/action", perm(auth.PermPackageManage), pkgHandler(rt).Do)
+		// Ops dock — local users. Read ActionConnect; lock/group PermSysUserManage.
+		ops.GET("/nodes/:id/users", sysuserHandler(rt).Info)
+		ops.POST("/nodes/:id/users/lock", perm(auth.PermSysUserManage), sysuserHandler(rt).Lock)
+		ops.POST("/nodes/:id/users/group", perm(auth.PermSysUserManage), sysuserHandler(rt).AddToGroup)
+		// Ops dock — security posture (read-only).
+		ops.GET("/nodes/:id/security", secauditHandler(rt).Report)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

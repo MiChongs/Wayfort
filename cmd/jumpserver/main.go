@@ -46,14 +46,18 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
+	"github.com/michongs/jumpserver-anonymous/internal/cron"
 	"github.com/michongs/jumpserver-anonymous/internal/hardware"
 	"github.com/michongs/jumpserver-anonymous/internal/kernel"
 	"github.com/michongs/jumpserver-anonymous/internal/logs"
 	"github.com/michongs/jumpserver-anonymous/internal/nettools"
 	"github.com/michongs/jumpserver-anonymous/internal/perf"
+	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
 	"github.com/michongs/jumpserver-anonymous/internal/process"
+	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/storage"
+	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
 	"github.com/michongs/jumpserver-anonymous/internal/systemd"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -754,6 +758,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
 	})
 	routes.NetTools = api.NewNetToolsHandler(nettoolsMgr)
+	cronMgr := cron.NewManager(cron.Config{Enabled: true}, cron.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Cron = api.NewCronHandler(cronMgr)
+	pkgMgr := pkg.NewManager(pkg.Config{Enabled: true}, pkg.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Pkg = api.NewPkgHandler(pkgMgr)
+	sysuserMgr := sysuser.NewManager(sysuser.Config{Enabled: true}, sysuser.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.SysUser = api.NewSysUserHandler(sysuserMgr)
+	secauditMgr := secaudit.NewManager(secaudit.Config{Enabled: true}, secaudit.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, SSH: sshDeps,
+	})
+	routes.SecAudit = api.NewSecAuditHandler(secauditMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{

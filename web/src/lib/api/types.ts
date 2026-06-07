@@ -1021,6 +1021,108 @@ export interface NetDiagResult {
   sampled_at: string
 }
 
+// ---------------- cron / scheduled tasks ----------------
+export interface CronEntry {
+  index: number
+  schedule: string
+  command: string
+  raw: string
+}
+export interface CronTimer {
+  unit: string
+  next?: string
+  left?: string
+  activates?: string
+  enabled?: string
+}
+export interface CronInfo {
+  user_cron: CronEntry[]
+  system_cron?: string[]
+  timers?: CronTimer[]
+  has_crontab: boolean
+  sampled_at: string
+}
+
+// ---------------- packages ----------------
+export type PkgVerb = "install" | "remove" | "upgrade" | "upgrade-all" | "update"
+export interface PkgStatus {
+  manager: string
+  available: boolean
+  installed_count: number
+  upgradable_count: number
+  security_count: number
+  reason?: string
+  sampled_at: string
+}
+export interface PkgUpdate {
+  name: string
+  current?: string
+  candidate?: string
+  security?: boolean
+}
+export interface PkgSearchItem {
+  name: string
+  version?: string
+  installed: boolean
+  summary?: string
+}
+export interface PkgActionResult {
+  ok: boolean
+  output: string
+}
+
+// ---------------- local users ----------------
+export interface SysUser {
+  name: string
+  uid: number
+  gid: number
+  gecos?: string
+  home?: string
+  shell?: string
+  system: boolean
+}
+export interface SysGroup {
+  name: string
+  gid: number
+  members?: string[]
+}
+export interface SysLoginSession {
+  user: string
+  tty: string
+  from?: string
+  login?: string
+}
+export interface SysLoginHistory {
+  user: string
+  from?: string
+  when?: string
+  failed?: boolean
+}
+export interface SysUserInfo {
+  users: SysUser[]
+  groups: SysGroup[]
+  online: SysLoginSession[]
+  recent?: SysLoginHistory[]
+  sudoers?: string[]
+  sampled_at: string
+}
+
+// ---------------- security posture ----------------
+export type SecStatus = "ok" | "warn" | "danger" | "info" | "unknown"
+export interface SecCheck {
+  id: string
+  title: string
+  status: SecStatus
+  detail?: string
+  items?: string[]
+  fix?: string
+}
+export interface SecReport {
+  score: number
+  checks: SecCheck[]
+  sampled_at: string
+}
+
 export interface AssetGrant {
   id: number
   grantee_type: "user" | "role" | "group" | "department"

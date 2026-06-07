@@ -5,6 +5,7 @@ import { Group, Panel, Separator } from "react-resizable-panels"
 import {
   Activity,
   Box,
+  Clock,
   Cog,
   Cpu,
   Gauge,
@@ -12,12 +13,15 @@ import {
   History,
   Info,
   Network,
+  Package,
   PanelRightClose,
   PanelRightOpen,
   ScrollText,
   Shield,
+  ShieldCheck,
   SlidersHorizontal,
   TerminalSquare,
+  UsersRound,
   Zap,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -36,6 +40,10 @@ import { HardwareTab } from "./server/HardwareTab"
 import { KernelTab } from "./server/KernelTab"
 import { StorageTab } from "./server/StorageTab"
 import { NetworkToolsTab } from "./server/NetworkTab"
+import { CronTab } from "./server/CronTab"
+import { PackagesTab } from "./server/PackagesTab"
+import { UsersTab } from "./server/UsersTab"
+import { SecurityTab } from "./server/SecurityTab"
 import { useWorkspaceStore, type SubTab as SubTabKey } from "./useWorkspaceStore"
 
 type Props = {
@@ -69,6 +77,8 @@ const DOCK_TABS: DockTab[] = [
   // 运行
   { key: "services", label: "服务", group: "运行", icon: Cog, render: ({ nodeId, active }) => <ServicesTab nodeId={nodeId} active={active} /> },
   { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, active }) => <DockerTab nodeId={nodeId} active={active} /> },
+  { key: "cron", label: "定时", group: "运行", icon: Clock, render: ({ nodeId, tabId, active }) => <CronTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "packages", label: "软件包", group: "运行", icon: Package, render: ({ nodeId, tabId, active }) => <PackagesTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "runner", label: "命令", group: "运行", icon: TerminalSquare, render: ({ nodeId, tabId, active }) => <CommandRunnerTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 系统
   { key: "network", label: "网络", group: "系统", icon: Network, render: ({ nodeId, tabId, active }) => <NetworkToolsTab nodeId={nodeId} tabId={tabId} active={active} /> },
@@ -77,6 +87,8 @@ const DOCK_TABS: DockTab[] = [
   { key: "hardware", label: "硬件", group: "系统", icon: Cpu, render: ({ nodeId, active }) => <HardwareTab nodeId={nodeId} active={active} /> },
   // 治理
   { key: "firewall", label: "防火墙", group: "治理", icon: Shield, render: ({ nodeId, active }) => <FirewallTab nodeId={nodeId} active={active} /> },
+  { key: "users", label: "用户", group: "治理", icon: UsersRound, render: ({ nodeId, tabId, active }) => <UsersTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "security", label: "安全", group: "治理", icon: ShieldCheck, render: ({ nodeId, tabId, active }) => <SecurityTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "sessions", label: "会话", group: "治理", icon: History, render: ({ nodeId }) => <SessionsTab nodeId={nodeId} /> },
   { key: "info", label: "信息", group: "治理", icon: Info, render: ({ nodeId }) => <NodeInfoTab nodeId={nodeId} /> },
 ]

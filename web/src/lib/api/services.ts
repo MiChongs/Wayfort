@@ -67,6 +67,14 @@ import type {
   NetInfo,
   NetDiagResult,
   NetDiagTool,
+  CronInfo,
+  PkgStatus,
+  PkgUpdate,
+  PkgSearchItem,
+  PkgActionResult,
+  PkgVerb,
+  SysUserInfo,
+  SecReport,
   LoginHistory,
   MFADevice,
   Node,
@@ -476,6 +484,38 @@ export const networkService = {
     api<NetDiagResult>("POST", `/nodes/${nodeId}/network/diagnose`, { body: { tool, target } }),
   setIface: (nodeId: number, name: string, up: boolean) =>
     api<{ ok: boolean }>("POST", `/nodes/${nodeId}/network/iface`, { body: { name, up } }),
+}
+
+export const cronService = {
+  info: (nodeId: number) => api<CronInfo>("GET", `/nodes/${nodeId}/cron`),
+  add: (nodeId: number, entry: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/cron/add`, { body: { entry } }),
+  remove: (nodeId: number, index: number) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/cron/remove`, { body: { index } }),
+  setTimer: (nodeId: number, unit: string, enable: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/cron/timer`, { body: { unit, enable } }),
+}
+
+export const packageService = {
+  status: (nodeId: number) => api<PkgStatus>("GET", `/nodes/${nodeId}/packages/status`),
+  upgradable: (nodeId: number) =>
+    api<{ updates: PkgUpdate[] }>("GET", `/nodes/${nodeId}/packages/upgradable`),
+  search: (nodeId: number, q: string) =>
+    api<{ packages: PkgSearchItem[] }>("GET", `/nodes/${nodeId}/packages/search`, { query: { q } }),
+  action: (nodeId: number, verb: PkgVerb, name?: string) =>
+    api<PkgActionResult>("POST", `/nodes/${nodeId}/packages/action`, { body: { verb, name } }),
+}
+
+export const usersService = {
+  info: (nodeId: number) => api<SysUserInfo>("GET", `/nodes/${nodeId}/users`),
+  lock: (nodeId: number, user: string, lock: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/users/lock`, { body: { user, lock } }),
+  addToGroup: (nodeId: number, user: string, group: string) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/users/group`, { body: { user, group } }),
+}
+
+export const securityService = {
+  report: (nodeId: number) => api<SecReport>("GET", `/nodes/${nodeId}/security`),
 }
 
 export const portfwdService = {
