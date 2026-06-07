@@ -277,7 +277,9 @@ function PerfChart({
         </div>
       </div>
       <div className="h-[120px] px-1 py-1">
-        <ResponsiveContainer width="100%" height="100%">
+        {/* minWidth={0} silences Recharts' "width(-1)/height(-1)" warning while
+            the panel's container is briefly unsized (Sheet open transition). */}
+        <ResponsiveContainer width="100%" height="100%" minWidth={0}>
           <AreaChart data={samples} margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
             <defs>
               <linearGradient id={`fill-${dataKey}`} x1="0" y1="0" x2="0" y2="1">

@@ -68,13 +68,35 @@ ctx.addEventListener("message", async (event: MessageEvent<WorkerIn>) => {
       ctx.postMessage({ type: "warn", message: `frame decode skipped: ${String(error)}` })
     }
   }
+  // Build the transfer list, de-duplicating by backing ArrayBuffer. A coalesced
+  // batch (gateway packs up to 32 frames into one WS message) can hand several
+  // raw_bgra/zlib_bgra frames that are subarray VIEWS of the SAME incoming
+  // buffer — pushing that buffer twice makes postMessage throw
+  // `DataCloneError: ArrayBuffer ... is a duplicate`, which drops the entire
+  // batch and freezes the surface. Transfer each unique buffer once; both views
+  // are reconstructed against it on the main thread. ImageBitmaps are distinct
+  // objects, so they never collide.
   const transfer: Transferable[] = []
+  const seenBuffers = new Set<ArrayBufferLike>()
+  const transferBuffer = (buf: ArrayBufferLike) => {
+    if (seenBuffers.has(buf)) return
+    seenBuffers.add(buf)
+    transfer.push(buf as ArrayBuffer)
+  }
   for (const frame of frames) {
     if (frame.bitmap) transfer.push(frame.bitmap)
-    if (frame.imageData) transfer.push(frame.imageData.data.buffer)
-    if (frame.bgra) transfer.push(frame.bgra.buffer)
+    if (frame.imageData) transferBuffer(frame.imageData.data.buffer)
+    if (frame.bgra) transferBuffer(frame.bgra.buffer)
   }
-  ctx.postMessage({ type: "decoded", id: msg.id, frames }, transfer)
+  try {
+    ctx.postMessage({ type: "decoded", id: msg.id, frames }, transfer)
+  } catch (err) {
+    // Defense-in-depth: if the transfer list is somehow still invalid the spec
+    // says nothing was transferred, so re-send as a structured clone (copy).
+    // Slower, but the batch still paints instead of freezing the surface.
+    ctx.postMessage({ type: "warn", message: `frame transfer failed, copying batch: ${String(err)}` })
+    ctx.postMessage({ type: "decoded", id: msg.id, frames })
+  }
 })
 
 let warnedRFX = false

@@ -77,7 +77,18 @@ export async function createWebGPUSurface(
 
   let device: GPUDevice | null = null
   try {
-    const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" })
+    // Chrome currently ignores powerPreference on Windows and logs a console
+    // warning every adapter request (crbug.com/369219127). Send the
+    // discrete-GPU hint only where it's actually honoured (macOS / Linux) so we
+    // keep the high-performance request without the Windows console noise.
+    const platform =
+      (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ||
+      navigator.platform ||
+      ""
+    const isWindows = /win/i.test(platform)
+    const adapter = await gpu.requestAdapter(
+      isWindows ? undefined : { powerPreference: "high-performance" },
+    )
     if (!adapter) return null
     device = await adapter.requestDevice()
     if (!device) return null

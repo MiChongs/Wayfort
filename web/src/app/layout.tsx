@@ -31,6 +31,9 @@ const cormorant = Cormorant_Garamond({
 export const metadata: Metadata = {
   title: "JumpServer Anonymous",
   description: "现代化网页跳板机 + 多协议网关 + AI 运维助手",
+  // Point the icon at the bundled SVG so browsers use it instead of probing the
+  // non-existent /favicon.ico (which 404s on every page load).
+  icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
