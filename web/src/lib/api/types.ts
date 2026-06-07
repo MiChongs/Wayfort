@@ -796,6 +796,114 @@ export interface SystemdJournal {
   sampled_at: string
 }
 
+// ---------------- process management ----------------
+export type ProcSignal = "TERM" | "KILL" | "HUP" | "INT" | "STOP" | "CONT" | "USR1" | "USR2" | "QUIT"
+export type ProcSort = "cpu" | "mem" | "rss" | "pid"
+export interface ProcRow {
+  pid: number
+  ppid: number
+  user: string
+  cpu_pct: number
+  mem_pct: number
+  rss_kb: number
+  vsz_kb: number
+  threads: number
+  nice: number
+  state: string
+  elapsed_sec: number
+  comm: string
+  args: string
+}
+export interface ProcList {
+  generated_at: string
+  total: number
+  processes: ProcRow[]
+}
+export interface ProcDetail {
+  pid: number
+  status: Record<string, string>
+  cmdline?: string
+  limits?: string
+  fd_count: number
+  io_read_bytes?: number
+  io_write_bytes?: number
+  sampled_at: string
+}
+
+// ---------------- performance diagnostics ----------------
+export interface PerfPressureMetric {
+  avg10: number
+  avg60: number
+  avg300: number
+}
+export interface PerfPressure {
+  available: boolean
+  cpu_some: PerfPressureMetric
+  io_some: PerfPressureMetric
+  io_full: PerfPressureMetric
+  mem_some: PerfPressureMetric
+  mem_full: PerfPressureMetric
+}
+export interface PerfVMStat {
+  available: boolean
+  procs_r: number
+  procs_b: number
+  swap_in_kbs: number
+  swap_out_kbs: number
+  block_in_kbs: number
+  block_out_kbs: number
+  interrupts: number
+  context_switches: number
+  cpu_user: number
+  cpu_system: number
+  cpu_idle: number
+  cpu_iowait: number
+  cpu_steal: number
+}
+export interface PerfDisk {
+  device: string
+  tps: number
+  read_kbs: number
+  write_kbs: number
+  await_ms: number
+  util_pct: number
+}
+export interface PerfSnapshot {
+  generated_at: string
+  load_avg: [number, number, number]
+  uptime_sec: number
+  pressure: PerfPressure
+  vmstat: PerfVMStat
+  disks: PerfDisk[]
+  sysstat_available: boolean
+  dmesg_tail?: string[]
+  oom_events?: string[]
+  notes?: string
+}
+export interface PerfDmesg {
+  lines: string[]
+  sampled_at: string
+}
+
+// ---------------- log viewer ----------------
+export interface LogFile {
+  path: string
+  size_kb: number
+  modified?: string
+}
+export interface LogList {
+  has_journal: boolean
+  files: LogFile[]
+  sampled_at: string
+}
+export interface LogTail {
+  source: string
+  ref: string
+  lines: number
+  text: string
+  sampled_at: string
+}
+
 export interface AssetGrant {
   id: number
   grantee_type: "user" | "role" | "group" | "department"

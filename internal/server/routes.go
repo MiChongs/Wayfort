@@ -41,6 +41,29 @@ func systemdHandler(rt *Routes) *api.SystemdHandler {
 		"the binary may predate the service-management feature; rebuild from latest source")
 }
 
+// opsStubReason is the shared 503 message for the Wave 1-3 ops modules when the
+// gateway binary predates them.
+const opsStubReason = "ops subsystem not initialised on this gateway — rebuild from latest source"
+
+func processHandler(rt *Routes) *api.ProcessHandler {
+	if rt.Process != nil {
+		return rt.Process
+	}
+	return api.NewProcessHandlerStub(opsStubReason)
+}
+func perfHandler(rt *Routes) *api.PerfHandler {
+	if rt.Perf != nil {
+		return rt.Perf
+	}
+	return api.NewPerfHandlerStub(opsStubReason)
+}
+func logsHandler(rt *Routes) *api.LogsHandler {
+	if rt.Logs != nil {
+		return rt.Logs
+	}
+	return api.NewLogsHandlerStub(opsStubReason)
+}
+
 // insightsHandler returns rt.Insights if non-nil, else a stub that always
 // responds 503. Lets us register routes unconditionally so missing /
 // stale config never manifests as a 404.
@@ -129,6 +152,9 @@ type Routes struct {
 	Firewall *api.FirewallHandler
 	Docker   *api.DockerHandler
 	Systemd  *api.SystemdHandler
+	Process  *api.ProcessHandler
+	Perf     *api.PerfHandler
+	Logs     *api.LogsHandler
 
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
@@ -443,6 +469,18 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/nodes/:id/systemd/unit", systemdHandler(rt).Detail)
 		ops.GET("/nodes/:id/systemd/journal", systemdHandler(rt).Journal)
 		ops.POST("/nodes/:id/systemd/action", perm(auth.PermServiceManage), systemdHandler(rt).Action)
+		// Ops dock — process management. Reads ActionConnect; signal/renice PermProcessManage.
+		ops.GET("/nodes/:id/process/list", processHandler(rt).List)
+		ops.GET("/nodes/:id/process/detail", processHandler(rt).Detail)
+		ops.POST("/nodes/:id/process/signal", perm(auth.PermProcessManage), processHandler(rt).Signal)
+		ops.POST("/nodes/:id/process/renice", perm(auth.PermProcessManage), processHandler(rt).Renice)
+		// Ops dock — performance diagnostics (read-only).
+		ops.GET("/nodes/:id/perf/snapshot", perfHandler(rt).Snapshot)
+		ops.GET("/nodes/:id/perf/dmesg", perfHandler(rt).Dmesg)
+		// Ops dock — log viewer (read-only; follow streams over SSE).
+		ops.GET("/nodes/:id/logs/files", logsHandler(rt).Files)
+		ops.GET("/nodes/:id/logs/tail", logsHandler(rt).Tail)
+		ops.GET("/nodes/:id/logs/follow", logsHandler(rt).Follow)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

@@ -46,6 +46,9 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
+	"github.com/michongs/jumpserver-anonymous/internal/logs"
+	"github.com/michongs/jumpserver-anonymous/internal/perf"
+	"github.com/michongs/jumpserver-anonymous/internal/process"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/systemd"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -717,6 +720,20 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Audit: auditWriter, SSH: sshDeps,
 	})
 	routes.Systemd = api.NewSystemdHandler(systemdMgr)
+	processMgr := process.NewManager(process.Config{Enabled: true}, process.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
+		Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Process = api.NewProcessHandler(processMgr)
+	perfMgr := perf.NewManager(perf.Config{Enabled: true}, perf.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver, SSH: sshDeps,
+	})
+	routes.Perf = api.NewPerfHandler(perfMgr)
+	logsMgr := logs.NewManager(logs.Config{Enabled: true}, logs.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
+		SSH: sshDeps, HostKey: sshDeps.HostKey,
+	})
+	routes.Logs = api.NewLogsHandler(logsMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{

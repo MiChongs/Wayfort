@@ -3,6 +3,7 @@
 import * as React from "react"
 import { Group, Panel, Separator } from "react-resizable-panels"
 import {
+  Activity,
   Box,
   Cog,
   Gauge,
@@ -10,8 +11,10 @@ import {
   Info,
   PanelRightClose,
   PanelRightOpen,
+  ScrollText,
   Shield,
   TerminalSquare,
+  Zap,
 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
@@ -22,6 +25,9 @@ import { DockerTab } from "./server/DockerTab"
 import { NodeInfoTab } from "./server/NodeInfoTab"
 import { SessionsTab } from "./server/SessionsTab"
 import { CommandRunnerTab } from "./server/CommandRunnerTab"
+import { ProcessesTab } from "./server/ProcessesTab"
+import { PerformanceTab } from "./server/PerformanceTab"
+import { LogsTab } from "./server/LogsTab"
 import { useWorkspaceStore, type SubTab as SubTabKey } from "./useWorkspaceStore"
 
 type Props = {
@@ -49,6 +55,9 @@ type DockTab = {
 const DOCK_TABS: DockTab[] = [
   // 观测
   { key: "dashboard", label: "仪表盘", group: "观测", icon: Gauge, render: ({ nodeId }) => <DashboardTab nodeId={nodeId} /> },
+  { key: "processes", label: "进程", group: "观测", icon: Activity, render: ({ nodeId, tabId, active }) => <ProcessesTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "performance", label: "性能", group: "观测", icon: Zap, render: ({ nodeId, tabId, active }) => <PerformanceTab nodeId={nodeId} tabId={tabId} active={active} /> },
+  { key: "logs", label: "日志", group: "观测", icon: ScrollText, render: ({ nodeId, tabId, active }) => <LogsTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 运行
   { key: "services", label: "服务", group: "运行", icon: Cog, render: ({ nodeId, active }) => <ServicesTab nodeId={nodeId} active={active} /> },
   { key: "docker", label: "Docker", group: "运行", icon: Box, render: ({ nodeId, active }) => <DockerTab nodeId={nodeId} active={active} /> },

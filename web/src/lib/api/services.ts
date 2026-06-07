@@ -3,7 +3,7 @@
 // is a thin wrapper around the api client so React Query can cache against
 // stable URLs.
 
-import { api, apiUpload, withTokenQuery, type UploadOptions } from "./client"
+import { api, apiUpload, buildURLFromAPI, withTokenQuery, type UploadOptions } from "./client"
 import type {
   SettingsSchema,
   IntegrationStatus,
@@ -52,6 +52,15 @@ import type {
   SystemdDetail,
   SystemdJournal,
   SystemdVerb,
+  ProcRow,
+  ProcList,
+  ProcDetail,
+  ProcSignal,
+  ProcSort,
+  PerfSnapshot,
+  PerfDmesg,
+  LogList,
+  LogTail,
   LoginHistory,
   MFADevice,
   Node,
@@ -407,6 +416,34 @@ export const systemdService = {
     api<{ ok: boolean }>("POST", `/nodes/${nodeId}/systemd/action`, {
       body: { name, verb },
     }),
+}
+
+export const processService = {
+  list: (nodeId: number, sort: ProcSort = "cpu") =>
+    api<ProcList>("GET", `/nodes/${nodeId}/process/list`, { query: { sort } }),
+  detail: (nodeId: number, pid: number) =>
+    api<ProcDetail>("GET", `/nodes/${nodeId}/process/detail`, { query: { pid } }),
+  signal: (nodeId: number, pid: number, signal: ProcSignal) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/process/signal`, { body: { pid, signal } }),
+  renice: (nodeId: number, pid: number, nice: number) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/process/renice`, { body: { pid, nice } }),
+}
+
+export const perfService = {
+  snapshot: (nodeId: number) =>
+    api<PerfSnapshot>("GET", `/nodes/${nodeId}/perf/snapshot`),
+  dmesg: (nodeId: number, lines = 200) =>
+    api<PerfDmesg>("GET", `/nodes/${nodeId}/perf/dmesg`, { query: { lines } }),
+}
+
+export const logsService = {
+  files: (nodeId: number) => api<LogList>("GET", `/nodes/${nodeId}/logs/files`),
+  tail: (nodeId: number, source: "journal" | "file", ref: string, lines = 200) =>
+    api<LogTail>("GET", `/nodes/${nodeId}/logs/tail`, { query: { source, ref, lines } }),
+  // SSE follow URL — consumed by EventSource, which can't set headers, so the
+  // access token rides as a query param (backend middleware honours ?token=).
+  followURL: (nodeId: number, source: "journal" | "file", ref: string, lines = 200) =>
+    withTokenQuery(buildURLFromAPI(`/nodes/${nodeId}/logs/follow`, { source, ref, lines })),
 }
 
 export const portfwdService = {
