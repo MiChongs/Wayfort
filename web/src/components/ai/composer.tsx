@@ -327,15 +327,22 @@ export const Composer = React.forwardRef<
 
                 <div className="ml-auto flex items-center gap-2">
                   {charCount > 0 && (
-                    <Badge
-                      variant={overLimit ? "warning" : "secondary"}
-                      className={cn(
-                        "h-5 px-1.5 font-mono text-[10px] tabular-nums",
-                        !overLimit && "bg-transparent text-muted-foreground/60",
-                      )}
-                    >
-                      {charCount.toLocaleString()}
-                    </Badge>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge
+                          variant={overLimit ? "warning" : "secondary"}
+                          className={cn(
+                            "h-5 px-1.5 font-mono text-[10px] tabular-nums",
+                            !overLimit && "bg-transparent text-muted-foreground/60",
+                          )}
+                        >
+                          ~{Math.max(1, Math.ceil(charCount / 4)).toLocaleString()} tok
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        约 {charCount.toLocaleString()} 字符 · 粗略 token 估算
+                      </TooltipContent>
+                    </Tooltip>
                   )}
 
                   {running && cancel ? (

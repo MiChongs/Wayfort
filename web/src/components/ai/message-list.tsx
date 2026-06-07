@@ -19,6 +19,7 @@ import { ToolGroupCard } from "./tool-group-card"
 import { AgentInfoCard } from "./agent-info-card"
 import { AskUserCard } from "./ask-user-card"
 import { PlanCard } from "./plan-card"
+import { BranchNav } from "./branch-nav"
 import { cn } from "@/lib/utils"
 import { groupTools, type ToolLike } from "@/lib/ai/group-tools"
 import type { AIAgent, AIMessage, AIToolInvocation } from "@/lib/api/types"
@@ -93,6 +94,10 @@ interface MessageListProps {
   onEditUser?: (msg: AIMessage, newText: string) => void
   // Transient highlight for an in-conversation search hit (scroll-to + ring).
   highlightMsgId?: number | null
+  // Branch DAG: parentId (0 = root) → sorted sibling message ids, for the
+  // "‹2/3›" switcher on user messages that have sibling branches.
+  branchSiblings?: Map<number, number[]>
+  onSwitchBranch?: (siblingId: number) => void
 }
 
 export interface MessageListHandle {
@@ -138,6 +143,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
     onRegenerateFrom,
     onEditUser,
     highlightMsgId,
+    branchSiblings,
+    onSwitchBranch,
   },
   ref,
 ) {
@@ -168,8 +175,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
   React.useEffect(() => () => footerObsRef.current?.disconnect(), [])
 
   const historyBubbles = React.useMemo(
-    () => renderHistory(messages, invocations, agent, onRegenerateFrom, onEditUser),
-    [messages, invocations, agent, onRegenerateFrom, onEditUser],
+    () =>
+      renderHistory(messages, invocations, agent, onRegenerateFrom, onEditUser, branchSiblings, onSwitchBranch),
+    [messages, invocations, agent, onRegenerateFrom, onEditUser, branchSiblings, onSwitchBranch],
   )
 
   // msg.id → history index, for in-conversation search jump.
@@ -580,6 +588,8 @@ function renderHistory(
   agent?: AIAgent,
   onRegenerateFrom?: (msg: AIMessage) => void,
   onEditUser?: (msg: AIMessage, newText: string) => void,
+  branchSiblings?: Map<number, number[]>,
+  onSwitchBranch?: (siblingId: number) => void,
 ): RenderedBubble[] {
   type HistoryItem =
     | { kind: "user"; msg: AIMessage; text: string }
@@ -676,16 +686,39 @@ function renderHistory(
     }
     const it = entry as HistoryItem
     if (it.kind === "user") {
+      const sibs = branchSiblings?.get(it.msg.parent_id ?? 0)
+      const hasBranches = !!sibs && sibs.length > 1 && sibs.includes(it.msg.id)
+      const bubble = (
+        <UserBubble
+          text={it.text}
+          images={parseContentImages(it.msg.content)}
+          message={it.msg}
+          onEdit={onEditUser}
+        />
+      )
       out.push({
         key: `u-${it.msg.id}`,
         msgId: it.msg.id,
-        node: (
-          <UserBubble
-            text={it.text}
-            images={parseContentImages(it.msg.content)}
-            message={it.msg}
-            onEdit={onEditUser}
-          />
+        node: hasBranches ? (
+          <div className="space-y-1">
+            <div className="flex justify-end">
+              <BranchNav
+                index={sibs!.indexOf(it.msg.id)}
+                total={sibs!.length}
+                onPrev={() => {
+                  const i = sibs!.indexOf(it.msg.id)
+                  onSwitchBranch?.(sibs![(i - 1 + sibs!.length) % sibs!.length])
+                }}
+                onNext={() => {
+                  const i = sibs!.indexOf(it.msg.id)
+                  onSwitchBranch?.(sibs![(i + 1) % sibs!.length])
+                }}
+              />
+            </div>
+            {bubble}
+          </div>
+        ) : (
+          bubble
         ),
       })
       prevKind = "user"

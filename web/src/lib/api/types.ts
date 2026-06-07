@@ -1328,6 +1328,8 @@ export interface AIConversation {
   permission_mode: PermissionMode
   total_input_tokens?: number
   total_output_tokens?: number
+  total_cache_read_tokens?: number
+  total_cache_write_tokens?: number
   total_cost_micros?: number
   message_count: number
   status: "active" | "running" | "idle" | "archived"
@@ -1347,6 +1349,7 @@ export interface AIConversation {
 export interface AIMessage {
   id: number
   conversation_id: string
+  parent_id?: number | null  // branch DAG link (null = linear / root)
   role: "system" | "user" | "assistant" | "tool"
   content: string  // JSON: ContentPart[]
   reasoning?: string  // persisted extended-thinking trace (assistant turns)

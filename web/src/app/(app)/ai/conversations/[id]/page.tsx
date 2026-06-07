@@ -122,6 +122,30 @@ export default function ConversationPage({
     queryKey: ["ai", "agents"],
     queryFn: aiAgentService.list,
   })
+  // Branch points → "‹2/3›" switchers on user messages that have siblings.
+  const branchesQuery = useQuery({
+    queryKey: ["ai", "branches", id],
+    queryFn: () => aiConversationService.branches(id),
+  })
+  const branchSiblings = React.useMemo(() => {
+    const m = new Map<number, number[]>()
+    for (const g of branchesQuery.data?.branches || []) {
+      m.set(g.parent_id, [...g.siblings].sort((a, b) => a - b))
+    }
+    return m
+  }, [branchesQuery.data])
+  const switchBranch = React.useCallback(
+    async (siblingId: number) => {
+      try {
+        await aiConversationService.setActiveLeaf(id, siblingId)
+        qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
+        qc.invalidateQueries({ queryKey: ["ai", "branches", id] })
+      } catch (e: unknown) {
+        toast.error("切换分支失败", { description: (e as Error).message })
+      }
+    },
+    [id, qc],
+  )
   const agent = React.useMemo(() => {
     const aid = detail.data?.conversation.agent_id
     if (!aid) return undefined
@@ -691,6 +715,7 @@ export default function ConversationPage({
       pendingClearRef.current = true
       qc.invalidateQueries({ queryKey: ["ai", "conv", id] })
       qc.invalidateQueries({ queryKey: ["ai", "convs"] })
+      qc.invalidateQueries({ queryKey: ["ai", "branches", id] })
     }
   }
 
@@ -1057,6 +1082,8 @@ export default function ConversationPage({
               loading={detail.isLoading}
               agent={agent}
               highlightMsgId={highlightMsgId}
+              branchSiblings={branchSiblings}
+              onSwitchBranch={switchBranch}
               onApprove={approve}
               onReject={reject}
               onAnswer={answer}

@@ -130,6 +130,37 @@ func (r *MessageRepo) ListBranch(ctx context.Context, convID string, leafID uint
 	return path, nil
 }
 
+// DeepestLeaf walks down from fromID, always following the latest child, to the
+// tip of that subtree — used when switching to a sibling branch so the whole
+// branch (not just the fork point) becomes the active leaf.
+func (r *MessageRepo) DeepestLeaf(ctx context.Context, convID string, fromID uint64) (uint64, error) {
+	all, err := r.ListByConv(ctx, convID)
+	if err != nil {
+		return fromID, err
+	}
+	childrenOf := map[uint64][]uint64{}
+	for _, m := range all {
+		if m.ParentID != nil {
+			childrenOf[*m.ParentID] = append(childrenOf[*m.ParentID], m.ID)
+		}
+	}
+	cur := fromID
+	for steps := 0; steps <= len(all); steps++ {
+		kids := childrenOf[cur]
+		if len(kids) == 0 {
+			break
+		}
+		latest := kids[0]
+		for _, k := range kids {
+			if k > latest {
+				latest = k
+			}
+		}
+		cur = latest
+	}
+	return cur, nil
+}
+
 // ListByConvBefore returns up to `limit` messages with id < beforeID (beforeID
 // == 0 means "from the newest"), in natural ascending order — cursor pagination
 // for lazy-loading older messages in the UI.

@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
-import { ChevronDown, ListChecks } from "lucide-react"
+import { Check, ChevronDown, ListChecks } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { planProgress, type AgentTask } from "@/lib/ai/plan"
@@ -17,11 +17,11 @@ interface TaskPanelProps {
   className?: string
 }
 
-// The long-horizon agent's live TODO panel. Desktop renders it as a right rail
-// (a layout sibling of the chat column, OUTSIDE the message scroll area so it
-// never fights the sticky-bottom); mobile renders a collapsible block above the
-// list. Surface + dots follow DESIGN.md: cream/muted card, hairline border, no
-// shadow, the single scarce coral on the progress bar only.
+// The long-horizon agent's live plan, drawn as a vertical timeline of steps.
+// Desktop = right rail (a layout sibling OUTSIDE the message scroll area, so it
+// never fights the sticky-bottom); mobile = collapsible block above the list.
+// Surface + dots follow DESIGN.md (cream/muted card, hairline borders, no big
+// shadow; the single scarce coral lives on the icon tile + progress fill).
 export function TaskPanel({
   tasks,
   running,
@@ -32,53 +32,49 @@ export function TaskPanel({
 }: TaskPanelProps) {
   const reduce = useReducedMotion()
   const prog = planProgress(tasks)
-  const activeRunning = !!running && prog.active > 0
+  const allDone = prog.total > 0 && prog.done === prog.total
+  const activeTitle = tasks.find((t) => t.status === "active")?.title
 
-  const header = (
+  const list = (
+    <ol className="py-2">
+      <AnimatePresence initial={false}>
+        {tasks.map((t, i) => (
+          <TaskRow
+            key={t.id || `${t.ordinal}-${t.title}`}
+            task={t}
+            index={i}
+            isFirst={i === 0}
+            isLast={i === tasks.length - 1}
+          />
+        ))}
+      </AnimatePresence>
+    </ol>
+  )
+
+  const head = (
     <Header
       variant={variant}
       done={prog.done}
       total={prog.total}
-      activeRunning={activeRunning}
+      pct={prog.pct}
+      allDone={allDone}
+      running={!!running}
+      activeTitle={activeTitle}
       collapsed={collapsed}
       onToggle={onToggleCollapsed}
       reduce={!!reduce}
     />
   )
 
-  const progressBar = (
-    <div className="h-[2px] w-full overflow-hidden rounded-full bg-border/70">
-      <motion.div
-        className="h-full rounded-full bg-primary/70"
-        initial={false}
-        animate={{ width: `${prog.pct}%` }}
-        transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 220, damping: 30 }}
-      />
-    </div>
-  )
-
-  const list = (
-    <ul className="py-1">
-      <AnimatePresence initial={false}>
-        {tasks.map((t, i) => (
-          <TaskRow key={t.id || `${t.ordinal}-${t.title}`} task={t} index={i} />
-        ))}
-      </AnimatePresence>
-    </ul>
-  )
-
   if (variant === "rail") {
     return (
       <aside
         className={cn(
-          "flex h-full w-full flex-col overflow-hidden border-l border-border/70 bg-muted/20",
+          "flex h-full w-full flex-col overflow-hidden border-l border-border/70 bg-muted/15",
           className,
         )}
       >
-        <div className="shrink-0 space-y-2 px-3 pb-2 pt-3">
-          {header}
-          {progressBar}
-        </div>
+        <div className="shrink-0 border-b border-border/60 px-3 pb-3 pt-3.5">{head}</div>
         <ScrollArea className="min-h-0 flex-1">{list}</ScrollArea>
       </aside>
     )
@@ -87,10 +83,7 @@ export function TaskPanel({
   // inline (mobile): collapsible block.
   return (
     <div className={cn("border-b border-border/70 bg-muted/25", className)}>
-      <div className="space-y-2 px-3 py-2.5">
-        {header}
-        {progressBar}
-      </div>
+      <div className="px-3 py-2.5">{head}</div>
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.div
@@ -100,7 +93,7 @@ export function TaskPanel({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="max-h-[40vh] overflow-y-auto pb-1">{list}</div>
+            <div className="max-h-[42vh] overflow-y-auto pb-1">{list}</div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -112,7 +105,10 @@ function Header({
   variant,
   done,
   total,
-  activeRunning,
+  pct,
+  allDone,
+  running,
+  activeTitle,
   collapsed,
   onToggle,
   reduce,
@@ -120,53 +116,84 @@ function Header({
   variant: "rail" | "inline"
   done: number
   total: number
-  activeRunning: boolean
+  pct: number
+  allDone: boolean
+  running: boolean
+  activeTitle?: string
   collapsed?: boolean
   onToggle?: () => void
   reduce: boolean
 }) {
-  const inner = (
-    <>
-      <span className="flex items-center gap-1.5">
-        <ListChecks className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-        <span className="eyebrow">执行计划</span>
-        {activeRunning && (
-          <motion.span
-            className="ml-0.5 h-1.5 w-1.5 rounded-full bg-warning"
-            animate={reduce ? undefined : { opacity: [0.5, 1, 0.5] }}
-            transition={{ duration: 1.4, repeat: Infinity }}
-            aria-hidden
-          />
-        )}
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
-          {done}/{total}
+  const titleRow = (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+          <ListChecks className="h-3 w-3" aria-hidden />
         </span>
+        <span className="eyebrow">执行计划</span>
+      </span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        {allDone ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+            <Check className="h-3 w-3" strokeWidth={3} /> 完成
+          </span>
+        ) : (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium tabular-nums text-muted-foreground">
+            {done}/{total}
+          </span>
+        )}
         {variant === "inline" && (
           <ChevronDown
-            className={cn(
-              "h-4 w-4 text-muted-foreground transition-transform",
-              !collapsed && "rotate-180",
-            )}
+            className={cn("h-4 w-4 text-muted-foreground transition-transform", !collapsed && "rotate-180")}
             aria-hidden
           />
         )}
       </span>
-    </>
+    </div>
   )
 
-  if (variant === "inline") {
-    return (
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center justify-between focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:rounded"
-        aria-expanded={!collapsed}
-      >
-        {inner}
-      </button>
-    )
-  }
-  return <div className="flex items-center justify-between">{inner}</div>
+  return (
+    <div className="space-y-2">
+      {variant === "inline" ? (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="block w-full text-left focus:outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring/40"
+          aria-expanded={!collapsed}
+        >
+          {titleRow}
+        </button>
+      ) : (
+        titleRow
+      )}
+
+      {/* progress bar + percentage */}
+      <div className="flex items-center gap-2">
+        <div className="h-1 flex-1 overflow-hidden rounded-full bg-border/60">
+          <motion.div
+            className={cn("h-full rounded-full", allDone ? "bg-success" : "bg-primary/70")}
+            initial={false}
+            animate={{ width: `${pct}%` }}
+            transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 220, damping: 30 }}
+          />
+        </div>
+        <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">{pct}%</span>
+      </div>
+
+      {/* active step glance line */}
+      <AnimatePresence initial={false}>
+        {running && activeTitle && !allDone && (
+          <motion.div
+            initial={reduce ? false : { opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={reduce ? { opacity: 0 } : { opacity: 0, height: 0 }}
+            className="flex items-center gap-1.5 overflow-hidden text-[11px] text-muted-foreground"
+          >
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning motion-safe:animate-pulse" aria-hidden />
+            <span className="truncate">进行中 · {activeTitle}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
 }

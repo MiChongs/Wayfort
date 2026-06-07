@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -44,6 +45,40 @@ func (p *GeminiProvider) Kind() Kind   { return KindGemini }
 func (p *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if len(p.models) > 0 {
 		return p.models, nil
+	}
+	// Discover the live catalogue; fall back to a hard-coded baseline on error so
+	// the UI is always populated.
+	var out []ModelInfo
+	for m, err := range p.client.Models.All(ctx) {
+		if err != nil {
+			out = nil
+			break
+		}
+		id := strings.TrimPrefix(m.Name, "models/")
+		if id == "" || strings.Contains(id, "embedding") || strings.Contains(id, "aqa") || strings.Contains(id, "imagen") {
+			continue
+		}
+		gen := len(m.SupportedActions) == 0
+		for _, a := range m.SupportedActions {
+			if a == "generateContent" || a == "bidiGenerateContent" {
+				gen = true
+				break
+			}
+		}
+		if !gen {
+			continue
+		}
+		label := m.DisplayName
+		if label == "" {
+			label = id
+		}
+		out = append(out, ModelInfo{
+			ID: id, Label: label, Tools: true, Vision: true,
+			ContextWindow: int(m.InputTokenLimit), MaxOutput: int(m.OutputTokenLimit),
+		})
+	}
+	if len(out) > 0 {
+		return out, nil
 	}
 	return []ModelInfo{
 		{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro", Tools: true, Vision: true, ContextWindow: 2_000_000},
@@ -104,6 +139,12 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 	if req.MaxTokens > 0 {
 		cfg.MaxOutputTokens = int32(req.MaxTokens)
 	}
+	// Extended thinking (Gemini 2.5): allocate a thinking budget and ask for
+	// thought summaries so the reasoning UI lights up like Anthropic/o-series.
+	if req.ThinkingBudget > 0 {
+		b := int32(req.ThinkingBudget)
+		cfg.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &b, IncludeThoughts: true}
+	}
 
 	out := make(chan Event, 32)
 	go func() {
@@ -112,6 +153,7 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 		finish := ""
 		var totalIn, totalOut, cached int32
 		toolIdx := 0
+		reasoningOpen := false
 		for resp, err := range p.client.Models.GenerateContentStream(ctx, model, contents, cfg) {
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
@@ -128,7 +170,19 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 			}
 			for _, part := range cand.Content.Parts {
 				if part.Text != "" {
-					emit(out, ctx, Event{Type: EvtTextDelta, Text: part.Text})
+					if part.Thought {
+						if !reasoningOpen {
+							reasoningOpen = true
+							emit(out, ctx, Event{Type: EvtReasoningStart})
+						}
+						emit(out, ctx, Event{Type: EvtReasoningDelta, Text: part.Text})
+					} else {
+						if reasoningOpen {
+							reasoningOpen = false
+							emit(out, ctx, Event{Type: EvtReasoningEnd})
+						}
+						emit(out, ctx, Event{Type: EvtTextDelta, Text: part.Text})
+					}
 				}
 				if part.FunctionCall != nil {
 					toolIdx++
@@ -149,6 +203,9 @@ func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event,
 				totalOut = resp.UsageMetadata.CandidatesTokenCount
 				cached = resp.UsageMetadata.CachedContentTokenCount
 			}
+		}
+		if reasoningOpen {
+			emit(out, ctx, Event{Type: EvtReasoningEnd})
 		}
 		if totalIn > 0 || totalOut > 0 {
 			// PromptTokenCount includes cached tokens; report the fresh remainder
@@ -183,6 +240,14 @@ func buildGeminiContents(req Request) []*genai.Content {
 		if t := collectText(m.Content); t != "" {
 			parts = append(parts, &genai.Part{Text: t})
 		}
+		// Vision: attach image blocks as inline data (base64 → raw bytes).
+		for _, img := range collectImages(m.Content) {
+			if mt, data, ok := parseDataURL(img); ok {
+				if raw, err := base64.StdEncoding.DecodeString(data); err == nil {
+					parts = append(parts, &genai.Part{InlineData: &genai.Blob{MIMEType: mt, Data: raw}})
+				}
+			}
+		}
 		for _, tc := range m.ToolCalls {
 			var args map[string]any
 			if tc.Arguments != "" {
@@ -205,6 +270,3 @@ func buildGeminiContents(req Request) []*genai.Content {
 	}
 	return out
 }
-
-// silence unused-import warnings in tight refactors
-var _ = strings.TrimSpace

@@ -87,7 +87,15 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 	if !ok {
 		return
 	}
-	msgs, _ := h.Msg.ListByConv(c.Request.Context(), conv.ID)
+	// Return the ACTIVE branch only (when the conversation is branched), so the
+	// transcript reads as a coherent line; other branches stay reachable via the
+	// branch switcher (/branches + /active-leaf).
+	var msgs []aimodel.AIMessage
+	if conv.ActiveLeafMessageID != nil {
+		msgs, _ = h.Msg.ListBranch(c.Request.Context(), conv.ID, *conv.ActiveLeafMessageID)
+	} else {
+		msgs, _ = h.Msg.ListByConv(c.Request.Context(), conv.ID)
+	}
 	invs, _ := h.Inv.ListByConv(c.Request.Context(), conv.ID)
 	var tasks []aimodel.AITask
 	if h.Tasks != nil {
@@ -493,11 +501,15 @@ func (h *ConversationHandler) ListBranches(c *gin.Context) {
 		return
 	}
 	msgs, _ := h.Msg.ListByConv(c.Request.Context(), conv.ID)
+	// Group children by parent id; root-level siblings (parent_id null) use the
+	// sentinel key 0 so a branch off the very first message is still surfaced.
 	byParent := map[uint64][]uint64{}
 	for _, m := range msgs {
+		var pid uint64
 		if m.ParentID != nil {
-			byParent[*m.ParentID] = append(byParent[*m.ParentID], m.ID)
+			pid = *m.ParentID
 		}
+		byParent[pid] = append(byParent[pid], m.ID)
 	}
 	type group struct {
 		ParentID uint64   `json:"parent_id"`
@@ -532,8 +544,12 @@ func (h *ConversationHandler) SetActiveLeaf(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "message not found"})
 			return
 		}
+		// Follow the chosen node down to its branch tip so the full branch shows.
+		tip, _ := h.Msg.DeepestLeaf(c.Request.Context(), conv.ID, *body.MessageID)
+		conv.ActiveLeafMessageID = &tip
+	} else {
+		conv.ActiveLeafMessageID = nil
 	}
-	conv.ActiveLeafMessageID = body.MessageID
 	if err := h.Repo.Update(c.Request.Context(), conv); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

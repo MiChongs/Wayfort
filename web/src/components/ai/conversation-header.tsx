@@ -13,6 +13,7 @@ import {
   FileText as FileTextIcon,
   Wand2,
   GitFork,
+  Zap,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -193,6 +194,16 @@ export function ConversationHeader({
                 <TooltipContent>按公开 list price 估算的累计成本</TooltipContent>
               </Tooltip>
             )}
+            {(conversation?.total_cache_read_tokens ?? 0) > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex cursor-default items-center gap-0.5 tabular-nums text-success">
+                    · <Zap className="h-3 w-3" /> {formatCompact(conversation!.total_cache_read_tokens!)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>命中 prompt 缓存的输入 token（更省成本、更快首字）</TooltipContent>
+              </Tooltip>
+            )}
             <span>·</span>
             <span>{conversation?.message_count || 0} 条消息</span>
             {running && (
@@ -329,6 +340,12 @@ export function ConversationHeader({
       )}
     </div>
   )
+}
+
+// formatCompact renders a token count compactly (e.g. 12.3k).
+function formatCompact(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`
+  return `${n}`
 }
 
 // formatCost renders micro-dollars as a compact USD string, widening precision
