@@ -47,6 +47,7 @@ import (
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/jumpserver-anonymous/internal/systemd"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
 	"github.com/michongs/jumpserver-anonymous/pkg/kms"
@@ -711,6 +712,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Audit: auditWriter, SSH: sshDeps,
 	})
 	routes.Docker = api.NewDockerHandler(dockerMgr)
+	systemdMgr := systemd.NewManager(systemd.Config{Enabled: true}, systemd.Deps{
+		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
+		Audit: auditWriter, SSH: sshDeps,
+	})
+	routes.Systemd = api.NewSystemdHandler(systemdMgr)
 
 	// AI assistant subsystem
 	aiSet := ai.New(ai.Config{

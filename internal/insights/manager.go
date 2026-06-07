@@ -70,11 +70,11 @@ type netCacheEntry struct {
 	snap NetworkSnapshot
 }
 
-// nodeHistory carries the previous samples used to compute CPU% and iface
-// bandwidth. Protected by mu.
+// nodeHistory carries the previous poll's cumulative counters used to compute
+// rate metrics (CPU usage/breakdown/per-core, iface bandwidth, disk I/O).
+// Protected by mu.
 type nodeHistory struct {
-	prevStat  procStat
-	prevIface map[string]ifaceCounter
+	prev sampleState
 }
 
 // Deps groups the wiring values main.go passes us at startup.
@@ -212,16 +212,14 @@ func (m *Manager) collectSystem(ctx context.Context, nodeID uint64, l *nodeAndCr
 		hist = &nodeHistory{}
 		m.history[nodeID] = hist
 	}
-	prevStat := hist.prevStat
-	prevIface := hist.prevIface
+	prev := hist.prev
 	m.mu.Unlock()
 
 	now := time.Now().UTC()
-	snap, curStat, curIface := parseSystemBundle(out, prevStat, prevIface, now)
+	snap, cur := parseSystemBundle(out, prev, now)
 
 	m.mu.Lock()
-	hist.prevStat = curStat
-	hist.prevIface = curIface
+	hist.prev = cur
 	m.system[nodeID] = &systemCacheEntry{at: now, snap: snap}
 	m.mu.Unlock()
 	return &snap, nil

@@ -3,8 +3,11 @@ package insights
 import (
 	"bufio"
 	"encoding/json"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // parseUname expects `uname -s -r -m` style output on one line (single host)
@@ -455,6 +458,292 @@ func splitNonEmptyLines(s string) []string {
 			continue
 		}
 		out = append(out, t)
+	}
+	return out
+}
+
+func clampPct(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
+}
+
+// parseCPUMHz reads the numeric value from `grep 'cpu MHz' | cut -d:`.
+func parseCPUMHz(s string) float64 {
+	f := strings.Fields(strings.TrimSpace(s))
+	if len(f) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
+// parseCPUTimesAll reads every `cpu` / `cpuN` line from `grep '^cpu' /proc/stat`,
+// returning the aggregate plus a per-core map keyed by core index.
+func parseCPUTimesAll(s string) (agg cpuTimes, perCore map[int]cpuTimes) {
+	perCore = map[int]cpuTimes{}
+	for _, line := range splitNonEmptyLines(s) {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || !strings.HasPrefix(fields[0], "cpu") {
+			continue
+		}
+		ct := parseCPUTimesFields(fields[1:])
+		if fields[0] == "cpu" {
+			agg = ct
+			continue
+		}
+		idx, err := strconv.Atoi(fields[0][3:])
+		if err != nil {
+			continue
+		}
+		perCore[idx] = ct
+	}
+	return
+}
+
+func parseCPUTimesFields(nums []string) cpuTimes {
+	get := func(i int) uint64 {
+		if i >= len(nums) {
+			return 0
+		}
+		v, _ := strconv.ParseUint(nums[i], 10, 64)
+		return v
+	}
+	return cpuTimes{
+		User: get(0), Nice: get(1), System: get(2), Idle: get(3),
+		IOWait: get(4), IRQ: get(5), SoftIRQ: get(6), Steal: get(7),
+	}
+}
+
+// cpuBreakdownFromDelta splits the aggregate busy time into user / system /
+// iowait / steal percentages (0..100) over two samples. system folds in
+// irq + softirq; user folds in nice. Returns -1s when no useful delta.
+func cpuBreakdownFromDelta(prev, cur cpuTimes) (user, system, iowait, steal float64) {
+	totalDelta := float64(cur.total()) - float64(prev.total())
+	if totalDelta <= 0 {
+		return -1, -1, -1, -1
+	}
+	pct := func(c, p uint64) float64 {
+		d := float64(c) - float64(p)
+		if d < 0 {
+			d = 0
+		}
+		return clampPct(d / totalDelta * 100)
+	}
+	user = pct(cur.User+cur.Nice, prev.User+prev.Nice)
+	system = pct(cur.System+cur.IRQ+cur.SoftIRQ, prev.System+prev.IRQ+prev.SoftIRQ)
+	iowait = pct(cur.IOWait, prev.IOWait)
+	steal = pct(cur.Steal, prev.Steal)
+	return
+}
+
+// perCoreUsage returns each core's busy percentage ordered by core index.
+func perCoreUsage(prev, cur map[int]cpuTimes) []float64 {
+	idxs := make([]int, 0, len(cur))
+	for i := range cur {
+		idxs = append(idxs, i)
+	}
+	sort.Ints(idxs)
+	out := make([]float64, 0, len(idxs))
+	for _, i := range idxs {
+		p, ok := prev[i]
+		if !ok {
+			out = append(out, 0)
+			continue
+		}
+		out = append(out, busyPct(p, cur[i]))
+	}
+	return out
+}
+
+func busyPct(prev, cur cpuTimes) float64 {
+	totalDelta := float64(cur.total()) - float64(prev.total())
+	if totalDelta <= 0 {
+		return 0
+	}
+	idleDelta := float64(cur.idleAll()) - float64(prev.idleAll())
+	return clampPct((1 - idleDelta/totalDelta) * 100)
+}
+
+// wholeDiskRe matches whole block devices, excluding partitions
+// (sda1, nvme0n1p1) and virtual devices (loop, ram, sr, fd).
+var wholeDiskRe = regexp.MustCompile(`^(sd[a-z]+|vd[a-z]+|xvd[a-z]+|hd[a-z]+|nvme\d+n\d+|mmcblk\d+|dm-\d+)$`)
+
+func isWholeDisk(name string) bool { return wholeDiskRe.MatchString(name) }
+
+// parseDiskstats reads /proc/diskstats. Field layout (1-indexed within line):
+// 1 major 2 minor 3 name 4 reads 5 rmerged 6 sectors_read 7 ms_reading
+// 8 writes 9 wmerged 10 sectors_written 11 ms_writing 12 inflight 13 ms_io ...
+// Sectors are 512 bytes. Only whole disks are kept.
+func parseDiskstats(s string, now time.Time) map[string]diskCounter {
+	out := map[string]diskCounter{}
+	for _, line := range splitNonEmptyLines(s) {
+		fields := strings.Fields(line)
+		if len(fields) < 13 {
+			continue
+		}
+		name := fields[2]
+		if !isWholeDisk(name) {
+			continue
+		}
+		reads, _ := strconv.ParseInt(fields[3], 10, 64)
+		rsect, _ := strconv.ParseInt(fields[5], 10, 64)
+		writes, _ := strconv.ParseInt(fields[7], 10, 64)
+		wsect, _ := strconv.ParseInt(fields[9], 10, 64)
+		ioms, _ := strconv.ParseInt(fields[12], 10, 64)
+		out[name] = diskCounter{
+			ReadSectors:  rsect,
+			WriteSectors: wsect,
+			ReadOps:      reads,
+			WriteOps:     writes,
+			IOMs:         ioms,
+			At:           now,
+		}
+	}
+	return out
+}
+
+// diskIOFromDelta turns two diskstats samples into per-device rates, ordered by
+// device name. Devices present only in the current sample report zero rates.
+func diskIOFromDelta(prev, cur map[string]diskCounter) []DiskIO {
+	names := make([]string, 0, len(cur))
+	for n := range cur {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	out := make([]DiskIO, 0, len(names))
+	for _, n := range names {
+		c := cur[n]
+		io := DiskIO{Device: n}
+		if p, ok := prev[n]; ok && !p.At.IsZero() {
+			if dt := c.At.Sub(p.At).Seconds(); dt > 0 {
+				if c.ReadSectors >= p.ReadSectors {
+					io.ReadBps = int64(float64(c.ReadSectors-p.ReadSectors) * 512 / dt)
+				}
+				if c.WriteSectors >= p.WriteSectors {
+					io.WriteBps = int64(float64(c.WriteSectors-p.WriteSectors) * 512 / dt)
+				}
+				if c.ReadOps >= p.ReadOps {
+					io.ReadIOPS = int64(float64(c.ReadOps-p.ReadOps) / dt)
+				}
+				if c.WriteOps >= p.WriteOps {
+					io.WriteIOPS = int64(float64(c.WriteOps-p.WriteOps) / dt)
+				}
+				if c.IOMs >= p.IOMs {
+					io.UtilPct = clampPct(float64(c.IOMs-p.IOMs) / (dt * 1000) * 100)
+				}
+			}
+		}
+		out = append(out, io)
+	}
+	return out
+}
+
+// parseThermal reads the `<type> <millidegrees>` lines emitted from
+// /sys/class/thermal. Implausible readings (<=0 or >150°C) are dropped.
+func parseThermal(s string) []TempSensor {
+	out := []TempSensor{}
+	for _, line := range splitNonEmptyLines(s) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		milli, err := strconv.ParseFloat(fields[len(fields)-1], 64)
+		if err != nil {
+			continue
+		}
+		c := milli / 1000.0
+		if c <= 0 || c > 150 {
+			continue
+		}
+		out = append(out, TempSensor{
+			Label: strings.Join(fields[:len(fields)-1], " "),
+			TempC: c,
+		})
+		if len(out) >= 12 {
+			break
+		}
+	}
+	return out
+}
+
+// pickCPUTemp picks the most CPU-representative sensor, else the hottest.
+func pickCPUTemp(sensors []TempSensor) float64 {
+	best := 0.0
+	for _, s := range sensors {
+		l := strings.ToLower(s.Label)
+		if strings.Contains(l, "pkg") || strings.Contains(l, "package") ||
+			strings.Contains(l, "cpu") || strings.Contains(l, "core") ||
+			strings.Contains(l, "tdie") || strings.Contains(l, "tctl") ||
+			strings.Contains(l, "k10temp") {
+			return s.TempC
+		}
+		if s.TempC > best {
+			best = s.TempC
+		}
+	}
+	return best
+}
+
+// parseProcState reads `ps -eo stat= | cut -c1 | sort | uniq -c` output:
+// each line is "<count> <state-letter>".
+func parseProcState(s string) ProcSummary {
+	var ps ProcSummary
+	for _, line := range splitNonEmptyLines(s) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[0])
+		if err != nil || fields[1] == "" {
+			continue
+		}
+		ps.Total += n
+		switch fields[1][0] {
+		case 'R':
+			ps.Running += n
+		case 'S', 'D', 'I':
+			ps.Sleeping += n
+		case 'T', 't':
+			ps.Stopped += n
+		case 'Z':
+			ps.Zombie += n
+		}
+	}
+	return ps
+}
+
+// parseWho reads `who` output into interactive login sessions:
+//
+//	root  pts/0  2024-06-07 09:12 (10.0.0.5)
+//	alice tty1   2024-06-06 22:01
+func parseWho(s string) []LoginUser {
+	out := []LoginUser{}
+	for _, line := range splitNonEmptyLines(s) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		u := LoginUser{User: fields[0], TTY: fields[1]}
+		if len(fields) >= 4 && strings.Contains(fields[2], "-") {
+			u.Login = fields[2] + " " + fields[3]
+		} else if len(fields) >= 3 {
+			u.Login = strings.Join(fields[2:], " ")
+		}
+		if last := fields[len(fields)-1]; strings.HasPrefix(last, "(") && strings.HasSuffix(last, ")") {
+			u.From = strings.TrimSuffix(strings.TrimPrefix(last, "("), ")")
+		}
+		out = append(out, u)
+		if len(out) >= 64 {
+			break
+		}
 	}
 	return out
 }

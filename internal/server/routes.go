@@ -33,6 +33,13 @@ func dockerHandler(rt *Routes) *api.DockerHandler {
 	}
 	return api.NewDockerHandler(nil)
 }
+func systemdHandler(rt *Routes) *api.SystemdHandler {
+	if rt.Systemd != nil {
+		return rt.Systemd
+	}
+	return api.NewSystemdHandlerStub("systemd subsystem not initialised on this gateway — " +
+		"the binary may predate the service-management feature; rebuild from latest source")
+}
 
 // insightsHandler returns rt.Insights if non-nil, else a stub that always
 // responds 503. Lets us register routes unconditionally so missing /
@@ -117,10 +124,11 @@ type Routes struct {
 	// sessions (list / upload / download / delete / mkdir).
 	DesktopDrive *desktop.DriveHandler
 
-	// Workspace v2 — server-management panels (firewall, docker) that
-	// run SSH commands on the managed node.
+	// Workspace v2 — server-management panels (firewall, docker, systemd)
+	// that run SSH commands on the managed node.
 	Firewall *api.FirewallHandler
 	Docker   *api.DockerHandler
+	Systemd  *api.SystemdHandler
 
 	// Phase 14 — KMS provider setup wizard. Admin-only endpoints
 	// under /api/v1/setup/kms/*.
@@ -428,6 +436,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/nodes/:id/docker/containers/:cid/stop", perm(auth.PermDockerManage), dockerHandler(rt).Stop)
 		ops.POST("/nodes/:id/docker/containers/:cid/restart", perm(auth.PermDockerManage), dockerHandler(rt).Restart)
 		ops.DELETE("/nodes/:id/docker/containers/:cid", perm(auth.PermDockerManage), dockerHandler(rt).Remove)
+		// Workspace ops dock — systemd service management. Reads gated by
+		// ActionConnect; control actions by PermServiceManage.
+		ops.GET("/nodes/:id/systemd/status", systemdHandler(rt).Status)
+		ops.GET("/nodes/:id/systemd/units", systemdHandler(rt).ListUnits)
+		ops.GET("/nodes/:id/systemd/unit", systemdHandler(rt).Detail)
+		ops.GET("/nodes/:id/systemd/journal", systemdHandler(rt).Journal)
+		ops.POST("/nodes/:id/systemd/action", perm(auth.PermServiceManage), systemdHandler(rt).Action)
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.

@@ -22,7 +22,7 @@ export type ExpiryInfo = { ms: number; deadline: string; low: boolean }
 
 // SideDock sub-tab key — which server-management panel is open inside a
 // connection tab. Persisted per-tab so refresh restores the user's last view.
-export type SubTab = "dashboard" | "firewall" | "docker" | "sessions" | "info"
+export type SubTab = "dashboard" | "services" | "firewall" | "docker" | "sessions" | "info"
 
 // Chrome-style group palette. Eight muted tones keep the strip visually
 // quiet even with three or four groups open simultaneously. Names live in

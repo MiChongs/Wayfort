@@ -52,6 +52,7 @@ const (
 	// :manage code below.
 	PermFirewallManage = "firewall:manage"
 	PermDockerManage   = "docker:manage"
+	PermServiceManage  = "service:manage"
 
 	// Phase 15 — Approval Service.
 	// Any authenticated user can OPEN a request for themselves, so we do not
@@ -102,6 +103,7 @@ var AllPermissions = []struct {
 	{PermAIProviderGlobal, "ai", "配置全局 AI 提供商（管理员）"},
 	{PermFirewallManage, "ops", "修改节点防火墙规则"},
 	{PermDockerManage, "ops", "启停 / 删除节点 Docker 容器"},
+	{PermServiceManage, "ops", "启停 / 启用节点 systemd 服务"},
 	{PermApprovalDecide, "approval", "审批：批准 / 驳回 / 委托分配到自己的任务"},
 	{PermApprovalAdmin, "approval", "审批：撤销请求 / 吊销 grant（管理员）"},
 	{PermApprovalTemplateManage, "approval", "审批：管理审批模板（管理员）"},
@@ -153,7 +155,7 @@ var adminTierPerms = []string{
 	PermAssetGroupManage, PermTagManage, PermGrantManage,
 	PermSessionTerminate, PermAuditRead,
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
-	PermFirewallManage, PermDockerManage,
+	PermFirewallManage, PermDockerManage, PermServiceManage,
 	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
 	PermApprovalSubscribeManage, PermApprovalAuditRead,
 	PermAIAgentGlobal, PermAIProviderGlobal,

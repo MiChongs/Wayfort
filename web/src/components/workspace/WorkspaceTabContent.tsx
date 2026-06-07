@@ -148,9 +148,13 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
   // open — their write operations enforce approval per-action.
   const body = (): React.ReactNode => {
     switch (tab.protocol) {
+      // SSH is the only protocol that carries the Linux server-ops dock
+      // (insights / firewall / docker / systemd / sessions / info). The dock's
+      // telemetry is collected over an SSH exec channel against a Linux host, so
+      // it's meaningless for telnet (no SSH), a DB CLI, a Windows desktop
+      // (rdp/vnc/rdp_next) or the structured DB browser — those render the bare
+      // session full-bleed.
       case "ssh":
-      case "telnet":
-      case "dbcli":
         return (
           <SideDock tabId={tab.id} nodeId={tab.nodeId}>
             <WebSSHTerminal
@@ -164,32 +168,41 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
             />
           </SideDock>
         )
+      case "telnet":
+      case "dbcli":
+        return (
+          <WebSSHTerminal
+            protocol={tab.protocol}
+            nodeId={tab.nodeId}
+            displayName={tab.title}
+            host={tab.host}
+            port={tab.port}
+            onStatusChange={onSshStatusChange}
+            onOpenSftp={onOpenSftp}
+          />
+        )
       case "rdp":
       case "vnc":
         return (
-          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-            <RDPDisplay
-              protocol={tab.protocol}
-              nodeId={tab.nodeId}
-              nodeName={tab.title}
-              nodeHost={tab.host}
-              nodePort={tab.port}
-            />
-          </SideDock>
+          <RDPDisplay
+            protocol={tab.protocol}
+            nodeId={tab.nodeId}
+            nodeName={tab.title}
+            nodeHost={tab.host}
+            nodePort={tab.port}
+          />
         )
       case "rdp_next":
         return (
-          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-            <DesktopDisplay
-              nodeId={tab.nodeId}
-              nodeName={tab.title}
-              nodeHost={tab.host}
-              nodePort={tab.port}
-              backend={tab.rdpBackend}
-              onStatusChange={onDesktopStatusChange}
-              onLatencyChange={onDesktopLatency}
-            />
-          </SideDock>
+          <DesktopDisplay
+            nodeId={tab.nodeId}
+            nodeName={tab.title}
+            nodeHost={tab.host}
+            nodePort={tab.port}
+            backend={tab.rdpBackend}
+            onStatusChange={onDesktopStatusChange}
+            onLatencyChange={onDesktopLatency}
+          />
         )
       case "sftp":
         return <SftpWorkspace nodeId={tab.nodeId} showNodeHeader={false} className="h-full flex flex-col" />
@@ -198,11 +211,7 @@ const TabBody = React.memo(function TabBody({ tab }: { tab: TabModel }) {
       case "tcp_forward":
         return <TcpForwardPanel nodeId={tab.nodeId} />
       case "db_studio":
-        return (
-          <SideDock tabId={tab.id} nodeId={tab.nodeId}>
-            <DBStudio nodeId={tab.nodeId} embedded />
-          </SideDock>
-        )
+        return <DBStudio nodeId={tab.nodeId} embedded />
     }
     return null
   }

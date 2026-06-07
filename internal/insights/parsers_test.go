@@ -2,6 +2,7 @@ package insights
 
 import (
 	"testing"
+	"time"
 )
 
 func TestParseUname(t *testing.T) {
@@ -220,6 +221,119 @@ tcp6       0      0 :::8080                 :::*                    LISTEN      
 	}
 	if rows[1].Proto != "tcp6" || rows[1].LocalPort != 8080 || rows[1].Process != "java" {
 		t.Errorf("java: %+v", rows[1])
+	}
+}
+
+func TestParseCPUTimesAll(t *testing.T) {
+	in := "cpu  100 10 50 1000 20 0 5 2 0 0\n" +
+		"cpu0 60 5 25 500 10 0 2 1 0 0\n" +
+		"cpu1 40 5 25 500 10 0 3 1 0 0\n"
+	agg, per := parseCPUTimesAll(in)
+	if agg.User != 100 || agg.System != 50 || agg.Idle != 1000 || agg.IOWait != 20 || agg.Steal != 2 {
+		t.Fatalf("agg: %+v", agg)
+	}
+	if len(per) != 2 {
+		t.Fatalf("want 2 cores, got %d", len(per))
+	}
+	if per[0].User != 60 || per[1].User != 40 {
+		t.Errorf("per-core: %+v", per)
+	}
+}
+
+func TestCPUBreakdownFromDelta(t *testing.T) {
+	prev := cpuTimes{User: 100, System: 100, Idle: 1000, IOWait: 0, Steal: 0}
+	// +100 user, +100 system, +800 idle → total delta 1000 → 10% user, 10% system.
+	cur := cpuTimes{User: 200, System: 200, Idle: 1800, IOWait: 0, Steal: 0}
+	u, s, io, st := cpuBreakdownFromDelta(prev, cur)
+	if u != 10 || s != 10 || io != 0 || st != 0 {
+		t.Fatalf("got u=%v s=%v io=%v st=%v", u, s, io, st)
+	}
+	if u, _, _, _ := cpuBreakdownFromDelta(cpuTimes{}, cpuTimes{}); u != -1 {
+		t.Errorf("no-delta should be -1, got %v", u)
+	}
+}
+
+func TestPerCoreUsage(t *testing.T) {
+	prev := map[int]cpuTimes{0: {Idle: 1000}, 1: {Idle: 1000}}
+	// core0: +500 idle, +500 busy → 50%. core1: +1000 idle, +0 busy → 0%.
+	cur := map[int]cpuTimes{0: {User: 500, Idle: 1500}, 1: {Idle: 2000}}
+	got := perCoreUsage(prev, cur)
+	if len(got) != 2 || got[0] != 50 || got[1] != 0 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestParseDiskstatsAndDelta(t *testing.T) {
+	// Field layout (after the name): reads rmerged rsect msread writes wmerged
+	// wsect mswrite inflight io_ms weighted. io_ms is index 12 (0-based).
+	// sda is a whole disk, sda1 a partition (skipped), loop0 virtual (skipped).
+	line := "   8       0 sda 100 0 2000 50 200 0 4000 80 0 130 200\n" +
+		"   8       1 sda1 10 0 20 1 5 0 40 2 0 1 2\n" +
+		"   7       0 loop0 1 0 2 0 0 0 0 0 0 0 0\n"
+	t0 := time.Unix(1000, 0)
+	prev := parseDiskstats(line, t0)
+	if len(prev) != 1 {
+		t.Fatalf("want only sda, got %d (%v)", len(prev), prev)
+	}
+	// One second later sda read +1000 sectors, wrote +2000 sectors, io_ms +500.
+	line2 := "   8       0 sda 150 0 3000 60 300 0 6000 90 0 630 800\n"
+	cur := parseDiskstats(line2, t0.Add(time.Second))
+	io := diskIOFromDelta(prev, cur)
+	if len(io) != 1 {
+		t.Fatalf("want 1 device, got %d", len(io))
+	}
+	d := io[0]
+	if d.Device != "sda" || d.ReadBps != 1000*512 || d.WriteBps != 2000*512 {
+		t.Errorf("throughput: %+v", d)
+	}
+	if d.ReadIOPS != 50 || d.WriteIOPS != 100 || d.UtilPct != 50 {
+		t.Errorf("iops/util: %+v", d)
+	}
+}
+
+func TestParseThermalAndPick(t *testing.T) {
+	in := "x86_pkg_temp 54000\nacpitz 38000\nbogus 999000\n"
+	sensors := parseThermal(in)
+	if len(sensors) != 2 {
+		t.Fatalf("want 2 (999°C dropped), got %d (%v)", len(sensors), sensors)
+	}
+	if sensors[0].Label != "x86_pkg_temp" || sensors[0].TempC != 54 {
+		t.Errorf("sensor0: %+v", sensors[0])
+	}
+	if got := pickCPUTemp(sensors); got != 54 {
+		t.Errorf("pick: %v", got)
+	}
+}
+
+func TestParseProcState(t *testing.T) {
+	in := "    220 S\n      2 R\n      1 Z\n      3 D\n"
+	ps := parseProcState(in)
+	if ps.Total != 226 || ps.Running != 2 || ps.Sleeping != 223 || ps.Zombie != 1 {
+		t.Fatalf("got %+v", ps)
+	}
+}
+
+func TestParseWho(t *testing.T) {
+	in := "root     pts/0        2024-06-07 09:12 (10.0.0.5)\n" +
+		"alice    tty1         2024-06-06 22:01\n"
+	rows := parseWho(in)
+	if len(rows) != 2 {
+		t.Fatalf("want 2, got %d", len(rows))
+	}
+	if rows[0].User != "root" || rows[0].TTY != "pts/0" || rows[0].From != "10.0.0.5" || rows[0].Login != "2024-06-07 09:12" {
+		t.Errorf("root: %+v", rows[0])
+	}
+	if rows[1].User != "alice" || rows[1].From != "" {
+		t.Errorf("alice: %+v", rows[1])
+	}
+}
+
+func TestParseCPUMHz(t *testing.T) {
+	if got := parseCPUMHz(" 2400.000\n"); got != 2400 {
+		t.Errorf("got %v", got)
+	}
+	if got := parseCPUMHz("garbage"); got != 0 {
+		t.Errorf("garbage should be 0, got %v", got)
 	}
 }
 

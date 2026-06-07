@@ -102,7 +102,7 @@ export function RefreshControl({
             <motion.span
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="text-amber-500"
+              className="text-warning"
             >
               <AlertTriangle className="w-3 h-3" />
             </motion.span>
@@ -112,7 +112,7 @@ export function RefreshControl({
           {OPTIONS.map((o) => (
             <SelectItem key={o.value} value={String(o.value)} className="text-xs">
               {o.label}
-              {o.warn && <span className="ml-1 text-amber-500">⚠</span>}
+              {o.warn && <span className="ml-1 text-warning">⚠</span>}
             </SelectItem>
           ))}
         </SelectContent>

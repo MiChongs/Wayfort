@@ -759,6 +759,43 @@ export interface DockerLogsResponse {
   logs: string
 }
 
+// ---------------- systemd service management ----------------
+export type SystemdVerb = "start" | "stop" | "restart" | "reload" | "enable" | "disable"
+export interface SystemdStatus {
+  available: boolean
+  state: string
+  version?: string
+  total_units: number
+  running_units: number
+  failed_units: number
+  reason?: string
+  sampled_at: string
+}
+export interface SystemdUnit {
+  name: string
+  description: string
+  load: string
+  active: string
+  sub: string
+  enabled: string
+}
+export interface SystemdDetail {
+  unit: SystemdUnit
+  properties: Record<string, string>
+  main_pid?: number
+  memory_bytes?: number
+  tasks_current?: number
+  active_since?: string
+  journal?: string
+  sampled_at: string
+}
+export interface SystemdJournal {
+  unit: string
+  lines: number
+  text: string
+  sampled_at: string
+}
+
 export interface AssetGrant {
   id: number
   grantee_type: "user" | "role" | "group" | "department"

@@ -105,18 +105,28 @@ cat /proc/loadavg
 echo '===CPUINFO==='
 nproc
 grep -m1 '^model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-
+echo '===CPUFREQ==='
+grep -m1 '^cpu MHz' /proc/cpuinfo 2>/dev/null | cut -d: -f2-
 echo '===STAT==='
-head -1 /proc/stat
+grep -E '^cpu' /proc/stat
 echo '===MEMINFO==='
 cat /proc/meminfo
 echo '===DF==='
 df -P -k -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null
+echo '===DISKSTATS==='
+cat /proc/diskstats 2>/dev/null
 echo '===INTERFACES==='
 ip -j addr show 2>/dev/null
 echo '===NETDEV==='
 cat /proc/net/dev
+echo '===THERMAL==='
+for z in /sys/class/thermal/thermal_zone*; do [ -r "$z/temp" ] && printf '%s %s\n' "$(cat "$z/type" 2>/dev/null)" "$(cat "$z/temp" 2>/dev/null)"; done 2>/dev/null
+echo '===PROCSTATE==='
+ps -eo stat= --no-headers 2>/dev/null | cut -c1 | sort | uniq -c
+echo '===THREADS==='
+ps -eL --no-headers 2>/dev/null | wc -l
 echo '===WHO==='
-who 2>/dev/null | wc -l
+who 2>/dev/null
 echo '===END==='
 `
 
@@ -134,13 +144,24 @@ ss -Hnt state established 2>/dev/null | wc -l
 echo '===END==='
 `
 
+// sampleState carries the cumulative counters from one poll that the next poll
+// needs to turn into rates: aggregate + per-core CPU jiffies, per-interface
+// byte counters, and per-device disk counters. Cached per node in the manager.
+type sampleState struct {
+	aggStat procStat
+	aggCPU  cpuTimes
+	perCore map[int]cpuTimes
+	iface   map[string]ifaceCounter
+	disk    map[string]diskCounter
+}
+
 // parseSystemBundle takes the raw stdout from systemScript and slices it by
 // section markers, calling the appropriate parser for each.
 //
-// `prevStat` / `prevIface` come from the last poll for this node and are used
-// to compute deltas. They may be zero on first sample — the result then
-// reports usage_pct = -1 / bps = 0.
-func parseSystemBundle(out string, prevStat procStat, prevIface map[string]ifaceCounter, now time.Time) (snap SystemSnapshot, curStat procStat, curIface map[string]ifaceCounter) {
+// `prev` carries the previous poll's cumulative counters and is used to compute
+// deltas (CPU usage/breakdown/per-core, interface bandwidth, disk throughput).
+// On the first sample the rate fields report -1 / 0 and `cur` seeds the next call.
+func parseSystemBundle(out string, prev sampleState, now time.Time) (snap SystemSnapshot, cur sampleState) {
 	snap.GeneratedAt = now
 	sections := splitSections(out)
 
@@ -149,17 +170,36 @@ func parseSystemBundle(out string, prevStat procStat, prevIface map[string]iface
 	snap.Host.Distro = parseOSRelease(sections["OSREL"])
 	snap.Uptime = parseUptime(sections["UPTIME"])
 	snap.LoadAvg = parseLoadavg(sections["LOADAVG"])
+
 	cores, model := parseCPUInfo(sections["CPUINFO"])
-	snap.CPU = CPUInfo{Cores: cores, Model: model, UsagePct: -1}
-	stat, ok := parseProcStatCPU(sections["STAT"])
-	if ok {
-		curStat = stat
-		if prevStat.Total != 0 {
-			snap.CPU.UsagePct = cpuUsagePctFromDelta(prevStat, stat)
+	snap.CPU = CPUInfo{
+		Cores: cores, Model: model,
+		UsagePct: -1, UserPct: -1, SystemPct: -1, IOWaitPct: -1, StealPct: -1,
+		MHz: parseCPUMHz(sections["CPUFREQ"]),
+	}
+	if stat, ok := parseProcStatCPU(sections["STAT"]); ok {
+		cur.aggStat = stat
+		if prev.aggStat.Total != 0 {
+			snap.CPU.UsagePct = cpuUsagePctFromDelta(prev.aggStat, stat)
 		}
 	}
+	agg, perCore := parseCPUTimesAll(sections["STAT"])
+	cur.aggCPU = agg
+	cur.perCore = perCore
+	if prev.aggCPU.total() != 0 {
+		u, s, io, st := cpuBreakdownFromDelta(prev.aggCPU, agg)
+		snap.CPU.UserPct, snap.CPU.SystemPct, snap.CPU.IOWaitPct, snap.CPU.StealPct = u, s, io, st
+	}
+	if len(prev.perCore) > 0 {
+		snap.CPU.PerCore = perCoreUsage(prev.perCore, perCore)
+	}
+
 	snap.Memory = parseMeminfo(sections["MEMINFO"])
 	snap.Disks = parseDF(sections["DF"])
+
+	// Disk I/O — delta against the previous /proc/diskstats sample.
+	cur.disk = parseDiskstats(sections["DISKSTATS"], now)
+	snap.DiskIO = diskIOFromDelta(prev.disk, cur.disk)
 
 	ifs, ipOk := parseIPJSON(sections["INTERFACES"])
 	if !ipOk {
@@ -169,9 +209,9 @@ func parseSystemBundle(out string, prevStat procStat, prevIface map[string]iface
 		ifs = []NetIface{}
 	}
 	counters := parseNetDev(sections["NETDEV"])
-	curIface = map[string]ifaceCounter{}
+	cur.iface = map[string]ifaceCounter{}
 	for name, c := range counters {
-		curIface[name] = ifaceCounter{Rx: c[0], Tx: c[1], At: now}
+		cur.iface[name] = ifaceCounter{Rx: c[0], Tx: c[1], At: now}
 	}
 	byName := map[string]int{}
 	for i, ni := range ifs {
@@ -179,7 +219,7 @@ func parseSystemBundle(out string, prevStat procStat, prevIface map[string]iface
 	}
 	// Ensure all interfaces with counters appear, even if `ip` didn't list
 	// them. Common on minimal containers.
-	for name := range curIface {
+	for name := range cur.iface {
 		if _, ok := byName[name]; !ok {
 			byName[name] = len(ifs)
 			ifs = append(ifs, NetIface{Name: name, OperState: "UNKNOWN"})
@@ -187,17 +227,17 @@ func parseSystemBundle(out string, prevStat procStat, prevIface map[string]iface
 	}
 	for name, idx := range byName {
 		ni := ifs[idx]
-		cur := curIface[name]
-		ni.RxBytes = cur.Rx
-		ni.TxBytes = cur.Tx
-		if prev, ok := prevIface[name]; ok && !prev.At.IsZero() {
-			dt := cur.At.Sub(prev.At).Seconds()
+		c := cur.iface[name]
+		ni.RxBytes = c.Rx
+		ni.TxBytes = c.Tx
+		if p, ok := prev.iface[name]; ok && !p.At.IsZero() {
+			dt := c.At.Sub(p.At).Seconds()
 			if dt > 0 {
-				if cur.Rx >= prev.Rx {
-					ni.RxBps = int64(float64(cur.Rx-prev.Rx) / dt)
+				if c.Rx >= p.Rx {
+					ni.RxBps = int64(float64(c.Rx-p.Rx) / dt)
 				}
-				if cur.Tx >= prev.Tx {
-					ni.TxBps = int64(float64(cur.Tx-prev.Tx) / dt)
+				if c.Tx >= p.Tx {
+					ni.TxBps = int64(float64(c.Tx-p.Tx) / dt)
 				}
 			}
 		}
@@ -206,8 +246,18 @@ func parseSystemBundle(out string, prevStat procStat, prevIface map[string]iface
 	sort.Slice(ifs, func(i, j int) bool { return ifs[i].Name < ifs[j].Name })
 	snap.Interfaces = ifs
 
-	users, _ := parseIntField(sections["WHO"])
-	snap.LoggedInUsers = users
+	snap.Temps = parseThermal(sections["THERMAL"])
+	if len(snap.Temps) > 0 {
+		snap.CPU.TempC = pickCPUTemp(snap.Temps)
+	}
+
+	snap.Procs = parseProcState(sections["PROCSTATE"])
+	if th, ok := parseIntField(sections["THREADS"]); ok {
+		snap.Procs.Threads = th
+	}
+
+	snap.Sessions = parseWho(sections["WHO"])
+	snap.LoggedInUsers = len(snap.Sessions)
 	return
 }
 

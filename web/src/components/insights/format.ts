@@ -52,15 +52,17 @@ export function relativeTime(iso: string | undefined): string {
   return `${h}小时前`
 }
 
-// Threshold-coloured tone class for "used percentage" indicators.
+// Threshold-coloured tone class for "used percentage" indicators. Warm
+// semantic palette per DESIGN.md — sage / amber-gold / brick, never cool
+// emerald/amber.
 export function usagePctTone(pct: number): string {
   if (pct >= 90) return "text-destructive"
-  if (pct >= 70) return "text-amber-500"
-  return "text-emerald-500"
+  if (pct >= 70) return "text-warning"
+  return "text-success"
 }
 
 export function usagePctBg(pct: number): string {
   if (pct >= 90) return "bg-destructive"
-  if (pct >= 70) return "bg-amber-500"
-  return "bg-emerald-500"
+  if (pct >= 70) return "bg-warning"
+  return "bg-success"
 }

@@ -10,16 +10,18 @@ export interface StatCardProps {
   label: string
   value: React.ReactNode
   hint?: React.ReactNode
-  tone?: "default" | "amber" | "rose" | "sky"
+  tone?: "default" | "success" | "warning" | "danger"
   children?: React.ReactNode
   className?: string
 }
 
+// Warm semantic tints per DESIGN.md — sage / amber-gold / brick. Used as
+// barely-there 1px borders + ~6% wash, never as big color blocks.
 const TONE: Record<NonNullable<StatCardProps["tone"]>, string> = {
   default: "border-border/60",
-  amber: "border-amber-500/40 bg-amber-500/5",
-  rose: "border-rose-500/40 bg-rose-500/5",
-  sky: "border-sky-500/40 bg-sky-500/5",
+  success: "border-success/40 bg-success/[0.06]",
+  warning: "border-warning/40 bg-warning/[0.06]",
+  danger: "border-destructive/40 bg-destructive/[0.06]",
 }
 
 /**
@@ -35,7 +37,7 @@ export function StatCard({ icon: Icon, label, value, hint, tone = "default", chi
           {Icon && <Icon className="w-3 h-3" />}
           <span>{label}</span>
         </div>
-        <div className="text-2xl font-semibold tabular-nums leading-tight">{value}</div>
+        <div className="text-2xl font-medium tabular-nums leading-tight">{value}</div>
         {hint && <div className="text-[11px] text-muted-foreground">{hint}</div>}
         {children}
       </CardContent>

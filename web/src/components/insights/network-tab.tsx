@@ -132,9 +132,9 @@ function InterfaceList({ system }: { system?: SystemSnapshot }) {
 function InterfaceCard({ iface }: { iface: InsightsIface }) {
   const stateClass =
     iface.oper_state === "UP"
-      ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/40"
+      ? "bg-success/15 text-success border-success/40"
       : iface.oper_state === "DOWN"
-        ? "bg-rose-500/20 text-rose-600 dark:text-rose-400 border-rose-500/40"
+        ? "bg-destructive/15 text-destructive border-destructive/40"
         : "bg-muted text-muted-foreground border-border/60"
   return (
     <Card>

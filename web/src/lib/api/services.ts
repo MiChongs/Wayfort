@@ -47,6 +47,11 @@ import type {
   FirewallRule,
   FirewallRuleSpec,
   FirewallStatus,
+  SystemdStatus,
+  SystemdUnit,
+  SystemdDetail,
+  SystemdJournal,
+  SystemdVerb,
   LoginHistory,
   MFADevice,
   Node,
@@ -380,6 +385,27 @@ export const dockerService = {
   remove: (nodeId: number, cid: string, force = false) =>
     api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/docker/containers/${cid}`, {
       query: force ? { force: "true" } : undefined,
+    }),
+}
+
+export const systemdService = {
+  status: (nodeId: number) =>
+    api<SystemdStatus>("GET", `/nodes/${nodeId}/systemd/status`),
+  listUnits: (nodeId: number, filter = "") =>
+    api<{ units: SystemdUnit[] }>("GET", `/nodes/${nodeId}/systemd/units`, {
+      query: filter ? { filter } : undefined,
+    }),
+  detail: (nodeId: number, name: string, lines = 200) =>
+    api<SystemdDetail>("GET", `/nodes/${nodeId}/systemd/unit`, {
+      query: { name, lines },
+    }),
+  journal: (nodeId: number, name: string, lines = 300) =>
+    api<SystemdJournal>("GET", `/nodes/${nodeId}/systemd/journal`, {
+      query: { name, lines },
+    }),
+  action: (nodeId: number, name: string, verb: SystemdVerb) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/systemd/action`, {
+      body: { name, verb },
     }),
 }
 
@@ -784,6 +810,43 @@ export interface InsightsCPU {
   model: string
   cores: number
   usage_pct: number
+  /** Aggregate busy-time breakdown over the last interval (0..100; -1 until 2 samples). */
+  user_pct: number
+  system_pct: number
+  iowait_pct: number
+  steal_pct: number
+  /** Per-logical-CPU busy percentage, ordered by core index. Empty until a delta exists. */
+  per_core?: number[]
+  /** Current core frequency in MHz, best-effort. */
+  mhz?: number
+  /** Package temperature in °C, 0 if unknown. */
+  temp_c?: number
+}
+export interface InsightsDiskIO {
+  device: string
+  read_bps: number
+  write_bps: number
+  read_iops: number
+  write_iops: number
+  util_pct: number
+}
+export interface InsightsTemp {
+  label: string
+  temp_c: number
+}
+export interface InsightsProcSummary {
+  total: number
+  running: number
+  sleeping: number
+  stopped: number
+  zombie: number
+  threads?: number
+}
+export interface InsightsLoginUser {
+  user: string
+  tty: string
+  from?: string
+  login?: string
 }
 export interface InsightsMemory {
   total_kb: number
@@ -822,7 +885,11 @@ export interface SystemSnapshot {
   load_avg: [number, number, number]
   uptime_sec: number
   disks: InsightsDisk[]
+  disk_io?: InsightsDiskIO[]
   interfaces: InsightsIface[]
+  temps?: InsightsTemp[]
+  procs: InsightsProcSummary
+  sessions?: InsightsLoginUser[]
   logged_in_users: number
   partial?: boolean
   notes?: string

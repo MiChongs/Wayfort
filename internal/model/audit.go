@@ -28,6 +28,7 @@ const (
 	// Plan v2 — server-management actions executed via SSH.
 	AuditFirewallChange  AuditEventKind = "firewall.change"
 	AuditDockerAction    AuditEventKind = "docker.action"
+	AuditServiceAction   AuditEventKind = "service.action"
 	// Object-storage (OSS) bastion operations.
 	AuditOSSList     AuditEventKind = "oss.list"
 	AuditOSSDownload AuditEventKind = "oss.download"

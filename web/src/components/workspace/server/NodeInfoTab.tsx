@@ -64,7 +64,7 @@ export function NodeInfoTab({ nodeId }: Props) {
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h2 className="text-base font-semibold truncate" title={n.name}>{n.name}</h2>
+            <h2 className="text-base font-medium truncate" title={n.name}>{n.name}</h2>
             {isFav && <Heart className="w-3.5 h-3.5 fill-[#e8a55a] text-[#e8a55a] shrink-0" />}
             {n.disabled && <Badge variant="destructive">已禁用</Badge>}
           </div>

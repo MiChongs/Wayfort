@@ -2,10 +2,11 @@
 
 import * as React from "react"
 import { Group, Panel, Separator } from "react-resizable-panels"
-import { Box, Gauge, History, Info, Shield } from "lucide-react"
+import { Box, Cog, Gauge, History, Info, Shield } from "lucide-react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
 import { DashboardTab } from "./server/DashboardTab"
+import { ServicesTab } from "./server/ServicesTab"
 import { FirewallTab } from "./server/FirewallTab"
 import { DockerTab } from "./server/DockerTab"
 import { NodeInfoTab } from "./server/NodeInfoTab"
@@ -21,6 +22,7 @@ type Props = {
 
 const SUBTABS: { key: SubTabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "dashboard", label: "仪表盘", icon: Gauge },
+  { key: "services", label: "服务", icon: Cog },
   { key: "firewall", label: "防火墙", icon: Shield },
   { key: "docker", label: "Docker", icon: Box },
   { key: "sessions", label: "会话", icon: History },
@@ -72,14 +74,14 @@ export function SideDock({ tabId, nodeId, children }: Props) {
                 onValueChange={(v) => setSubTab(tabId, v as SubTabKey)}
                 className="flex-1 min-w-0"
               >
-                <TabsList className="h-7 w-full justify-start gap-0.5 p-0.5">
+                <TabsList className="h-7 w-full justify-start gap-0.5 p-0.5 overflow-x-auto">
                   {SUBTABS.map((t) => {
                     const Icon = t.icon
                     return (
                       <TabsTrigger
                         key={t.key}
                         value={t.key}
-                        className="h-6 text-[11px] px-2 gap-1"
+                        className="h-6 text-[11px] px-2 gap-1 shrink-0"
                         title={t.label}
                       >
                         <Icon className="w-3 h-3" />
@@ -94,6 +96,7 @@ export function SideDock({ tabId, nodeId, children }: Props) {
           {dockOpen && (
             <div className="flex-1 min-h-0">
               {sub === "dashboard" && <DashboardTab nodeId={nodeId} />}
+              {sub === "services" && <ServicesTab nodeId={nodeId} active={sub === "services"} />}
               {sub === "firewall" && <FirewallTab nodeId={nodeId} active={sub === "firewall"} />}
               {sub === "docker" && <DockerTab nodeId={nodeId} active={sub === "docker"} />}
               {sub === "sessions" && <SessionsTab nodeId={nodeId} />}
