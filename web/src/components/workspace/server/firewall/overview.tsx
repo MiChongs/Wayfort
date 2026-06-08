@@ -16,23 +16,34 @@ export function OverviewView({
   snapshot: FirewallSnapshot
   onAddRule: (prefill: Partial<FirewallRuleSpec>) => void
 }) {
+  const [ref, width] = useElementWidth<HTMLDivElement>()
   const ports = snapshot.exposure ?? []
   const openCount = ports.filter((p) => p.verdict === "open").length
   const restricted = ports.filter((p) => p.verdict === "restricted").length
   const denyDefault = /deny|drop|reject/i.test(`${snapshot.policy ?? ""} ${snapshot.default_in ?? ""}`)
 
+  // Container-measured columns — the dock panel is narrow even on a wide
+  // viewport, so Tailwind's viewport breakpoints don't apply here.
+  const cols = width === 0 ? 2 : width < 360 ? 2 : width < 560 ? 3 : 4
+
   return (
-    <div className="h-full min-h-0 space-y-3 overflow-auto p-3">
-      <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-6">
-        <StatCard icon={Shield} label="工具" value={(snapshot.tool || "—").toUpperCase()} />
-        <StatCard icon={Power} label="状态" value={snapshot.active ? "运行" : "停止"} tone={snapshot.active ? "success" : "warning"} />
-        <StatCard icon={ShieldCheck} label="默认入站" value={denyDefault ? "拒绝" : "允许"} tone={denyDefault ? "success" : "warning"} hint={snapshot.policy} />
+    <div ref={ref} className="h-full min-h-0 space-y-3 overflow-auto p-3">
+      <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+        <StatCard icon={Shield} label="工具" value={<span className="whitespace-nowrap">{(snapshot.tool || "—").toUpperCase()}</span>} />
+        <StatCard icon={Power} label="状态" value={<span className="whitespace-nowrap">{snapshot.active ? "运行" : "停止"}</span>} tone={snapshot.active ? "success" : "warning"} />
+        <StatCard
+          icon={ShieldCheck}
+          label="默认入站"
+          value={<span className="whitespace-nowrap">{denyDefault ? "拒绝" : "允许"}</span>}
+          tone={denyDefault ? "success" : "warning"}
+          hint={<span className="block truncate" title={snapshot.policy}>{shortPolicy(snapshot)}</span>}
+        />
         <StatCard icon={List} label="规则" value={snapshot.rule_count} hint={snapshot.chains?.length ? `${snapshot.chains.length} 链` : undefined} />
         <StatCard icon={Globe} label="对外暴露" value={openCount} tone={openCount > 0 ? "warning" : "success"} hint={`${restricted} 受限`} />
-        <StatCard icon={ShieldBan} label="封禁 IP" value={snapshot.fail2ban?.banned_total ?? "—"} hint={snapshot.fail2ban ? `${snapshot.fail2ban.jail_count} jail` : "未装 fail2ban"} />
+        <StatCard icon={ShieldBan} label="封禁 IP" value={snapshot.fail2ban?.banned_total ?? "—"} hint={snapshot.fail2ban ? `${snapshot.fail2ban.jail_count} jail` : "未装"} />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="text-[10px] uppercase tracking-wide text-muted-foreground">对外暴露端口</span>
         <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
           <Legend tone="open" /> <Legend tone="restricted" /> <Legend tone="blocked" />
@@ -41,6 +52,14 @@ export function OverviewView({
       <ExposureMatrix ports={ports} onAddRule={onAddRule} />
     </div>
   )
+}
+
+// shortPolicy keeps the hint to one compact line; the full string is in the title.
+function shortPolicy(s: FirewallSnapshot): string {
+  if (s.default_in) return `出站 ${/(deny|drop|reject)/i.test(s.default_out ?? "") ? "拒绝" : "允许"}`
+  const p = s.policy ?? ""
+  if (/allow \(outgoing\)/i.test(p)) return "出站 允许"
+  return p.length > 14 ? p.slice(0, 14) + "…" : p
 }
 
 function Legend({ tone }: { tone: "open" | "restricted" | "blocked" }) {
