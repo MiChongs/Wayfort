@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
@@ -20,6 +21,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"go.uber.org/zap"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -28,11 +30,37 @@ var (
 	ErrUnreachable      = errors.New("node unreachable")
 	ErrPermissionDenied = errors.New("permission denied")
 	ErrBadIface         = errors.New("invalid interface name")
+
+	// Validation errors (validate.go is the first line of injection defence).
+	ErrBadCIDR       = errors.New("invalid address/CIDR")
+	ErrBadPort       = errors.New("invalid listen port")
+	ErrBadMTU        = errors.New("invalid MTU")
+	ErrBadKeepalive  = errors.New("invalid persistent keepalive")
+	ErrBadKey        = errors.New("invalid WireGuard key")
+	ErrBadAllowedIPs = errors.New("invalid allowed IPs")
+	ErrBadEndpoint   = errors.New("invalid endpoint")
+	ErrBadEgress     = errors.New("invalid egress interface")
+
+	// Lifecycle / state errors.
+	ErrNotInstalled      = errors.New("wireguard-tools not installed on node")
+	ErrUnsupportedPkgMgr = errors.New("no supported package manager detected")
+	ErrConfNotFound      = errors.New("interface config file not found")
+	ErrConfExists        = errors.New("interface config already exists")
+	ErrPeerNotFound      = errors.New("peer not found in interface config")
+	ErrPeerExists        = errors.New("peer already exists in interface config")
+	ErrSubnetFull        = errors.New("no free address available in interface subnet")
+	ErrConfParse         = errors.New("failed to parse interface config")
+	ErrConfConflict      = errors.New("interface config changed on disk since read")
+	ErrConfirmRequired   = errors.New("destructive operation requires confirm=true")
 )
 
 type Config struct {
-	Enabled    bool
-	SSHTimeout time.Duration // default 10s
+	Enabled           bool
+	SSHTimeout        time.Duration // default 10s — short status/mutation commands
+	InstallTimeout    time.Duration // default 300s — streamed package install
+	CacheTTL          time.Duration // default 5s — Status cache window
+	ConfDir           string        // default "/etc/wireguard"
+	DefaultListenPort int           // default 51820 — fallback for new interfaces
 }
 
 type Deps struct {
@@ -66,11 +94,21 @@ type Iface struct {
 	PublicKey  string `json:"public_key"`
 	ListenPort int    `json:"listen_port"`
 	Peers      []Peer `json:"peers"`
+	// Enriched metadata (from the conf file + systemctl), all optional so the
+	// status payload stays backward compatible.
+	Addresses []string `json:"addresses,omitempty"` // [Interface] Address CIDRs
+	MTU       int      `json:"mtu,omitempty"`
+	DNS       []string `json:"dns,omitempty"`
+	Up        bool     `json:"up"`        // present in the kernel (wg show hit)
+	Autostart bool     `json:"autostart"` // systemctl is-enabled wg-quick@<name>
+	HasConf   bool     `json:"has_conf"`  // /etc/wireguard/<name>.conf exists
 }
 
 type Status struct {
 	Available bool      `json:"available"`
 	Reason    string    `json:"reason,omitempty"`
+	Installed bool      `json:"installed"`     // `wg` command present on the host
+	KernelMod bool      `json:"kernel_module"` // wireguard module loaded/available, or wireguard-go
 	Ifaces    []Iface   `json:"ifaces"`
 	SampledAt time.Time `json:"sampled_at"`
 }
@@ -83,13 +121,34 @@ type Manager struct {
 	asset  *asset.Resolver
 	audit  *audit.Writer
 	deps   sshrun.Deps
+
+	mu     sync.Mutex
+	cache  map[uint64]*cacheEntry
+	flight singleflight.Group
+}
+
+type cacheEntry struct {
+	at     time.Time
+	status Status
 }
 
 func NewManager(cfg Config, deps Deps) *Manager {
 	if cfg.SSHTimeout <= 0 {
 		cfg.SSHTimeout = 10 * time.Second
 	}
-	m := &Manager{cfg: cfg, logger: deps.Logger, nodes: deps.Nodes, creds: deps.Creds, asset: deps.Asset, audit: deps.Audit, deps: deps.SSH}
+	if cfg.InstallTimeout <= 0 {
+		cfg.InstallTimeout = 300 * time.Second
+	}
+	if cfg.CacheTTL <= 0 {
+		cfg.CacheTTL = 5 * time.Second
+	}
+	if cfg.ConfDir == "" {
+		cfg.ConfDir = "/etc/wireguard"
+	}
+	if cfg.DefaultListenPort <= 0 {
+		cfg.DefaultListenPort = 51820
+	}
+	m := &Manager{cfg: cfg, logger: deps.Logger, nodes: deps.Nodes, creds: deps.Creds, asset: deps.Asset, audit: deps.Audit, deps: deps.SSH, cache: map[uint64]*cacheEntry{}}
 	if m.logger != nil {
 		m.logger.Info("wireguard subsystem ready", zap.Bool("enabled", cfg.Enabled))
 	}
@@ -98,31 +157,108 @@ func NewManager(cfg Config, deps Deps) *Manager {
 
 func (m *Manager) Enabled() bool { return m.cfg.Enabled }
 
-// statusScript prefers a passwordless-sudo dump (wg show needs root to read
-// private keys / handshakes) and falls back to an unprivileged dump. A sentinel
-// distinguishes "wg not installed" from "no interfaces / insufficient rights".
-const statusScript = `if ! command -v wg >/dev/null 2>&1; then echo "__NO_WG__"; else (sudo -n wg show all dump 2>/dev/null || wg show all dump 2>/dev/null); fi`
+func (m *Manager) cached(nodeID uint64) *cacheEntry {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if c, ok := m.cache[nodeID]; ok && time.Since(c.at) < m.cfg.CacheTTL {
+		return c
+	}
+	return nil
+}
+
+func (m *Manager) store(nodeID uint64, c *cacheEntry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cache[nodeID] = c
+}
+
+func (m *Manager) invalidate(nodeID uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.cache, nodeID)
+}
+
+// runWG runs a single command against the node with the standard timeout and
+// error classification: it inspects the combined output for permission errors
+// first (sudo -n failures surface there, not as an exit error), then classifies
+// the transport error. Returns the stdout (falling back to stderr when stdout
+// is empty, since many wg-quick errors land on stderr).
+func (m *Manager) runWG(ctx context.Context, node *model.Node, cred *model.Credential, cmd, op string, to time.Duration) (string, error) {
+	if to <= 0 {
+		to = m.cfg.SSHTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, to)
+	defer cancel()
+	res, err := sshrun.Run(cctx, m.deps, node, cred, cmd, to)
+	if e := classifyOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return res.Stdout, e
+	}
+	if err != nil && res.Stdout == "" {
+		return res.Stderr, classify(err, op)
+	}
+	out := res.Stdout
+	if out == "" {
+		out = res.Stderr
+	}
+	return out, nil
+}
+
+// statusScript builds the aggregated status probe: a single SSH round-trip that
+// returns the live `wg show all dump`, every interface conf (for
+// Address/MTU/DNS + conf-only interfaces that aren't up), each unit's autostart
+// state, and the kernel-module situation. `wg show` needs root to read private
+// keys / handshakes, so each privileged read prefers `sudo -n` and falls back
+// to unprivileged. confDir is operator config (not user input) and is embedded
+// raw so the *.conf glob expands. Section markers let parseStatus split it.
+func statusScript(confDir string) string {
+	return `if ! command -v wg >/dev/null 2>&1; then echo "__NO_WG__"; exit 0; fi
+echo "===DUMP==="
+(sudo -n wg show all dump 2>/dev/null || wg show all dump 2>/dev/null)
+echo "===CONF==="
+for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; echo "@@FILE@@ $f"; (sudo -n cat "$f" 2>/dev/null || cat "$f" 2>/dev/null); echo "@@ENDFILE@@"; done
+echo "===ENABLED==="
+for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; n=$(basename "$f" .conf); printf '%s %s\n' "$n" "$(systemctl is-enabled wg-quick@$n 2>/dev/null || echo unknown)"; done
+echo "===MOD==="
+( (lsmod 2>/dev/null | grep -q '^wireguard' && echo loaded) || (modinfo wireguard >/dev/null 2>&1 && echo available) || (command -v wireguard-go >/dev/null 2>&1 && echo userspace) || echo none )
+echo "===END==="`
+}
 
 func (m *Manager) Status(ctx context.Context, userID, nodeID uint64) (*Status, error) {
 	node, cred, err := m.gateAndLoad(ctx, userID, nodeID)
 	if err != nil {
 		return nil, err
 	}
+	if c := m.cached(nodeID); c != nil {
+		s := c.status
+		return &s, nil
+	}
+	v, err, _ := m.flight.Do(fmt.Sprintf("wg-status:%d", nodeID), func() (any, error) {
+		s, err := m.collectStatus(ctx, node, cred)
+		if err != nil {
+			return nil, err
+		}
+		entry := &cacheEntry{at: time.Now().UTC(), status: *s}
+		m.store(nodeID, entry)
+		return entry, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	s := v.(*cacheEntry).status
+	return &s, nil
+}
+
+// collectStatus runs the on-host status probe and parses it into a Status. The
+// caller handles gating + caching; this is the SSH-bound part wrapped by
+// singleflight. (Task 2 enriches this with the aggregated metadata script.)
+func (m *Manager) collectStatus(ctx context.Context, node *model.Node, cred *model.Credential) (*Status, error) {
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)
 	defer cancel()
-	res, err := sshrun.Run(cctx, m.deps, node, cred, statusScript, m.cfg.SSHTimeout)
+	res, err := sshrun.Run(cctx, m.deps, node, cred, statusScript(m.cfg.ConfDir), m.cfg.SSHTimeout)
 	if err != nil && res.Stdout == "" {
 		return nil, classify(err, "wg show")
 	}
-	out := strings.TrimSpace(res.Stdout)
-	if out == "__NO_WG__" {
-		return &Status{Available: false, Reason: "目标主机未安装 WireGuard（未找到 wg 命令）。", SampledAt: time.Now().UTC()}, nil
-	}
-	ifaces := parseDump(out)
-	if len(ifaces) == 0 {
-		return &Status{Available: false, Reason: "未发现 WireGuard 接口，或当前 SSH 用户无权读取（需 root / sudo NOPASSWD）。", SampledAt: time.Now().UTC()}, nil
-	}
-	return &Status{Available: true, Ifaces: ifaces, SampledAt: time.Now().UTC()}, nil
+	return parseStatus(res.Stdout), nil
 }
 
 // SetInterface brings a WireGuard interface up or down via wg-quick.
@@ -149,6 +285,7 @@ func (m *Manager) SetInterface(ctx context.Context, userID, nodeID uint64, claim
 	if err != nil {
 		return classify(err, "wg-quick")
 	}
+	m.invalidate(nodeID)
 	m.recordAudit(claims, nodeID, fmt.Sprintf("wireguard %s %s", verb, name))
 	return nil
 }
@@ -260,8 +397,10 @@ func classifyOutput(out string) error {
 	return nil
 }
 
+// validIface enforces the kernel interface-name limit (IFNAMSIZ-1 = 15) and a
+// safe charset, so a name is always shell-safe and usable by wg-quick.
 func validIface(name string) bool {
-	if name == "" || len(name) > 32 {
+	if name == "" || len(name) > 15 {
 		return false
 	}
 	for _, r := range name {

@@ -59,8 +59,9 @@ const (
 	PermStorageManage  = "storage:manage"
 	PermKernelManage   = "kernel:manage"
 	PermSysUserManage  = "sysuser:manage"
-	PermNetworkManage  = "network:manage"
-	PermSecurityManage = "security:manage"
+	PermNetworkManage   = "network:manage"
+	PermWireGuardManage = "wireguard:manage"
+	PermSecurityManage  = "security:manage"
 
 	// Phase 15 — Approval Service.
 	// Any authenticated user can OPEN a request for themselves, so we do not
@@ -119,6 +120,7 @@ var AllPermissions = []struct {
 	{PermKernelManage, "ops", "修改节点内核参数（sysctl）"},
 	{PermSysUserManage, "ops", "管理节点系统用户（锁定 / 解锁 / 改组）"},
 	{PermNetworkManage, "ops", "修改节点网络（接口启停）"},
+	{PermWireGuardManage, "ops", "管理节点 WireGuard（安装 / 接口 / 对端 / 网关）"},
 	{PermSecurityManage, "ops", "应用节点安全加固修复"},
 	{PermApprovalDecide, "approval", "审批：批准 / 驳回 / 委托分配到自己的任务"},
 	{PermApprovalAdmin, "approval", "审批：撤销请求 / 吊销 grant（管理员）"},
@@ -173,7 +175,7 @@ var adminTierPerms = []string{
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
 	PermFirewallManage, PermDockerManage, PermServiceManage,
 	PermProcessManage, PermCronManage, PermPackageManage, PermStorageManage,
-	PermKernelManage, PermSysUserManage, PermNetworkManage, PermSecurityManage,
+	PermKernelManage, PermSysUserManage, PermNetworkManage, PermWireGuardManage, PermSecurityManage,
 	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
 	PermApprovalSubscribeManage, PermApprovalAuditRead,
 	PermAIAgentGlobal, PermAIProviderGlobal,

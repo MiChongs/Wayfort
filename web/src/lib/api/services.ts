@@ -110,6 +110,9 @@ import type {
   Session,
   SessionStats,
   AuditEvent,
+  AuditLogRow,
+  AuditStats,
+  AuditQuery,
   DriveInfo,
   DriveEntry,
   AnonymousSession,
@@ -368,6 +371,37 @@ export const sessionService = {
   recordingURL: (id: string) => withTokenQuery(`/api/proxy/api/v1/sessions/${id}/recording`),
 }
 
+// auditService backs the global audit center. `list`/`stats` go through the
+// JSON client; `streamURL` feeds the SSE tail (token rides the Authorization
+// header that streamSSE sets); `exportURL` is consumed by an <a download> so
+// the token is appended as a query param.
+function auditParams(q: AuditQuery): Record<string, string | number | undefined> {
+  return {
+    category: q.category || undefined,
+    kind: q.kind || undefined,
+    user_id: q.user_id,
+    username: q.username || undefined,
+    session_id: q.session_id || undefined,
+    node_id: q.node_id,
+    node_name: q.node_name || undefined,
+    client_ip: q.client_ip || undefined,
+    q: q.q || undefined,
+    only_abnormal: q.only_abnormal ? 1 : undefined,
+    from: q.from,
+    to: q.to,
+    limit: q.limit,
+    offset: q.offset,
+  }
+}
+
+export const auditService = {
+  list: (q: AuditQuery = {}) =>
+    api<{ audit_logs: AuditLogRow[]; total: number }>("GET", "/audit-logs", { query: auditParams(q) }),
+  stats: (days = 14) => api<AuditStats>("GET", "/audit-logs/stats", { query: { days } }),
+  streamURL: (q: AuditQuery = {}) => buildURLFromAPI("/audit-logs/stream", auditParams(q)),
+  exportURL: (q: AuditQuery = {}) => withTokenQuery(buildURLFromAPI("/audit-logs/export", auditParams(q))),
+}
+
 // ----- desktop per-user file drive (redirected into RDP sessions) -----
 export const desktopDriveService = {
   info: () => api<DriveInfo>("GET", "/desktop/drive"),
@@ -550,17 +584,174 @@ export type WGIface = {
   public_key: string
   listen_port: number
   peers: WGPeer[] | null
+  // Enriched metadata from the conf + systemctl (optional / back-compatible).
+  addresses?: string[] | null
+  mtu?: number
+  dns?: string[] | null
+  up: boolean
+  autostart: boolean
+  has_conf: boolean
 }
 export type WGStatus = {
   available: boolean
   reason?: string
+  installed: boolean
+  kernel_module: boolean
   ifaces: WGIface[] | null
   sampled_at: string
 }
+export type WGProbe = {
+  os_id: string
+  pkg_manager: string
+  installed: boolean
+  wg_quick: boolean
+  kernel_module: string
+  can_sudo: boolean
+  kernel: string
+  cmd_preview: string
+  sampled_at: string
+}
+export type WGKeyPair = { private_key: string; public_key: string }
+export type WGPeerConfig = {
+  public_key: string
+  preshared_key?: string
+  allowed_ips: string[] | null
+  endpoint?: string
+  persistent_keepalive?: number
+  comment?: string
+}
+export type WGIfaceConfig = {
+  name: string
+  private_key?: string
+  public_key?: string
+  address: string[] | null
+  listen_port?: number
+  dns?: string[] | null
+  mtu?: number
+  pre_up?: string[] | null
+  post_up?: string[] | null
+  pre_down?: string[] | null
+  post_down?: string[] | null
+  save_config?: boolean
+  peers: WGPeerConfig[] | null
+}
+export type WGConf = {
+  name: string
+  path: string
+  content: string
+  exists: boolean
+  sha256?: string
+  sampled_at: string
+}
+export type WGConfDiff = { name: string; original: string; modified: string; changed: boolean }
+export type WGGatewayStatus = {
+  ip_forward: boolean
+  ip_forward_persisted: boolean
+  nat_enabled: boolean
+  egress_iface: string
+  egress_candidates: string[] | null
+  rules: string[] | null
+  sampled_at: string
+}
+export type WGClientConfig = {
+  interface_name: string
+  address: string
+  public_key: string
+  server_public_key: string
+  endpoint: string
+  dns?: string
+  allowed_ips: string
+  persistent_keepalive?: number
+  conf: string
+}
+export type WGCreateIfaceReq = {
+  name: string
+  address: string[]
+  listen_port?: number
+  dns?: string[]
+  mtu?: number
+  private_key?: string
+  save_config?: boolean
+  enable_nat?: boolean
+  nat_egress?: string
+  autostart?: boolean
+  bring_up?: boolean
+}
+export type WGUpdateIfaceReq = {
+  address?: string[]
+  listen_port?: number
+  dns?: string[]
+  mtu?: number
+  post_up?: string[]
+  post_down?: string[]
+}
+export type WGPeerReq = {
+  public_key: string
+  allowed_ips: string[]
+  endpoint?: string
+  persistent_keepalive?: number
+  preshared_key?: string
+  comment?: string
+}
+export type WGClientReq = {
+  comment?: string
+  dns?: string[]
+  allowed_ips?: string[]
+  endpoint?: string
+  persistent_keepalive?: number
+  use_psk?: boolean
+}
+
+const wgIfacePath = (nodeId: number, name: string) =>
+  `/nodes/${nodeId}/wireguard/ifaces/${encodeURIComponent(name)}`
+
 export const wireguardService = {
   status: (nodeId: number) => api<WGStatus>("GET", `/nodes/${nodeId}/wireguard`),
+  probe: (nodeId: number) => api<WGProbe>("GET", `/nodes/${nodeId}/wireguard/probe`),
   setIface: (nodeId: number, name: string, up: boolean) =>
     api<{ ok: boolean }>("POST", `/nodes/${nodeId}/wireguard/iface`, { body: { name, up } }),
+  // keys
+  genKeys: (nodeId: number) => api<WGKeyPair>("POST", `/nodes/${nodeId}/wireguard/keys`),
+  genPSK: (nodeId: number) =>
+    api<{ preshared_key: string }>("POST", `/nodes/${nodeId}/wireguard/psk`),
+  // interfaces
+  getIface: (nodeId: number, name: string) => api<WGIfaceConfig>("GET", wgIfacePath(nodeId, name)),
+  createIface: (nodeId: number, body: WGCreateIfaceReq) =>
+    api<WGIfaceConfig>("POST", `/nodes/${nodeId}/wireguard/ifaces`, { body }),
+  updateIface: (nodeId: number, name: string, body: WGUpdateIfaceReq) =>
+    api<WGIfaceConfig>("PATCH", wgIfacePath(nodeId, name), { body }),
+  deleteIface: (nodeId: number, name: string, confirm: boolean) =>
+    api<{ ok: boolean }>("DELETE", wgIfacePath(nodeId, name), { body: { confirm } }),
+  setAutostart: (nodeId: number, name: string, enabled: boolean) =>
+    api<{ ok: boolean }>("POST", `${wgIfacePath(nodeId, name)}/autostart`, { body: { enabled } }),
+  // config file
+  readConf: (nodeId: number, name: string) => api<WGConf>("GET", `${wgIfacePath(nodeId, name)}/conf`),
+  writeConf: (nodeId: number, name: string, content: string, expectSha?: string) =>
+    api<{ ok: boolean }>("PUT", `${wgIfacePath(nodeId, name)}/conf`, {
+      body: { content, expect_sha: expectSha },
+    }),
+  diffConf: (nodeId: number, name: string, content: string) =>
+    api<WGConfDiff>("POST", `${wgIfacePath(nodeId, name)}/conf/diff`, { body: { content } }),
+  // peers
+  addPeer: (nodeId: number, name: string, body: WGPeerReq) =>
+    api<{ ok: boolean }>("POST", `${wgIfacePath(nodeId, name)}/peers`, { body }),
+  updatePeer: (nodeId: number, name: string, body: WGPeerReq) =>
+    api<{ ok: boolean }>("POST", `${wgIfacePath(nodeId, name)}/peers/update`, { body }),
+  deletePeer: (nodeId: number, name: string, publicKey: string) =>
+    api<{ ok: boolean }>("POST", `${wgIfacePath(nodeId, name)}/peers/delete`, {
+      body: { public_key: publicKey },
+    }),
+  // clients
+  newClient: (nodeId: number, name: string, body: WGClientReq) =>
+    api<WGClientConfig>("POST", `${wgIfacePath(nodeId, name)}/clients`, { body }),
+  // gateway
+  gateway: (nodeId: number) => api<WGGatewayStatus>("GET", `/nodes/${nodeId}/wireguard/gateway`),
+  setForwarding: (nodeId: number, persist: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/wireguard/gateway/forwarding`, { body: { persist } }),
+  setNat: (nodeId: number, enabled: boolean, egress: string, confirm: boolean) =>
+    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/wireguard/gateway/nat`, {
+      body: { enabled, egress, confirm },
+    }),
 }
 
 export type FileEntry = {

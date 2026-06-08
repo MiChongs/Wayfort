@@ -8,6 +8,7 @@
 package sshrun
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -108,6 +109,86 @@ func Run(
 		return res, err
 	}
 	return res, nil
+}
+
+// RunStream dials the node and runs command, invoking onLine for each stdout
+// line as it arrives (instead of buffering the whole output like Run). It is the
+// real-time path for long-running ops commands — streamed package installs,
+// config applies — so the UI sees progress immediately. Merge stderr into the
+// command (append `2>&1`) if you need it; RunStream only reads stdout. The
+// remote process is signalled + the session closed when ctx is cancelled (the
+// SSE handler cancels on client disconnect). dialTimeout <= 0 falls back to 10s.
+func RunStream(
+	ctx context.Context,
+	d Deps,
+	node *model.Node,
+	cred *model.Credential,
+	command string,
+	dialTimeout time.Duration,
+	onLine func(string),
+) error {
+	if node == nil {
+		return errors.New("sshrun: node is nil")
+	}
+	if cred == nil {
+		return errors.New("sshrun: credential is nil")
+	}
+	hops, err := ResolveHops(ctx, d.Proxies, node.ProxyChain)
+	if err != nil {
+		return fmt.Errorf("resolve hops: %w", err)
+	}
+	finalDialer, release, err := d.Chain.Build(ctx, hops, nil)
+	if err != nil {
+		return fmt.Errorf("build chain: %w", err)
+	}
+	defer release()
+	methods, err := d.Resolver.AuthMethods(cred)
+	if err != nil {
+		return fmt.Errorf("decode cred: %w", err)
+	}
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
+	client, err := pkgssh.Connect(ctx, finalDialer, pkgssh.DialConfig{
+		Addr:    pkgssh.AddrOf(node.Host, node.Port),
+		User:    pkgssh.PreferredUser(cred, node.Username),
+		Auth:    methods,
+		HostKey: d.HostKey,
+		Timeout: dialTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("new session: %w", err)
+	}
+	defer sess.Close()
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	if err := sess.Start(command); err != nil {
+		return fmt.Errorf("start: %w", err)
+	}
+	// Kill the remote command when the caller's ctx ends.
+	go func() {
+		<-ctx.Done()
+		_ = sess.Signal(xssh.SIGINT)
+		_ = sess.Close()
+		_ = client.Close()
+	}()
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if ctx.Err() != nil {
+			break
+		}
+		onLine(scanner.Text())
+	}
+	_ = sess.Wait()
+	return ctx.Err()
 }
 
 // ResolveHops parses a node's comma-separated proxy chain ("3,1") into

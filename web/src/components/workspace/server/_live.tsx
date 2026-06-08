@@ -30,6 +30,14 @@ export function networkStreamURL(nodeId: number): string {
 export function wireguardStreamURL(nodeId: number): string {
   return buildURLFromAPI(`/nodes/${nodeId}/wireguard/stream`)
 }
+export function wireguardInstallStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/wireguard/install/stream`)
+}
+export function wireguardApplyStreamURL(nodeId: number, name: string, mode: "sync" | "reload"): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/wireguard/ifaces/${encodeURIComponent(name)}/apply/stream`, {
+    mode,
+  })
+}
 
 /**
  * LiveKpiStrip — a compact, in-place real-time header for ops tools. Subscribes

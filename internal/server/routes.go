@@ -177,6 +177,7 @@ type Routes struct {
 	ProxyMetrics  *api.MetricsHandler
 	Cred          *api.CredentialHandler
 	Session       *api.SessionHandler
+	Audit         *api.AuditHandler
 	SFTP          *sftp.Handler
 	OSS           *oss.Handler
 	WS            *webssh.Gateway
@@ -516,6 +517,15 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.POST("/sessions/:id/terminate", perm(auth.PermSessionTerminate), rt.Session.Terminate)
 		ops.GET("/sessions/:id/recording", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/sessions/:id/cast", perm(auth.PermSessionRead), rt.Session.Recording)
+
+		// Audit center — global trail across every subsystem. Read-gated on
+		// audit:read (the `auditor` role + super-admins hold it).
+		if rt.Audit != nil {
+			ops.GET("/audit-logs", perm(auth.PermAuditRead), rt.Audit.List)
+			ops.GET("/audit-logs/stats", perm(auth.PermAuditRead), rt.Audit.Stats)
+			ops.GET("/audit-logs/stream", perm(auth.PermAuditRead), rt.Audit.Stream)
+			ops.GET("/audit-logs/export", perm(auth.PermAuditRead), rt.Audit.Export)
+		}
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
 		ops.GET("/nodes/:id/sftp/stat", rt.SFTP.Stat)
 		ops.POST("/nodes/:id/sftp/mkdir", rt.SFTP.Mkdir)
@@ -645,10 +655,33 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// Ops dock — security posture. Report read ActionConnect; Apply PermSecurityManage.
 		ops.GET("/nodes/:id/security", secauditHandler(rt).Report)
 		ops.POST("/nodes/:id/security/apply", perm(auth.PermSecurityManage), secauditHandler(rt).Apply)
-		// Ops dock — WireGuard. Status/stream read ActionConnect; iface up/down PermNetworkManage.
+		// Ops dock — WireGuard. Reads (status/stream/probe/conf/gateway) require
+		// ActionConnect on the node; every mutation (incl. the SSE write streams
+		// install + apply) is gated by wireguard:manage.
 		ops.GET("/nodes/:id/wireguard", wireguardHandler(rt).Status)
 		ops.GET("/nodes/:id/wireguard/stream", wireguardHandler(rt).Stream)
-		ops.POST("/nodes/:id/wireguard/iface", perm(auth.PermNetworkManage), wireguardHandler(rt).SetInterface)
+		ops.GET("/nodes/:id/wireguard/probe", wireguardHandler(rt).Probe)
+		ops.GET("/nodes/:id/wireguard/gateway", wireguardHandler(rt).GatewayStatus)
+		ops.GET("/nodes/:id/wireguard/ifaces/:name", wireguardHandler(rt).GetIfaceConfig)
+		ops.GET("/nodes/:id/wireguard/ifaces/:name/conf", wireguardHandler(rt).ReadConf)
+		wgManage := perm(auth.PermWireGuardManage)
+		ops.POST("/nodes/:id/wireguard/iface", wgManage, wireguardHandler(rt).SetInterface)
+		ops.POST("/nodes/:id/wireguard/install/stream", wgManage, wireguardHandler(rt).Install)
+		ops.POST("/nodes/:id/wireguard/keys", wgManage, wireguardHandler(rt).GenKeyPair)
+		ops.POST("/nodes/:id/wireguard/psk", wgManage, wireguardHandler(rt).GenPSK)
+		ops.POST("/nodes/:id/wireguard/ifaces", wgManage, wireguardHandler(rt).CreateIface)
+		ops.PATCH("/nodes/:id/wireguard/ifaces/:name", wgManage, wireguardHandler(rt).UpdateIface)
+		ops.DELETE("/nodes/:id/wireguard/ifaces/:name", wgManage, wireguardHandler(rt).DeleteIface)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/autostart", wgManage, wireguardHandler(rt).SetAutostart)
+		ops.PUT("/nodes/:id/wireguard/ifaces/:name/conf", wgManage, wireguardHandler(rt).WriteConf)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/conf/diff", wgManage, wireguardHandler(rt).DiffConf)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/apply/stream", wgManage, wireguardHandler(rt).ApplyConfigStream)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/peers", wgManage, wireguardHandler(rt).AddPeer)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/peers/update", wgManage, wireguardHandler(rt).UpdatePeer)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/peers/delete", wgManage, wireguardHandler(rt).DeletePeer)
+		ops.POST("/nodes/:id/wireguard/ifaces/:name/clients", wgManage, wireguardHandler(rt).NewClient)
+		ops.POST("/nodes/:id/wireguard/gateway/forwarding", wgManage, wireguardHandler(rt).EnableForwarding)
+		ops.POST("/nodes/:id/wireguard/gateway/nat", wgManage, wireguardHandler(rt).SetNAT)
 		// Ops dock — file manager + config editor. List/read ActionConnect;
 		// write/chmod gated by storage:manage (filesystem mutations).
 		ops.GET("/nodes/:id/files/list", filesHandler(rt).List)
