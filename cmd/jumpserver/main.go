@@ -491,6 +491,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 
 		// System settings center — super-admin runtime configuration.
 		Settings: &api.SettingsHandler{Center: settingsCenter, Prober: settingsProber},
+		// Anti-leak watermark — readable by every authenticated user; reads the
+		// live settings snapshot so super-admin changes apply on the next poll.
+		Watermark: &api.WatermarkHandler{Users: userRepo, Center: settingsCenter},
 		// (Phase 12 cherry-pick brought a duplicate OIDCClient line back —
 		// dropped; the canonical wiring with Sealer: oidcVault sits earlier
 		// in this struct literal.)

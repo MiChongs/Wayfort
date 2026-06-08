@@ -23,6 +23,7 @@ import type {
   AIToolInvocation,
   AccessExplanation,
   AccessInfo,
+  WatermarkRuntime,
   DashboardSummary,
   NodeListParams,
   NodeTestResult,
@@ -179,6 +180,8 @@ export const meService = {
   profile: () => api<User>("GET", "/me/profile"),
   // Role tier + permission set for dashboard + nav gating (server-computed).
   access: () => api<AccessInfo>("GET", "/me/access"),
+  // Resolved anti-leak watermark policy + this user's masked identity.
+  watermark: () => api<WatermarkRuntime>("GET", "/me/watermark"),
   updateProfile: (body: Partial<User>) => api<User>("PATCH", "/me/profile", { body }),
   changePassword: (old_password: string, new_password: string) =>
     api<void>("POST", "/me/password", { body: { old_password, new_password } }),

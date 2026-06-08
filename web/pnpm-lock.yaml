@@ -224,6 +224,9 @@ importers:
       video.js:
         specifier: ^8.23.7
         version: 8.23.7
+      watermark-js-plus:
+        specifier: ^1.6.3
+        version: 1.6.3
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -3380,6 +3383,9 @@ packages:
 
   warning@4.0.3:
     resolution: {integrity: sha512-rpJyN222KWIvHJ/F53XSZv0Zl/accqHR8et1kpaMTD/fLCRxtV8iX8czMzY7sVZupTI3zcUTg8eycS2kNF9l6w==}
+
+  watermark-js-plus@1.6.3:
+    resolution: {integrity: sha512-iCLOGf70KacIwjGF9MDViYxQcRiVwOH7l42qDHLeE2HeUsQD1EQuUC9cKRG/4SErTUmdqV3yf5WnKk2dRARHPQ==}
 
   web-namespaces@2.0.1:
     resolution: {integrity: sha512-bKr1DkiNa2krS7qxNtdrtHAmzuYGFQLiQ13TsorsdT6ULTkPLKuu5+GsFpDlg6JFjUTwX2DyhMPG2be8uPrqsQ==}
@@ -6892,6 +6898,8 @@ snapshots:
   warning@4.0.3:
     dependencies:
       loose-envify: 1.4.0
+
+  watermark-js-plus@1.6.3: {}
 
   web-namespaces@2.0.1: {}
 

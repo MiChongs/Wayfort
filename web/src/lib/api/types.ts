@@ -2258,6 +2258,31 @@ export type SettingFieldType =
   | "stringlist"
   | "stringmap"
   | "secret"
+  | "color"
+
+// Per-user anti-leak watermark payload returned by GET /me/watermark. Identity
+// and IP are resolved server-side (email/phone masked); the {date}/{time}/
+// {datetime} tokens inside `text` are left for the client to fill live.
+export interface WatermarkRuntime {
+  enabled: boolean
+  scope?: "all" | "session"
+  text?: string
+  style?: {
+    opacity: number
+    fontSize: number
+    color: string
+    rotation: number
+    gapX: number
+    gapY: number
+  }
+  blind?: { enabled: boolean; text: string }
+  features?: {
+    antiTamper: boolean
+    hardened: boolean
+    liveClock: boolean
+    refreshSec: number
+  }
+}
 
 export interface SettingEnumOption {
   value: string

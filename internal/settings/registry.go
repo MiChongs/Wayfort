@@ -28,6 +28,8 @@ var groups = []Group{
 		Subtitle: "审批账本离线归档到 S3 兼容对象存储", Integrations: []string{"s3archive"}},
 	{ID: "office", Title: "在线文档", Icon: "file-text", Order: 100,
 		Subtitle: "OnlyOffice / Collabora 在浏览器内编辑文档", Integrations: []string{"office"}},
+	{ID: "watermark", Title: "界面水印", Icon: "droplets", Order: 105,
+		Subtitle: "终端 / 桌面 / 管理页的全局防泄密水印：身份模板、平铺样式与盲水印取证"},
 }
 
 var specs = []Spec{
@@ -339,6 +341,51 @@ var specs = []Spec{
 		DependsOn: "office.enabled", DependsValue: "true", Help: "与 Document Server 一致的签名密钥，加密存储。"},
 	{Key: "office.callback_base_url", Group: "office", Type: TypeString, Label: "回调地址", Integration: "office",
 		DependsOn: "office.enabled", DependsValue: "true", Help: "Document Server 回访本网关拉取/保存文件的地址。"},
+
+	// ---------------- 界面水印 (request-time → live) ----------------
+	{Key: "watermark.enabled", Group: "watermark", Type: TypeBool, Label: "启用水印", Live: true,
+		Help: "在终端、远程桌面、文件传输与所有后台/业务页面叠加当前用户的防泄密水印。"},
+	{Key: "watermark.scope", Group: "watermark", Type: TypeEnum, Label: "显示范围", Live: true,
+		Enum: []EnumOption{
+			{Value: "all", Label: "全部页面", Help: "所有已登录页面（含后台管理）+ 会话界面"},
+			{Value: "session", Label: "仅会话界面", Help: "只在终端 / 桌面 / 文件等高敏感界面显示"},
+		},
+		DependsOn: "watermark.enabled", DependsValue: "true", Help: "控制水印覆盖的页面范围。登录页与匿名沙箱始终不加。"},
+	{Key: "watermark.content", Group: "watermark", Type: TypeText, Label: "内容模板", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true",
+		Placeholder: "{name}\n{email}\n{ip}  {datetime}",
+		Help: "每行一段，可用变量：{username} 用户名、{name} 姓名、{email} 邮箱、{phone} 手机号、{ip} 客户端IP、{date} 日期、{time} 时间、{datetime} 日期时间。邮箱/手机号自动脱敏；日期时间实时刷新。"},
+	{Key: "watermark.opacity", Group: "watermark", Type: TypeInt, Label: "不透明度", Unit: "%", Live: true,
+		Min: f(2), Max: f(100), DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "水印整体透明度，越低越淡。建议 10–25 兼顾可读与不打扰。"},
+	{Key: "watermark.font_size", Group: "watermark", Type: TypeInt, Label: "字号", Unit: "px", Live: true,
+		Min: f(8), Max: f(40), DependsOn: "watermark.enabled", DependsValue: "true", Help: "水印文字字号。"},
+	{Key: "watermark.font_color", Group: "watermark", Type: TypeColor, Label: "颜色", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true", Help: "水印文字颜色，深色背景界面会自动叠加描边保证可见。"},
+	{Key: "watermark.rotation", Group: "watermark", Type: TypeInt, Label: "倾斜角度", Unit: "°", Live: true,
+		Min: f(-90), Max: f(90), DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "文字倾斜角度，-45 即经典的 45° 斜向平铺。"},
+	{Key: "watermark.gap_x", Group: "watermark", Type: TypeInt, Label: "横向间距", Unit: "px", Live: true,
+		Min: f(80), Max: f(600), DependsOn: "watermark.enabled", DependsValue: "true", Help: "平铺单元的水平间距，越大越稀疏。"},
+	{Key: "watermark.gap_y", Group: "watermark", Type: TypeInt, Label: "纵向间距", Unit: "px", Live: true,
+		Min: f(60), Max: f(600), DependsOn: "watermark.enabled", DependsValue: "true", Help: "平铺单元的垂直间距，越大越稀疏。"},
+	{Key: "watermark.anti_tamper", Group: "watermark", Type: TypeBool, Label: "防篡改自愈", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "监测水印被删除 / 隐藏 / 改样式时立即原样重绘，对抗 DevTools 抹除。"},
+	{Key: "watermark.hardened", Group: "watermark", Type: TypeBool, Label: "移除加固", Advanced: true, Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "叠加周期性校验重建与不可选中保护，进一步提高手工移除成本。"},
+	{Key: "watermark.blind_enabled", Group: "watermark", Type: TypeBool, Label: "盲水印取证", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "在背景叠加肉眼不可见的隐写水印，截图外泄后可用解码工具还原泄密者身份。"},
+	{Key: "watermark.blind_content", Group: "watermark", Type: TypeString, Label: "盲水印文本", Advanced: true, Live: true,
+		DependsOn: "watermark.blind_enabled", DependsValue: "true",
+		Placeholder: "留空则取可见水印首行", Help: "嵌入隐写层的文本，留空时自动使用可见水印的第一行身份。"},
+	{Key: "watermark.live_clock", Group: "watermark", Type: TypeBool, Label: "实时时钟", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true", Help: "水印中的时间按刷新周期实时滚动，证明截图发生的具体时刻。"},
+	{Key: "watermark.refresh_sec", Group: "watermark", Type: TypeInt, Label: "刷新周期", Unit: "秒", Advanced: true, Live: true,
+		Min: f(10), Max: f(600), DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "实时时钟刷新与防篡改周期校验的时间间隔。"},
 }
 
 // wiredLive is the set of keys whose owning subsystem actually re-reads the
@@ -362,6 +409,23 @@ var wiredLive = map[string]bool{
 	"anonymous.shell":               true,
 	"protocols.tcpfwd.default_ttl":  true,
 	"protocols.tcpfwd.max_per_user": true,
+	// Watermark policy is read fresh from the snapshot by /me/watermark on every
+	// fetch, so every key applies live — clients pick up changes on next poll.
+	"watermark.enabled":       true,
+	"watermark.scope":         true,
+	"watermark.content":       true,
+	"watermark.opacity":       true,
+	"watermark.font_size":     true,
+	"watermark.font_color":    true,
+	"watermark.rotation":      true,
+	"watermark.gap_x":         true,
+	"watermark.gap_y":         true,
+	"watermark.anti_tamper":   true,
+	"watermark.hardened":      true,
+	"watermark.blind_enabled": true,
+	"watermark.blind_content": true,
+	"watermark.live_clock":    true,
+	"watermark.refresh_sec":   true,
 }
 
 // ---- lookups ----

@@ -28,6 +28,36 @@ type Config struct {
 	Approval  ApprovalConfig  `mapstructure:"approval"`
 	Office    OfficeConfig    `mapstructure:"office"`
 	Health    HealthConfig    `mapstructure:"health"`
+	Watermark WatermarkConfig `mapstructure:"watermark"`
+}
+
+// WatermarkConfig drives the browser-side anti-leak watermark: a diagonally
+// tiled overlay carrying the operator's identity across every authenticated
+// page and full-screen session so a screenshot/photo leak is traceable. The
+// gateway only stores policy here; the per-user identity is resolved at request
+// time by the /me/watermark endpoint (email/phone masked server-side) and the
+// canvas rendering happens in the browser via the watermark-js-plus library.
+//
+// Content is a template with newline-separated lines and {var} placeholders:
+// {username} {name} {email} {phone} {ip} {date} {time} {datetime}. The server
+// substitutes identity + ip (masking email/phone) and leaves the date/time
+// tokens for the client to fill live so the optional clock can tick.
+type WatermarkConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`       // master switch
+	Scope        string `mapstructure:"scope"`         // all | session
+	Content      string `mapstructure:"content"`       // template, newline-separated, {var} tokens
+	Opacity      int    `mapstructure:"opacity"`       // 1..100 (%)
+	FontSize     int    `mapstructure:"font_size"`     // px
+	FontColor    string `mapstructure:"font_color"`    // hex
+	Rotation     int    `mapstructure:"rotation"`      // degrees, -90..90 (default -45 → 45° diagonal)
+	GapX         int    `mapstructure:"gap_x"`         // horizontal tile spacing px
+	GapY         int    `mapstructure:"gap_y"`         // vertical tile spacing px
+	AntiTamper   bool   `mapstructure:"anti_tamper"`   // MutationObserver auto-restore
+	Hardened     bool   `mapstructure:"hardened"`      // extra removal hardening + periodic re-validate
+	BlindEnabled bool   `mapstructure:"blind_enabled"` // invisible blind watermark for forensics
+	BlindContent string `mapstructure:"blind_content"` // blind text; empty → first visible line
+	LiveClock    bool   `mapstructure:"live_clock"`    // refresh time tokens periodically
+	RefreshSec   int    `mapstructure:"refresh_sec"`   // clock refresh / re-validate interval (s)
 }
 
 // HealthConfig tunes the background proxy reachability prober. When enabled, a
@@ -592,6 +622,26 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("webssh.read_buffer", 8192)
 	v.SetDefault("webssh.write_timeout", 10*time.Second)
 	v.SetDefault("webssh.ping_interval", 30*time.Second)
+
+	// Anti-leak watermark — on by default so a fresh deploy is traceable.
+	// Default content lays out name / masked email / ip + live datetime; the
+	// 45° diagonal tiling and forensic blind layer are all enabled out of the
+	// box. Super-admins tune everything from /admin/settings → 界面水印.
+	v.SetDefault("watermark.enabled", true)
+	v.SetDefault("watermark.scope", "all")
+	v.SetDefault("watermark.content", "{name}\n{email}\n{ip}  {datetime}")
+	v.SetDefault("watermark.opacity", 16)
+	v.SetDefault("watermark.font_size", 15)
+	v.SetDefault("watermark.font_color", "#141413")
+	v.SetDefault("watermark.rotation", -45)
+	v.SetDefault("watermark.gap_x", 240)
+	v.SetDefault("watermark.gap_y", 180)
+	v.SetDefault("watermark.anti_tamper", true)
+	v.SetDefault("watermark.hardened", true)
+	v.SetDefault("watermark.blind_enabled", true)
+	v.SetDefault("watermark.blind_content", "")
+	v.SetDefault("watermark.live_clock", true)
+	v.SetDefault("watermark.refresh_sec", 60)
 
 	// Plan 14 — live system insights are read-only and gated by
 	// asset.ActionConnect, so they're on by default. Operators who need to

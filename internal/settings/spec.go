@@ -29,6 +29,7 @@ const (
 	TypeStringList FieldType = "stringlist" // → tag input
 	TypeStringMap  FieldType = "stringmap"  // → key/value editor
 	TypeSecret     FieldType = "secret"     // → password Input, write-only, masked
+	TypeColor      FieldType = "color"      // → color swatch + hex Input (stored as string)
 )
 
 // EnumOption is one choice for a TypeEnum field.

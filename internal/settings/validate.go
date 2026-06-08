@@ -60,7 +60,7 @@ func validateValue(spec Spec, raw json.RawMessage) error {
 			}
 		}
 		return fmt.Errorf("%s：取值不在允许范围内", spec.Label)
-	case TypeString, TypeText, TypeSecret:
+	case TypeString, TypeText, TypeSecret, TypeColor:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s：应为文本", spec.Label)

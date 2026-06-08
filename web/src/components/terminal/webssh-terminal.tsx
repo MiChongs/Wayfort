@@ -17,6 +17,7 @@ import {
 } from "@/lib/terminal/banner"
 import { inferDisconnect } from "@/lib/terminal/disconnect-reasons"
 import { cn } from "@/lib/utils"
+import { SessionWatermark } from "@/components/watermark/session-watermark"
 import { TerminalCommandPalette } from "./terminal-command-palette"
 import { TerminalContextMenu } from "./terminal-context-menu"
 import { TerminalHistorySheet } from "./terminal-history-sheet"
@@ -907,6 +908,7 @@ export function WebSSHTerminal({
         )}
         style={{ background: themePalette.colors.background }}
       >
+        <SessionWatermark targetRef={wrapRef} />
         <TerminalToolbar
           status={status}
           protocol={protocol}

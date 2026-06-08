@@ -73,7 +73,7 @@ func flatten(cfg *config.Config, spec Spec) (any, error) {
 		return rv.Int(), nil
 	case TypeFloat:
 		return rv.Float(), nil
-	case TypeString, TypeText, TypeEnum, TypeSecret:
+	case TypeString, TypeText, TypeEnum, TypeSecret, TypeColor:
 		return rv.String(), nil
 	case TypeStringList, TypeStringMap:
 		return rv.Interface(), nil
@@ -121,7 +121,7 @@ func apply(cfg *config.Config, spec Spec, raw json.RawMessage) error {
 			return fmt.Errorf("%s: invalid duration %q", spec.Key, s)
 		}
 		rv.SetInt(int64(d))
-	case TypeString, TypeText, TypeEnum, TypeSecret:
+	case TypeString, TypeText, TypeEnum, TypeSecret, TypeColor:
 		var s string
 		if err := json.Unmarshal(raw, &s); err != nil {
 			return fmt.Errorf("%s: expected string", spec.Key)

@@ -141,6 +141,8 @@ function FieldControl({
       return <ListControl field={field} value={Array.isArray(value) ? (value as string[]) : []} disabled={!active} onChange={onChange} />
     case "stringmap":
       return <MapControl value={(value && typeof value === "object" ? (value as Record<string, string>) : {})} disabled={!active} onChange={onChange} />
+    case "color":
+      return <ColorControl value={typeof value === "string" ? value : ""} disabled={!active} onChange={onChange} />
     case "text":
       return (
         <Textarea
@@ -163,6 +165,48 @@ function FieldControl({
         />
       )
   }
+}
+
+// Color swatch + hex input. The native picker drives the swatch; the text field
+// lets operators paste an exact token. Both feed the same string value.
+function ColorControl({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: string
+  disabled: boolean
+  onChange: (v: string) => void
+}) {
+  const safe = /^#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})$/.test(value.trim()) ? value.trim() : "#141413"
+  return (
+    <div className="flex items-center gap-2">
+      <label
+        className={cn(
+          "relative inline-flex h-8 w-8 items-center justify-center overflow-hidden rounded-md border border-border",
+          disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+        )}
+        title="选择颜色"
+      >
+        <span className="absolute inset-0" style={{ backgroundColor: safe }} />
+        <input
+          type="color"
+          value={safe}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value)}
+          className="absolute inset-0 cursor-pointer opacity-0"
+          aria-label="选择颜色"
+        />
+      </label>
+      <Input
+        value={value}
+        disabled={disabled}
+        placeholder="#RRGGBB"
+        onChange={(e) => onChange(e.target.value)}
+        className="w-[120px] font-mono text-xs uppercase"
+      />
+    </div>
+  )
 }
 
 function EnumControl({

@@ -12,6 +12,7 @@ import { GuacLoader } from "@/components/guacamole/guac-loader"
 import { RDPToolbar } from "./rdp-toolbar"
 import { AnnotationToolbar, type AnnotationTool } from "./annotation-toolbar"
 import { RecordingStatus } from "./recording-status"
+import { SessionWatermark } from "@/components/watermark/session-watermark"
 
 export interface RDPDisplayProps {
   protocol: "rdp" | "vnc"
@@ -225,6 +226,7 @@ export function RDPDisplay({
       className="relative h-full w-full bg-black overflow-hidden focus:outline-none"
       tabIndex={0}
     >
+      <SessionWatermark targetRef={wrapperRef} />
       {/* The host div is what RDPClient mounts into. After Plan 16 it
           contains: (1) the Guacamole display wrapper (event-receiving,
           renders the real desktop + cursor), (2) the Pixi canvas above

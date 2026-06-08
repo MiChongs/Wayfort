@@ -259,6 +259,10 @@ type Routes struct {
 	// only (gated with the system:admin permission). Nil when not wired.
 	Settings *api.SettingsHandler
 
+	// Watermark — per-user anti-leak watermark payload, readable by every
+	// authenticated user (reads the live settings snapshot). Nil when not wired.
+	Watermark *api.WatermarkHandler
+
 	// Phase 15 — Approval Service surface. Nil when the subsystem is
 	// disabled (the routes are still registered and return 503 stubs the
 	// same way insights/firewall do).
@@ -315,6 +319,9 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// /me self-service
 		me := authed.Group("/me")
 		me.GET("/profile", rt.Me.Profile)
+		if rt.Watermark != nil {
+			me.GET("/watermark", rt.Watermark.Get)
+		}
 		me.PATCH("/profile", rt.Me.UpdateProfile)
 		me.POST("/password", rt.Me.ChangePassword)
 		me.GET("/mfa", rt.Me.ListMFA)

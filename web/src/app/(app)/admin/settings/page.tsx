@@ -9,6 +9,7 @@ import {
   Bot,
   Box,
   ChevronRight,
+  Droplets,
   FileText,
   History,
   LayoutDashboard,
@@ -36,6 +37,7 @@ import { Separator } from "@/components/ui/separator"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { SettingFieldRow } from "@/components/settings/field-control"
 import { IntegrationCard } from "@/components/settings/integration-card"
+import { WatermarkSettingsPanel } from "@/components/settings/watermark-panel"
 
 type IconType = React.ComponentType<{ className?: string }>
 
@@ -51,6 +53,7 @@ const GROUP_ICONS: Record<string, IconType> = {
   box: Box,
   archive: Archive,
   "file-text": FileText,
+  droplets: Droplets,
 }
 
 const OVERVIEW: SettingsGroup = {
@@ -333,6 +336,8 @@ function GroupPanel({
           ))}
         </div>
       )}
+
+      {group.id === "watermark" && <WatermarkSettingsPanel fields={fields} valueOf={valueOf} />}
 
       <div className="rounded-xl border border-border bg-card px-5">
         {common.length === 0 && advanced.length === 0 ? (

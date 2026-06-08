@@ -41,6 +41,7 @@ import {
 } from "@/lib/desktop/types"
 import { cn } from "@/lib/utils"
 import { PortalContainerProvider } from "@/components/ui/portal-container"
+import { SessionWatermark } from "@/components/watermark/session-watermark"
 import { DesktopCommandPalette } from "./desktop-command-palette"
 import { DesktopContextMenu } from "./desktop-context-menu"
 import { DesktopConnectionStage } from "./desktop-connection-stage"
@@ -761,6 +762,7 @@ function LegacyDesktopDisplay({
           fullscreen && "fixed inset-0 z-[60]",
         )}
       >
+        <SessionWatermark targetRef={wrapRef} />
         <PortalContainerProvider value={fullscreen ? wrapEl : undefined}>
         {/* Single control bar. In fullscreen it overlays the canvas and slides
             away when idle; in windowed mode it's pinned in normal flow. */}
