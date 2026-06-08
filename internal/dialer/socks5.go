@@ -1,35 +1,24 @@
 package dialer
 
 import (
-	"context"
-	"fmt"
-	"net"
+	"time"
 
+	"github.com/wzshiming/socks5"
 	"golang.org/x/net/proxy"
 )
 
-// NewSOCKS5 wraps the upstream ContextDialer so that connections traverse a
-// SOCKS5 server first.
-func NewSOCKS5(addr, user, pass string, upstream proxy.ContextDialer) (proxy.ContextDialer, error) {
-	var auth *proxy.Auth
-	if user != "" {
-		auth = &proxy.Auth{User: user, Password: pass}
+// NewSOCKS5 wraps the upstream ContextDialer so connections traverse a SOCKS5
+// server first. Unlike the previous golang.org/x/net/proxy bridge, the wzshiming
+// dialer threads the caller's context through to the transport dial via
+// ProxyDial, so per-hop timeouts and cancellation propagate end-to-end.
+func NewSOCKS5(addr, user, pass string, timeout time.Duration, upstream proxy.ContextDialer) (proxy.ContextDialer, error) {
+	d := &socks5.Dialer{
+		ProxyNetwork: "tcp",
+		ProxyAddress: addr,
+		Username:     user,
+		Password:     pass,
+		Timeout:      timeout,
+		ProxyDial:    upstream.DialContext,
 	}
-	// proxy.SOCKS5 takes a proxy.Dialer (non-context). We bridge by adapting
-	// upstream.DialContext into a context-less Dial.
-	d, err := proxy.SOCKS5("tcp", addr, auth, dialerAdapter{upstream})
-	if err != nil {
-		return nil, err
-	}
-	cd, ok := d.(proxy.ContextDialer)
-	if !ok {
-		return nil, fmt.Errorf("socks5 dialer does not implement ContextDialer")
-	}
-	return cd, nil
-}
-
-type dialerAdapter struct{ cd proxy.ContextDialer }
-
-func (a dialerAdapter) Dial(network, addr string) (net.Conn, error) {
-	return a.cd.DialContext(context.Background(), network, addr)
+	return d, nil
 }

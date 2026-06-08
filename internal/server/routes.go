@@ -172,6 +172,9 @@ type Routes struct {
 	Node          *api.NodeHandler
 	Proxy         *api.ProxyHandler
 	ChainTemplate *api.ChainTemplateHandler
+	ProxyGroup    *api.ProxyGroupHandler
+	ProxyHealth   *api.HealthHandler
+	ProxyMetrics  *api.MetricsHandler
 	Cred          *api.CredentialHandler
 	Session       *api.SessionHandler
 	SFTP          *sftp.Handler
@@ -432,6 +435,23 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/proxies/chain-templates", perm(auth.PermProxyManage), rt.ChainTemplate.Create)
 		admin.PATCH("/proxies/chain-templates/:id", perm(auth.PermProxyManage), rt.ChainTemplate.Update)
 		admin.DELETE("/proxies/chain-templates/:id", perm(auth.PermProxyManage), rt.ChainTemplate.Delete)
+		// Live health — background prober snapshot + SSE stream + on-demand probe.
+		if rt.ProxyHealth != nil {
+			admin.GET("/proxies/health", perm(auth.PermProxyManage), rt.ProxyHealth.Snapshot)
+			admin.GET("/proxies/health/stream", perm(auth.PermProxyManage), rt.ProxyHealth.Stream)
+			admin.POST("/proxies/health/probe", perm(auth.PermProxyManage), rt.ProxyHealth.ProbeNow)
+		}
+		// Connection metrics — in-memory snapshot + SSE stream.
+		if rt.ProxyMetrics != nil {
+			admin.GET("/proxies/metrics", perm(auth.PermProxyManage), rt.ProxyMetrics.Snapshot)
+			admin.GET("/proxies/metrics/stream", perm(auth.PermProxyManage), rt.ProxyMetrics.Stream)
+		}
+		// Failover-group membership (the all-in-one path is POST/PATCH /proxies).
+		if rt.ProxyGroup != nil {
+			admin.GET("/proxies/:id/members", perm(auth.PermProxyManage), rt.ProxyGroup.Members)
+			admin.PUT("/proxies/:id/members", perm(auth.PermProxyManage), rt.ProxyGroup.SetMembers)
+			admin.DELETE("/proxies/:id/members/:mid", perm(auth.PermProxyManage), rt.ProxyGroup.RemoveMember)
+		}
 		admin.GET("/credentials", perm(auth.PermCredentialManage), rt.Cred.List)
 		admin.POST("/credentials", perm(auth.PermCredentialManage), rt.Cred.Create)
 		admin.PATCH("/credentials/:id", perm(auth.PermCredentialManage), rt.Cred.Update)

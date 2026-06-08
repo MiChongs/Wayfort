@@ -97,6 +97,9 @@ import type {
   PortForward,
   Proxy,
   ProxyChainTemplate,
+  ProxyFailoverGroup,
+  ProxyHealthSnapshot,
+  ProxyMetricsSnapshot,
   KnownHost,
   Role,
   SSHKey,
@@ -221,6 +224,17 @@ export const proxyService = {
     api<ChainTestResponse>("POST", "/proxies/chains/test", {
       body: { chain, target, timeout_seconds: timeoutSeconds },
     }),
+  // Live health — snapshot + SSE stream URL + on-demand probe.
+  health: () => api<ProxyHealthSnapshot>("GET", "/proxies/health"),
+  healthStreamURL: () => buildURLFromAPI("/proxies/health/stream"),
+  probeNow: () => api<ProxyHealthSnapshot>("POST", "/proxies/health/probe"),
+  // Connection metrics — snapshot + SSE stream URL.
+  metrics: () => api<ProxyMetricsSnapshot>("GET", "/proxies/metrics"),
+  metricsStreamURL: () => buildURLFromAPI("/proxies/metrics/stream"),
+  // Failover-group membership (the all-in-one path is create/update via group).
+  members: (id: number) => api<{ members: Proxy[] }>("GET", `/proxies/${id}/members`),
+  setMembers: (id: number, body: ProxyFailoverGroup) =>
+    api<{ ok: boolean }>("PUT", `/proxies/${id}/members`, { body }),
 }
 
 // Phase 10 — reusable proxy chain presets.

@@ -61,8 +61,7 @@ const NAV: NavGroup[] = [
     items: [
       { href: "/admin/nodes", label: "资产 - 节点", icon: Server, minTier: "admin" },
       { href: "/admin/credentials", label: "凭据", icon: KeyRound, minTier: "admin" },
-      { href: "/admin/proxies", label: "代理", icon: Network, minTier: "admin" },
-      { href: "/admin/chain-templates", label: "代理链模板", icon: Sparkles, minTier: "admin" },
+      { href: "/admin/proxy-center", label: "代理链中心", icon: Network, minTier: "admin" },
       { href: "/admin/asset-groups", label: "资产组", icon: Tags, minTier: "admin" },
       { href: "/admin/tags", label: "标签", icon: TagIcon, minTier: "admin" },
       { href: "/admin/asset-grants", label: "访问策略", icon: FileLock2, minTier: "admin" },

@@ -38,7 +38,7 @@ const PATH_LABELS: Record<string, string> = {
   "/admin/organization": "组织架构",
   "/admin/nodes": "节点 - 资产",
   "/admin/credentials": "凭据",
-  "/admin/proxies": "代理",
+  "/admin/proxy-center": "代理链中心",
   "/admin/asset-groups": "资产组",
   "/admin/tags": "标签",
   "/admin/asset-grants": "资产授权",

@@ -21,6 +21,7 @@ import (
 type ProxyHandler struct {
 	Repo      *repo.ProxyRepo
 	Templates *repo.ChainTemplateRepo
+	Groups    *repo.ProxyGroupRepo
 	Builder   *dialer.ChainBuilder
 }
 
@@ -30,6 +31,7 @@ func (h *ProxyHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.enrichGroups(c.Request.Context(), out)
 	// Augment with per-kind / per-credential summary so the UI can render
 	// counts without round-tripping. Kept tiny — no N+1 query.
 	counts := map[model.ProxyKind]int{}
@@ -52,11 +54,20 @@ func (h *ProxyHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	applyGroupSpec(&p)
 	if err := validateProxyShape(&p); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := h.validateGroupMembers(c.Request.Context(), 0, p.Kind, p.Group); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.Repo.Create(c.Request.Context(), &p); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.syncGroupMembers(c.Request.Context(), &p); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -75,11 +86,20 @@ func (h *ProxyHandler) Update(c *gin.Context) {
 		return
 	}
 	p.ID = id
+	applyGroupSpec(p)
 	if err := validateProxyShape(p); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	if err := h.validateGroupMembers(c.Request.Context(), id, p.Kind, p.Group); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.Repo.Update(c.Request.Context(), p); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.syncGroupMembers(c.Request.Context(), p); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -92,7 +112,101 @@ func (h *ProxyHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Drop any failover membership rows this proxy owned so deleting a group
+	// doesn't leave orphaned links behind.
+	if h.Groups != nil {
+		_ = h.Groups.DeleteByGroup(c.Request.Context(), id)
+	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// applyGroupSpec folds the API-facing Group DTO onto the persisted scalar
+// columns so a failover hop round-trips strategy/retry/backoff.
+func applyGroupSpec(p *model.Proxy) {
+	if p.Kind != model.ProxyFailover || p.Group == nil {
+		return
+	}
+	p.GroupStrategy = p.Group.Strategy
+	if p.GroupStrategy == "" {
+		p.GroupStrategy = model.FailoverOrdered
+	}
+	p.GroupRetryMax = p.Group.Retry
+	p.GroupBackoffMS = p.Group.BackoffMS
+}
+
+// syncGroupMembers replaces the membership rows for a failover proxy (or clears
+// them when a proxy is no longer a group).
+func (h *ProxyHandler) syncGroupMembers(ctx context.Context, p *model.Proxy) error {
+	if h.Groups == nil {
+		return nil
+	}
+	if p.Kind != model.ProxyFailover {
+		return h.Groups.DeleteByGroup(ctx, p.ID)
+	}
+	if p.Group == nil {
+		return nil // membership untouched when the caller omitted it
+	}
+	return h.Groups.SetMembers(ctx, p.ID, membersFromSpec(p.Group))
+}
+
+func membersFromSpec(s *model.ProxyGroupSpec) []model.ProxyGroupMember {
+	out := make([]model.ProxyGroupMember, 0, len(s.Members))
+	for i, mid := range s.Members {
+		out = append(out, model.ProxyGroupMember{MemberID: mid, Priority: i, Weight: 1})
+	}
+	return out
+}
+
+// validateGroupMembers checks (against the catalog) that a failover group's
+// members exist, are not themselves groups, and don't include the group itself.
+func (h *ProxyHandler) validateGroupMembers(ctx context.Context, selfID uint64, kind model.ProxyKind, spec *model.ProxyGroupSpec) error {
+	if kind != model.ProxyFailover || spec == nil {
+		return nil
+	}
+	for _, mid := range spec.Members {
+		if mid == selfID {
+			return errors.New("failover group cannot include itself")
+		}
+		m, err := h.Repo.FindByID(ctx, mid)
+		if err != nil {
+			return err
+		}
+		if m == nil {
+			return fmt.Errorf("member proxy %d not found", mid)
+		}
+		if m.Kind == model.ProxyFailover {
+			return fmt.Errorf("member %q is itself a failover group (nesting not allowed)", m.Name)
+		}
+	}
+	return nil
+}
+
+// enrichGroups attaches the Group DTO (members + strategy/retry/backoff) to each
+// failover proxy in a list, in one query.
+func (h *ProxyHandler) enrichGroups(ctx context.Context, proxies []model.Proxy) {
+	if h.Groups == nil {
+		return
+	}
+	byGroup, err := h.Groups.AllMembers(ctx)
+	if err != nil {
+		return
+	}
+	for i := range proxies {
+		if proxies[i].Kind != model.ProxyFailover {
+			continue
+		}
+		links := byGroup[proxies[i].ID]
+		ids := make([]uint64, 0, len(links))
+		for _, l := range links {
+			ids = append(ids, l.MemberID)
+		}
+		proxies[i].Group = &model.ProxyGroupSpec{
+			Members:   ids,
+			Strategy:  proxies[i].GroupStrategy,
+			Retry:     proxies[i].GroupRetryMax,
+			BackoffMS: proxies[i].GroupBackoffMS,
+		}
+	}
 }
 
 // ValidateChainRequest is the body of POST /admin/proxies/chains/validate.
@@ -201,7 +315,7 @@ func validateProxyShape(p *model.Proxy) error {
 	switch p.Kind {
 	case model.ProxyDirect:
 		// direct does not need host/port
-	case model.ProxySOCKS5, model.ProxyHTTPConn:
+	case model.ProxySOCKS5, model.ProxySOCKS4, model.ProxyHTTPConn:
 		if strings.TrimSpace(p.Host) == "" || p.Port <= 0 {
 			return fmt.Errorf("%s proxy requires host and port", p.Kind)
 		}
@@ -211,6 +325,13 @@ func validateProxyShape(p *model.Proxy) error {
 		}
 		if p.CredentialID == nil {
 			return errors.New("bastion proxy requires a credential")
+		}
+	case model.ProxyFailover:
+		if p.Group == nil || len(p.Group.Members) == 0 {
+			return errors.New("failover group requires at least one member")
+		}
+		if p.Group.Strategy != "" && !p.Group.Strategy.Valid() {
+			return fmt.Errorf("invalid failover strategy %q", p.Group.Strategy)
 		}
 	default:
 		return fmt.Errorf("unsupported proxy kind %q", p.Kind)

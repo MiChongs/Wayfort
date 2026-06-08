@@ -27,6 +27,21 @@ type Config struct {
 	Desktop   DesktopConfig   `mapstructure:"desktop"`
 	Approval  ApprovalConfig  `mapstructure:"approval"`
 	Office    OfficeConfig    `mapstructure:"office"`
+	Health    HealthConfig    `mapstructure:"health"`
+}
+
+// HealthConfig tunes the background proxy reachability prober. When enabled, a
+// goroutine probes every enabled proxy on Interval and feeds the failover dialer
+// + the live-health UI. ProbeTarget empty (default) = L4 reachability to each
+// proxy's own endpoint (no tunnel traffic); set it to a host:port to instead
+// dial that canary THROUGH each proxy (true end-to-end, exercises credentials).
+type HealthConfig struct {
+	Enabled     bool          `mapstructure:"enabled"`
+	Interval    time.Duration `mapstructure:"interval"`
+	Timeout     time.Duration `mapstructure:"timeout"`
+	Concurrency int           `mapstructure:"concurrency"`
+	DegradedMS  int64         `mapstructure:"degraded_ms"`
+	ProbeTarget string        `mapstructure:"probe_target"`
 }
 
 // OfficeConfig wires an external OnlyOffice / Collabora Document Server for
@@ -544,6 +559,12 @@ func setDefaults(v *viper.Viper) {
 	// a single non-empty line. Set the value via /api/v1/setup/seal
 	// on the very first boot; subsequent boots just read it.
 	v.SetDefault("crypto.unseal_passphrase_file", "./var/keystore.unseal")
+	v.SetDefault("health.enabled", true)
+	v.SetDefault("health.interval", 30*time.Second)
+	v.SetDefault("health.timeout", 5*time.Second)
+	v.SetDefault("health.concurrency", 8)
+	v.SetDefault("health.degraded_ms", 800)
+	v.SetDefault("health.probe_target", "")
 	v.SetDefault("sshpool.max_sessions_per_client", 8)
 	v.SetDefault("sshpool.idle_eviction", 10*time.Minute)
 	v.SetDefault("sshpool.dial_timeout", 15*time.Second)

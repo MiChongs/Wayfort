@@ -83,19 +83,10 @@ import type {
   ProxyKind,
 } from "@/lib/api/types"
 
-const KIND_LABEL: Record<ProxyKind, string> = {
-  direct: "Direct",
-  socks5: "SOCKS5",
-  bastion: "SSH 跳板",
-  http_connect: "HTTP CONNECT",
-}
-
-const KIND_TONE: Record<ProxyKind, string> = {
-  direct: "bg-muted text-muted-foreground border-border",
-  socks5: "bg-sky-500/10 text-sky-600 dark:text-sky-300 border-sky-500/30",
-  bastion: "bg-amber-500/10 text-amber-600 dark:text-amber-300 border-amber-500/30",
-  http_connect: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
-}
+import { KIND_ICON, KIND_LABEL, KIND_TONE } from "./proxy-kind"
+import { HealthDot } from "./proxy-health/health-dot"
+import { LatencyBadge } from "./proxy-health/latency-badge"
+import { useProxyHealthCtx } from "./proxy-health/health-context"
 
 export interface ProxyChainBuilderProps {
   value: string
@@ -321,6 +312,7 @@ export function ProxyChainBuilder({
                             index={idx}
                             total={hops.length}
                             proxy={p}
+                            proxies={proxies}
                             id={ids[idx]}
                             issues={hopIssues}
                             testResult={hopResult}
@@ -357,11 +349,11 @@ export function ProxyChainBuilder({
                 <AlertCircle className="h-3.5 w-3.5" /> {errorCount} 项错误,无法连接
               </span>
             ) : warningCount > 0 ? (
-              <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+              <span className="inline-flex items-center gap-1 text-warning">
                 <ShieldAlert className="h-3.5 w-3.5" /> {warningCount} 项警告
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+              <span className="inline-flex items-center gap-1 text-success">
                 <CheckCircle2 className="h-3.5 w-3.5" /> 链路结构正常
               </span>
             )}
@@ -372,7 +364,7 @@ export function ProxyChainBuilder({
               className={cn(
                 "font-normal",
                 testOK
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                  ? "border-success/30 bg-success/10 text-success"
                   : "border-destructive/30 bg-destructive/10 text-destructive",
               )}
             >
@@ -391,8 +383,8 @@ export function ProxyChainBuilder({
               className={cn(
                 "flex items-start gap-2 rounded-md border px-3 py-2 text-xs",
                 i.severity === "error" && "border-destructive/30 bg-destructive/10 text-destructive",
-                i.severity === "warning" && "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-                i.severity === "info" && "border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300",
+                i.severity === "warning" && "border-warning/30 bg-warning/10 text-warning",
+                i.severity === "info" && "border-border bg-muted/50 text-muted-foreground",
               )}
             >
               <IssueIcon severity={i.severity} />
@@ -406,11 +398,18 @@ export function ProxyChainBuilder({
 
 // ----- subcomponents ------------------------------------------------------
 
+const STRATEGY_LABEL: Record<string, string> = {
+  ordered: "顺序",
+  round_robin: "轮询",
+  health_weighted: "健康加权",
+}
+
 function HopRow({
   index,
   total,
   id,
   proxy,
+  proxies,
   issues,
   testResult,
   disabled,
@@ -422,6 +421,7 @@ function HopRow({
   total: number
   id: number
   proxy?: Proxy
+  proxies: Proxy[]
   issues: ChainIssue[]
   testResult?: ChainHopTestResult
   disabled: boolean
@@ -429,8 +429,12 @@ function HopRow({
   onMoveDown: () => void
   onRemove: () => void
 }) {
+  const health = useProxyHealthCtx()
   const missing = !proxy
   const blocking = issues.some((i) => i.severity === "error") || missing
+  const hp = proxy ? health.byId(proxy.id) : undefined
+  const group = proxy?.kind === "failover" ? proxy.group : undefined
+  const members = group?.members ?? []
   return (
     <div
       className={cn(
@@ -453,12 +457,14 @@ function HopRow({
         ) : (
           <div className="space-y-0.5">
             <div className="flex flex-wrap items-center gap-2">
+              <HealthDot state={hp?.state ?? "unknown"} title={hp?.last_error || undefined} />
               <span className="truncate text-sm font-medium">{proxy.name}</span>
               <Badge variant="outline" className={cn("font-normal", KIND_TONE[proxy.kind])}>
                 {KIND_LABEL[proxy.kind]}
               </Badge>
+              <LatencyBadge ms={hp?.latency_ms} />
               {proxy.disabled && (
-                <Badge variant="outline" className="border-amber-500/30 bg-amber-500/10 font-normal text-amber-700 dark:text-amber-300">
+                <Badge variant="outline" className="border-warning/30 bg-warning/10 font-normal text-warning">
                   已禁用
                 </Badge>
               )}
@@ -468,7 +474,7 @@ function HopRow({
                   className={cn(
                     "font-normal",
                     testResult.ok
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300"
+                      ? "border-success/30 bg-success/10 text-success"
                       : "border-destructive/30 bg-destructive/10 text-destructive",
                   )}
                 >
@@ -477,17 +483,46 @@ function HopRow({
               )}
             </div>
             <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              {proxy.host ? <span className="font-mono">{proxy.host}:{proxy.port}</span> : <span>—</span>}
+              {group ? (
+                <span className="inline-flex items-center gap-1">
+                  <Badge variant="outline" className="h-5 rounded-full border-border bg-accent px-2 font-normal">
+                    {STRATEGY_LABEL[group.strategy] ?? group.strategy} · {members.length} 备选
+                  </Badge>
+                  {group.retry > 0 && <span>重试 {group.retry} 次</span>}
+                </span>
+              ) : proxy.host ? (
+                <span className="font-mono">{proxy.host}:{proxy.port}</span>
+              ) : (
+                <span>—</span>
+              )}
+              {proxy.timeout_ms ? <span>超时 {Math.round(proxy.timeout_ms / 1000)}s</span> : null}
               {proxy.description && <span className="truncate">{proxy.description}</span>}
             </div>
+            {group && members.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 pt-1">
+                {members.map((mid) => {
+                  const m = proxies.find((p) => p.id === mid)
+                  const mh = health.byId(mid)
+                  return (
+                    <span
+                      key={mid}
+                      className="inline-flex items-center gap-1 rounded-full border border-border bg-background px-2 py-0.5 text-[10px]"
+                    >
+                      <HealthDot state={mh?.state ?? "unknown"} pulse={false} className="h-1.5 w-1.5" />
+                      {m ? m.name : `#${mid}`}
+                    </span>
+                  )
+                })}
+              </div>
+            )}
             {issues.map((i, k) => (
               <div
                 key={k}
                 className={cn(
                   "flex items-start gap-1.5 pt-1 text-[11px]",
                   i.severity === "error" && "text-destructive",
-                  i.severity === "warning" && "text-amber-600 dark:text-amber-400",
-                  i.severity === "info" && "text-sky-600 dark:text-sky-300",
+                  i.severity === "warning" && "text-warning",
+                  i.severity === "info" && "text-muted-foreground",
                 )}
               >
                 <IssueIcon severity={i.severity} />
@@ -800,13 +835,16 @@ export function ProxyChainSummary({
     <div className={cn("flex flex-wrap items-center gap-1", className)}>
       {ids.map((id, i) => {
         const p = byId.get(id)
+        const Icon = p ? KIND_ICON[p.kind] ?? Server : Server
+        const memberCount = p?.kind === "failover" ? p.group?.members.length ?? 0 : 0
         return (
           <React.Fragment key={`${id}-${i}`}>
             {i > 0 && <span className="text-muted-foreground">→</span>}
             {p ? (
               <Badge variant="outline" className={cn("font-normal", KIND_TONE[p.kind])}>
-                <Server className="mr-1 h-3 w-3" />
+                <Icon className="mr-1 h-3 w-3" />
                 {p.name}
+                {memberCount > 0 && <span className="ml-1 opacity-70">· {memberCount}</span>}
               </Badge>
             ) : (
               <Badge variant="outline" className="border-destructive/30 bg-destructive/10 font-normal text-destructive">

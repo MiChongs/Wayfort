@@ -44,21 +44,10 @@ import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { proxyService } from "@/lib/api/services"
-import type { ChainHopTestResult, ChainIssue, Proxy, ProxyKind } from "@/lib/api/types"
-
-const KIND_LABEL: Record<ProxyKind, string> = {
-  direct: "直连",
-  socks5: "SOCKS5",
-  bastion: "SSH 跳板",
-  http_connect: "HTTP 代理",
-}
-
-const KIND_TONE: Record<ProxyKind, string> = {
-  direct: "bg-muted text-muted-foreground border-border",
-  socks5: "bg-sky-500/10 text-sky-600 dark:text-sky-300 border-sky-500/30",
-  bastion: "bg-amber-500/10 text-amber-600 dark:text-amber-300 border-amber-500/30",
-  http_connect: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
-}
+import type { ChainHopTestResult, ChainIssue, Proxy } from "@/lib/api/types"
+import { KIND_LABEL, KIND_TONE } from "./proxy-kind"
+import { HealthDot } from "./proxy-health/health-dot"
+import { useProxyHealthCtx } from "./proxy-health/health-context"
 
 const CLIENT_ID = "client"
 const TARGET_ID = "target"
@@ -80,7 +69,7 @@ interface HopNodeData extends Record<string, unknown> {
 
 function ClientNode() {
   return (
-    <div className="rounded-xl border bg-card px-4 py-3 shadow-sm">
+    <div className="rounded-xl border bg-card px-4 py-3">
       <div className="flex items-center gap-2">
         <Monitor className="h-4 w-4 text-primary" />
         <div className="text-sm font-medium">客户端 / 网关</div>
@@ -94,10 +83,10 @@ function ClientNode() {
 function TargetNode({ data }: NodeProps) {
   const addr = (data as { addr?: string }).addr
   return (
-    <div className="rounded-xl border bg-card px-4 py-3 shadow-sm">
-      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-background !bg-emerald-500" />
+    <div className="rounded-xl border bg-card px-4 py-3">
+      <Handle type="target" position={Position.Left} className="!h-3 !w-3 !border-2 !border-background !bg-success" />
       <div className="flex items-center gap-2">
-        <Target className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        <Target className="h-4 w-4 text-success" />
         <div className="text-sm font-medium">目标节点</div>
       </div>
       <div className="mt-0.5 font-mono text-xs text-muted-foreground">{addr || "连接的资产"}</div>
@@ -108,11 +97,14 @@ function TargetNode({ data }: NodeProps) {
 function HopNode({ data }: NodeProps) {
   const d = data as HopNodeData
   const p = d.proxy
+  const health = useProxyHealthCtx()
+  const hp = p ? health.byId(p.id) : undefined
   const error = d.issue?.severity === "error" || !p
+  const memberCount = p?.kind === "failover" ? p.group?.members.length ?? 0 : 0
   return (
     <div
       className={cn(
-        "group w-[208px] rounded-xl border bg-card px-3 py-2.5 shadow-sm transition-colors",
+        "group w-[208px] rounded-xl border bg-card px-3 py-2.5 transition-colors",
         error && "border-destructive/40 ring-1 ring-destructive/15",
         !d.inChain && "opacity-55",
       )}
@@ -122,7 +114,7 @@ function HopNode({ data }: NodeProps) {
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
-          <ServerCog className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          {p ? <HealthDot state={hp?.state ?? "unknown"} title={hp?.last_error || undefined} /> : <ServerCog className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
           <span className="truncate text-sm font-medium">{p ? p.name : `代理 #${d.proxyId}`}</span>
         </div>
         <button
@@ -141,20 +133,24 @@ function HopNode({ data }: NodeProps) {
           <Badge variant="outline" className={cn("font-normal", KIND_TONE[p.kind])}>
             {KIND_LABEL[p.kind]}
           </Badge>
-          {p.host ? <span className="font-mono text-[11px] text-muted-foreground">{p.host}:{p.port}</span> : null}
+          {memberCount > 0 ? (
+            <span className="text-[11px] text-muted-foreground">{memberCount} 备选</span>
+          ) : p.host ? (
+            <span className="font-mono text-[11px] text-muted-foreground">{p.host}:{p.port}</span>
+          ) : null}
         </div>
       ) : (
         <div className="mt-1 text-[11px] text-destructive">该代理已被删除，请移除此节点</div>
       )}
 
-      {!d.inChain && p ? <div className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">未接入链路</div> : null}
+      {!d.inChain && p ? <div className="mt-1 text-[11px] text-warning">未接入链路</div> : null}
       {d.issue && p ? (
-        <div className={cn("mt-1 text-[11px]", d.issue.severity === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400")}>
+        <div className={cn("mt-1 text-[11px]", d.issue.severity === "error" ? "text-destructive" : "text-warning")}>
           {d.issue.message}
         </div>
       ) : null}
       {d.test ? (
-        <div className={cn("mt-1 text-[11px]", d.test.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive")}>
+        <div className={cn("mt-1 text-[11px]", d.test.ok ? "text-success" : "text-destructive")}>
           {d.test.ok ? `连通 · ${d.test.duration_ms}ms` : `失败：${d.test.error || "建链未成功"}`}
         </div>
       ) : null}
@@ -412,7 +408,7 @@ function ChainCanvasInner({ value, onChange, proxies, target, disabled, classNam
 
         {/* 节点库 */}
         <Panel position="top-left" className="!m-2">
-          <div className="w-56 rounded-lg border bg-card/95 shadow-sm backdrop-blur">
+          <div className="w-56 rounded-lg border bg-card/95 backdrop-blur">
             <div className="border-b px-3 py-2 text-xs font-medium">节点库</div>
             <div className="max-h-56 overflow-auto p-1.5">
               {candidates.length === 0 ? (
@@ -440,7 +436,7 @@ function ChainCanvasInner({ value, onChange, proxies, target, disabled, classNam
 
         {/* 状态条 + 测试 */}
         <Panel position="top-right" className="!m-2">
-          <div className="flex items-center gap-2 rounded-lg border bg-card/95 px-3 py-1.5 shadow-sm backdrop-blur">
+          <div className="flex items-center gap-2 rounded-lg border bg-card/95 px-3 py-1.5 backdrop-blur">
             {chainIds.length === 0 ? (
               <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                 <CircleSlash className="h-3.5 w-3.5" /> 直连（未经过任何中转）
@@ -450,7 +446,7 @@ function ChainCanvasInner({ value, onChange, proxies, target, disabled, classNam
                 <Wifi className="h-3.5 w-3.5" /> {chainIds.length} 个中转 · {errorCount} 处错误
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+              <span className="inline-flex items-center gap-1 text-xs text-success">
                 <CheckCircle2 className="h-3.5 w-3.5" /> 经过 {chainIds.length} 个中转，链路有效
               </span>
             )}

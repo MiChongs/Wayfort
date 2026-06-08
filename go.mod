@@ -40,6 +40,9 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.73
 	github.com/wneessen/go-mail v0.7.3
+	github.com/wzshiming/httpproxy v0.5.7
+	github.com/wzshiming/socks4 v0.4.0
+	github.com/wzshiming/socks5 v0.7.0
 	go.uber.org/zap v1.28.0
 	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.54.0

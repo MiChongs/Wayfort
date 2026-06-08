@@ -30,7 +30,9 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
 	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
 	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/health"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
+	"github.com/michongs/jumpserver-anonymous/internal/metrics"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
@@ -292,10 +294,25 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 
 	credProvider := &pkgssh.PoolCredentialProvider{Creds: credRepo, Resolver: resolver}
 	pool := sshpool.New(cfg.SSHPool, credProvider, hostKeyChecker.Callback())
+	proxyGroupRepo := repo.NewProxyGroupRepo(db)
+	healthReg := health.NewRegistry(cfg.Health.DegradedMS)
+	metricsReg := metrics.New()
 	chain := &dialer.ChainBuilder{
-		Bastion: pool,
-		Creds:   &pkgssh.SOCKS5CredentialResolver{Creds: credRepo, Resolver: resolver},
+		Bastion:           pool,
+		Creds:             &pkgssh.SOCKS5CredentialResolver{Creds: credRepo, Resolver: resolver},
+		Groups:            proxyGroupRepo,
+		Health:            healthReg,
+		Metrics:           metricsReg,
+		DefaultHopTimeout: 15 * time.Second,
 	}
+	proxyProber := health.NewProber(healthReg, proxyRepo, chain, proxyGroupRepo, health.Config{
+		Enabled:     cfg.Health.Enabled,
+		Interval:    cfg.Health.Interval,
+		Timeout:     cfg.Health.Timeout,
+		Concurrency: cfg.Health.Concurrency,
+		DegradedMS:  cfg.Health.DegradedMS,
+		ProbeTarget: cfg.Health.ProbeTarget,
+	}, logger)
 
 	auditWriter := audit.NewWriter(cfg.Audit, auditRepo, logger)
 
@@ -413,8 +430,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			AnonSpec: cfg.Anonymous,
 		},
 		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver},
-		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Builder: chain},
+		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
 		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
+		ProxyGroup:    &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},
+		ProxyHealth:   &api.HealthHandler{Reg: healthReg, Prober: proxyProber},
+		ProxyMetrics:  &api.MetricsHandler{Reg: metricsReg},
 		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault, Resolver: resolver, Nodes: nodeRepo},
 		Dashboard:     &api.DashboardHandler{DB: db, RBAC: rbacResolver, Asset: assetResolver},
 		Session:       &api.SessionHandler{Repo: sessionRepo, Audit: auditRepo, Writer: auditWriter, Terminators: []api.SessionTerminator{wsGateway}},
@@ -850,6 +870,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	g, gctx := errgroup.WithContext(rootCtx)
 	g.Go(func() error { return auditWriter.Run(gctx) })
 	g.Go(func() error { return pool.Run(gctx) })
+	if cfg.Health.Enabled {
+		g.Go(func() error { return proxyProber.Run(gctx) })
+	}
 	if anonJanitor != nil {
 		g.Go(func() error { return anonJanitor.Run(gctx) })
 	}

@@ -429,7 +429,18 @@ export interface CredentialTestResult {
   target?: string
 }
 
-export type ProxyKind = "direct" | "socks5" | "bastion" | "http_connect"
+export type ProxyKind = "direct" | "socks5" | "socks4" | "bastion" | "http_connect" | "failover"
+
+export type FailoverStrategy = "ordered" | "round_robin" | "health_weighted"
+
+// ProxyFailoverGroup is the structured payload for a failover hop. The chain CSV
+// still references it by a single proxy id; members live here.
+export interface ProxyFailoverGroup {
+  members: number[] // ordered member proxy ids
+  strategy: FailoverStrategy
+  retry: number
+  backoff_ms: number
+}
 
 export interface Proxy {
   id: number
@@ -441,8 +452,73 @@ export interface Proxy {
   description?: string
   disabled?: boolean
   tags?: string
+  // Per-hop connect timeout (ms); 0 → server default.
+  timeout_ms?: number
+  // http_connect transport knobs.
+  tls_to_proxy?: boolean
+  insecure_tls?: boolean
+  proxy_sni?: string
+  headers?: Record<string, string>
+  // socks4 — resolve the destination name proxy-side (SOCKS4a).
+  socks4_remote?: boolean
+  // failover — present only when kind === "failover".
+  group?: ProxyFailoverGroup
   created_at?: string
   updated_at?: string
+}
+
+// --- live health (background prober) ---
+export type ProxyHealthState = "online" | "degraded" | "down" | "unknown"
+
+export interface ProxyHealth {
+  proxy_id: number
+  name?: string
+  kind?: ProxyKind
+  up: boolean
+  state: ProxyHealthState
+  latency_ms: number
+  last_error?: string
+  checked_at: string
+  consecutive_up?: number
+  consecutive_down?: number
+}
+
+export interface ProxyHealthSnapshot {
+  proxies: Record<number, ProxyHealth>
+  sampled_at: string
+}
+
+// --- connection metrics ---
+export interface ProxyMetric {
+  proxy_id: number
+  active_conns: number
+  total_dials: number
+  failures: number
+  success_rate: number // 0..1
+  bytes_in: number
+  bytes_out: number
+  avg_latency_ms: number
+}
+
+export interface ProxyMetricsSeriesPoint {
+  ts: string
+  dials: number
+  failures: number
+  active_conns: number
+}
+
+export interface ProxyMetricsSnapshot {
+  proxies: Record<number, ProxyMetric>
+  aggregate: {
+    active_conns: number
+    total_dials: number
+    failures: number
+    success_rate: number
+    bytes_in: number
+    bytes_out: number
+  }
+  series: ProxyMetricsSeriesPoint[]
+  sampled_at: string
 }
 
 // Phase 10 — proxy chain validation, testing, templates.
@@ -471,6 +547,8 @@ export interface ChainHopTestResult {
   ok: boolean
   duration_ms: number
   error?: string
+  // host:port actually dialed through the partial chain for this hop.
+  probed?: string
 }
 
 export interface ChainTestResponse {

@@ -84,6 +84,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.Credential{},
 		&model.Proxy{},
 		&model.ProxyChainTemplate{},
+		&model.ProxyGroupMember{},
 		&model.Node{},
 		&model.Session{},
 		&model.AuditLog{},

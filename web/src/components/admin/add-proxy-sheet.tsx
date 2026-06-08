@@ -27,8 +27,10 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { CredentialPicker } from "@/components/admin/credential-picker"
+import { ProxyHeadersEditor } from "@/components/admin/proxy-headers-editor"
+import { FailoverGroupEditor } from "@/components/admin/failover-group-editor"
 import { proxyService } from "@/lib/api/services"
-import type { Proxy, ProxyKind } from "@/lib/api/types"
+import type { Proxy, ProxyFailoverGroup, ProxyKind } from "@/lib/api/types"
 
 const KIND_OPTIONS: {
   kind: ProxyKind
@@ -52,6 +54,13 @@ const KIND_OPTIONS: {
     needs: { host: true, port: true, credential: false },
   },
   {
+    kind: "socks4",
+    label: "SOCKS4",
+    port: 1080,
+    description: "SOCKS4/4a 出口。仅用户名 ident，无密码;可让代理端解析域名(4a)。",
+    needs: { host: true, port: true, credential: false },
+  },
+  {
     kind: "bastion",
     label: "SSH 跳板",
     port: 22,
@@ -62,17 +71,28 @@ const KIND_OPTIONS: {
     kind: "http_connect",
     label: "HTTP CONNECT",
     port: 8080,
-    description: "HTTP/1.1 CONNECT 代理。常用于 corp egress。",
+    description: "HTTP/1.1 CONNECT 代理。支持 TLS-to-proxy、认证、自定义请求头。",
     needs: { host: true, port: true, credential: false },
+  },
+  {
+    kind: "failover",
+    label: "故障转移组",
+    port: 0,
+    description: "把多个代理聚成一跳,按策略自动切换 + 重试退避。在链中算作单个节点。",
+    needs: { host: false, port: false, credential: false },
   },
 ]
 
+const DEFAULT_GROUP: ProxyFailoverGroup = { members: [], strategy: "ordered", retry: 0, backoff_ms: 200 }
+
 export interface AddProxySheetProps {
   credentials: { id: number; name: string }[]
+  /** Catalog used by the failover group member picker. */
+  proxies?: Proxy[]
   onCreated: () => void
 }
 
-export function AddProxySheet({ onCreated }: AddProxySheetProps) {
+export function AddProxySheet({ onCreated, proxies = [] }: AddProxySheetProps) {
   // `credentials` is still accepted for API compatibility but the embedded
   // CredentialPicker now fetches + caches the list itself.
   const [open, setOpen] = React.useState(false)
@@ -98,6 +118,7 @@ export function AddProxySheet({ onCreated }: AddProxySheetProps) {
     !!p.name?.trim() &&
     (!kindMeta.needs.host || (!!p.host?.trim() && (p.port || 0) > 0)) &&
     (!kindMeta.needs.credential || !!p.credential_id) &&
+    (p.kind !== "failover" || (p.group?.members?.length ?? 0) > 0) &&
     !create.isPending
 
   return (
@@ -128,7 +149,14 @@ export function AddProxySheet({ onCreated }: AddProxySheetProps) {
                   <button
                     key={opt.kind}
                     type="button"
-                    onClick={() => setP({ ...p, kind: opt.kind, port: opt.port })}
+                    onClick={() =>
+                      setP({
+                        ...p,
+                        kind: opt.kind,
+                        port: opt.port,
+                        group: opt.kind === "failover" ? p.group ?? DEFAULT_GROUP : undefined,
+                      })
+                    }
                     className={cn(
                       "rounded-md border bg-card p-3 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       p.kind === opt.kind && "border-primary ring-1 ring-primary",
@@ -173,15 +201,88 @@ export function AddProxySheet({ onCreated }: AddProxySheetProps) {
               </div>
             )}
 
-            <Field label={kindMeta.needs.credential ? "凭据 (必填)" : "凭据 (可选)"}>
-              <CredentialPicker
-                value={p.credential_id ?? null}
-                onChange={(id) => setP({ ...p, credential_id: id ?? undefined })}
-                allowNone={!kindMeta.needs.credential}
-                placeholder={kindMeta.needs.credential ? "选择凭据" : "不绑定（可选）"}
-                aria-invalid={kindMeta.needs.credential && !p.credential_id}
+            {p.kind !== "failover" && (
+              <Field label={kindMeta.needs.credential ? "凭据 (必填)" : "凭据 (可选)"}>
+                <CredentialPicker
+                  value={p.credential_id ?? null}
+                  onChange={(id) => setP({ ...p, credential_id: id ?? undefined })}
+                  allowNone={!kindMeta.needs.credential}
+                  placeholder={kindMeta.needs.credential ? "选择凭据" : "不绑定（可选）"}
+                  aria-invalid={kindMeta.needs.credential && !p.credential_id}
+                />
+              </Field>
+            )}
+
+            {/* SOCKS4 — proxy-side name resolution toggle (4a). */}
+            {p.kind === "socks4" && (
+              <ToggleRow
+                label="代理端解析域名 (SOCKS4a)"
+                hint="开启后把目标域名交给代理解析,而非本地解析。"
+                checked={!!p.socks4_remote}
+                onCheckedChange={(v) => setP({ ...p, socks4_remote: v })}
               />
-            </Field>
+            )}
+
+            {/* HTTP CONNECT — TLS-to-proxy, SNI, headers. */}
+            {p.kind === "http_connect" && (
+              <div className="space-y-3 rounded-md border border-border bg-accent/40 p-3">
+                <ToggleRow
+                  label="对代理使用 TLS (HTTPS CONNECT)"
+                  hint="与代理本身建立 TLS,而非仅明文 CONNECT。"
+                  checked={!!p.tls_to_proxy}
+                  onCheckedChange={(v) => setP({ ...p, tls_to_proxy: v })}
+                />
+                {p.tls_to_proxy && (
+                  <>
+                    <Field label="TLS SNI (可选)">
+                      <Input
+                        value={p.proxy_sni || ""}
+                        onChange={(e) => setP({ ...p, proxy_sni: e.target.value })}
+                        placeholder="留空则用主机名"
+                      />
+                    </Field>
+                    <ToggleRow
+                      label="跳过证书校验"
+                      hint="仅限实验环境;生产请保持关闭。"
+                      checked={!!p.insecure_tls}
+                      onCheckedChange={(v) => setP({ ...p, insecure_tls: v })}
+                    />
+                  </>
+                )}
+                <Field label="自定义请求头 (可选)">
+                  <ProxyHeadersEditor
+                    key={`hdr-${p.kind}`}
+                    value={p.headers}
+                    onChange={(h) => setP({ ...p, headers: h })}
+                  />
+                </Field>
+              </div>
+            )}
+
+            {/* Failover group editor. */}
+            {p.kind === "failover" && (
+              <Field label="故障转移组">
+                <FailoverGroupEditor
+                  value={p.group ?? DEFAULT_GROUP}
+                  onChange={(g) => setP({ ...p, group: g })}
+                  proxies={proxies}
+                />
+              </Field>
+            )}
+
+            {/* Per-hop dial timeout for endpoint kinds. */}
+            {kindMeta.needs.host && (
+              <Field label="逐跳超时 (ms, 0=默认)">
+                <Input
+                  type="number"
+                  min={0}
+                  step={1000}
+                  value={p.timeout_ms ?? 0}
+                  onChange={(e) => setP({ ...p, timeout_ms: Math.max(0, Number(e.target.value)) })}
+                  placeholder="0"
+                />
+              </Field>
+            )}
 
             <Field label="标签 (逗号分隔)">
               <div className="relative">
@@ -251,6 +352,28 @@ function Field({
         {required && <span className="ml-0.5 text-destructive">*</span>}
       </Label>
       {children}
+    </div>
+  )
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onCheckedChange,
+}: {
+  label: string
+  hint?: string
+  checked: boolean
+  onCheckedChange: (v: boolean) => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">
+      <div className="space-y-0.5">
+        <Label className="text-sm">{label}</Label>
+        {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   )
 }

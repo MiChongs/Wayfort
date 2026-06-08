@@ -3,6 +3,7 @@ package dialer
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -23,9 +24,63 @@ type CredentialResolver interface {
 	UserPassByCredentialID(ctx context.Context, id uint64) (user, pass string, err error)
 }
 
+// defaultHopTimeout is the fallback per-hop connect deadline when neither the
+// proxy row nor the builder configures one. A bounded default replaces the old
+// zero-value Direct{} that connected with no timeout at all.
+const defaultHopTimeout = 15 * time.Second
+
 type ChainBuilder struct {
 	Bastion BastionConnector
 	Creds   CredentialResolver
+	// Groups resolves failover-group members. Nil disables failover hops.
+	Groups GroupReader
+	// Health feeds failover member selection. Nil → treat all members healthy.
+	Health HealthReader
+	// Metrics receives dial/conn/byte telemetry. Nil disables instrumentation.
+	Metrics MetricsSink
+	// DefaultHopTimeout bounds each hop's connect when the proxy row leaves
+	// TimeoutMS at 0. Zero falls back to defaultHopTimeout.
+	DefaultHopTimeout time.Duration
+}
+
+// hopTimeout resolves the connect deadline for reaching one hop: the proxy's own
+// TimeoutMS, else the builder default, else defaultHopTimeout.
+func (b *ChainBuilder) hopTimeout(p *model.Proxy) time.Duration {
+	if p != nil && p.TimeoutMS > 0 {
+		return time.Duration(p.TimeoutMS) * time.Millisecond
+	}
+	if b.DefaultHopTimeout > 0 {
+		return b.DefaultHopTimeout
+	}
+	return defaultHopTimeout
+}
+
+// meter wraps outer so the dial that reaches proxyID's server is timed/counted.
+// No-op when metrics are disabled.
+func (b *ChainBuilder) meter(outer proxy.ContextDialer, proxyID uint64) proxy.ContextDialer {
+	if b.Metrics == nil {
+		return outer
+	}
+	return &dialMeter{inner: outer, sink: b.Metrics, proxyID: proxyID}
+}
+
+// socksCreds resolves the optional username/password bound to a proxy hop.
+func (b *ChainBuilder) socksCreds(ctx context.Context, p *model.Proxy) (user, pass string, err error) {
+	if p.CredentialID != nil && b.Creds != nil {
+		return b.Creds.UserPassByCredentialID(ctx, *p.CredentialID)
+	}
+	return "", "", nil
+}
+
+func headerFromMap(m map[string]string) http.Header {
+	if len(m) == 0 {
+		return nil
+	}
+	h := make(http.Header, len(m))
+	for k, v := range m {
+		h.Set(k, v)
+	}
+	return h
 }
 
 // MaxChainHops is a defence-in-depth limit so an operator can't accidentally
@@ -88,12 +143,22 @@ func ValidateChainShape(hops []*model.Proxy) []ChainIssue {
 					Message: "direct 代理夹在中间没有意义,可移除",
 				})
 			}
-		case model.ProxySOCKS5, model.ProxyHTTPConn:
+		case model.ProxySOCKS5, model.ProxySOCKS4, model.ProxyHTTPConn:
 			if strings.TrimSpace(p.Host) == "" || p.Port <= 0 {
 				out = append(out, ChainIssue{
 					Hop: i, ProxyID: p.ID, Severity: SeverityError,
 					Code:    "missing_endpoint",
 					Message: fmt.Sprintf("%s 代理未配置 host:port", p.Kind),
+				})
+			}
+		case model.ProxyFailover:
+			// Members are validated when the group is built (they live in a
+			// separate table not visible here); only lint the strategy scalar.
+			if p.GroupStrategy != "" && !p.GroupStrategy.Valid() {
+				out = append(out, ChainIssue{
+					Hop: i, ProxyID: p.ID, Severity: SeverityError,
+					Code:    "bad_strategy",
+					Message: fmt.Sprintf("故障转移组策略 %q 无效", p.GroupStrategy),
 				})
 			}
 		case model.ProxyBastion:
@@ -161,7 +226,9 @@ func (b *ChainBuilder) Build(ctx context.Context, hops []*model.Proxy, base prox
 		return nil, func() {}, fmt.Errorf("chain validation: %s", issues[0].Message)
 	}
 	if base == nil {
-		base = &Direct{}
+		// A bounded Direct base fixes the old zero-value Direct{} that connected
+		// with no timeout at all.
+		base = &Direct{Timeout: b.hopTimeout(nil)}
 	}
 	releases := make([]func(), 0, len(hops))
 	release := func() {
@@ -183,6 +250,15 @@ func (b *ChainBuilder) Build(ctx context.Context, hops []*model.Proxy, base prox
 		releases = append(releases, rel)
 		current = next
 	}
+	// Outermost byte/active-conn metering, attributed to the egress (terminal)
+	// hop so session traffic is counted exactly once.
+	if b.Metrics != nil {
+		var termID uint64
+		if n := len(hops); n > 0 {
+			termID = hops[n-1].ID
+		}
+		current = &connMeter{inner: current, sink: b.Metrics, terminalID: termID}
+	}
 	return current, release, nil
 }
 
@@ -196,6 +272,10 @@ type TestResult struct {
 	OK       bool          `json:"ok"`
 	Duration time.Duration `json:"duration_ms"`
 	Error    string        `json:"error,omitempty"`
+	// Probed is the host:port actually dialed through the partial chain for this
+	// hop (the next hop's endpoint, or this hop's own for the last hop). Empty
+	// when the hop could only be built, not dialed (e.g. a failover next hop).
+	Probed string `json:"probed,omitempty"`
 }
 
 // Test probes the chain end-to-end. It walks the hops just like Build, but on
@@ -215,81 +295,173 @@ func (b *ChainBuilder) Test(ctx context.Context, hops []*model.Proxy, target str
 		})
 		return out
 	}
-	current := proxy.ContextDialer(&Direct{})
-	releases := make([]func(), 0, len(hops))
-	defer func() {
-		for i := len(releases) - 1; i >= 0; i-- {
-			if releases[i] != nil {
-				releases[i]()
-			}
-		}
-	}()
-	for i, hop := range hops {
-		start := time.Now()
-		next, rel, err := b.wrap(ctx, hop, current)
-		dur := time.Since(start)
-		r := TestResult{
-			Hop: i, ProxyID: hop.ID, Name: hop.Name,
-			Kind: string(hop.Kind), Duration: dur / time.Millisecond,
-		}
+	// Probe with a metrics-free builder so test dials never pollute live
+	// session counters.
+	pb := *b
+	pb.Metrics = nil
+	for i := range hops {
+		hop := hops[i]
+		r := TestResult{Hop: i, ProxyID: hop.ID, Name: hop.Name, Kind: string(hop.Kind)}
+		// Build the partial chain hops[:i+1] and issue a real dial through it so
+		// lazy SOCKS/HTTP dialers actually perform their handshake — the old
+		// code marked them OK on wrap() return without ever connecting.
+		partial, release, err := pb.Build(ctx, hops[:i+1], nil)
 		if err != nil {
 			r.OK = false
 			r.Error = err.Error()
 			out = append(out, r)
 			return out
 		}
-		releases = append(releases, rel)
-		current = next
-		// On a real-target probe we issue a TCP dial through the partial
-		// chain so subsequent hops are exercised end-to-end. We only run
-		// the probe on the LAST hop to avoid spamming intermediates with
-		// dummy connections (they're still implicitly probed via the next
-		// wrap call).
-		r.OK = true
-		out = append(out, r)
-	}
-	if target != "" && len(out) > 0 {
-		start := time.Now()
-		conn, err := current.DialContext(ctx, "tcp", target)
-		dur := time.Since(start) / time.Millisecond
-		lastIdx := len(out) - 1
-		out[lastIdx].Duration += dur
-		if err != nil {
-			out[lastIdx].OK = false
-			out[lastIdx].Error = "target dial: " + err.Error()
-		} else if conn != nil {
-			_ = conn.Close()
+		probe := strings.TrimSpace(target)
+		if probe == "" {
+			probe = probeTargetFor(hops, i)
 		}
+		start := time.Now()
+		var dialErr error
+		if probe != "" {
+			conn, e := partial.DialContext(ctx, "tcp", probe)
+			dialErr = e
+			if conn != nil {
+				_ = conn.Close()
+			}
+		}
+		r.Duration = time.Since(start) / time.Millisecond
+		release()
+		if dialErr != nil {
+			r.OK = false
+			r.Error = dialErr.Error()
+			r.Probed = probe
+			out = append(out, r)
+			return out
+		}
+		r.OK = true
+		r.Probed = probe
+		out = append(out, r)
 	}
 	return out
 }
 
+// probeTargetFor picks a host:port to dial through the partial chain ending at
+// hop i: the next hop's endpoint (proves hop i reaches it), falling back to hop
+// i's own endpoint for the last hop. Returns "" when neither has an endpoint
+// (e.g. a failover next hop) — the caller then only validates the build.
+func probeTargetFor(hops []*model.Proxy, i int) string {
+	if i+1 < len(hops) {
+		if t := endpointOf(hops[i+1]); t != "" {
+			return t
+		}
+	}
+	return endpointOf(hops[i])
+}
+
+func endpointOf(p *model.Proxy) string {
+	if p == nil || strings.TrimSpace(p.Host) == "" || p.Port <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", p.Host, p.Port)
+}
+
 func (b *ChainBuilder) wrap(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer) (proxy.ContextDialer, func(), error) {
+	to := b.hopTimeout(p)
+	addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
 	switch p.Kind {
 	case model.ProxyDirect:
 		return outer, nil, nil
 	case model.ProxySOCKS5:
-		var user, pass string
-		if p.CredentialID != nil && b.Creds != nil {
-			u, pw, err := b.Creds.UserPassByCredentialID(ctx, *p.CredentialID)
-			if err != nil {
-				return nil, nil, err
-			}
-			user, pass = u, pw
+		user, pass, err := b.socksCreds(ctx, p)
+		if err != nil {
+			return nil, nil, err
 		}
-		addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
-		d, err := NewSOCKS5(addr, user, pass, outer)
+		d, err := NewSOCKS5(addr, user, pass, to, b.meter(outer, p.ID))
+		return d, nil, err
+	case model.ProxySOCKS4:
+		// SOCKS4 carries only an ident (username); password is ignored.
+		user, _, err := b.socksCreds(ctx, p)
+		if err != nil {
+			return nil, nil, err
+		}
+		d, err := NewSOCKS4(addr, user, p.SOCKS4Remote, to, b.meter(outer, p.ID))
+		return d, nil, err
+	case model.ProxyHTTPConn:
+		user, pass, err := b.socksCreds(ctx, p)
+		if err != nil {
+			return nil, nil, err
+		}
+		d, err := NewHTTPConnect(addr, user, pass, p.TLSToProxy, p.ProxySNI, p.InsecureSkipVerify, headerFromMap(p.Headers), to, b.meter(outer, p.ID))
 		return d, nil, err
 	case model.ProxyBastion:
 		if b.Bastion == nil {
 			return nil, nil, fmt.Errorf("bastion connector not configured")
 		}
-		bd, rel, err := b.Bastion.Acquire(ctx, p, outer)
+		bd, rel, err := b.Bastion.Acquire(ctx, p, b.meter(outer, p.ID))
 		if err != nil {
 			return nil, nil, err
 		}
 		return bd, rel, nil
+	case model.ProxyFailover:
+		return b.wrapGroup(ctx, p, outer)
 	default:
 		return nil, nil, fmt.Errorf("unsupported proxy kind %q", p.Kind)
 	}
+}
+
+// wrapGroup turns a failover hop into a failoverDialer. Each member is composed
+// over the SAME outer (the chain branches at the group hop, which is the correct
+// failover semantic: any member is an alternative path forward). Broken members
+// are skipped; the group fails only when none are usable. Nested groups are
+// rejected to bound recursion.
+func (b *ChainBuilder) wrapGroup(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer) (proxy.ContextDialer, func(), error) {
+	if b.Groups == nil {
+		return nil, nil, fmt.Errorf("failover group reader not configured")
+	}
+	specs, err := b.Groups.MembersOf(ctx, p.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	built := make([]builtMember, 0, len(specs))
+	releases := make([]func(), 0, len(specs))
+	for _, s := range specs {
+		if s.Proxy == nil || s.Proxy.Disabled || s.Proxy.Kind == model.ProxyFailover {
+			continue
+		}
+		d, rel, werr := b.wrap(ctx, s.Proxy, outer)
+		if werr != nil {
+			continue // skip a broken member rather than sinking the group
+		}
+		if rel != nil {
+			releases = append(releases, rel)
+		}
+		built = append(built, builtMember{
+			proxyID: s.Proxy.ID, priority: s.Priority, weight: s.Weight, dialer: d,
+		})
+	}
+	if len(built) == 0 {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+		return nil, nil, fmt.Errorf("failover group %q has no usable members", p.Name)
+	}
+	backoff := time.Duration(p.GroupBackoffMS) * time.Millisecond
+	backoffMax := backoff * 16
+	if backoffMax <= 0 || backoffMax > 30*time.Second {
+		backoffMax = 30 * time.Second
+	}
+	fd := &failoverDialer{
+		groupID:     p.ID,
+		members:     built,
+		strategy:    p.GroupStrategy,
+		retryMax:    p.GroupRetryMax,
+		backoffBase: backoff,
+		backoffMax:  backoffMax,
+		health:      b.Health,
+		metrics:     b.Metrics,
+	}
+	release := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			if releases[i] != nil {
+				releases[i]()
+			}
+		}
+	}
+	return fd, release, nil
 }
