@@ -20,8 +20,8 @@ export default function WorkspaceLayout({ children }: { children: React.ReactNod
   }, [router])
 
   if (!ready) return null
-  // h-screen + overflow-hidden locks the shell to the viewport (status bar sits
-  // flush at the foot). w-full (not w-screen) avoids the 100vw-includes-scrollbar
-  // footgun that can cause a stray horizontal overflow.
-  return <div className="h-screen w-full overflow-hidden flex flex-col bg-background">{children}</div>
+  // Fill the viewport-locked body (h-full, not h-screen/100vh — follows the real
+  // body height with no vh quirks); status bar sits flush at the foot. w-full,
+  // not w-screen, avoids the 100vw-includes-scrollbar footgun.
+  return <div className="h-full w-full overflow-hidden flex flex-col bg-background">{children}</div>
 }

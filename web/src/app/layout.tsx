@@ -41,9 +41,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html
       lang="zh-CN"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} ${cormorant.variable}`}
+      className={`h-full ${geistSans.variable} ${geistMono.variable} ${cormorant.variable}`}
     >
-      <body className="font-sans antialiased min-h-screen bg-background text-foreground">
+      {/* Lock the document to exactly the viewport so no Provider-level sibling
+          (toasts / dev tools / overlays) can grow the body and body-scroll into
+          blank space below the route shell. Each route group owns its own scroll
+          (app: main; workspace: internal; auth: overflow-y-auto). Fixed-position
+          elements escape this overflow, so toasts/dialogs still render. */}
+      <body className="font-sans antialiased h-full overflow-hidden bg-background text-foreground">
         <Providers>{children}</Providers>
       </body>
     </html>

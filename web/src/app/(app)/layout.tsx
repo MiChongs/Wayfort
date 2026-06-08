@@ -24,11 +24,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   if (!ready) return null
   return (
     <NotificationProvider>
-      {/* Lock the shell to exactly the viewport height; the main area is the
-          single scroll container. Using h-screen + overflow-hidden (instead of
-          min-h-screen) prevents the document from growing past the viewport and
-          body-scrolling into blank space below short pages. */}
-      <div className="flex h-screen overflow-hidden">
+      {/* Fill the viewport-locked body; main is the single scroll container. */}
+      <div className="flex h-full overflow-hidden">
         <Sidebar />
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
           <TopBar onMobileMenu={() => setMobileOpen(true)} mobileOpen={mobileOpen} onMobileClose={() => setMobileOpen(false)} />

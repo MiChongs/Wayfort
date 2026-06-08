@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils"
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
+    <div className="relative h-full overflow-y-auto bg-background text-foreground">
       {/* Subtle background grid — pure CSS, no SVG dependency */}
       <div
         aria-hidden
