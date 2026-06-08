@@ -761,7 +761,12 @@ export type FirewallFamily = "inet" | "inet6" | ""
 export interface FirewallStatus {
   tool: FirewallTool
   active: boolean
+  installed: boolean
   policy?: string
+  default_in?: string
+  default_out?: string
+  chains?: string[] | null
+  ssh_port?: number
   rule_count: number
   reason?: string
   sampled_at: string
@@ -775,14 +780,171 @@ export interface FirewallRule {
   source?: string
   chain?: string
   family?: FirewallFamily
+  handle?: number
+  table?: string
+  comment?: string
+  pkts?: number
+  bytes?: number
   raw: string
 }
 export interface FirewallRuleSpec {
   action: "ALLOW" | "DENY" | "REJECT"
   direction?: "in" | "out"
-  protocol?: "tcp" | "udp"
+  protocol?: "tcp" | "udp" | "icmp" | "any"
   port: string
   source?: string
+  comment?: string
+}
+
+// SSE snapshot — status (flat) + rules with live counters + exposure + f2b summary.
+export interface FirewallSnapshot extends FirewallStatus {
+  rules: FirewallRule[] | null
+  exposure?: ExposurePort[] | null
+  fail2ban?: { installed: boolean; banned_total: number; jail_count: number }
+}
+
+export type ExposureVerdict = "open" | "restricted" | "blocked" | "local"
+export interface ExposurePort {
+  proto: "tcp" | "udp"
+  port: number
+  listen_addr: string
+  process?: string
+  pid?: number
+  verdict: ExposureVerdict
+  allowed_from?: string[] | null
+  rule_index?: number
+}
+
+export interface FirewallRuleInsert {
+  at: number
+  spec: FirewallRuleSpec
+}
+export interface FirewallRuleEdit {
+  index?: number
+  handle?: number
+  chain?: string
+  new_spec: FirewallRuleSpec
+}
+export interface FirewallRuleMove {
+  from: number
+  to: number
+  handle?: number
+  chain?: string
+}
+
+export interface FirewallProbe {
+  os_id: string
+  pkg_manager: string
+  has_ufw: boolean
+  has_nft: boolean
+  has_iptables: boolean
+  has_firewalld: boolean
+  has_fail2ban: boolean
+  has_conntrack: boolean
+  can_sudo: boolean
+  recommended_tool: FirewallTool
+  cmd_preview_ufw: string
+  cmd_preview_nft: string
+  sampled_at: string
+}
+
+export interface ServicePreset {
+  id: string
+  name: string
+  port: string
+  protocol: string
+  category: string
+}
+export interface PolicyTemplate {
+  id: string
+  name: string
+  description?: string
+  tags?: string[] | null
+  default_policy?: string
+  allows: FirewallRuleSpec[] | null
+  high_risk: boolean
+}
+
+export type FirewallApplyKind =
+  | "add"
+  | "insert"
+  | "delete"
+  | "edit"
+  | "reorder"
+  | "bulk"
+  | "import"
+  | "template"
+  | "policy"
+export interface FirewallApplyRequest {
+  kind: FirewallApplyKind
+  spec?: FirewallRuleSpec
+  insert?: FirewallRuleInsert
+  edit?: FirewallRuleEdit
+  move?: FirewallRuleMove
+  indexes?: number[]
+  template_id?: string
+  format?: string
+  content?: string
+  default_policy?: string
+  ttl_seconds?: number
+  confirm?: boolean
+}
+export interface FirewallApplyPlan {
+  commands: string[] | null
+  adds: number
+  deletes: number
+  high_risk: boolean
+  risk_reasons?: string[] | null
+}
+export interface FirewallArmResult {
+  arm_token: string
+  snapshot_id: string
+  window_seconds: number
+  rollback_via: string
+  job_ref: string
+  ssh_guard: string
+  deadline: string
+  high_risk: boolean
+  plan?: FirewallApplyPlan
+}
+
+export interface FirewallConn {
+  proto: string
+  src: string
+  src_port?: number
+  dst: string
+  dst_port?: number
+  state?: string
+  bytes?: number
+  packets?: number
+}
+export interface ConntrackSnapshot {
+  total: number
+  truncated: boolean
+  connections: FirewallConn[] | null
+  sampled_at: string
+}
+
+export interface Fail2banJail {
+  name: string
+  filter?: string
+  banned: number
+  total_failed?: number
+  banned_ips?: string[] | null
+}
+export interface Fail2banStatus {
+  installed: boolean
+  running: boolean
+  jails: Fail2banJail[] | null
+  reason?: string
+  sampled_at: string
+}
+export interface FirewallRulesetDump {
+  tool: FirewallTool
+  format: string
+  content: string
+  sha256: string
+  sampled_at: string
 }
 // Returned by GET /firewall/diagnose — surfaces every observation the
 // gateway made when probing the node, so operators can self-serve "why

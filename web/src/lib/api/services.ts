@@ -58,6 +58,18 @@ import type {
   FirewallRule,
   FirewallRuleSpec,
   FirewallStatus,
+  FirewallRuleInsert,
+  FirewallRuleEdit,
+  FirewallRuleMove,
+  FirewallProbe,
+  FirewallApplyRequest,
+  FirewallApplyPlan,
+  FirewallArmResult,
+  FirewallRulesetDump,
+  ServicePreset,
+  PolicyTemplate,
+  ExposurePort,
+  Fail2banStatus,
   SystemdStatus,
   SystemdUnit,
   SystemdDetail,
@@ -431,21 +443,49 @@ export const desktopDriveService = {
 
 // ----- Workspace v2 — firewall + docker services -----
 
+const fwBase = (nodeId: number) => `/nodes/${nodeId}/firewall`
+
 export const firewallService = {
-  status: (nodeId: number) =>
-    api<FirewallStatus>("GET", `/nodes/${nodeId}/firewall/status`),
-  listRules: (nodeId: number) =>
-    api<{ rules: FirewallRule[] }>("GET", `/nodes/${nodeId}/firewall/rules`),
-  diagnose: (nodeId: number) =>
-    api<FirewallDiagnostics>("GET", `/nodes/${nodeId}/firewall/diagnose`),
+  status: (nodeId: number) => api<FirewallStatus>("GET", `${fwBase(nodeId)}/status`),
+  listRules: (nodeId: number) => api<{ rules: FirewallRule[] }>("GET", `${fwBase(nodeId)}/rules`),
+  diagnose: (nodeId: number) => api<FirewallDiagnostics>("GET", `${fwBase(nodeId)}/diagnose`),
+  probe: (nodeId: number) => api<FirewallProbe>("GET", `${fwBase(nodeId)}/install/probe`),
+  exposure: (nodeId: number) => api<{ ports: ExposurePort[] }>("GET", `${fwBase(nodeId)}/exposure`),
+  presets: (nodeId: number) => api<{ presets: ServicePreset[] }>("GET", `${fwBase(nodeId)}/presets`),
+  templates: (nodeId: number) => api<{ templates: PolicyTemplate[] }>("GET", `${fwBase(nodeId)}/templates`),
+  // rules
   addRule: (nodeId: number, spec: FirewallRuleSpec) =>
-    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/rules`, { body: spec }),
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/rules`, { body: spec }),
   deleteRule: (nodeId: number, index: number) =>
-    api<{ ok: boolean }>("DELETE", `/nodes/${nodeId}/firewall/rules/${index}`),
-  enable: (nodeId: number) =>
-    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/enable`),
-  disable: (nodeId: number) =>
-    api<{ ok: boolean }>("POST", `/nodes/${nodeId}/firewall/disable`),
+    api<{ ok: boolean }>("DELETE", `${fwBase(nodeId)}/rules/${index}`),
+  insertRule: (nodeId: number, body: FirewallRuleInsert) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/rules/insert`, { body }),
+  editRule: (nodeId: number, index: number, body: FirewallRuleEdit) =>
+    api<{ ok: boolean }>("PUT", `${fwBase(nodeId)}/rules/${index}`, { body }),
+  moveRule: (nodeId: number, body: FirewallRuleMove) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/rules/move`, { body }),
+  bulkDelete: (nodeId: number, indexes: number[]) =>
+    api<{ ok: boolean; deleted: number }>("POST", `${fwBase(nodeId)}/rules/bulk-delete`, { body: { indexes } }),
+  persist: (nodeId: number) => api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/persist`),
+  enable: (nodeId: number) => api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/enable`),
+  disable: (nodeId: number) => api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/disable`),
+  // safe apply + rollback
+  apply: (nodeId: number, req: FirewallApplyRequest) =>
+    api<FirewallArmResult>("POST", `${fwBase(nodeId)}/apply`, { body: req }),
+  commit: (nodeId: number, armToken: string) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/commit`, { body: { arm_token: armToken } }),
+  rollback: (nodeId: number, armToken: string) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/rollback`, { body: { arm_token: armToken } }),
+  // import / export
+  export: (nodeId: number) => api<FirewallRulesetDump>("GET", `${fwBase(nodeId)}/export`),
+  importPreview: (nodeId: number, content: string) =>
+    api<FirewallApplyPlan>("POST", `${fwBase(nodeId)}/import/preview`, { body: { content } }),
+  // fail2ban
+  fail2ban: (nodeId: number) => api<Fail2banStatus>("GET", `${fwBase(nodeId)}/fail2ban`),
+  fail2banBan: (nodeId: number, jail: string, ip: string) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/fail2ban/ban`, { body: { jail, ip } }),
+  fail2banUnban: (nodeId: number, jail: string, ip: string) =>
+    api<{ ok: boolean }>("POST", `${fwBase(nodeId)}/fail2ban/unban`, { body: { jail, ip } }),
 }
 
 export const dockerService = {

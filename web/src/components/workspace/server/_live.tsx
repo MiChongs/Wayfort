@@ -30,6 +30,24 @@ export function networkStreamURL(nodeId: number): string {
 export function wireguardStreamURL(nodeId: number): string {
   return buildURLFromAPI(`/nodes/${nodeId}/wireguard/stream`)
 }
+export function firewallStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/status/stream`)
+}
+export function firewallConntrackStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/conntrack/stream`)
+}
+export function firewallLogStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/logs/stream`)
+}
+export function firewallInstallStreamURL(nodeId: number, tool: "ufw" | "nft"): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/install/stream`, { tool })
+}
+export function fail2banInstallStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/fail2ban/install/stream`)
+}
+export function fail2banStreamURL(nodeId: number): string {
+  return buildURLFromAPI(`/nodes/${nodeId}/firewall/fail2ban/stream`)
+}
 export function wireguardInstallStreamURL(nodeId: number): string {
   return buildURLFromAPI(`/nodes/${nodeId}/wireguard/install/stream`)
 }

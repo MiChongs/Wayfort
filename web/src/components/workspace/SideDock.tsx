@@ -100,7 +100,7 @@ const DOCK_TABS: DockTab[] = [
   { key: "files", label: "文件", group: "系统", icon: FolderOpen, render: ({ nodeId, tabId, active }) => <FilesTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "capture", label: "抓包", group: "系统", icon: Radio, render: ({ nodeId, tabId, active }) => <CaptureTab nodeId={nodeId} tabId={tabId} active={active} /> },
   // 治理
-  { key: "firewall", label: "防火墙", group: "治理", icon: Shield, render: ({ nodeId, active }) => <FirewallTab nodeId={nodeId} active={active} /> },
+  { key: "firewall", label: "防火墙", group: "治理", icon: Shield, render: ({ nodeId, tabId, active }) => <FirewallTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "users", label: "用户", group: "治理", icon: UsersRound, render: ({ nodeId, tabId, active }) => <UsersTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "security", label: "安全", group: "治理", icon: ShieldCheck, render: ({ nodeId, tabId, active }) => <SecurityTab nodeId={nodeId} tabId={tabId} active={active} /> },
   { key: "backup", label: "备份", group: "治理", icon: Archive, render: ({ nodeId, tabId, active }) => <BackupTab nodeId={nodeId} tabId={tabId} active={active} /> },

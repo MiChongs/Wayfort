@@ -221,6 +221,8 @@ func parseIPTablesList(out, chain string, family Family) (Status, []Rule) {
 			Source:    fields[7],
 			Chain:     chain,
 			Family:    family,
+			Pkts:      parseCount(fields[1]),
+			Bytes:     parseCount(fields[2]),
 			Raw:       strings.TrimSpace(raw),
 		}
 		if r.Protocol == "all" {
@@ -305,11 +307,15 @@ func parseNftables(out string) (Status, []Rule, error) {
 }
 
 func nftRuleToUnified(n *nftRule) Rule {
+	h := n.Handle
 	r := Rule{
 		Index:     n.Handle,
+		Handle:    &h,
+		Table:     n.Table,
 		Chain:     n.Chain,
 		Direction: directionForChain(n.Chain),
 		Family:    nftFamily(n.Family),
+		Comment:   n.Comment,
 		Raw:       reencodeExpr(n),
 	}
 	for _, e := range n.Expr {
@@ -323,12 +329,26 @@ func nftRuleToUnified(n *nftRule) Rule {
 		} else if v, ok := e["match"]; ok {
 			// "match": { "op": "==", "left": {...}, "right": ... }
 			parseNftMatch(v, &r)
+		} else if v, ok := e["counter"]; ok {
+			parseNftCounter(v, &r)
 		}
 	}
 	if r.Action == "" {
 		r.Action = "(no terminal verdict)"
 	}
 	return r
+}
+
+// parseNftCounter extracts {"counter":{"packets":N,"bytes":M}} into the rule.
+func parseNftCounter(raw json.RawMessage, r *Rule) {
+	var c struct {
+		Packets int64 `json:"packets"`
+		Bytes   int64 `json:"bytes"`
+	}
+	if err := json.Unmarshal(raw, &c); err == nil {
+		r.Pkts = c.Packets
+		r.Bytes = c.Bytes
+	}
 }
 
 func nftFamily(f string) Family {

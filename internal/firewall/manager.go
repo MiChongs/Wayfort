@@ -20,9 +20,24 @@ import (
 // Config controls per-node caching of the firewall snapshot. Mutations are
 // always synchronous; reads are deduplicated within CacheTTL.
 type Config struct {
-	Enabled    bool
-	CacheTTL   time.Duration // default 5s
-	SSHTimeout time.Duration // default 10s
+	Enabled           bool
+	CacheTTL          time.Duration // default 5s
+	SSHTimeout        time.Duration // default 10s
+	InstallTimeout    time.Duration // default 300s — streamed package install
+	ConntrackMax      int           // default 500 — cap conntrack rows
+	DefaultArmSeconds int           // default 60 — auto-rollback window
+	SSHPortGuard      bool          // default true — never lock out current SSH
+}
+
+// armState tracks a pending safe-apply rollback for a node (in-memory; the
+// host-side watchdog is the real safety net — this just serialises arming and
+// lets commit/rollback find the job ref).
+type armState struct {
+	token     string
+	snapID    string
+	via       string
+	jobRef    string
+	expiresAt time.Time
 }
 
 // Manager fetches and mutates firewall state over SSH on managed nodes.
@@ -37,6 +52,7 @@ type Manager struct {
 
 	mu     sync.Mutex
 	cache  map[uint64]*cacheEntry
+	armed  map[uint64]*armState
 	flight singleflight.Group
 }
 
@@ -62,6 +78,15 @@ func NewManager(cfg Config, deps Deps) *Manager {
 	if cfg.SSHTimeout <= 0 {
 		cfg.SSHTimeout = 10 * time.Second
 	}
+	if cfg.InstallTimeout <= 0 {
+		cfg.InstallTimeout = 300 * time.Second
+	}
+	if cfg.ConntrackMax <= 0 {
+		cfg.ConntrackMax = 500
+	}
+	if cfg.DefaultArmSeconds <= 0 {
+		cfg.DefaultArmSeconds = 60
+	}
 	m := &Manager{
 		cfg:    cfg,
 		logger: deps.Logger,
@@ -71,6 +96,7 @@ func NewManager(cfg Config, deps Deps) *Manager {
 		audit:  deps.Audit,
 		deps:   deps.SSH,
 		cache:  map[uint64]*cacheEntry{},
+		armed:  map[uint64]*armState{},
 	}
 	// Startup observability — the absence of this log on boot tells the
 	// operator immediately that the firewall subsystem isn't wired into
@@ -144,6 +170,8 @@ func (m *Manager) collect(ctx context.Context, nodeID uint64, l *nodeAndCred) (*
 	if err != nil {
 		return nil, err
 	}
+	status.Installed = true
+	status.SSHPort = int(l.node.Port)
 	status.SampledAt = time.Now().UTC()
 	entry := &cacheEntry{at: status.SampledAt, status: status, rules: rules}
 	m.store(nodeID, entry)
@@ -183,7 +211,7 @@ func (m *Manager) listRules(ctx context.Context, l *nodeAndCred, tool Tool) (Sta
 		s, r := parseFirewalldList(res.Stdout)
 		return s, r, nil
 	case ToolNftables:
-		res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, "nft -j list ruleset 2>&1", m.cfg.SSHTimeout)
+		res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, "nft -j -a list ruleset 2>&1", m.cfg.SSHTimeout)
 		if err != nil && res.Stdout == "" {
 			return Status{}, nil, classifySSHError(err, res.Stderr, "list nft")
 		}
@@ -220,7 +248,7 @@ func (m *Manager) listIPTables(ctx context.Context, l *nodeAndCred) (Status, []R
 	status.Active = true
 	for _, b := range binaries {
 		for _, chain := range chains {
-			cmd := fmt.Sprintf("%s -L %s -n -v --line-numbers 2>&1", b.bin, chain)
+			cmd := fmt.Sprintf("%s -L %s -n -v -x --line-numbers 2>&1", b.bin, chain)
 			res, err := sshrun.Run(ctx, m.deps, l.node, l.cred, cmd, m.cfg.SSHTimeout)
 			if err != nil && res.Stdout == "" {
 				// ip6tables may legitimately not exist on this host — only
@@ -245,6 +273,30 @@ func (m *Manager) listIPTables(ctx context.Context, l *nodeAndCred) (Status, []R
 	}
 	status.RuleCount = len(merged)
 	return status, merged, nil
+}
+
+// runFW runs one command against the node, classifying tool-output permission
+// errors first (some tools exit 0 on them), then transport errors. Returns
+// stdout (falling back to stderr when stdout is empty). Shared by the new
+// mutators / install / safe-apply paths.
+func (m *Manager) runFW(ctx context.Context, l *nodeAndCred, cmd, op string, to time.Duration) (string, error) {
+	if to <= 0 {
+		to = m.cfg.SSHTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, to)
+	defer cancel()
+	res, err := sshrun.Run(cctx, m.deps, l.node, l.cred, cmd, to)
+	if e := classifyToolOutput(res.Stdout + " " + res.Stderr); e != nil {
+		return res.Stdout, e
+	}
+	if err != nil && res.Stdout == "" {
+		return res.Stderr, classifySSHError(err, res.Stderr, op)
+	}
+	out := res.Stdout
+	if out == "" {
+		out = res.Stderr
+	}
+	return out, nil
 }
 
 func (m *Manager) unsupportedEntry(nodeID uint64) *cacheEntry {
