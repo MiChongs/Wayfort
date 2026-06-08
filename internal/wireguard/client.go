@@ -118,6 +118,11 @@ func (m *Manager) NewClient(ctx context.Context, userID, nodeID uint64, claims A
 	if dns == "" {
 		dns = strings.Join(cfg.DNS, ", ")
 	}
+	if dns == "" {
+		// Server interfaces don't carry DNS; give the client a sane default so
+		// full-tunnel clients still resolve names.
+		dns = "1.1.1.1"
+	}
 	keepalive := req.Keepalive
 	if keepalive == 0 {
 		keepalive = 25

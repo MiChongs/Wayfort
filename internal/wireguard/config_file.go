@@ -36,6 +36,9 @@ type IfaceConfig struct {
 	PostDown   []string     `json:"post_down,omitempty"`
 	SaveConfig bool         `json:"save_config,omitempty"`
 	Peers      []PeerConfig `json:"peers"`
+	// Warning is a transient, non-fatal note returned by CreateIface (e.g. the
+	// conf was written but wg-quick up failed). Never parsed from disk.
+	Warning string `json:"warning,omitempty"`
 }
 
 // PeerConfig is one [Peer] section. Comment carries the "# Name = ..." alias

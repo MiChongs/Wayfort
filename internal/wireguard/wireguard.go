@@ -206,18 +206,22 @@ func (m *Manager) runWG(ctx context.Context, node *model.Node, cred *model.Crede
 // statusScript builds the aggregated status probe: a single SSH round-trip that
 // returns the live `wg show all dump`, every interface conf (for
 // Address/MTU/DNS + conf-only interfaces that aren't up), each unit's autostart
-// state, and the kernel-module situation. `wg show` needs root to read private
-// keys / handshakes, so each privileged read prefers `sudo -n` and falls back
-// to unprivileged. confDir is operator config (not user input) and is embedded
-// raw so the *.conf glob expands. Section markers let parseStatus split it.
+// state, and the kernel-module situation. `wg show` and reading the conf dir
+// need root (/etc/wireguard is 0700 root by default — even *globbing* it needs
+// the directory readable), so the conf/enabled enumeration runs inside a single
+// `sudo -n sh -c` (not just the per-file cat) with an unprivileged fallback.
+// confDir is operator config (not user input) and is embedded raw so the *.conf
+// glob expands. Section markers let parseStatus split it.
 func statusScript(confDir string) string {
+	confLoop := `for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; echo "@@FILE@@ $f"; cat "$f"; echo "@@ENDFILE@@"; done`
+	enabledLoop := `for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; n=$(basename "$f" .conf); printf "%s %s\n" "$n" "$(systemctl is-enabled wg-quick@$n 2>/dev/null || echo unknown)"; done`
 	return `if ! command -v wg >/dev/null 2>&1; then echo "__NO_WG__"; exit 0; fi
 echo "===DUMP==="
 (sudo -n wg show all dump 2>/dev/null || wg show all dump 2>/dev/null)
 echo "===CONF==="
-for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; echo "@@FILE@@ $f"; (sudo -n cat "$f" 2>/dev/null || cat "$f" 2>/dev/null); echo "@@ENDFILE@@"; done
+sudo -n sh -c '` + confLoop + `' 2>/dev/null || sh -c '` + confLoop + `' 2>/dev/null
 echo "===ENABLED==="
-for f in ` + confDir + `/*.conf; do [ -e "$f" ] || continue; n=$(basename "$f" .conf); printf '%s %s\n' "$n" "$(systemctl is-enabled wg-quick@$n 2>/dev/null || echo unknown)"; done
+sudo -n sh -c '` + enabledLoop + `' 2>/dev/null || sh -c '` + enabledLoop + `' 2>/dev/null
 echo "===MOD==="
 ( (lsmod 2>/dev/null | grep -q '^wireguard' && echo loaded) || (modinfo wireguard >/dev/null 2>&1 && echo available) || (command -v wireguard-go >/dev/null 2>&1 && echo userspace) || echo none )
 echo "===END==="`

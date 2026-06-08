@@ -161,9 +161,12 @@ func (m *Manager) CreateIface(ctx context.Context, userID, nodeID uint64, claims
 		return nil, ErrBadEgress
 	}
 
-	// Refuse to clobber an existing conf.
+	// Refuse to clobber an existing conf. /etc/wireguard is 0700 root, so the
+	// existence test must try sudo first (a plain test can't even stat inside it
+	// as a non-root user, which would be a false "does not exist").
+	q := shellQuote(m.confPath(req.Name))
 	chk, err := m.runWG(ctx, node, cred,
-		fmt.Sprintf(`[ -e %s ] && echo __EXISTS__ || echo __OK__`, shellQuote(m.confPath(req.Name))),
+		fmt.Sprintf(`(sudo -n test -e %s || test -e %s) && echo __EXISTS__ || echo __OK__`, q, q),
 		"check conf", m.cfg.SSHTimeout)
 	if err != nil {
 		return nil, err
@@ -189,9 +192,14 @@ func (m *Manager) CreateIface(ctx context.Context, userID, nodeID uint64, claims
 	if port == 0 {
 		port = m.cfg.DefaultListenPort
 	}
+	// NOTE: a server [Interface] must NOT carry DNS. wg-quick interprets DNS by
+	// shelling out to resolvconf / resolvectl, which is frequently absent on
+	// servers and makes `wg-quick up` fail (taking the whole create down with
+	// it). DNS is a client-side concern and is emitted into the generated client
+	// .conf instead (see NewClient). req.DNS is intentionally ignored here.
 	cfg := &IfaceConfig{
 		Name: req.Name, PrivateKey: priv, PublicKey: pub,
-		Address: req.Address, ListenPort: port, DNS: req.DNS, MTU: req.MTU, SaveConfig: req.SaveConfig,
+		Address: req.Address, ListenPort: port, MTU: req.MTU, SaveConfig: req.SaveConfig,
 	}
 	if req.EnableNAT {
 		cfg.PostUp, cfg.PostDown = natRules(req.NATEgress)
@@ -207,9 +215,13 @@ func (m *Manager) CreateIface(ctx context.Context, userID, nodeID uint64, claims
 	if req.Autostart {
 		_ = m.setAutostartRaw(ctx, node, cred, req.Name, true)
 	}
+	// Bringing the interface up is best-effort: the conf is already persisted, so
+	// a failure here (missing kernel module, iptables quirk, address clash) must
+	// not fail the whole create — otherwise the user sees an error yet the
+	// interface exists. Surface it as a non-fatal warning instead.
 	if req.BringUp {
-		if _, err := m.runWG(ctx, node, cred, wgQuickCmd("up", req.Name), "wg-quick up", m.cfg.SSHTimeout); err != nil {
-			return nil, err
+		if out, upErr := m.runWG(ctx, node, cred, wgQuickCmd("up", req.Name), "wg-quick up", m.cfg.SSHTimeout); upErr != nil {
+			cfg.Warning = "接口已创建，但自动启动失败（可在接口卡片手动启动并查看原因）：" + firstLine(out, upErr)
 		}
 	}
 
@@ -357,6 +369,20 @@ func (m *Manager) setAutostartRaw(ctx context.Context, node *model.Node, cred *m
 }
 
 // ---- helpers ----
+
+// firstLine returns the first non-empty line of out (trimmed) for a concise
+// warning, falling back to the error's message when out is empty.
+func firstLine(out string, err error) string {
+	for _, l := range strings.Split(out, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			return truncate(t, 200)
+		}
+	}
+	if err != nil {
+		return truncate(err.Error(), 200)
+	}
+	return ""
+}
 
 // wgQuickCmd builds the sudo-preferring wg-quick up/down command for name.
 func wgQuickCmd(verb, name string) string {

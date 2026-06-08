@@ -256,6 +256,7 @@ function ClientWizard({
   const qc = useQueryClient()
   const [comment, setComment] = React.useState("")
   const [endpoint, setEndpoint] = React.useState("")
+  const [dns, setDns] = React.useState("1.1.1.1")
   const [fullTunnel, setFullTunnel] = React.useState(true)
   const [splitIps, setSplitIps] = React.useState("")
   const [usePsk, setUsePsk] = React.useState(true)
@@ -264,6 +265,7 @@ function ClientWizard({
     if (!open) return
     setComment("")
     setEndpoint("")
+    setDns("1.1.1.1")
     setFullTunnel(true)
     setSplitIps("")
     setUsePsk(true)
@@ -274,6 +276,7 @@ function ClientWizard({
       wireguardService.newClient(nodeId, iface, {
         comment: comment.trim() || undefined,
         endpoint: endpoint.trim() || undefined,
+        dns: dns.split(",").map((x) => x.trim()).filter(Boolean),
         use_psk: usePsk,
         allowed_ips: fullTunnel ? undefined : splitIps.split(",").map((x) => x.trim()).filter(Boolean),
       }),
@@ -295,6 +298,7 @@ function ClientWizard({
         <div className="space-y-2.5 py-1">
           <PField label="设备名 / 备注 (可选)"><Input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="如 my-phone" className="h-8 text-xs" /></PField>
           <PField label="公网 Endpoint (可选)" hint="客户端用于连接本机的公网地址/域名；留空则用节点主机地址"><Input value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder="vpn.example.com" className="h-8 font-mono text-xs" /></PField>
+          <PField label="客户端 DNS (逗号分隔)" hint="写入客户端配置；留空则默认 1.1.1.1"><Input value={dns} onChange={(e) => setDns(e.target.value)} placeholder="1.1.1.1" className="h-8 font-mono text-xs" /></PField>
           <label className="flex items-center justify-between gap-2 rounded-md border bg-card px-2.5 py-2">
             <span className="text-xs">全局路由 (0.0.0.0/0, ::/0)</span>
             <Switch checked={fullTunnel} onCheckedChange={setFullTunnel} />

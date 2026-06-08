@@ -160,7 +160,6 @@ export function CreateIfaceWizard({
   const [name, setName] = React.useState("wg0")
   const [address, setAddress] = React.useState("10.8.0.1/24")
   const [port, setPort] = React.useState("51820")
-  const [dns, setDns] = React.useState("1.1.1.1")
   const [mtu, setMtu] = React.useState("")
   const [keys, setKeys] = React.useState<WGKeyPair | null>(null)
   const [showPriv, setShowPriv] = React.useState(false)
@@ -191,7 +190,6 @@ export function CreateIfaceWizard({
     setName("wg0")
     setAddress("10.8.0.1/24")
     setPort("51820")
-    setDns("1.1.1.1")
     setMtu("")
     setKeys(null)
     setShowPriv(false)
@@ -208,7 +206,6 @@ export function CreateIfaceWizard({
         name: name.trim(),
         address: splitCSV(address),
         listen_port: port ? Number(port) : undefined,
-        dns: splitCSV(dns),
         mtu: mtu ? Number(mtu) : undefined,
         private_key: keys?.private_key,
         enable_nat: enableNat,
@@ -218,8 +215,9 @@ export function CreateIfaceWizard({
       }
       return wireguardService.createIface(nodeId, body)
     },
-    onSuccess: () => {
-      toast.success(`接口 ${name} 已创建`)
+    onSuccess: (cfg) => {
+      if (cfg?.warning) toast.warning(`接口 ${name} 已创建`, { description: cfg.warning })
+      else toast.success(`接口 ${name} 已创建`)
       void qc.invalidateQueries({ queryKey: ["wg", nodeId] })
       onClose()
     },
@@ -284,7 +282,7 @@ export function CreateIfaceWizard({
                 <Field label="监听端口"><Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="51820" className="h-8 font-mono text-xs" /></Field>
                 <Field label="MTU (可选)"><Input value={mtu} onChange={(e) => setMtu(e.target.value)} placeholder="1420" className="h-8 font-mono text-xs" /></Field>
               </div>
-              <Field label="DNS (可选，逗号分隔)"><Input value={dns} onChange={(e) => setDns(e.target.value)} placeholder="1.1.1.1" className="h-8 font-mono text-xs" /></Field>
+              <p className="text-[10px] text-muted-foreground/70">DNS 属于客户端配置，在「生成客户端」时设置；服务端接口不设 DNS（否则 wg-quick 会因 resolvconf 缺失而启动失败）。</p>
             </div>
           )}
           {step === 3 && (

@@ -634,6 +634,8 @@ export type WGIfaceConfig = {
   post_down?: string[] | null
   save_config?: boolean
   peers: WGPeerConfig[] | null
+  /** Non-fatal note from create (e.g. conf written but wg-quick up failed). */
+  warning?: string
 }
 export type WGConf = {
   name: string
