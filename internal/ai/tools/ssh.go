@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // RegisterSSHTools adds the three SSH-execution tools:
@@ -131,13 +132,13 @@ func sshExecDryRun(_ context.Context, _ ToolCtx, raw json.RawMessage) (string, e
 }
 
 // ===== readonly allow-list engine =====
-
-// dangerousFragments are shell metacharacters that, if present anywhere in the
-// command, would let the agent escape the readonly contract: command
-// substitution ($(), backticks), redirection (>, <), statement separators (;),
-// or bare backgrounding (& not part of &&). We reject the whole command on
-// first sighting and tell the agent to use ssh_exec instead.
-var dangerousFragments = []string{"$(", "`", ">", "<", ";"}
+//
+// Validation is AST-driven (mvdan.cc/sh): the command is parsed into a shell
+// syntax tree and we reject only *real* contract-breaking nodes (redirects,
+// command/process/arith substitution, backgrounding, multiple statements, and
+// operators other than | && ||). Quoted literals such as `grep 'a | b'` are
+// plain text in the tree, so they are never mistaken for operators — fixing the
+// old substring matcher's false positives on `<`, `>`, `;`, etc.
 
 // normaliseAllow resolves the effective allow list. Behaviour:
 //   - if `in` is non-empty: that REPLACES the curated default (use for lock-down)
@@ -178,7 +179,9 @@ var DefaultReadonlyAllow = []string{
 	// --- text reading / filtering ---
 	"ls", "dir", "cat", "tac", "nl", "grep", "egrep", "fgrep", "zgrep", "zcat",
 	"tail", "head", "awk", "gawk", "sed", "wc", "sort", "uniq", "cut", "tr",
-	"column", "tee", "tsort", "rev", "expand", "fold", "fmt", "paste",
+	// NOTE: "tee" intentionally excluded — it writes files, violating the
+	// readonly contract (`... | tee /etc/x`). Use ssh_exec for that.
+	"column", "tsort", "rev", "expand", "fold", "fmt", "paste",
 	"xxd", "od", "hexdump", "base64",
 	"strings", "find", "locate", "file", "stat", "tree", "less", "more",
 	"readlink", "realpath", "dirname", "basename",
@@ -262,62 +265,154 @@ var DefaultReadonlyAllow = []string{
 	"git ls-tree", "git cat-file", "git rev-parse", "git config --get",
 }
 
-// commandAllowedReason returns "" if the command is allowed, otherwise a
-// short reason string suitable for surfacing back to the model.
+// commandAllowedReason returns "" if the command is allowed for the readonly
+// surface, otherwise a short reason string suitable for surfacing back to the
+// model. It parses the command into a shell AST (mvdan.cc/sh) so that quoted
+// literals are never mistaken for real operators — `grep 'a | b' f` is fine,
+// while `ls > /tmp/x` is a real redirect and is rejected.
 func commandAllowedReason(cmd string, allow []string) string {
 	trimmed := strings.TrimSpace(cmd)
 	if trimmed == "" {
 		return "command is empty"
 	}
-	if reason := containsDangerous(trimmed); reason != "" {
-		return reason + " (use ssh_exec if you really need this)"
+	file, err := syntax.NewParser().Parse(strings.NewReader(trimmed), "")
+	if err != nil {
+		return fmt.Sprintf("无法解析命令(shell 语法错误): %s —— 如确需复杂语法请改用 ssh_exec", cleanParseErr(err))
 	}
-	for _, seg := range splitConjunctions(trimmed) {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			return "empty segment between | or &&"
+	// Multiple top-level statements means ";" / newline separation — not a
+	// pipeline or && / || conjunction. Reject (the readonly surface is one
+	// logical command line).
+	if len(file.Stmts) != 1 {
+		return readonlyEscape("多条语句(; 或换行)")
+	}
+	// Reject any node that lets the command escape the readonly contract.
+	if reason := scanDanger(file); reason != "" {
+		return reason
+	}
+	// Validate the leading command of every pipeline / && / || segment.
+	var firstReject string
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if firstReject != "" {
+			return false
 		}
-		if reason := containsDangerous(seg); reason != "" {
-			return reason
+		ce, ok := node.(*syntax.CallExpr)
+		if !ok || len(ce.Args) == 0 {
+			return true
+		}
+		seg, ok := segmentLiteral(ce.Args)
+		if !ok {
+			firstReject = "命令名包含动态展开($VAR/$()/未解析通配)，无法核验白名单；请改用 ssh_exec"
+			return false
 		}
 		if !segmentAllowed(seg, allow) {
-			return fmt.Sprintf("command segment %q not in readonly allow-list", abbreviate(seg, 80))
+			firstReject = fmt.Sprintf(
+				"command segment %q not in readonly allow-list（命令段不在只读白名单内）；"+
+					"若确需写操作/重定向/管道到写命令，请改用 ssh_exec(高危工具，会触发用户审批)",
+				abbreviate(seg, 80))
+			return false
 		}
-	}
-	return ""
+		return true
+	})
+	return firstReject
 }
 
-func containsDangerous(s string) string {
-	for _, frag := range dangerousFragments {
-		if strings.Contains(s, frag) {
-			return fmt.Sprintf("dangerous shell metachar %q", frag)
-		}
-	}
-	// Detect bare "&" (backgrounding / multiple commands) — but tolerate
-	// "&&" as a conjunction. Strip "&&" first then look for any remaining "&".
-	stripped := strings.ReplaceAll(s, "&&", "")
-	if strings.Contains(stripped, "&") {
-		return `dangerous shell metachar "&" (backgrounding)`
-	}
-	return ""
+// readonlyEscape wraps a danger reason with the standard remediation pointer.
+func readonlyEscape(what string) string {
+	return what + " (use ssh_exec if you really need this)"
 }
 
-// splitConjunctions splits a command line on "&&" and "|" into independent
-// segments. Each segment must independently match the allow list. Note that
-// the splitter does NOT understand quoting — e.g. `echo "a | b"` would be
-// split, which would conservatively reject. That's fine for the readonly
-// surface; the model can fall back to ssh_exec for fancy quoting.
-func splitConjunctions(s string) []string {
-	out := []string{}
-	for _, andSeg := range strings.Split(s, "&&") {
-		for _, pipeSeg := range strings.Split(andSeg, "|") {
-			t := strings.TrimSpace(pipeSeg)
-			if t != "" {
-				out = append(out, t)
+// scanDanger walks the AST and returns a non-empty reason on the first node
+// that would break the readonly contract. Quoted text is not an operator in the
+// tree, so it is naturally allowed.
+func scanDanger(file *syntax.File) string {
+	var reason string
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if reason != "" {
+			return false
+		}
+		switch n := node.(type) {
+		case *syntax.Redirect:
+			reason = readonlyEscape(fmt.Sprintf("重定向 %q", n.Op.String()))
+		case *syntax.CmdSubst:
+			if n.Backquotes {
+				reason = readonlyEscape("命令替换(反引号)")
+			} else {
+				reason = readonlyEscape("命令替换 $(...)")
+			}
+		case *syntax.ProcSubst:
+			reason = readonlyEscape("进程替换 <(...)/>(...)")
+		case *syntax.ArithmExp:
+			reason = readonlyEscape("算术替换 $((...))")
+		case *syntax.Stmt:
+			if n.Background {
+				reason = readonlyEscape(`后台执行 "&"`)
+			}
+		case *syntax.BinaryCmd:
+			switch n.Op {
+			case syntax.Pipe, syntax.PipeAll, syntax.AndStmt, syntax.OrStmt:
+				// allowed: pipeline (| |&) and conjunctions (&& ||)
+			default:
+				reason = readonlyEscape(fmt.Sprintf("操作符 %q", n.Op.String()))
 			}
 		}
+		return true
+	})
+	return reason
+}
+
+// segmentLiteral reconstructs the leading run of literal words of a simple
+// command into a space-joined string ("docker" "ps" "-a" -> "docker ps -a").
+// It stops at the first word with a non-literal part (param/cmd/arith
+// expansion); that is fine because allow-list entries are always literal
+// command + subcommand tokens. ok=false only when the command name itself is
+// dynamic (first word non-literal).
+func segmentLiteral(args []*syntax.Word) (string, bool) {
+	parts := make([]string, 0, len(args))
+	for _, w := range args {
+		lit, ok := wordLiteral(w)
+		if !ok {
+			break
+		}
+		parts = append(parts, lit)
 	}
-	return out
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, " "), true
+}
+
+// wordLiteral returns the literal text of a word if it is composed solely of
+// literal / quoted-literal parts (no expansions), else ok=false.
+func wordLiteral(w *syntax.Word) (string, bool) {
+	var b strings.Builder
+	for _, part := range w.Parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			b.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			b.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			for _, dp := range p.Parts {
+				lit, ok := dp.(*syntax.Lit)
+				if !ok {
+					return "", false
+				}
+				b.WriteString(lit.Value)
+			}
+		default:
+			return "", false
+		}
+	}
+	return b.String(), true
+}
+
+// cleanParseErr trims the noisy positional prefix from a mvdan/sh parse error.
+func cleanParseErr(err error) string {
+	msg := err.Error()
+	if i := strings.LastIndex(msg, ": "); i >= 0 && i+2 < len(msg) {
+		return msg[i+2:]
+	}
+	return msg
 }
 
 // segmentAllowed checks one pipe segment against the allow list. Two match
