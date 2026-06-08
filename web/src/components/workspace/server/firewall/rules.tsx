@@ -24,7 +24,10 @@ function onErr(e: ApiError) {
   toast.error("操作失败", { description: errorHint(codeOf(e), e?.message || "") || e?.message })
 }
 
-// useRuleCounters keeps a per-rule sliding window of packet counts for sparklines.
+// useRuleCounters keeps a per-rule sliding window of packet counts for
+// sparklines. Each update produces a NEW array (never mutates the stored one) —
+// the array we hand to <Sparkline> may be frozen by recharts, so pushing into
+// the same reference on the next frame would throw "object is not extensible".
 function useRuleCounters(rules: FirewallRule[]) {
   const ref = React.useRef<Map<string, HistoryPoint[]>>(new Map())
   const last = React.useRef<FirewallRule[] | null>(null)
@@ -36,10 +39,10 @@ function useRuleCounters(rules: FirewallRule[]) {
     for (const r of rules) {
       const k = ruleKey(r)
       seen.add(k)
-      const arr = m.get(k) ?? []
-      arr.push({ t: t++, v: r.pkts ?? 0 })
-      while (arr.length > 40) arr.shift()
-      m.set(k, arr)
+      const prev = m.get(k) ?? []
+      const next = prev.length >= 40 ? prev.slice(prev.length - 39) : prev.slice()
+      next.push({ t: t++, v: r.pkts ?? 0 })
+      m.set(k, next)
     }
     for (const k of Array.from(m.keys())) if (!seen.has(k)) m.delete(k)
   }
