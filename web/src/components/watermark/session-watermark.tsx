@@ -1,58 +1,36 @@
 "use client"
 
-// Scoped watermark for full-screen session surfaces (terminal, RDP/VNC, desktop).
+// Scoped watermark for session surfaces (terminal, RDP/VNC, desktop).
 //
-// Why this exists: requestFullscreen() renders ONLY the fullscreen element and
-// its subtree, so the global <body> overlay vanishes the moment a session goes
-// fullscreen. Mounting a layer *inside* the session wrapper keeps the identity
-// mark on screen exactly when it matters most (and on screenshots).
+// Session surfaces are dark islands that may sit inside a light-themed app, and
+// they go full-screen via requestFullscreen() (which renders ONLY the
+// fullscreen element + its subtree). Both facts mean the global <body> overlay
+// can't be relied on here:
+//   • its colour is chosen for the APP theme, so a dark-on-dark app would make
+//     it invisible over a dark terminal;
+//   • it disappears entirely the moment the surface goes fullscreen.
 //
-// To avoid a double-dark overlay, when scope === "all" we mount the scoped layer
-// only while the wrapper is the active fullscreen element — outside fullscreen
-// the body overlay already covers it. When scope === "session" the body overlay
-// never exists, so the scoped layer is always mounted.
+// So we always mount a layer *inside* the session wrapper, colour-adapted for a
+// dark surface. In the common light-theme app the body overlay's dark text is
+// invisible over the dark terminal, so there's no visible double; this layer is
+// the one the user actually sees on the session (and on any screenshot/record).
 
 import * as React from "react"
 import { useWatermarkRuntime } from "./watermark-context"
 import { mountWatermark, type WatermarkEngine, type Surface } from "./engine"
 
-function fullscreenElement(): Element | null {
-  if (typeof document === "undefined") return null
-  return (
-    document.fullscreenElement ??
-    (document as unknown as { webkitFullscreenElement?: Element }).webkitFullscreenElement ??
-    null
-  )
-}
-
 /**
  * Mount a watermark on the element referenced by `targetRef`. The target should
- * be the same element the session calls requestFullscreen() on. Session surfaces
- * are dark, so the default surface is "dark" (the engine flips a dark configured
- * colour to a legible light one automatically).
+ * be the element the session calls requestFullscreen() on, so the layer follows
+ * it into fullscreen. Defaults to the "dark" surface (the engine keeps the mark
+ * legible by flipping a too-dark configured colour to a light one).
  */
 export function useWatermark(targetRef: React.RefObject<HTMLElement | null>, surface: Surface = "dark") {
   const runtime = useWatermarkRuntime()
-  const [fsTick, setFsTick] = React.useState(0)
-
-  React.useEffect(() => {
-    const onChange = () => setFsTick((t) => t + 1)
-    document.addEventListener("fullscreenchange", onChange)
-    document.addEventListener("webkitfullscreenchange", onChange)
-    return () => {
-      document.removeEventListener("fullscreenchange", onChange)
-      document.removeEventListener("webkitfullscreenchange", onChange)
-    }
-  }, [])
 
   React.useEffect(() => {
     const target = targetRef.current
     if (!target || !runtime?.enabled) return
-
-    const fsEl = fullscreenElement()
-    const inFullscreen = !!fsEl && (fsEl === target || fsEl.contains(target) || target.contains(fsEl))
-    // scope "all" + not fullscreen → the body overlay already covers this; skip.
-    if (runtime.scope !== "session" && !inFullscreen) return
 
     let engine: WatermarkEngine | null = null
     let cancelled = false
@@ -67,7 +45,7 @@ export function useWatermark(targetRef: React.RefObject<HTMLElement | null>, sur
       cancelled = true
       engine?.destroy()
     }
-  }, [targetRef, runtime, surface, fsTick])
+  }, [targetRef, runtime, surface])
 }
 
 /** Declarative wrapper around useWatermark for session components. Renders nothing. */
