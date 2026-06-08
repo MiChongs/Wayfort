@@ -7,7 +7,17 @@
 
 import * as React from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
-import { Plus, Search } from "lucide-react"
+import {
+  CalendarClock,
+  Eye,
+  FileUp,
+  Plus,
+  Search,
+  Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
+  Wrench,
+} from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -15,7 +25,6 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { TreeList } from "@/components/common/tree-list"
 import {
@@ -31,7 +40,7 @@ import {
   assetGroupService, departmentService, grantService, groupService, nodeService, roleService, tagService, userService,
 } from "@/lib/api/services"
 import type { GranteeKind, SubjectKind } from "@/lib/api/types"
-import { ALL_ACTIONS, PRESETS, actionLabel, summarizeActions } from "@/lib/access/permissions"
+import { ACTION_GROUPS, PRESETS, actionLabel, summarizeActions } from "@/lib/access/permissions"
 
 export interface PickerEntity {
   id: number
@@ -119,6 +128,56 @@ export interface GrantWizardProps {
   onOpenChange?: (v: boolean) => void
 }
 
+type ValidMode = "forever" | "7d" | "30d" | "90d" | "custom"
+
+const VALID_PRESETS: { key: ValidMode; label: string }[] = [
+  { key: "forever", label: "永久" },
+  { key: "7d", label: "7 天" },
+  { key: "30d", label: "30 天" },
+  { key: "90d", label: "90 天" },
+  { key: "custom", label: "自定义" },
+]
+
+const PRESET_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  readonly: Eye,
+  operate: Wrench,
+  files: FileUp,
+  full: ShieldCheck,
+}
+
+function plusDaysISO(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString()
+}
+
+// Resolve the chosen validity into the API's optional from/to plus a human label.
+function computeValidity(mode: ValidMode, from: string, to: string): { from?: string; to?: string; label: string } {
+  if (mode === "forever") return { label: "永久有效" }
+  if (mode === "custom") {
+    const f = from || undefined
+    const t = to || undefined
+    if (!f && !t) return { label: "永久有效" }
+    return {
+      from: f,
+      to: t,
+      label: `${f ? `${f.replace("T", " ")} 起` : "立即生效"} · ${t ? `${t.replace("T", " ")} 到期` : "不过期"}`,
+    }
+  }
+  const days = mode === "7d" ? 7 : mode === "30d" ? 30 : 90
+  const iso = plusDaysISO(days)
+  return { to: iso, label: `立即生效 · ${days} 天后到期（${new Date(iso).toLocaleString()}）` }
+}
+
+function ReviewRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[64px_1fr] gap-2">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="min-w-0">{children}</dd>
+    </div>
+  )
+}
+
 export function GrantWizard({
   trigger,
   onDone,
@@ -138,13 +197,15 @@ export function GrantWizard({
   const [granteeSel, setGranteeSel] = React.useState<Set<string>>(new Set())
   const [presetKey, setPresetKey] = React.useState("readonly")
   const [customActions, setCustomActions] = React.useState<string[]>(["connect"])
-  const [validMode, setValidMode] = React.useState<"forever" | "until">("forever")
+  const [validMode, setValidMode] = React.useState<ValidMode>("forever")
+  const [validFrom, setValidFrom] = React.useState("")
   const [validTo, setValidTo] = React.useState("")
 
   React.useEffect(() => {
     if (open) {
       setSubjectAll(false); setSubjectSel(new Set()); setGranteeSel(new Set())
-      setPresetKey("readonly"); setCustomActions(["connect"]); setValidMode("forever"); setValidTo("")
+      setPresetKey("readonly"); setCustomActions(["connect"])
+      setValidMode("forever"); setValidFrom(""); setValidTo("")
     }
   }, [open])
 
@@ -163,7 +224,9 @@ export function GrantWizard({
         ? [{ type: "all", id: 0 }]
         : [...subjectSel].map(parseRef)
 
-  const canSubmit = grantees.length > 0 && subjects.length > 0 && actions.length > 0 && (validMode === "forever" || !!validTo)
+  const validity = computeValidity(validMode, validFrom, validTo)
+  const validOk = validMode !== "custom" || !!validTo || !!validFrom
+  const canSubmit = grantees.length > 0 && subjects.length > 0 && actions.length > 0 && validOk
 
   const submit = useMutation({
     mutationFn: () =>
@@ -171,7 +234,8 @@ export function GrantWizard({
         grantees: grantees as { type: GranteeKind; id: number }[],
         subjects: subjects as { type: SubjectKind; id: number }[],
         actions: actions.join(","),
-        valid_to: validMode === "until" && validTo ? validTo : undefined,
+        valid_from: validity.from,
+        valid_to: validity.to,
       }),
     onSuccess: (r) => {
       toast.success("授权已创建", { description: `新增 ${r.created} 条` })
@@ -179,6 +243,9 @@ export function GrantWizard({
     },
     onError: (e: Error) => toast.error("创建失败", { description: e.message }),
   })
+
+  // Pair count drives the confirm button label ("授权 N 条").
+  const pairCount = grantees.length * subjects.length
 
   let stepNo = 0
   const next = () => ++stepNo
@@ -220,65 +287,196 @@ export function GrantWizard({
             )}
 
             <Section step={next()} title="授予什么权限">
-              <RadioGroup value={presetKey} onValueChange={setPresetKey} className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {PRESETS.map((p) => (
-                  <label key={p.key} className={cn("cursor-pointer rounded-lg border p-2.5 text-sm transition-colors", presetKey === p.key ? "border-primary bg-primary/5" : "hover:bg-accent")}>
-                    <div className="flex items-center gap-2"><RadioGroupItem value={p.key} /><span className="font-medium">{p.label}</span></div>
-                    <p className="mt-1 pl-6 text-xs text-muted-foreground">{p.desc}</p>
-                  </label>
-                ))}
-                <label className={cn("cursor-pointer rounded-lg border p-2.5 text-sm transition-colors", presetKey === "custom" ? "border-primary bg-primary/5" : "hover:bg-accent")}>
-                  <div className="flex items-center gap-2"><RadioGroupItem value="custom" /><span className="font-medium">自定义</span></div>
-                  <p className="mt-1 pl-6 text-xs text-muted-foreground">自己勾选动作</p>
-                </label>
-              </RadioGroup>
-              {presetKey === "custom" && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {ALL_ACTIONS.map((a) => {
-                    const on = customActions.includes(a)
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {PRESETS.map((p) => {
+                  const Icon = PRESET_ICONS[p.key] ?? Settings2
+                  const on = presetKey === p.key
+                  return (
+                    <button
+                      key={p.key}
+                      type="button"
+                      onClick={() => setPresetKey(p.key)}
+                      className={cn(
+                        "flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors",
+                        on ? "border-primary bg-primary/[0.06] ring-1 ring-inset ring-primary/30" : "hover:bg-accent",
+                      )}
+                    >
+                      <span className={cn("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md", on ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground")}>
+                        <Icon className="h-4 w-4" />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium">{p.label}</span>
+                        <span className="mt-0.5 block text-xs text-muted-foreground">{p.desc}</span>
+                      </span>
+                    </button>
+                  )
+                })}
+                <button
+                  type="button"
+                  onClick={() => setPresetKey("custom")}
+                  className={cn(
+                    "flex items-start gap-2.5 rounded-lg border p-3 text-left transition-colors",
+                    presetKey === "custom" ? "border-primary bg-primary/[0.06] ring-1 ring-inset ring-primary/30" : "hover:bg-accent",
+                  )}
+                >
+                  <span className={cn("mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md", presetKey === "custom" ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground")}>
+                    <SlidersHorizontal className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">自定义</span>
+                    <span className="mt-0.5 block text-xs text-muted-foreground">按能力逐项勾选</span>
+                  </span>
+                </button>
+              </div>
+
+              {presetKey === "custom" ? (
+                // Capability matrix — grouped, each action with a human hint.
+                <div className="mt-3 space-y-3 rounded-lg border bg-card p-3">
+                  {ACTION_GROUPS.map((g) => {
+                    const codes = g.actions.map((a) => a.code)
+                    const allOn = codes.every((c) => customActions.includes(c))
                     return (
-                      <button key={a} type="button"
-                        onClick={() => setCustomActions(on ? customActions.filter((x) => x !== a) : [...customActions, a])}
-                        className={cn("rounded-md border px-2.5 py-1 text-xs", on ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent")}>
-                        {actionLabel(a)}
-                      </button>
+                      <div key={g.key}>
+                        <div className="mb-1.5 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-muted-foreground">{g.label}</span>
+                          <button
+                            type="button"
+                            className="text-[11px] text-primary hover:underline"
+                            onClick={() =>
+                              setCustomActions((prev) =>
+                                allOn ? prev.filter((c) => !codes.includes(c)) : [...new Set([...prev, ...codes])],
+                              )
+                            }
+                          >
+                            {allOn ? "清空本组" : "全选本组"}
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                          {g.actions.map((a) => {
+                            const on = customActions.includes(a.code)
+                            return (
+                              <label
+                                key={a.code}
+                                className={cn(
+                                  "flex cursor-pointer items-start gap-2 rounded-md border px-2.5 py-2 text-sm transition-colors",
+                                  on ? "border-primary/40 bg-primary/[0.04]" : "hover:bg-accent",
+                                )}
+                              >
+                                <Checkbox
+                                  checked={on}
+                                  onCheckedChange={() =>
+                                    setCustomActions((prev) =>
+                                      on ? prev.filter((c) => c !== a.code) : [...prev, a.code],
+                                    )
+                                  }
+                                  className="mt-0.5"
+                                />
+                                <span className="min-w-0">
+                                  <span className="block font-medium">{a.label}</span>
+                                  <span className="block text-xs text-muted-foreground">{a.hint}</span>
+                                </span>
+                              </label>
+                            )
+                          })}
+                        </div>
+                      </div>
                     )
                   })}
+                  {customActions.length === 0 && (
+                    <p className="text-xs text-warning">请至少勾选一项能力。</p>
+                  )}
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {actions.map((a) => (
+                    <Badge key={a} variant={a === "*" ? "secondary" : "outline"} className="font-normal">
+                      {actionLabel(a)}
+                    </Badge>
+                  ))}
                 </div>
               )}
             </Section>
 
             <Section step={next()} title="有效期">
-              <div className="flex flex-wrap items-center gap-3">
-                <RadioGroup value={validMode} onValueChange={(v) => setValidMode(v as "forever" | "until")} className="flex gap-4">
-                  <label className="flex cursor-pointer items-center gap-2 text-sm"><RadioGroupItem value="forever" /> 永久</label>
-                  <label className="flex cursor-pointer items-center gap-2 text-sm"><RadioGroupItem value="until" /> 临时到</label>
-                </RadioGroup>
-                {validMode === "until" && (
-                  <Input type="datetime-local" value={validTo} onChange={(e) => setValidTo(e.target.value)} className="w-56" />
-                )}
+              <div className="flex flex-wrap gap-1.5">
+                {VALID_PRESETS.map((v) => (
+                  <button
+                    key={v.key}
+                    type="button"
+                    onClick={() => setValidMode(v.key)}
+                    className={cn(
+                      "rounded-md border px-3 py-1.5 text-sm transition-colors",
+                      validMode === v.key ? "border-primary bg-primary text-primary-foreground" : "hover:bg-accent",
+                    )}
+                  >
+                    {v.label}
+                  </button>
+                ))}
               </div>
+              {validMode === "custom" && (
+                <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">生效起始（留空＝立即）</Label>
+                    <Input type="datetime-local" value={validFrom} onChange={(e) => setValidFrom(e.target.value)} />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-muted-foreground">到期（留空＝不过期）</Label>
+                    <Input type="datetime-local" value={validTo} onChange={(e) => setValidTo(e.target.value)} />
+                  </div>
+                </div>
+              )}
+              <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <CalendarClock className="h-3.5 w-3.5" /> {validity.label}
+              </p>
             </Section>
+
+            {/* Live review card */}
+            <div className="rounded-lg border border-primary/25 bg-primary/[0.04] p-3">
+              <div className="mb-2 text-xs font-semibold text-muted-foreground">预览</div>
+              <dl className="space-y-1.5 text-sm">
+                <ReviewRow label="给谁">
+                  {fixedGrantee ? fixedGrantee.name : grantees.length ? `${grantees.length} 个对象` : <span className="text-muted-foreground">未选择</span>}
+                </ReviewRow>
+                <ReviewRow label="可访问">
+                  {fixedSubject
+                    ? fixedSubject.name
+                    : hasFixedSubjects
+                      ? `${subjects.length} 个资产`
+                      : subjectAll
+                        ? <span className="text-warning">全部资产</span>
+                        : subjects.length
+                          ? `${subjects.length} 个资产`
+                          : <span className="text-muted-foreground">未选择</span>}
+                </ReviewRow>
+                <ReviewRow label="权限">
+                  {actions.length ? (
+                    <span>
+                      <strong className="font-medium">{presetLabel}</strong>
+                      <span className="ml-1.5 text-xs text-muted-foreground">{summarizeActions(actions)}</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">未选择</span>
+                  )}
+                </ReviewRow>
+                <ReviewRow label="有效期">{validity.label}</ReviewRow>
+              </dl>
+            </div>
           </div>
         </ScrollArea>
 
         <SheetFooter className="flex-row items-center justify-between gap-2 border-t bg-muted/30 px-6 py-4">
           <div className="min-w-0 flex-1 text-sm text-muted-foreground">
             {canSubmit ? (
-              <span className="line-clamp-2">
-                给 <strong className="text-foreground">{fixedGrantee ? fixedGrantee.name : `${grantees.length} 个对象`}</strong> ×{" "}
-                <strong className="text-foreground">{fixedSubject ? fixedSubject.name : hasFixedSubjects ? `${subjects.length} 个资产` : subjectAll ? "全部资产" : `${subjects.length} 个资产`}</strong> 授【
-                <strong className="text-foreground">{presetLabel}</strong>】
-                {validMode === "until" && validTo ? `，到期 ${validTo.replace("T", " ")}` : ""}
-                <span className="ml-1 text-xs">= {summarizeActions(actions)}</span>
-              </span>
+              <span>将创建 <strong className="text-foreground">{pairCount}</strong> 条授权</span>
             ) : (
               <span>选择对象、资产与权限后可创建</span>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="outline" onClick={() => setOpen(false)} disabled={submit.isPending}>取消</Button>
-            <Button disabled={!canSubmit || submit.isPending} onClick={() => submit.mutate()}>确认授权</Button>
+            <Button disabled={!canSubmit || submit.isPending} onClick={() => submit.mutate()}>
+              确认授权{canSubmit && pairCount > 1 ? ` · ${pairCount}` : ""}
+            </Button>
           </div>
         </SheetFooter>
       </SheetContent>

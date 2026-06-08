@@ -39,6 +39,40 @@ export const PRESETS: Preset[] = [
   { key: "full", label: "完全访问", desc: "该资产的所有权限", actions: ["*"] },
 ]
 
+// 自定义权限的能力矩阵：按类目分组，每个动作带人话说明，供向导逐项勾选。
+export interface ActionMeta {
+  code: string
+  label: string
+  hint: string
+}
+export interface ActionGroup {
+  key: string
+  label: string
+  actions: ActionMeta[]
+}
+export const ACTION_GROUPS: ActionGroup[] = [
+  {
+    key: "session",
+    label: "会话",
+    actions: [{ code: "connect", label: "连接", hint: "打开终端 / 远程桌面 / 数据库会话" }],
+  },
+  {
+    key: "file",
+    label: "文件传输",
+    actions: [
+      { code: "sftp_read", label: "SFTP 读取", hint: "浏览、下载远端文件" },
+      { code: "sftp_write", label: "SFTP 写入", hint: "修改、删除远端文件" },
+      { code: "upload", label: "文件上传", hint: "上传文件到远端" },
+      { code: "download", label: "文件下载", hint: "从远端下载文件" },
+    ],
+  },
+  {
+    key: "network",
+    label: "网络",
+    actions: [{ code: "port_forward", label: "端口转发", hint: "经该资产做 TCP 端口转发" }],
+  },
+]
+
 const norm = (a: string[]) => [...new Set(a)].sort().join(",")
 
 // matchPreset 找出与给定动作集合完全一致的套餐 key（用于回显），找不到返回 null。
