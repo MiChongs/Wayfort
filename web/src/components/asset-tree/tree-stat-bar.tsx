@@ -2,24 +2,18 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { StatusDot } from "@/components/asset-tree/status-dot"
 
-// A compact stats strip above an asset tree: total / matched / online (annotated
-// with how many were actually probed, so the count never over-claims) / selected.
-// The `right` slot carries view controls (expand-all, refresh, …).
+// A compact stats strip above an asset tree: total / matched / selected. The
+// `right` slot carries view controls (expand-all, …).
 export function TreeStatBar({
   total,
   matched,
-  online,
-  probed,
   selected,
   right,
   className,
 }: {
   total: number
   matched?: number
-  online?: number
-  probed?: number
   selected?: number
   right?: React.ReactNode
   className?: string
@@ -31,13 +25,6 @@ export function TreeStatBar({
       </span>
       {matched != null && matched !== total && (
         <span className="tabular-nums">匹配 {matched}</span>
-      )}
-      {probed != null && probed > 0 && (
-        <span className="inline-flex items-center gap-1 tabular-nums">
-          <StatusDot state="online" pulse={false} />
-          在线 {online ?? 0}
-          <span className="text-muted-foreground/70">/ 已探测 {probed}</span>
-        </span>
       )}
       {selected != null && selected > 0 && (
         <span className="tabular-nums text-primary">已选 {selected}</span>

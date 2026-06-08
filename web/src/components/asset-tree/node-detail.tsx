@@ -2,13 +2,11 @@
 
 // Shared node detail drawer for the asset tree. The workspace opens it on a
 // single click (double-click still connects); the admin trees open it on row
-// activate. Shows connection facts, managed tags, live status (with a re-probe
-// button), the grant context when viewed from the access tree, and recent
-// sessions for admins.
+// activate. Shows connection facts, managed tags, the grant context when viewed
+// from the access tree, and recent sessions for admins.
 
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { RefreshCw } from "lucide-react"
 import {
   Sheet,
   SheetContent,
@@ -16,15 +14,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { AppIcon } from "@/components/icons/app-icon"
 import { TagBadge } from "@/components/tags/tag-badge"
-import { StatusBadge } from "@/components/asset-tree/status-dot"
 import { ActionChips, ValidityCell, type GranteeNameFn } from "@/lib/access/grant-display"
 import { nodeIcon } from "@/lib/icons/protocol"
 import { sessionService } from "@/lib/api/services"
-import type { GranteeRef, Node, NodeAccess, NodeStatus } from "@/lib/api/types"
+import type { GranteeRef, Node, NodeAccess } from "@/lib/api/types"
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -39,9 +35,6 @@ export function NodeDetailPanel({
   node,
   open,
   onOpenChange,
-  status,
-  checking,
-  onRecheck,
   access,
   granteeName,
   withSessions = false,
@@ -49,9 +42,6 @@ export function NodeDetailPanel({
   node: Node | null
   open: boolean
   onOpenChange: (v: boolean) => void
-  status?: NodeStatus | null
-  checking?: boolean
-  onRecheck?: (id: number) => void
   /** Grant context when this panel is opened from the access (按人看) tree. */
   access?: NodeAccess | null
   granteeName?: GranteeNameFn
@@ -83,23 +73,6 @@ export function NodeDetailPanel({
             </SheetHeader>
 
             <div className="space-y-4 px-4 pb-6">
-              <section className="rounded-lg border p-3">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">连通状态</span>
-                  {onRecheck && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-6 gap-1 text-xs"
-                      onClick={() => onRecheck(node.id)}
-                    >
-                      <RefreshCw className="h-3 w-3" /> 重新探测
-                    </Button>
-                  )}
-                </div>
-                <StatusBadge status={status} checking={checking} />
-              </section>
-
               <section>
                 <Row label="协议">
                   <Badge variant="outline" className="font-normal uppercase">{node.protocol}</Badge>

@@ -32,11 +32,9 @@ import { confirmDialog } from "@/components/common/confirm-dialog"
 import { GrantWizard } from "@/components/admin/grant-wizard"
 import { TreeList } from "@/components/common/tree-list"
 import { AppIcon } from "@/components/icons/app-icon"
-import { StatusDot, statusToState } from "@/components/asset-tree/status-dot"
 import { BatchActionBar } from "@/components/common/batch-action-bar"
 import { NodeBatchActions } from "@/components/asset-tree/node-batch-actions"
 import { NodeDetailPanel } from "@/components/asset-tree/node-detail"
-import { useNodeStatus } from "@/lib/hooks/use-node-status"
 import { buildAccessTree, childrenOfRow, collectGroupRowIds, type AccessTreeRow } from "@/lib/asset-tree/build"
 import {
   ActionChips,
@@ -248,7 +246,6 @@ function ByGranteeTab({
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
   const [detailNode, setDetailNode] = React.useState<Node | null>(null)
   const [detailOpen, setDetailOpen] = React.useState(false)
-  const status = useNodeStatus()
 
   const exp = useQuery({
     queryKey: ["access", "by-grantee", sel?.type, sel?.id],
@@ -298,7 +295,7 @@ function ByGranteeTab({
     [selectedNodeIds, nodeById],
   )
 
-  const openDetail = (n: Node) => { setDetailNode(n); setDetailOpen(true); status.request([n.id]) }
+  const openDetail = (n: Node) => { setDetailNode(n); setDetailOpen(true) }
 
   return (
     <div className="space-y-3">
@@ -322,13 +319,7 @@ function ByGranteeTab({
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="在可达资产中搜索…" className="pl-8" />
             </div>
-            <span className="text-xs text-muted-foreground">实际可访问 {exp.data?.nodes.length ?? 0} 台</span>
-            <Button
-              variant="outline" size="sm" className="ml-auto h-8"
-              onClick={() => status.request(reach.map((r) => r.node_id))}
-            >
-              探测连通性
-            </Button>
+            <span className="ml-auto text-xs text-muted-foreground">实际可访问 {exp.data?.nodes.length ?? 0} 台</span>
           </div>
 
           {selectedNodeIds.length > 0 && (
@@ -362,7 +353,6 @@ function ByGranteeTab({
                 renderRow={(r) => (
                   <AccessRow
                     row={r}
-                    status={status}
                     granteeName={(t, id) => granteeName2(t, id)}
                     onOpenDetail={openDetail}
                   />
@@ -377,9 +367,6 @@ function ByGranteeTab({
         node={detailNode}
         open={detailOpen}
         onOpenChange={setDetailOpen}
-        status={detailNode ? status.byId(detailNode.id) : null}
-        checking={detailNode ? status.isChecking?.(detailNode.id) : false}
-        onRecheck={(id) => status.request([id], true)}
         access={detailNode ? exp.data?.nodes.find((n) => n.node_id === detailNode.id) ?? null : null}
         granteeName={granteeName2}
         withSessions
@@ -389,12 +376,11 @@ function ByGranteeTab({
 }
 
 // One row of the 按人看 access tree — folder header (count) or a node leaf with
-// status dot, action chips, source grantees and expiry.
+// action chips, source grantees and expiry.
 function AccessRow({
-  row, status, granteeName, onOpenDetail,
+  row, granteeName, onOpenDetail,
 }: {
   row: AccessTreeRow
-  status: ReturnType<typeof useNodeStatus>
   granteeName: (type: GranteeKind, id: number) => string
   onOpenDetail: (n: Node) => void
 }) {
@@ -407,17 +393,14 @@ function AccessRow({
     )
   }
   const n = row.node
-  const st = status.byId(row.nodeId)
   return (
     <button
       type="button"
       onClick={() => n && onOpenDetail(n)}
-      onMouseEnter={() => status.request([row.nodeId])}
       className="flex w-full items-center gap-2 py-1 pr-1 text-left text-sm"
     >
       {n ? <AppIcon icon={nodeIcon(n)} className="h-3.5 w-3.5 shrink-0" /> : null}
       <span className="min-w-0 flex-1 truncate">{n?.name ?? `节点#${row.nodeId}`}</span>
-      <StatusDot state={statusToState(st, status.isChecking?.(row.nodeId))} latencyMs={st?.latency_ms} />
       {n ? <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{n.host}:{n.port}</span> : null}
       {row.access ? <ActionChips actions={row.access.actions} className="hidden md:flex" /> : null}
       {row.access?.sources?.length ? (

@@ -430,7 +430,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			AnonEna:  anonService != nil,
 			AnonSpec: cfg.Anonymous,
 		},
-		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, Chain: chain, Access: assetResolver, Cache: rc.Client()},
+		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver},
 		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
 		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
 		ProxyGroup:    &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},

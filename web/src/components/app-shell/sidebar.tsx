@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Cog,
   FileLock2,
+  FolderTree,
   Gavel,
   KeyRound,
   LayoutDashboard,
@@ -24,7 +25,6 @@ import {
   SlidersHorizontal,
   Sparkles,
   Tag as TagIcon,
-  Tags,
   Users,
   Zap,
 } from "lucide-react"
@@ -39,6 +39,12 @@ type NavItem = {
   icon: IconType
   /** Minimum tier required to see this item. Defaults to "user". */
   minTier?: AccessTier
+  /**
+   * Permission that also unlocks this item regardless of tier — so e.g. the
+   * `auditor` role (admin tier, holds audit:read) sees the audit center even
+   * though it lives in a superadmin group. Superadmins always pass.
+   */
+  requiredPerm?: string
 }
 type NavGroup = { title?: string; minTier?: AccessTier; items: NavItem[] }
 
@@ -59,10 +65,9 @@ const NAV: NavGroup[] = [
     title: "资产管理",
     minTier: "admin",
     items: [
-      { href: "/admin/nodes", label: "资产 - 节点", icon: Server, minTier: "admin" },
+      { href: "/admin/nodes", label: "资产", icon: FolderTree, minTier: "admin" },
       { href: "/admin/credentials", label: "凭据", icon: KeyRound, minTier: "admin" },
       { href: "/admin/proxy-center", label: "代理链中心", icon: Network, minTier: "admin" },
-      { href: "/admin/asset-groups", label: "资产组", icon: Tags, minTier: "admin" },
       { href: "/admin/tags", label: "标签", icon: TagIcon, minTier: "admin" },
       { href: "/admin/asset-grants", label: "访问策略", icon: FileLock2, minTier: "admin" },
       { href: "/admin/approvals", label: "审批治理", icon: Gavel, minTier: "admin" },
@@ -79,7 +84,7 @@ const NAV: NavGroup[] = [
       { href: "/admin/ai/providers", label: "AI 提供商", icon: Bot, minTier: "superadmin" },
       { href: "/admin/ai/agents", label: "AI Agent", icon: Bot, minTier: "superadmin" },
       { href: "/admin/ai/usage", label: "AI 用量", icon: Activity, minTier: "superadmin" },
-      { href: "/admin/audit", label: "审计日志", icon: ScrollText, minTier: "superadmin" },
+      { href: "/admin/audit", label: "审计日志", icon: ScrollText, minTier: "superadmin", requiredPerm: "audit:read" },
       { href: "/admin/settings", label: "系统设置", icon: SlidersHorizontal, minTier: "superadmin" },
     ],
   },
@@ -89,7 +94,7 @@ const COLLAPSE_KEY = "jumpserver:sidebar:collapsed"
 
 export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const pathname = usePathname()
-  const { tier } = useAccess()
+  const { tier, isSuperadmin, permissions } = useAccess()
   const [collapsed, setCollapsed] = React.useState(false)
 
   React.useEffect(() => {
@@ -116,10 +121,17 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const isCollapsed = collapsed && !mobile
   const rank = tierRank(tier)
 
+  // An item shows when the tier clears its bar, OR when the caller holds the
+  // item's unlocking permission (superadmins always pass). A group shows
+  // whenever it has at least one visible item — items already encode their own
+  // gate, so the group title follows its contents.
+  const canSee = (it: NavItem) =>
+    rank >= tierRank(it.minTier ?? "user") ||
+    (!!it.requiredPerm && (isSuperadmin || permissions.includes(it.requiredPerm)))
   const groups = NAV.map((g) => ({
     ...g,
-    items: g.items.filter((it) => rank >= tierRank(it.minTier ?? "user")),
-  })).filter((g) => g.items.length > 0 && rank >= tierRank(g.minTier ?? "user"))
+    items: g.items.filter(canSee),
+  })).filter((g) => g.items.length > 0)
 
   return (
     <aside

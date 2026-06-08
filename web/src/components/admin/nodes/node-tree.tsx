@@ -8,19 +8,17 @@
 
 import * as React from "react"
 import { useMutation } from "@tanstack/react-query"
-import { Pencil, ShieldCheck, Trash2 } from "lucide-react"
+import { FolderPlus } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { AppIcon } from "@/components/icons/app-icon"
 import { TreeList } from "@/components/common/tree-list"
-import { GrantWizard } from "@/components/admin/grant-wizard"
-import { StatusDot, statusToState } from "@/components/asset-tree/status-dot"
 import { assetGroupService } from "@/lib/api/services"
 import { nodeIcon } from "@/lib/icons/protocol"
 import { cn } from "@/lib/utils"
 import type { AssetGroup, Node } from "@/lib/api/types"
-import type { UseNodeStatus } from "@/lib/hooks/use-node-status"
+
+export type AssetSelection = { kind: "group" | "node"; id: number }
 
 export type NodeTreeRow =
   | { kind: "group"; id: string; label: string; path?: string; total: number; children: NodeTreeRow[] }
@@ -139,11 +137,9 @@ export function NodeTree({
   treeBy,
   selectedNodeIds,
   onSelectedNodeIds,
-  status,
-  onEdit,
-  onDelete,
-  onOpenDetail,
-  onGranted,
+  selected,
+  onSelect,
+  onNewSubgroup,
   onChanged,
 }: {
   nodes: Node[]
@@ -151,11 +147,9 @@ export function NodeTree({
   treeBy: "group" | "tag"
   selectedNodeIds: Set<number>
   onSelectedNodeIds: (next: Set<number>) => void
-  status: UseNodeStatus
-  onEdit: (n: Node) => void
-  onDelete: (n: Node) => void
-  onOpenDetail: (n: Node) => void
-  onGranted?: () => void
+  selected: AssetSelection | null
+  onSelect: (sel: AssetSelection) => void
+  onNewSubgroup: (parentId: number) => void
   onChanged?: () => void
 }) {
   const tree = React.useMemo(
@@ -218,92 +212,88 @@ export function NodeTree({
       : undefined
 
   return (
-    <div className="rounded-xl border bg-card p-1.5">
-      <TreeList<NodeTreeRow>
-        nodes={tree}
-        getId={(r) => r.id}
-        getChildren={(r) => (r.kind === "group" ? r.children : undefined)}
-        defaultExpandedIds={expandedSeed}
-        selectable
-        selectedIds={selectedStringIds}
-        onSelectedChange={onSelectedChange}
-        canSelect={(r) => r.kind === "node"}
-        onMove={onMove}
-        canDrag={(r) => r.kind === "node"}
-        indent={16}
-        renderRow={(r) =>
-          r.kind === "group" ? (
-            <div className="flex items-center gap-1.5 py-1 pr-1 text-sm">
-              <span className="flex-1 truncate font-medium">{r.label}</span>
-              <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{r.total}</span>
-            </div>
-          ) : (
-            <NodeRow
-              node={r.node}
-              status={status}
-              onEdit={onEdit}
-              onDelete={onDelete}
-              onOpenDetail={onOpenDetail}
-              onGranted={onGranted}
-            />
-          )
-        }
-      />
+    <TreeList<NodeTreeRow>
+      nodes={tree}
+      getId={(r) => r.id}
+      getChildren={(r) => (r.kind === "group" ? r.children : undefined)}
+      defaultExpandedIds={expandedSeed}
+      selectable
+      selectedIds={selectedStringIds}
+      onSelectedChange={onSelectedChange}
+      canSelect={(r) => r.kind === "node"}
+      onMove={onMove}
+      canDrag={(r) => r.kind === "node"}
+      indent={16}
+      rowClassName={(r) =>
+        selected &&
+        ((r.kind === "group" && selected.kind === "group" && r.id === `g:${selected.id}`) ||
+          (r.kind === "node" && selected.kind === "node" && r.nodeId === selected.id))
+          ? "bg-primary/[0.08] ring-1 ring-inset ring-primary/30"
+          : ""
+      }
+      renderRow={(r) =>
+        r.kind === "group" ? (
+          <GroupRow row={r} onSelect={onSelect} onNewSubgroup={onNewSubgroup} />
+        ) : (
+          <NodeRow node={r.node} onSelect={onSelect} />
+        )
+      }
+    />
+  )
+}
+
+function GroupRow({
+  row,
+  onSelect,
+  onNewSubgroup,
+}: {
+  row: Extract<NodeTreeRow, { kind: "group" }>
+  onSelect: (sel: AssetSelection) => void
+  onNewSubgroup: (parentId: number) => void
+}) {
+  // Real asset groups have a "g:<id>" id; the synthetic 未分组 / 未打标签 / tag
+  // folders don't map to a group entity, so they only expand (no inspector).
+  const gid = row.id.startsWith("g:") ? Number(row.id.slice(2)) : null
+  return (
+    <div className="group/grouprow flex items-center gap-1.5 py-1 pr-1 text-sm">
+      <button
+        type="button"
+        className="min-w-0 flex-1 truncate text-left font-medium disabled:cursor-default"
+        onClick={() => gid != null && onSelect({ kind: "group", id: gid })}
+        disabled={gid == null}
+      >
+        {row.label}
+      </button>
+      <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{row.total}</span>
+      {gid != null && (
+        <button
+          type="button"
+          title="新建子组"
+          onClick={(e) => {
+            e.stopPropagation()
+            onNewSubgroup(gid)
+          }}
+          className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/grouprow:opacity-100"
+        >
+          <FolderPlus className="h-3.5 w-3.5" />
+        </button>
+      )}
     </div>
   )
 }
 
-function NodeRow({
-  node,
-  status,
-  onEdit,
-  onDelete,
-  onOpenDetail,
-  onGranted,
-}: {
-  node: Node
-  status: UseNodeStatus
-  onEdit: (n: Node) => void
-  onDelete: (n: Node) => void
-  onOpenDetail: (n: Node) => void
-  onGranted?: () => void
-}) {
-  const st = status.byId(node.id)
+function NodeRow({ node, onSelect }: { node: Node; onSelect: (sel: AssetSelection) => void }) {
   return (
-    <div
-      className={cn("group/noderow flex items-center gap-2 py-1 pr-1 text-sm", node.disabled && "opacity-60")}
-      onMouseEnter={() => status.request([node.id])}
+    <button
+      type="button"
+      onClick={() => onSelect({ kind: "node", id: node.id })}
+      className={cn("flex w-full items-center gap-2 py-1 pr-1 text-left text-sm", node.disabled && "opacity-60")}
     >
       <AppIcon icon={nodeIcon(node)} className="h-4 w-4 shrink-0" />
-      <button
-        type="button"
-        className="min-w-0 flex-1 truncate text-left"
-        onClick={() => onOpenDetail(node)}
-        title="查看详情"
-      >
-        {node.name}
-      </button>
-      <StatusDot state={statusToState(st, status.isChecking(node.id))} latencyMs={st?.latency_ms} pulse={false} />
+      <span className="min-w-0 flex-1 truncate">{node.name}</span>
       <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{node.host}:{node.port}</span>
       <Badge variant="soft" className="hidden shrink-0 font-mono text-[10px] md:inline-flex">{node.protocol}</Badge>
       {node.disabled && <Badge variant="outline" className="shrink-0 text-[10px] text-muted-foreground">停用</Badge>}
-      <div className="ml-1 flex shrink-0 items-center opacity-0 transition-opacity group-hover/noderow:opacity-100">
-        <Button variant="ghost" size="icon" className="h-7 w-7" title="编辑" onClick={() => onEdit(node)}>
-          <Pencil className="h-3.5 w-3.5" />
-        </Button>
-        <GrantWizard
-          fixedSubject={{ type: "node", id: node.id, name: node.name }}
-          onDone={onGranted}
-          trigger={
-            <Button variant="ghost" size="icon" className="h-7 w-7" title="授权访问">
-              <ShieldCheck className="h-3.5 w-3.5" />
-            </Button>
-          }
-        />
-        <Button variant="ghost" size="icon" className="h-7 w-7" title="删除" onClick={() => onDelete(node)}>
-          <Trash2 className="h-3.5 w-3.5 text-destructive" />
-        </Button>
-      </div>
-    </div>
+    </button>
   )
 }

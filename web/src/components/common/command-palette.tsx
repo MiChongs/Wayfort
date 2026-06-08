@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
 import {
   Activity, Bot, KeyRound, LayoutDashboard, Network, Server,
-  Settings, Share2, ShieldCheck, Sparkles, Tag as TagIcon, Tags, Users,
+  Settings, Share2, ShieldCheck, Sparkles, Tag as TagIcon, Users,
 } from "lucide-react"
 import { useHotkeys } from "react-hotkeys-hook"
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
@@ -64,10 +64,9 @@ export function CommandPalette() {
         { group: "管理", label: "用户管理", icon: Users, onSelect: () => go("/admin/users") },
         { group: "管理", label: "角色与权限", icon: ShieldCheck, onSelect: () => go("/admin/roles") },
         { group: "管理", label: "组织架构", icon: Network, onSelect: () => go("/admin/organization") },
-        { group: "管理", label: "资产 - 节点", icon: Server, onSelect: () => go("/admin/nodes") },
+        { group: "管理", label: "资产", icon: Server, onSelect: () => go("/admin/nodes") },
         { group: "管理", label: "凭据", icon: KeyRound, onSelect: () => go("/admin/credentials") },
         { group: "管理", label: "代理", icon: Network, onSelect: () => go("/admin/proxies") },
-        { group: "管理", label: "资产组", icon: Tags, onSelect: () => go("/admin/asset-groups") },
         { group: "管理", label: "标签", icon: TagIcon, onSelect: () => go("/admin/tags") },
         { group: "管理", label: "访问策略", icon: ShieldCheck, onSelect: () => go("/admin/asset-grants") },
         { group: "管理", label: "OIDC 客户端", icon: ShieldCheck, onSelect: () => go("/admin/oidc-clients") },

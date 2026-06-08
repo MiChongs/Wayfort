@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Loader2, RefreshCcw, Search, Wifi, X } from "lucide-react"
+import { Loader2, RefreshCcw, Search, X } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { assetGroupService, meService, tagService } from "@/lib/api/services"
 import type { AssetGroup, Node } from "@/lib/api/types"
@@ -11,13 +11,9 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { TreeList } from "@/components/common/tree-list"
-import { BatchActionBar } from "@/components/common/batch-action-bar"
-import { NodeBatchActions } from "@/components/asset-tree/node-batch-actions"
 import { NodeDetailPanel } from "@/components/asset-tree/node-detail"
 import { AssetCommandPalette } from "@/components/asset-tree/asset-command-palette"
 import { TreeStatBar } from "@/components/asset-tree/tree-stat-bar"
-import { useNodeStatus } from "@/lib/hooks/use-node-status"
-import { useCurrentUser } from "@/lib/hooks/use-current-user"
 import {
   FolderContent,
   LeafContent,
@@ -38,9 +34,6 @@ export function AssetTree({ onOpenTab }: Props) {
   const treeView = useWorkspaceStore((s) => s.treeView)
   const setTreeView = useWorkspaceStore((s) => s.setTreeView)
   const [q, setQ] = React.useState("")
-  const isAdmin = !!useCurrentUser()?.adm
-  const status = useNodeStatus()
-  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
   const [detailNode, setDetailNode] = React.useState<Node | null>(null)
   const [detailOpen, setDetailOpen] = React.useState(false)
 
@@ -52,16 +45,11 @@ export function AssetTree({ onOpenTab }: Props) {
 
   const allNodes: Node[] = nodes.data?.nodes ?? []
   const favIds = new Set(favorites.data?.node_ids ?? [])
-  const nodeById = React.useMemo(() => new Map(allNodes.map((n) => [n.id, n])), [allNodes])
 
-  const openDetail = React.useCallback(
-    (n: Node) => {
-      setDetailNode(n)
-      setDetailOpen(true)
-      status.request([n.id])
-    },
-    [status],
-  )
+  const openDetail = React.useCallback((n: Node) => {
+    setDetailNode(n)
+    setDetailOpen(true)
+  }, [])
 
   const filteredNodes = React.useMemo(() => {
     const k = q.trim().toLowerCase()
@@ -90,28 +78,6 @@ export function AssetTree({ onOpenTab }: Props) {
         return buildAll(filteredNodes, favIds)
     }
   }, [filteredNodes, favIds, treeView, recents.data, groups.data, tags.data])
-
-  // Leaf ids are namespaced per view ("group-3:5", "all:5"…) so switching the
-  // view or search invalidates the current selection — clear it.
-  React.useEffect(() => { setSelectedIds(new Set()) }, [treeView])
-
-  // Map the selected leaf ids back to numeric node ids for batch actions.
-  const selectedNodeIds = React.useMemo(() => {
-    const out: number[] = []
-    const walk = (items: TreeItem[]) => {
-      for (const it of items) {
-        if (it.type === "leaf") {
-          if (selectedIds.has(it.id)) out.push(it.node.id)
-        } else walk(it.children)
-      }
-    }
-    walk(tree)
-    return [...new Set(out)]
-  }, [tree, selectedIds])
-  const selectedNodes = React.useMemo(
-    () => selectedNodeIds.map((id) => nodeById.get(id)).filter(Boolean) as Node[],
-    [selectedNodeIds, nodeById],
-  )
 
   const toggleFav = useMutation({
     mutationFn: async (node: Node) => {
@@ -171,39 +137,8 @@ export function AssetTree({ onOpenTab }: Props) {
       </div>
       <AssetTreeViewSwitcher value={treeView} onChange={setTreeView} />
       <div className="px-2 shrink-0">
-        <TreeStatBar
-          total={allNodes.length}
-          matched={filteredNodes.length}
-          online={status.summary.online}
-          probed={status.summary.probed}
-          selected={selectedNodeIds.length}
-          right={
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 gap-1 text-[11px] text-muted-foreground"
-              onClick={() => status.request(filteredNodes.map((n) => n.id))}
-              title="探测可见资产的连通性"
-            >
-              <Wifi className="h-3 w-3" /> 探测
-            </Button>
-          }
-        />
+        <TreeStatBar total={allNodes.length} matched={filteredNodes.length} />
       </div>
-      {selectedNodeIds.length > 0 && (
-        <div className="px-2 pb-1 shrink-0">
-          <BatchActionBar count={selectedNodeIds.length} noun="资产" onClear={() => setSelectedIds(new Set())}>
-            <NodeBatchActions
-              nodeIds={selectedNodeIds}
-              nodes={selectedNodes}
-              groups={groups.data?.asset_groups ?? []}
-              tags={tags.data?.tags ?? []}
-              canMutate={isAdmin}
-              onChanged={refreshAll}
-            />
-          </BatchActionBar>
-        </div>
-      )}
       <div className="flex-1 min-h-0 overflow-hidden py-1 px-1">
         {loading ? (
           <div className="text-xs text-muted-foreground flex items-center gap-1.5 px-3 py-2">
@@ -224,10 +159,6 @@ export function AssetTree({ onOpenTab }: Props) {
             getChildren={(it) => (it.type === "folder" ? it.children : undefined)}
             defaultExpandedIds={collectFolderIds(tree)}
             indent={14}
-            selectable
-            selectedIds={selectedIds}
-            onSelectedChange={setSelectedIds}
-            canSelect={(it) => it.type === "leaf"}
             renderRow={(it) =>
               it.type === "folder" ? (
                 <FolderContent folder={it} />
@@ -236,9 +167,6 @@ export function AssetTree({ onOpenTab }: Props) {
                   leaf={it}
                   onOpenTab={onOpenTab}
                   onToggleFavorite={(n) => toggleFav.mutate(n)}
-                  status={status.byId(it.node.id)}
-                  checking={status.isChecking(it.node.id)}
-                  onRequestStatus={(id) => status.request([id])}
                   onOpenDetail={openDetail}
                 />
               )
@@ -247,14 +175,7 @@ export function AssetTree({ onOpenTab }: Props) {
         )}
       </div>
 
-      <NodeDetailPanel
-        node={detailNode}
-        open={detailOpen}
-        onOpenChange={setDetailOpen}
-        status={detailNode ? status.byId(detailNode.id) : null}
-        checking={detailNode ? status.isChecking(detailNode.id) : false}
-        onRecheck={(id) => status.request([id], true)}
-      />
+      <NodeDetailPanel node={detailNode} open={detailOpen} onOpenChange={setDetailOpen} />
       <AssetCommandPalette nodes={allNodes} onSelect={openDetail} />
     </div>
   )

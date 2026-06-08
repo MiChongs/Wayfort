@@ -27,7 +27,6 @@ import type {
   DashboardSummary,
   NodeListParams,
   NodeTestResult,
-  NodeStatus,
   BatchResult,
   AssetGrant,
   AssetGroup,
@@ -227,13 +226,7 @@ export const nodeService = {
   update: (id: number, body: Partial<Node>) => api<Node>("PATCH", `/nodes/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/nodes/${id}`),
   test: (id: number) => api<NodeTestResult>("POST", `/nodes/${id}/test`),
-  // On-demand status probe (dials through the proxy chain, cached ~20s). The
-  // single form powers a row's manual re-check; the batch form powers the
-  // asset tree's status dots. Both enforce a per-node connect grant server-side.
-  probe: (id: number) => api<NodeStatus>("POST", `/nodes/${id}/probe`),
-  probeBatch: (ids: number[]) =>
-    api<{ results: NodeStatus[] }>("POST", "/nodes/probe/batch", { body: { ids } }),
-  // Bulk enable/disable from the asset tree's batch bar.
+  // Bulk enable/disable from the asset console's batch bar.
   batchEnable: (ids: number[]) => api<{ ok: number }>("POST", "/nodes/batch/enable", { body: { ids } }),
   batchDisable: (ids: number[]) => api<{ ok: number }>("POST", "/nodes/batch/disable", { body: { ids } }),
 }

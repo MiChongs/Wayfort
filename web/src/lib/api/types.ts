@@ -222,21 +222,6 @@ export interface NodeTestResult {
   target?: string
 }
 
-// On-demand status verdict from POST /nodes/:id/probe (and the batch form).
-// Probes dial through the node's proxy chain and are cached ~20s server-side;
-// `forbidden` marks ids the caller has no connect grant for. `online` is the
-// single field the asset-tree status dot keys on.
-export interface NodeStatus {
-  id: number
-  online: boolean
-  mode?: "ssh" | "tcp" | "chain"
-  latency_ms?: number
-  target?: string
-  error?: string
-  forbidden?: boolean
-  cached?: boolean
-  checked_at?: string
-}
 
 // Result shape for the bulk tree actions (add/remove nodes to a group, attach/
 // detach a tag across nodes): a success count plus any per-id failures so

@@ -378,13 +378,6 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		authed.GET("/tag-groups", rt.TagGroup.List)
 		authed.GET("/dashboard", rt.Dashboard.Summary)
 
-		// On-demand node status probe — open to every authenticated user, but
-		// the handler enforces a per-node connect grant (admins via 全部资产),
-		// so it never leaks reachability of assets the caller can't reach.
-		// Powers the asset tree's live status dots for the workspace too.
-		authed.POST("/nodes/:id/probe", rt.Node.Probe)
-		authed.POST("/nodes/probe/batch", rt.Node.ProbeBatch)
-
 		// Admin: users / roles / orgs
 		admin := authed.Group("")
 		admin.GET("/users", perm(auth.PermUserManage), rt.User.List)
