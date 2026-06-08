@@ -95,6 +95,24 @@
     @slot;
   }
 }
+/* Extra Base UI presence attributes used by the combobox (highlighted item,
+   empty list/content, pressed button) — not in upstream shadcn/tailwind.css but
+   emitted by @base-ui/react, so we define them here for correct styling. */
+@custom-variant data-highlighted {
+  &:where([data-highlighted]:not([data-highlighted="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-empty {
+  &:where([data-empty]:not([data-empty="false"])) {
+    @slot;
+  }
+}
+@custom-variant data-pressed {
+  &:where([data-pressed]:not([data-pressed="false"])) {
+    @slot;
+  }
+}
 
 @utility no-scrollbar {
   -ms-overflow-style: none;
