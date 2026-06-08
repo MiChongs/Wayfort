@@ -118,14 +118,36 @@ type Event struct {
 	Err              error
 }
 
-// ModelInfo is returned by ListModels for UI display + capability gating.
+// ModelPricing is the per-model list price (USD per 1M tokens) curated on a
+// provider row. When present it overrides the runner's static price table so
+// operators can pin accurate (or contract) rates per model. Zero fields fall
+// back to the static estimate.
+type ModelPricing struct {
+	InPerMTok         float64 `json:"in_per_mtok,omitempty"`
+	OutPerMTok        float64 `json:"out_per_mtok,omitempty"`
+	CacheReadPerMTok  float64 `json:"cache_read_per_mtok,omitempty"`
+	CacheWritePerMTok float64 `json:"cache_write_per_mtok,omitempty"`
+}
+
+// IsZero reports whether no price was set (so callers fall back to the estimate).
+func (p ModelPricing) IsZero() bool {
+	return p.InPerMTok == 0 && p.OutPerMTok == 0 && p.CacheReadPerMTok == 0 && p.CacheWritePerMTok == 0
+}
+
+// ModelInfo is returned by ListModels for UI display + capability gating, and is
+// also the persisted shape of a provider's curated model list (the Models JSON
+// column). Newer fields are omitempty so rows written by older code unmarshal
+// cleanly with zero values.
 type ModelInfo struct {
-	ID            string `json:"id"`
-	Label         string `json:"label,omitempty"`
-	ContextWindow int    `json:"context_window,omitempty"`
-	MaxOutput     int    `json:"max_output,omitempty"`
-	Vision        bool   `json:"vision,omitempty"`
-	Tools         bool   `json:"tools,omitempty"`
+	ID            string        `json:"id"`
+	Label         string        `json:"label,omitempty"`
+	ContextWindow int           `json:"context_window,omitempty"`
+	MaxOutput     int           `json:"max_output,omitempty"`
+	Vision        bool          `json:"vision,omitempty"`
+	Tools         bool          `json:"tools,omitempty"`
+	Reasoning     bool          `json:"reasoning,omitempty"`
+	Caching       bool          `json:"caching,omitempty"`
+	Pricing       *ModelPricing `json:"pricing,omitempty"`
 }
 
 // Provider is the common surface. Implementations live alongside this file.
@@ -135,6 +157,10 @@ type Provider interface {
 	Stream(ctx context.Context, req Request) (<-chan Event, error)
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 	Ping(ctx context.Context) error
+	// CuratedModels returns the operator-saved model list (capabilities + pricing)
+	// from the provider row, or nil when none was configured. Distinct from
+	// ListModels, which may hit the network for live discovery.
+	CuratedModels() []ModelInfo
 }
 
 // ErrUnsupported is returned when a Provider doesn't implement an optional API.

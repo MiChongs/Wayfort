@@ -72,6 +72,12 @@ import {
   siGooglecloud,
   siAnthropic,
   siTelegram,
+  // AI 提供商品牌
+  siGooglegemini,
+  siOllama,
+  siAlibabacloud,
+  siHuggingface,
+  siMistralai,
 } from "simple-icons"
 
 // The runtime shape we consume from each simple-icon export.
@@ -174,8 +180,15 @@ export const SIMPLE_ICONS: SimpleEntry[] = [
   entry(siDigitalocean, "云服务"),
   entry(siVercel, "云服务"),
   entry(siGooglecloud, "云服务"),
-  entry(siAnthropic, "云服务"),
   entry(siTelegram, "云服务"),
+
+  // AI 提供商
+  entry(siAnthropic, "AI"),
+  entry(siGooglegemini, "AI"),
+  entry(siOllama, "AI"),
+  entry(siAlibabacloud, "AI"),
+  entry(siHuggingface, "AI"),
+  entry(siMistralai, "AI"),
 ]
 
 export const SIMPLE_MAP: Record<string, SimpleEntry> = Object.fromEntries(

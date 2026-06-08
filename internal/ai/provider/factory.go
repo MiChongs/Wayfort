@@ -23,31 +23,53 @@ func Build(ctx context.Context, row *aimodel.AIProvider, sealer pkgcrypto.Vault)
 		return nil, fmt.Errorf("decrypt api key: %w", err)
 	}
 	models := parseModels(row.Models)
-	switch row.Kind {
+	extra := ParseExtra(row.ExtraJSON)
+	return buildFromParts(ctx, row.Kind, row.Name, row.BaseURL, string(keyPlain),
+		row.ProxyURL, row.DefaultModel, models, extra)
+}
+
+// BuildEphemeral constructs a one-off Provider from plaintext parts (no DB row,
+// no sealing) — used by the setup wizard's pre-create test + model discovery so
+// the operator can validate credentials before committing a provider.
+func BuildEphemeral(ctx context.Context, kind aimodel.ProviderKind, name, baseURL, apiKey, proxyURL, defaultModel string, models []ModelInfo, extra Extra) (Provider, error) {
+	if apiKey == "" {
+		// Local gateways (Ollama/LM Studio) accept any placeholder; fill one so the
+		// SDK doesn't reject an empty key during a draft probe.
+		apiKey = "draft"
+	}
+	return buildFromParts(ctx, kind, name, baseURL, apiKey, proxyURL, defaultModel, models, extra)
+}
+
+// buildFromParts is the shared kind-dispatch behind Build + BuildEphemeral.
+func buildFromParts(ctx context.Context, kind aimodel.ProviderKind, name, baseURL, apiKey, proxyURL, defaultModel string, models []ModelInfo, extra Extra) (Provider, error) {
+	switch kind {
 	case aimodel.ProviderOpenAI:
 		return NewOpenAI(OpenAIConfig{
-			Name: row.Name, Kind: KindOpenAI, APIKey: string(keyPlain),
-			BaseURL: row.BaseURL, DefaultModel: row.DefaultModel,
-			HTTPProxy: row.ProxyURL, Models: models,
+			Name: name, Kind: KindOpenAI, APIKey: apiKey,
+			BaseURL: baseURL, DefaultModel: defaultModel,
+			HTTPProxy: proxyURL, Models: models,
+			OrgID: extra.OrgID, AzureAPIVersion: extra.AzureAPIVersion, Headers: extra.Headers,
 		})
 	case aimodel.ProviderOpenAICompat:
 		return NewOpenAI(OpenAIConfig{
-			Name: row.Name, Kind: KindOpenAICompat, APIKey: string(keyPlain),
-			BaseURL: row.BaseURL, DefaultModel: row.DefaultModel,
-			HTTPProxy: row.ProxyURL, Models: models,
+			Name: name, Kind: KindOpenAICompat, APIKey: apiKey,
+			BaseURL: baseURL, DefaultModel: defaultModel,
+			HTTPProxy: proxyURL, Models: models,
+			OrgID: extra.OrgID, AzureAPIVersion: extra.AzureAPIVersion, Headers: extra.Headers,
 		})
 	case aimodel.ProviderAnthropic:
 		return NewAnthropic(AnthropicConfig{
-			Name: row.Name, APIKey: string(keyPlain), BaseURL: row.BaseURL,
-			DefaultModel: row.DefaultModel, HTTPProxy: row.ProxyURL, Models: models,
+			Name: name, APIKey: apiKey, BaseURL: baseURL,
+			DefaultModel: defaultModel, HTTPProxy: proxyURL, Models: models,
+			Headers: extra.Headers,
 		})
 	case aimodel.ProviderGemini:
 		return NewGemini(ctx, GeminiConfig{
-			Name: row.Name, APIKey: string(keyPlain),
-			DefaultModel: row.DefaultModel, Models: models,
+			Name: name, APIKey: apiKey,
+			DefaultModel: defaultModel, Models: models,
 		})
 	default:
-		return nil, fmt.Errorf("unsupported provider kind %q", row.Kind)
+		return nil, fmt.Errorf("unsupported provider kind %q", kind)
 	}
 }
 

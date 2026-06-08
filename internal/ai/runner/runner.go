@@ -14,6 +14,7 @@ import (
 
 	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
+	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
 	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
@@ -91,6 +92,10 @@ type Factory struct {
 	Logger        *zap.Logger
 	Cfg           Config
 
+	// Limiter enforces per-provider RPM/TPM ceilings. Set by ai.New; nil means
+	// no enforcement (every call allowed).
+	Limiter *ratelimit.Limiter
+
 	mu      sync.Mutex
 	running map[string]*activeRun
 
@@ -129,18 +134,9 @@ func (f *Factory) Capabilities(ctx context.Context, prov provider.Provider, mode
 	}
 	f.capMu.Unlock()
 
-	caps := provider.DefaultCapabilities(prov.Kind())
-	lm := strings.ToLower(model)
-	if modelLacksTools(model) {
-		caps.Tools = false
-	}
-	if strings.Contains(lm, "reasoner") || strings.Contains(lm, "-r1") || strings.Contains(lm, "qwq") ||
-		strings.Contains(lm, "deepseek-r") || strings.Contains(lm, "thinking") {
-		caps.Reasoning = true
-	}
-	if strings.Contains(lm, "-vl") || strings.Contains(lm, "vision") || strings.Contains(lm, "llava") {
-		caps.Vision = true
-	}
+	// Capability baseline + curated/catalog/heuristic resolution lives in the
+	// provider package so the handler + health prober agree with the runner.
+	caps := provider.ResolveCapabilities(prov.Kind(), model, prov.CuratedModels())
 	if caps.Tokenizer == "tiktoken" && encodingForModel(model) == "" {
 		caps.Tokenizer = "heuristic"
 	}
@@ -300,6 +296,11 @@ func (f *Factory) resolveRun(ctx context.Context, conv *aimodel.AIConversation) 
 	}
 	if conv.ProviderID == 0 {
 		conv.ProviderID = provRow.ID
+	}
+	// Keep the live rate limiter's ceilings in sync with the provider row (cheap,
+	// idempotent — preserves the current fill when limits are unchanged).
+	if f.Limiter != nil {
+		f.Limiter.Configure(provRow.ID, provRow.RateLimitRPM, provRow.RateLimitTPM)
 	}
 	if conv.Model == "" {
 		conv.Model = orStr(agent.DefaultModel, provRow.DefaultModel)
@@ -506,6 +507,10 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 	var lastFingerprint string
 	repeatRuns := 0
 
+	// Resolve the per-model billing rate once for the turn: operator-curated
+	// pricing or the preset catalog override the static price table when present.
+	turnRate := provider.ResolvePricing(prov.Kind(), conv.Model, prov.CuratedModels())
+
 	for iter := 0; ; iter++ {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -553,6 +558,21 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		if conv.ThinkingBudget != nil && *conv.ThinkingBudget > 0 && caps.Reasoning {
 			req.ThinkingBudget = *conv.ThinkingBudget
 		}
+		// Rate-limit gate: estimate the input size, charge the buckets, and bail
+		// the turn with a retry-after when the provider's RPM/TPM ceiling is hit.
+		// (Background summary/title calls deliberately bypass the limiter.)
+		estTok := 0
+		if f.Limiter != nil {
+			estTok = estimateRequestTokens(conv.Model, systemPrompt, messages)
+			if ok, retry, _ := f.Limiter.Allow(conv.ProviderID, estTok); !ok {
+				secs := int(retry.Seconds()) + 1
+				sink.Emit(Event{Kind: KindError, Data: map[string]any{
+					"error":               fmt.Sprintf("已达到该提供商的速率限制，请约 %d 秒后重试", secs),
+					"retry_after_seconds": secs,
+				}})
+				return f.finishTurn(ctx, conv, sink, "rate_limited")
+			}
+		}
 		stream, err := f.streamWithRetry(ctx, prov, req)
 		if err != nil {
 			return err
@@ -574,7 +594,7 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 			FinishReason: finish,
 			CreatedAt:    time.Now(),
 		}
-		turnCost := costMicros(conv.Model, usage.in, usage.out, usage.cacheRead, usage.cacheWrite)
+		turnCost := costMicrosWith(turnRate, conv.Model, usage.in, usage.out, usage.cacheRead, usage.cacheWrite)
 		asstMsg.CostMicros = turnCost
 		if branched && conv.ActiveLeafMessageID != nil {
 			asstMsg.ParentID = conv.ActiveLeafMessageID
@@ -593,6 +613,11 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		conv.TotalCacheWriteTokens += uint64(usage.cacheWrite)
 		conv.TotalCostMicros += turnCost
 		_ = f.Conv.Update(ctx, conv)
+		// Reconcile the TPM bucket with the real total (input+output+cache) now
+		// that usage is known — refunds the input over-estimate, charges output.
+		if f.Limiter != nil {
+			f.Limiter.Commit(conv.ProviderID, estTok, int(usage.in)+int(usage.out)+int(usage.cacheRead))
+		}
 		// Auto-name an untitled conversation after its first assistant turn — a
 		// detached, best-effort cheap model call (must never delay/fail the turn).
 		if needTitle && conv.MessageCount >= 2 {
@@ -1330,6 +1355,24 @@ func isTransientErr(err error) bool {
 	return false
 }
 
+// estimateRequestTokens approximates the input size of a request (system prompt
+// + history) for the rate limiter's TPM pre-charge. Uses the same per-model
+// tokenizer as the context-budget machinery; the real count is reconciled by
+// Limiter.Commit once usage comes back.
+func estimateRequestTokens(model, system string, msgs []provider.Message) int {
+	total := 0
+	if system != "" {
+		total += countTokens(model, provider.Message{
+			Role:    provider.RoleSystem,
+			Content: []provider.ContentPart{{Type: "text", Text: system}},
+		})
+	}
+	for i := range msgs {
+		total += countTokens(model, msgs[i])
+	}
+	return total
+}
+
 // condenseHistory keeps the transcript within a token budget. truncate_oldest
 // (the default) drops the oldest turns, snapping the kept window to a user
 // message so a tool result never leads without its triggering assistant turn.
@@ -1638,26 +1681,6 @@ func messageText(m provider.Message) string {
 	}
 	return sb.String()
 }
-
-// noToolModelSubstrings marks models we KNOW can't do tool calling. We gate on
-// this denylist rather than a provider's Tools flag because several providers
-// don't report capability flags — defaulting those to "supports tools" avoids
-// disabling tools for capable models.
-var noToolModelSubstrings = []string{
-	"embedding", "embed-", "whisper", "tts-", "dall-e", "dalle", "moderation",
-	"text-davinci", "davinci-002", "babbage-002", "-instruct", "rerank",
-}
-
-func modelLacksTools(model string) bool {
-	m := strings.ToLower(model)
-	for _, s := range noToolModelSubstrings {
-		if strings.Contains(m, s) {
-			return true
-		}
-	}
-	return false
-}
-
 
 func parseStringList(raw string) []string {
 	if raw == "" {

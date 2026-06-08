@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
@@ -217,10 +218,13 @@ func escapeLike(q string) string {
 	return string(out)
 }
 
-// UsageBucket is one row of aggregated usage (per day + model).
+// UsageBucket is one row of aggregated usage. The grouping dimensions present
+// (day / model / provider_id) depend on the UsageQuery; absent dimensions stay
+// zero-valued and are omitted from JSON.
 type UsageBucket struct {
-	Day              string `json:"day"`
-	Model            string `json:"model"`
+	Day              string `json:"day,omitempty"`
+	Model            string `json:"model,omitempty"`
+	ProviderID       uint64 `json:"provider_id,omitempty"`
 	InputTokens      uint64 `json:"input_tokens"`
 	OutputTokens     uint64 `json:"output_tokens"`
 	CacheReadTokens  uint64 `json:"cache_read_tokens"`
@@ -229,24 +233,83 @@ type UsageBucket struct {
 	Messages         int    `json:"messages"`
 }
 
+// UsageQuery selects the aggregation dimensions + an optional provider filter.
+type UsageQuery struct {
+	GroupBy    []string // subset of {"day","model","provider"}; empty → day+model
+	ProviderID uint64   // 0 = all providers
+}
+
+// usageGroupCols maps a whitelisted dimension to its (select, group-by) SQL.
+// Provider attribution joins through ai_conversations.provider_id (the message
+// rows carry no provider id), so it reflects the conversation's CURRENT provider
+// — slightly approximate for conversations that switched provider mid-stream.
+var usageGroupCols = map[string][2]string{
+	"day":      {"DATE(m.created_at) AS day", "day"},
+	"model":    {"m.model AS model", "m.model"},
+	"provider": {"c.provider_id AS provider_id", "c.provider_id"},
+}
+
+func normalizeUsageGroups(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, g := range in {
+		g = strings.ToLower(strings.TrimSpace(g))
+		if _, ok := usageGroupCols[g]; ok && !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"day", "model"}
+	}
+	return out
+}
+
 // AggregateUsage sums assistant-turn token/cache/cost across the time window,
-// grouped by day + model. adminAll = true aggregates every user's usage;
-// otherwise it is scoped to userID.
-func (r *ConversationRepo) AggregateUsage(ctx context.Context, userID uint64, adminAll bool, from, to time.Time) ([]UsageBucket, error) {
+// grouped by the requested dimensions. adminAll = true aggregates every user's
+// usage; otherwise it is scoped to userID.
+func (r *ConversationRepo) AggregateUsage(ctx context.Context, userID uint64, adminAll bool, from, to time.Time, opt UsageQuery) ([]UsageBucket, error) {
+	groups := normalizeUsageGroups(opt.GroupBy)
+	groupByProvider := false
+	sel := make([]string, 0, len(groups)+6)
+	grp := make([]string, 0, len(groups))
+	for _, g := range groups {
+		cols := usageGroupCols[g]
+		sel = append(sel, cols[0])
+		grp = append(grp, cols[1])
+		if g == "provider" {
+			groupByProvider = true
+		}
+	}
+	sel = append(sel,
+		"SUM(m.input_tokens) AS input_tokens", "SUM(m.output_tokens) AS output_tokens",
+		"SUM(m.cache_read_tokens) AS cache_read_tokens", "SUM(m.cache_write_tokens) AS cache_write_tokens",
+		"SUM(m.cost_micros) AS cost_micros", "COUNT(*) AS messages")
+
+	needJoin := !adminAll || opt.ProviderID != 0 || groupByProvider
 	q := r.db.WithContext(ctx).
 		Table("ai_messages AS m").
-		Select(`DATE(m.created_at) AS day, m.model AS model,
-			SUM(m.input_tokens) AS input_tokens, SUM(m.output_tokens) AS output_tokens,
-			SUM(m.cache_read_tokens) AS cache_read_tokens, SUM(m.cache_write_tokens) AS cache_write_tokens,
-			SUM(m.cost_micros) AS cost_micros, COUNT(*) AS messages`).
+		Select(strings.Join(sel, ", ")).
 		Where("m.role = ?", aimodel.RoleAssistant).
 		Where("m.created_at >= ? AND m.created_at < ?", from, to)
+	if needJoin {
+		q = q.Joins("JOIN ai_conversations c ON c.id = m.conversation_id")
+	}
 	if !adminAll {
-		q = q.Joins("JOIN ai_conversations c ON c.id = m.conversation_id").
-			Where("c.user_id = ?", userID)
+		q = q.Where("c.user_id = ?", userID)
+	}
+	if opt.ProviderID != 0 {
+		q = q.Where("c.provider_id = ?", opt.ProviderID)
+	}
+	q = q.Group(strings.Join(grp, ", "))
+	for _, g := range groups {
+		if g == "day" {
+			q = q.Order("day DESC")
+			break
+		}
 	}
 	var out []UsageBucket
-	err := q.Group("day, m.model").Order("day DESC").Scan(&out).Error
+	err := q.Scan(&out).Error
 	return out, err
 }
 

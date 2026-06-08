@@ -13,7 +13,11 @@ import type {
   AIAgent,
   AIConversation,
   AIMessage,
+  AIModel,
   AIProvider,
+  AIProviderPreset,
+  ProviderHealth,
+  ProviderKind,
   AITask,
   AITool,
   AIToolInvocation,
@@ -995,25 +999,87 @@ export const oidcService = {
 }
 
 // ----- AI -----
+export interface ProviderTestResult {
+  ok: boolean
+  reachable?: boolean
+  latency_ms?: number
+  model_count?: number
+  sample_model?: string
+  error?: string
+}
+
 export const aiProviderService = {
   list: () => api<{ providers: AIProvider[] }>("GET", "/ai/providers"),
-  create: (body: Partial<AIProvider> & { api_key: string }) =>
-    api<{ id: number }>("POST", "/ai/providers", { body }),
-  update: (id: number, body: Partial<AIProvider> & { api_key?: string }) =>
-    api<{ id: number }>("PATCH", `/ai/providers/${id}`, { body }),
+  create: (
+    body: Partial<Omit<AIProvider, "extra">> & {
+      api_key: string
+      models?: AIModel[]
+      extra?: Record<string, unknown>
+    },
+  ) => api<{ id: number }>("POST", "/ai/providers", { body }),
+  update: (
+    id: number,
+    body: Partial<Omit<AIProvider, "extra">> & {
+      api_key?: string
+      models?: AIModel[]
+      extra?: Record<string, unknown>
+    },
+  ) => api<{ id: number }>("PATCH", `/ai/providers/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/ai/providers/${id}`),
-  test: (id: number) => api<{ ok: boolean }>("POST", `/ai/providers/${id}/test`),
-  models: (id: number) =>
-    api<{
-      models: Array<{
-        id: string
-        label?: string
-        context_window?: number
-        max_output?: number
-        tools?: boolean
-        vision?: boolean
-      }>
-    }>("GET", `/ai/providers/${id}/models`),
+  // Richer than the old { ok }: latency + a bounded model probe.
+  test: (id: number) => api<ProviderTestResult>("POST", `/ai/providers/${id}/test`),
+  // Pre-create probe (wizard step 3) — test an unsaved draft.
+  testDraft: (body: {
+    kind: ProviderKind
+    name?: string
+    base_url?: string
+    api_key: string
+    proxy_url?: string
+    extra?: Record<string, unknown>
+  }) => api<ProviderTestResult>("POST", "/ai/provider-test", { body }),
+  // Live model discovery for an unsaved draft (wizard step 4).
+  discoverModels: (body: {
+    kind: ProviderKind
+    base_url?: string
+    api_key: string
+    proxy_url?: string
+    extra?: Record<string, unknown>
+  }) => api<{ models: AIModel[] }>("POST", "/ai/provider-discover-models", { body }),
+  // Live models. merge=1 unions live discovery + preset catalog + curated list.
+  models: (id: number, merge = false) =>
+    api<{ models: AIModel[] }>("GET", `/ai/providers/${id}/models`, merge ? { query: { merge: 1 } } : {}),
+  // Persist the curated model set (capabilities + pricing) + default model.
+  saveModels: (id: number, body: { models: AIModel[]; default_model?: string }) =>
+    api<{ ok: boolean }>("PUT", `/ai/providers/${id}/models`, { body }),
+  // The static provider catalog driving the gallery + wizard.
+  presets: () => api<{ presets: AIProviderPreset[] }>("GET", "/ai/provider-presets"),
+  // Live rate-limit budget for one provider.
+  rateLimit: (id: number) =>
+    api<{ rate_limit_rpm: number; rate_limit_tpm: number; remaining?: ProviderRateRemaining }>(
+      "GET",
+      `/ai/providers/${id}/ratelimit`,
+    ),
+  // Per-provider usage (same envelope as aiUsageService.summary).
+  usage: (id: number, days = 30, scope?: "me" | "all") =>
+    api<AIUsageSummary>("GET", `/ai/providers/${id}/usage`, { query: { days, scope } }),
+  // SSE health stream URL (fed to useSseSnapshot — NOT a fetch).
+  healthStreamURL: () => buildURLFromAPI("/ai/provider-health/stream"),
+  // One-shot health snapshot (non-streaming consumers).
+  health: () => api<ProviderHealthSnapshot>("GET", "/ai/provider-health"),
+  probeHealth: () => api<ProviderHealthSnapshot>("POST", "/ai/provider-health/probe"),
+}
+
+export interface ProviderRateRemaining {
+  req_limit: number
+  req_remaining: number
+  tok_limit: number
+  tok_remaining: number
+  reset_in_seconds: number
+}
+
+export interface ProviderHealthSnapshot {
+  providers: Record<number, ProviderHealth>
+  sampled_at: string
 }
 export const aiAgentService = {
   list: () => api<{ agents: AIAgent[] }>("GET", "/ai/agents"),

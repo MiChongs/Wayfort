@@ -296,6 +296,14 @@ type AIConfig struct {
 	SSHExecReadOnlyExtra  []string      `mapstructure:"ssh_exec_readonly_allow_extra"`
 	ConversationTTLDays   int           `mapstructure:"conversation_ttl_days"`
 	SeedDefaultAgents     bool          `mapstructure:"seed_default_agents"`
+	// Background provider health probing (opt-in: pinging upstream providers on a
+	// schedule consumes real quota). HealthProbeModels additionally calls
+	// ListModels each cycle for a model count (off by default — extra round-trip).
+	HealthProbeEnabled  bool          `mapstructure:"health_probe_enabled"`
+	HealthProbeInterval time.Duration `mapstructure:"health_probe_interval"`
+	HealthProbeTimeout  time.Duration `mapstructure:"health_probe_timeout"`
+	HealthProbeModels   bool          `mapstructure:"health_probe_models"`
+	HealthDegradedMS    int64         `mapstructure:"health_degraded_ms"`
 }
 
 // ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.

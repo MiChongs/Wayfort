@@ -1360,6 +1360,80 @@ export type ProviderKind = "openai" | "anthropic" | "openai_compatible" | "gemin
 export type PermissionMode = "plan" | "normal" | "bypass"
 export type AgentScope = "global" | "personal"
 
+export interface AIModelPricing {
+  in_per_mtok?: number
+  out_per_mtok?: number
+  cache_read_per_mtok?: number
+  cache_write_per_mtok?: number
+}
+
+// AIModel mirrors the backend provider.ModelInfo (the persisted curated-model
+// shape + live-discovery result). Capabilities + pricing drive the model editor.
+export interface AIModel {
+  id: string
+  label?: string
+  context_window?: number
+  max_output?: number
+  tools?: boolean
+  vision?: boolean
+  reasoning?: boolean
+  caching?: boolean
+  pricing?: AIModelPricing
+}
+
+export type ProviderHealthState = "online" | "degraded" | "offline" | "unknown"
+
+// ProviderHealth is one entry of the live health snapshot (keyed by provider id),
+// with the rate-limit budget folded in by the backend.
+export interface ProviderHealth {
+  provider_id: number
+  name?: string
+  kind?: string
+  state: ProviderHealthState
+  latency_ms?: number
+  model_count?: number
+  sample_model?: string
+  last_error?: string
+  checked_at?: string
+  req_limit?: number
+  req_remaining?: number
+  tok_limit?: number
+  tok_remaining?: number
+}
+
+// ProviderExtra is the redacted provider-specific config (secrets collapsed to
+// header_keys / booleans by the backend).
+export interface ProviderExtra {
+  azure_deployment?: string
+  azure_api_version?: string
+  azure_endpoint?: string
+  bedrock_region?: string
+  org_id?: string
+  header_keys?: string[]
+}
+
+export interface ProviderPresetExtraField {
+  key: string
+  label: string
+  placeholder?: string
+  required?: boolean
+}
+
+// AIProviderPreset is one entry of the static provider catalog (gallery + wizard).
+export interface AIProviderPreset {
+  slug: string
+  name: string
+  kind: ProviderKind
+  category: "international" | "domestic" | "local"
+  base_url?: string
+  icon?: string
+  key_help?: string
+  docs_url?: string
+  needs_base_url?: boolean
+  extra_fields?: ProviderPresetExtraField[]
+  models?: AIModel[]
+}
+
 export interface AIProvider {
   id: number
   name: string
@@ -1371,6 +1445,16 @@ export interface AIProvider {
   owner_id?: number | null
   enabled: boolean
   api_key_last4?: string
+  // Extended fields (round-tripped by the provider handler; all optional so older
+  // call sites stay valid).
+  proxy_url?: string
+  rate_limit_rpm?: number
+  rate_limit_tpm?: number
+  models?: AIModel[]
+  extra?: ProviderExtra
+  health?: ProviderHealth
+  created_at?: string
+  updated_at?: string
 }
 
 export interface AIAgent {

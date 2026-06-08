@@ -46,21 +46,40 @@ func (r *Registry) Get(ctx context.Context, providerID, userID uint64) (Provider
 	if !row.IsGlobal && (row.OwnerID == nil || *row.OwnerID != userID) {
 		return nil, nil, errors.New("provider not visible to user")
 	}
+	p, err := r.getOrBuild(ctx, row)
+	if err != nil {
+		return nil, row, err
+	}
+	return p, row, nil
+}
+
+// BuildFor returns a cached/built Provider for a row the caller has already
+// loaded, WITHOUT a per-user visibility check. Only trusted system callers (e.g.
+// the background health prober) should use it.
+func (r *Registry) BuildFor(ctx context.Context, row *aimodel.AIProvider) (Provider, error) {
+	if row == nil {
+		return nil, errors.New("nil provider row")
+	}
+	return r.getOrBuild(ctx, row)
+}
+
+// getOrBuild is the shared cache-or-construct path behind Get/BuildFor.
+func (r *Registry) getOrBuild(ctx context.Context, row *aimodel.AIProvider) (Provider, error) {
 	r.mu.RLock()
-	if c, ok := r.built[providerID]; ok && time.Since(c.at) < r.ttl {
+	if c, ok := r.built[row.ID]; ok && time.Since(c.at) < r.ttl {
 		r.mu.RUnlock()
-		return c.p, row, nil
+		return c.p, nil
 	}
 	r.mu.RUnlock()
 
 	p, err := Build(ctx, row, r.sealer)
 	if err != nil {
-		return nil, row, err
+		return nil, err
 	}
 	r.mu.Lock()
-	r.built[providerID] = cachedProvider{p: p, at: time.Now()}
+	r.built[row.ID] = cachedProvider{p: p, at: time.Now()}
 	r.mu.Unlock()
-	return p, row, nil
+	return p, nil
 }
 
 // Invalidate flushes the cache for one provider — call after admin updates it.

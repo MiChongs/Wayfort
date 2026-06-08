@@ -837,6 +837,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		SSHExecReadOnlyExtra:  cfg.AI.SSHExecReadOnlyExtra,
 		ConversationTTLDays:   cfg.AI.ConversationTTLDays,
 		SeedDefaultAgents:     cfg.AI.SeedDefaultAgents,
+		HealthProbeEnabled:    cfg.AI.HealthProbeEnabled,
+		HealthProbeInterval:   cfg.AI.HealthProbeInterval,
+		HealthProbeTimeout:    cfg.AI.HealthProbeTimeout,
+		HealthProbeModels:     cfg.AI.HealthProbeModels,
+		HealthDegradedMS:      cfg.AI.HealthDegradedMS,
 	}, ai.Deps{
 		DB: db, Sealer: aiVault, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,
@@ -884,6 +889,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	if aiSet != nil && aiSet.Enabled {
 		g.Go(func() error { return aiSet.Janitor(gctx) })
+		if cfg.AI.HealthProbeEnabled {
+			if hp := aiSet.HealthProber(); hp != nil {
+				g.Go(func() error { return hp.Run(gctx) })
+			}
+		}
 	}
 	g.Go(func() error { return server.Serve(gctx, cfg.Server.Addr, engine, cfg.Server, logger) })
 	// Phase 15 — approval reconciler: expires overdue grants, escalates

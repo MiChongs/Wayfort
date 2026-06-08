@@ -27,6 +27,7 @@ type AnthropicConfig struct {
 	DefaultModel string
 	HTTPProxy    string
 	Models       []ModelInfo
+	Headers      map[string]string // extra static request headers (from ExtraJSON)
 }
 
 func NewAnthropic(cfg AnthropicConfig) (*AnthropicProvider, error) {
@@ -44,6 +45,11 @@ func NewAnthropic(cfg AnthropicConfig) (*AnthropicProvider, error) {
 		}
 		opts = append(opts, anthropicopt.WithHTTPClient(hc))
 	}
+	for k, v := range cfg.Headers {
+		if k != "" {
+			opts = append(opts, anthropicopt.WithHeader(k, v))
+		}
+	}
 	return &AnthropicProvider{
 		name:         cfg.Name,
 		client:       anthropic.NewClient(opts...),
@@ -54,6 +60,8 @@ func NewAnthropic(cfg AnthropicConfig) (*AnthropicProvider, error) {
 
 func (p *AnthropicProvider) Name() string { return p.name }
 func (p *AnthropicProvider) Kind() Kind   { return KindAnthropic }
+
+func (p *AnthropicProvider) CuratedModels() []ModelInfo { return p.models }
 
 func (p *AnthropicProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if len(p.models) > 0 {

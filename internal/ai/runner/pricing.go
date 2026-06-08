@@ -1,6 +1,10 @@
 package runner
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
+)
 
 // Pricing is a best-effort static price table used only to surface an estimated
 // spend in the UI (TotalCostMicros). It is intentionally approximate — list
@@ -62,6 +66,24 @@ var priceTable = []struct {
 	{"deepseek-reasoner", openaiRate(0.55, 2.19)},
 	{"deepseek-chat", openaiRate(0.27, 1.1)},
 	{"deepseek", openaiRate(0.27, 1.1)},
+}
+
+// costMicrosWith bills a turn at an explicit per-model rate when one is supplied
+// (operator-curated pricing or the preset catalog, resolved by the provider
+// package). A nil/zero rate falls back to the static priceTable via costMicros.
+// This is how provider-pinned prices override the best-effort estimate.
+func costMicrosWith(rate *provider.ModelPricing, model string, inTok, outTok, cacheReadTok, cacheWriteTok uint32) uint64 {
+	if rate == nil || rate.IsZero() {
+		return costMicros(model, inTok, outTok, cacheReadTok, cacheWriteTok)
+	}
+	cost := float64(inTok)*rate.InPerMTok +
+		float64(outTok)*rate.OutPerMTok +
+		float64(cacheReadTok)*rate.CacheReadPerMTok +
+		float64(cacheWriteTok)*rate.CacheWritePerMTok
+	if cost < 0 {
+		return 0
+	}
+	return uint64(cost + 0.5)
 }
 
 // costMicros returns the estimated cost in micro-dollars (1e-6 USD) for the

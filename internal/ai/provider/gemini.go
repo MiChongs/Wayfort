@@ -42,6 +42,8 @@ func NewGemini(ctx context.Context, cfg GeminiConfig) (*GeminiProvider, error) {
 func (p *GeminiProvider) Name() string { return p.name }
 func (p *GeminiProvider) Kind() Kind   { return KindGemini }
 
+func (p *GeminiProvider) CuratedModels() []ModelInfo { return p.models }
+
 func (p *GeminiProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if len(p.models) > 0 {
 		return p.models, nil

@@ -6,6 +6,8 @@ import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } fro
 import { Activity, Coins, Cpu, Layers, Zap } from "lucide-react"
 import { aiUsageService, type AIUsageBucket } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { Segmented } from "@/components/common/segmented"
+import { fmtTok, fmtCost, MODEL_COLORS } from "@/lib/ai/usage-format"
 import {
   ChartContainer,
   ChartTooltip,
@@ -15,13 +17,6 @@ import {
 import { cn } from "@/lib/utils"
 
 const DAY_OPTIONS = [7, 30, 90] as const
-const MODEL_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-]
 
 export default function AIUsagePage() {
   const [days, setDays] = React.useState<number>(30)
@@ -234,43 +229,3 @@ function Stat({
   )
 }
 
-function Segmented({
-  value,
-  onChange,
-  options,
-}: {
-  value: string
-  onChange: (v: string) => void
-  options: { v: string; label: string }[]
-}) {
-  return (
-    <div className="inline-flex items-center gap-0.5 rounded-lg border bg-muted/40 p-0.5">
-      {options.map((o) => (
-        <button
-          key={o.v}
-          type="button"
-          onClick={() => onChange(o.v)}
-          className={cn(
-            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-            value === o.v ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function fmtTok(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`
-  return `${n}`
-}
-
-function fmtCost(micros: number): string {
-  const usd = micros / 1_000_000
-  if (usd >= 1) return `$${usd.toFixed(2)}`
-  if (usd >= 0.01) return `$${usd.toFixed(3)}`
-  return `$${usd.toFixed(4)}`
-}

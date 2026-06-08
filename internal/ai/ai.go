@@ -9,7 +9,9 @@ import (
 
 	"github.com/michongs/jumpserver-anonymous/internal/ai/bridge"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/handler"
+	aihealth "github.com/michongs/jumpserver-anonymous/internal/ai/health"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
+	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
 	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/runner"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
@@ -39,6 +41,11 @@ type Config struct {
 	SSHExecReadOnlyExtra  []string
 	ConversationTTLDays   int
 	SeedDefaultAgents     bool
+	HealthProbeEnabled    bool
+	HealthProbeInterval   time.Duration
+	HealthProbeTimeout    time.Duration
+	HealthProbeModels     bool
+	HealthDegradedMS      int64
 }
 
 // Deps is everything ai.New needs from the host process.
@@ -76,12 +83,15 @@ type Set struct {
 	SSE          *handler.SSEHandler
 	Invocation   *handler.InvocationHandler
 	Usage        *handler.UsageHandler
+	AIHealth     *handler.AIHealthHandler
 
 	Factory      *runner.Factory
 	ProviderRepo *airepo.ProviderRepo
 	AgentRepo    *airepo.AgentRepo
 	ConvRepo     *airepo.ConversationRepo
 	Cfg          Config
+
+	healthProber *aihealth.Prober
 
 	// toolReg / nodeRunner are kept so optools.RegisterAll can extend the live
 	// tool catalogue from main.go after construction. The runner holds the same
@@ -111,6 +121,17 @@ func New(cfg Config, deps Deps) *Set {
 	taskRepo := airepo.NewTaskRepo(deps.DB)
 
 	providerReg := provider.NewRegistry(providerRepo, deps.Sealer)
+	limiter := ratelimit.New()
+
+	// Background provider health probing (opt-in via config).
+	healthReg := aihealth.NewRegistry(cfg.HealthDegradedMS)
+	healthProber := aihealth.NewProber(healthReg, providerRepo, providerReg, aihealth.Config{
+		Enabled:     cfg.HealthProbeEnabled,
+		Interval:    cfg.HealthProbeInterval,
+		Timeout:     cfg.HealthProbeTimeout,
+		DegradedMS:  cfg.HealthDegradedMS,
+		ProbeModels: cfg.HealthProbeModels,
+	}, deps.Logger)
 
 	toolReg := tools.NewRegistry()
 
@@ -160,6 +181,7 @@ func New(cfg Config, deps Deps) *Set {
 			ToolTimeout:      cfg.ToolTimeout,
 			ApprovalTimeout:  cfg.ApprovalTimeout,
 		})
+	factory.Limiter = limiter
 	tdeps.AgentRunner = factory
 	tools.RegisterSubAgentTool(toolReg, tdeps)
 
@@ -181,8 +203,11 @@ func New(cfg Config, deps Deps) *Set {
 
 	return &Set{
 		Enabled: true,
-		Provider: &handler.ProviderHandler{Repo: providerRepo, Sealer: deps.Sealer, Registry: providerReg},
-		Agent:    &handler.AgentHandler{Repo: agentRepo, Tools: toolReg},
+		Provider: &handler.ProviderHandler{
+			Repo: providerRepo, Sealer: deps.Sealer, Registry: providerReg,
+			Health: healthReg, Limiter: limiter,
+		},
+		Agent: &handler.AgentHandler{Repo: agentRepo, Tools: toolReg},
 		Conversation: &handler.ConversationHandler{
 			Repo: convRepo, Msg: msgRepo, Inv: invRepo, Tasks: taskRepo,
 			Agents: agentRepo, Factory: factory,
@@ -190,15 +215,21 @@ func New(cfg Config, deps Deps) *Set {
 		SSE:        &handler.SSEHandler{Conv: convRepo, Msg: msgRepo, Inv: invRepo, Factory: factory},
 		Invocation: &handler.InvocationHandler{Conv: convRepo, Inv: invRepo, Factory: factory},
 		Usage:      &handler.UsageHandler{Conv: convRepo},
+		AIHealth:   &handler.AIHealthHandler{Reg: healthReg, Prober: healthProber, Limiter: limiter},
 		Factory:    factory,
 		ProviderRepo: providerRepo,
 		AgentRepo:    agentRepo,
 		ConvRepo:     convRepo,
 		Cfg:          cfg,
+		healthProber: healthProber,
 		toolReg:      toolReg,
 		nodeRunner:   nodeRunner,
 	}
 }
+
+// HealthProber returns the background provider-health prober so the host can run
+// it in an errgroup (gated by cfg.HealthProbeEnabled). Nil when AI is disabled.
+func (s *Set) HealthProber() *aihealth.Prober { return s.healthProber }
 
 // Janitor periodically removes conversations older than ConversationTTLDays.
 func (s *Set) Janitor(ctx context.Context) error {

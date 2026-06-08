@@ -833,6 +833,17 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		aiGroup.DELETE("/providers/:id", perm(auth.PermAIProviderUser), rt.AI.Provider.Delete)
 		aiGroup.POST("/providers/:id/test", perm(auth.PermAIUse), rt.AI.Provider.Test)
 		aiGroup.GET("/providers/:id/models", perm(auth.PermAIUse), rt.AI.Provider.Models)
+		aiGroup.PUT("/providers/:id/models", perm(auth.PermAIProviderUser), rt.AI.Provider.SaveModels)
+		aiGroup.GET("/providers/:id/ratelimit", perm(auth.PermAIUse), rt.AI.Provider.RateLimit)
+		aiGroup.GET("/providers/:id/usage", perm(auth.PermAIUse), rt.AI.Usage.ProviderUsage)
+		// Provider catalog + live health. Distinct path segments (provider-presets /
+		// provider-health) so they never collide with the /providers/:id param node.
+		aiGroup.GET("/provider-presets", perm(auth.PermAIUse), rt.AI.Provider.Presets)
+		aiGroup.POST("/provider-test", perm(auth.PermAIProviderUser), rt.AI.Provider.TestDraft)
+		aiGroup.POST("/provider-discover-models", perm(auth.PermAIProviderUser), rt.AI.Provider.DiscoverModels)
+		aiGroup.GET("/provider-health", perm(auth.PermAIUse), rt.AI.AIHealth.Snapshot)
+		aiGroup.GET("/provider-health/stream", perm(auth.PermAIUse), rt.AI.AIHealth.Stream)
+		aiGroup.POST("/provider-health/probe", perm(auth.PermAIProviderUser), rt.AI.AIHealth.ProbeNow)
 
 		aiGroup.GET("/usage", perm(auth.PermAIUse), rt.AI.Usage.Summary)
 

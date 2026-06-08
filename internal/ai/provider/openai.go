@@ -35,8 +35,12 @@ type OpenAIConfig struct {
 	APIKey       string
 	BaseURL      string
 	DefaultModel string
-	HTTPProxy    string  // optional: http(s)://... or socks5://...
+	HTTPProxy    string // optional: http(s)://... or socks5://...
 	Models       []ModelInfo
+	// Provider-specific extras (from the row's ExtraJSON). All optional.
+	OrgID           string            // OpenAI-Organization header
+	AzureAPIVersion string            // Azure OpenAI api-version query param
+	Headers         map[string]string // extra static request headers
 }
 
 func NewOpenAI(cfg OpenAIConfig) (*OpenAIProvider, error) {
@@ -54,6 +58,17 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAIProvider, error) {
 		}
 		opts = append(opts, option.WithHTTPClient(hc))
 	}
+	if cfg.OrgID != "" {
+		opts = append(opts, option.WithOrganization(cfg.OrgID))
+	}
+	if cfg.AzureAPIVersion != "" {
+		opts = append(opts, option.WithQueryAdd("api-version", cfg.AzureAPIVersion))
+	}
+	for k, v := range cfg.Headers {
+		if k != "" {
+			opts = append(opts, option.WithHeader(k, v))
+		}
+	}
 	c := openai.NewClient(opts...)
 	if cfg.Kind == "" {
 		cfg.Kind = KindOpenAI
@@ -66,6 +81,8 @@ func NewOpenAI(cfg OpenAIConfig) (*OpenAIProvider, error) {
 
 func (p *OpenAIProvider) Name() string { return p.name }
 func (p *OpenAIProvider) Kind() Kind   { return p.kind }
+
+func (p *OpenAIProvider) CuratedModels() []ModelInfo { return p.models }
 
 func (p *OpenAIProvider) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if len(p.models) > 0 {
