@@ -4,7 +4,8 @@ import * as React from "react"
 import { Star } from "lucide-react"
 import { useDraggable } from "@dnd-kit/core"
 import { toast } from "@/components/ui/sonner"
-import type { Node } from "@/lib/api/types"
+import { StatusDot, statusToState } from "@/components/asset-tree/status-dot"
+import type { Node, NodeStatus } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
 import {
   ContextMenu,
@@ -57,10 +58,18 @@ export function LeafContent({
   leaf,
   onOpenTab,
   onToggleFavorite,
+  status,
+  checking,
+  onRequestStatus,
+  onOpenDetail,
 }: {
   leaf: TreeLeaf
   onOpenTab: (node: Node, protocol: Protocol, rdpBackend?: DesktopBackend) => void
   onToggleFavorite?: (node: Node) => void
+  status?: NodeStatus | null
+  checking?: boolean
+  onRequestStatus?: (id: number) => void
+  onOpenDetail?: (node: Node) => void
 }) {
   const choices = protocolChoicesForNode(leaf.node.protocol)
   const defaultChoice = choices[0]
@@ -101,8 +110,10 @@ export function LeafContent({
           ref={setNodeRef}
           type="button"
           {...listeners}
+          onClick={() => onOpenDetail?.(leaf.node)}
           onDoubleClick={() => onOpenTab(leaf.node, defaultProto, defaultChoice?.rdpBackend)}
-          title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 双击连接 · 可拖到右侧打开`}
+          onMouseEnter={() => onRequestStatus?.(leaf.node.id)}
+          title={`${leaf.node.name} (${leaf.node.host}:${leaf.node.port}) — 单击详情 · 双击连接 · 可拖到右侧打开`}
           className={cn(
             "group/leaf flex w-full items-center gap-2 py-1 pr-1 text-sm",
             leaf.node.disabled && "opacity-50",
@@ -112,6 +123,11 @@ export function LeafContent({
           <Icon className={cn("h-3.5 w-3.5 shrink-0", meta.tint)} />
           <span className="flex-1 truncate text-left">{leaf.node.name}</span>
           {leaf.isFavorite && <Star className="h-3 w-3 shrink-0 fill-[#e8a55a] text-[#e8a55a]" />}
+          <StatusDot
+            state={statusToState(status, checking)}
+            latencyMs={status?.latency_ms}
+            pulse={false}
+          />
           <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{leaf.node.protocol}</span>
         </button>
       </ContextMenuTrigger>

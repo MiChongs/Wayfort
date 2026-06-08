@@ -39,9 +39,12 @@ type Config struct {
 // canvas rendering happens in the browser via the watermark-js-plus library.
 //
 // Content is a template with newline-separated lines and {var} placeholders:
-// {username} {name} {email} {phone} {ip} {date} {time} {datetime}. The server
-// substitutes identity + ip (masking email/phone) and leaves the date/time
-// tokens for the client to fill live so the optional clock can tick.
+// {username} {name} {email} {phone} {ip} {date} {time} {datetime} plus the
+// session-scoped {asset} {host} {session}. The server substitutes identity + ip
+// (masking email/phone) and leaves the date/time AND session tokens for the
+// client to fill: date/time so the optional clock can tick, and asset/host/
+// session because they only exist inside a live terminal/desktop connection
+// (a plain page clears them).
 type WatermarkConfig struct {
 	Enabled      bool   `mapstructure:"enabled"`       // master switch
 	Scope        string `mapstructure:"scope"`         // all | session
@@ -58,6 +61,7 @@ type WatermarkConfig struct {
 	BlindContent string `mapstructure:"blind_content"` // blind text; empty → first visible line
 	LiveClock    bool   `mapstructure:"live_clock"`    // refresh time tokens periodically
 	RefreshSec   int    `mapstructure:"refresh_sec"`   // clock refresh / re-validate interval (s)
+	SessionVars  bool   `mapstructure:"session_vars"`  // fill {asset}/{host}/{session} inside live sessions
 }
 
 // HealthConfig tunes the background proxy reachability prober. When enabled, a

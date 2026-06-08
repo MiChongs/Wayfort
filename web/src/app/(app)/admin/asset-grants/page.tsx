@@ -9,7 +9,6 @@
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import {
-  CalendarClock,
   Check,
   ChevronsUpDown,
   FileLock2,
@@ -31,11 +30,26 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { GrantWizard } from "@/components/admin/grant-wizard"
+import { TreeList } from "@/components/common/tree-list"
+import { AppIcon } from "@/components/icons/app-icon"
+import { StatusDot, statusToState } from "@/components/asset-tree/status-dot"
+import { BatchActionBar } from "@/components/common/batch-action-bar"
+import { NodeBatchActions } from "@/components/asset-tree/node-batch-actions"
+import { NodeDetailPanel } from "@/components/asset-tree/node-detail"
+import { useNodeStatus } from "@/lib/hooks/use-node-status"
+import { buildAccessTree, childrenOfRow, collectGroupRowIds, type AccessTreeRow } from "@/lib/asset-tree/build"
+import {
+  ActionChips,
+  ValidityCell,
+  GRANTEE_KIND_LABEL,
+  VIA_LABEL,
+  granteeNameFrom,
+} from "@/lib/access/grant-display"
+import { nodeIcon } from "@/lib/icons/protocol"
 import {
   assetGroupService, departmentService, grantService, groupService, nodeService, roleService, tagService, userService,
 } from "@/lib/api/services"
-import type { AssetGrant, GranteeKind } from "@/lib/api/types"
-import { actionLabel } from "@/lib/access/permissions"
+import type { AssetGrant, AssetGroup, GranteeKind, Node } from "@/lib/api/types"
 
 // ---- 公共：实体目录（供选择器与名称解析复用） ----------------------------
 
@@ -76,7 +90,7 @@ function useDirectories() {
   const granteeCat: Catalog = React.useMemo(() => indexCats(granteeCats), [granteeCats])
   const subjectCat: Catalog = React.useMemo(() => indexCats(subjectCats), [subjectCats])
 
-  return { granteeCats, subjectCats, granteeCat, subjectCat, nodes }
+  return { granteeCats, subjectCats, granteeCat, subjectCat, nodes, assetGroups, tags }
 }
 
 function indexCats(cats: { key: string; items: Entity[] }[]): Catalog {
@@ -84,9 +98,6 @@ function indexCats(cats: { key: string; items: Entity[] }[]): Catalog {
   for (const c of cats) out[c.key] = new Map(c.items.map((i) => [i.id, i]))
   return out
 }
-
-const GRANTEE_KIND_LABEL: Record<GranteeKind, string> = { user: "用户", role: "角色", group: "用户组", department: "部门" }
-const VIA_LABEL: Record<string, string> = { node: "直接授权", group: "资产组", tag: "标签", all: "全部资产", department: "部门" }
 
 function granteeName(cat: Catalog, type: GranteeKind, id: number): string {
   return cat[type]?.get(id)?.name ?? `${GRANTEE_KIND_LABEL[type]}#${id}`
@@ -120,7 +131,14 @@ export default function AccessPolicyPage() {
           <OverviewTab granteeCat={dirs.granteeCat} subjectCat={dirs.subjectCat} />
         </TabsContent>
         <TabsContent value="by-grantee" className="mt-4">
-          <ByGranteeTab granteeCats={dirs.granteeCats} granteeCat={dirs.granteeCat} subjectCat={dirs.subjectCat} />
+          <ByGranteeTab
+            granteeCats={dirs.granteeCats}
+            granteeCat={dirs.granteeCat}
+            nodes={dirs.nodes.data?.nodes ?? []}
+            assetGroups={dirs.assetGroups.data?.asset_groups ?? []}
+            tags={dirs.tags.data?.tags ?? []}
+            onChanged={() => qc.invalidateQueries({ queryKey: ["access", "by-grantee"] })}
+          />
         </TabsContent>
         <TabsContent value="by-subject" className="mt-4">
           <BySubjectTab subjectCat={dirs.subjectCat} granteeCat={dirs.granteeCat} onChanged={() => qc.invalidateQueries({ queryKey: ["admin", "grants"] })} />
@@ -213,89 +231,202 @@ function OverviewTab({ granteeCat, subjectCat }: { granteeCat: Catalog; subjectC
   )
 }
 
-function ActionChips({ actions }: { actions: string[] }) {
-  return (
-    <div className="flex flex-wrap gap-1">
-      {actions.map((a) => (
-        <Badge key={a} variant={a === "*" ? "secondary" : "outline"} className="font-normal">
-          {actionLabel(a)}
-        </Badge>
-      ))}
-    </div>
-  )
-}
-
-function ValidityCell({ to }: { to?: string | null }) {
-  if (!to) return <span className="text-muted-foreground">永久</span>
-  const ms = new Date(to).getTime() - Date.now()
-  if (ms <= 0) return <Badge variant="outline" className="border-destructive/30 bg-destructive/10 font-normal text-destructive">已过期</Badge>
-  const days = Math.ceil(ms / 86400000)
-  const soon = days <= 3
-  return (
-    <span className={cn("inline-flex items-center gap-1 text-xs", soon ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
-      <CalendarClock className="h-3.5 w-3.5" />
-      {days <= 1 ? "今天到期" : `${days} 天后到期`}
-    </span>
-  )
-}
-
 // ---- 按人看 ----------------------------------------------------------------
 
 function ByGranteeTab({
-  granteeCats, granteeCat, subjectCat,
+  granteeCats, granteeCat, nodes, assetGroups, tags, onChanged,
 }: {
   granteeCats: GranteeCat[]
   granteeCat: Catalog
-  subjectCat: Catalog
+  nodes: Node[]
+  assetGroups: AssetGroup[]
+  tags: { id: number; name: string }[]
+  onChanged: () => void
 }) {
   const [sel, setSel] = React.useState<{ type: GranteeKind; id: number } | null>(null)
+  const [q, setQ] = React.useState("")
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const [detailNode, setDetailNode] = React.useState<Node | null>(null)
+  const [detailOpen, setDetailOpen] = React.useState(false)
+  const status = useNodeStatus()
+
   const exp = useQuery({
     queryKey: ["access", "by-grantee", sel?.type, sel?.id],
     queryFn: () => grantService.byGrantee(sel!.type, sel!.id),
     enabled: !!sel,
   })
 
+  // Reset selection whenever the grantee changes.
+  React.useEffect(() => { setSelectedIds(new Set()); setQ("") }, [sel?.type, sel?.id])
+
+  const nodeById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
+  const granteeName2 = React.useMemo(
+    () => granteeNameFrom((t, id) => granteeCat[t]?.get(id)?.name),
+    [granteeCat],
+  )
+
+  // Filter the reachable set by the search box (name / host / actions) before
+  // hanging it on the group hierarchy, so search prunes the tree.
+  const reach = React.useMemo(() => {
+    const all = exp.data?.nodes ?? []
+    const k = q.trim().toLowerCase()
+    if (!k) return all
+    return all.filter((na) => {
+      const n = nodeById.get(na.node_id)
+      const hay = `${n?.name ?? ""} ${n?.host ?? ""} ${n?.tags ?? ""} ${na.actions.join(" ")}`.toLowerCase()
+      return hay.includes(k)
+    })
+  }, [exp.data, q, nodeById])
+
+  const tree = React.useMemo(() => buildAccessTree(assetGroups, reach, nodeById), [assetGroups, reach, nodeById])
+  const expandedSeed = React.useMemo(() => collectGroupRowIds(tree), [tree])
+
+  // Selected node ids (numeric) → batch + detail.
+  const selectedNodeIds = React.useMemo(() => {
+    const out: number[] = []
+    const walk = (rows: AccessTreeRow[]) => {
+      for (const r of rows) {
+        if (r.kind === "node") { if (selectedIds.has(r.id)) out.push(r.nodeId) }
+        else walk(r.children)
+      }
+    }
+    walk(tree)
+    return [...new Set(out)]
+  }, [tree, selectedIds])
+  const selectedNodes = React.useMemo(
+    () => selectedNodeIds.map((id) => nodeById.get(id)).filter(Boolean) as Node[],
+    [selectedNodeIds, nodeById],
+  )
+
+  const openDetail = (n: Node) => { setDetailNode(n); setDetailOpen(true); status.request([n.id]) }
+
   return (
     <div className="space-y-3">
-      <EntityCombobox
-        cats={granteeCats}
-        value={sel}
-        onChange={setSel}
-        placeholder="选一个用户 / 角色 / 用户组 / 部门"
-      />
+      <EntityCombobox cats={granteeCats} value={sel} onChange={setSel} placeholder="选一个用户 / 角色 / 用户组 / 部门" />
       {!sel ? (
-        <EmptyHint text="选一个对象，看他实际能访问哪些资产（已穿透用户组、角色、部门）。" />
+        <EmptyHint text="选一个对象，看他实际能访问哪些资产 —— 已穿透用户组、角色、部门，并按资产组层级组织成树。" />
       ) : exp.isLoading ? (
         <EmptyHint text="解析中…" />
       ) : (
         <div className="space-y-2">
           {exp.data?.all_actions?.length ? (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-              拥有<strong>全部资产</strong>的权限：<ActionChips actions={exp.data.all_actions} />
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm">
+              <span className="text-warning">拥有<strong>全部资产</strong>权限：</span>
+              <ActionChips actions={exp.data.all_actions} />
+              {exp.data.all_valid_to ? <ValidityCell to={exp.data.all_valid_to} /> : null}
             </div>
           ) : null}
-          <div className="text-xs text-muted-foreground">实际可访问 {exp.data?.nodes.length ?? 0} 台资产</div>
-          <div className="overflow-hidden rounded-lg border divide-y">
-            {(exp.data?.nodes || []).map((n) => {
-              const node = subjectCat.node?.get(n.node_id)
-              return (
-                <div key={n.node_id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm hover:bg-muted/30">
-                  <span className="min-w-[160px] font-medium">{node?.name ?? `节点#${n.node_id}`}</span>
-                  {node?.sub ? <span className="font-mono text-xs text-muted-foreground">{node.sub}</span> : null}
-                  <ActionChips actions={n.actions} />
-                  <span className="ml-auto text-xs text-muted-foreground">
-                    来自：{n.sources.map((s) => granteeName(granteeCat, s.type, s.id)).join("、")}
-                  </span>
-                </div>
-              )
-            })}
-            {(exp.data?.nodes.length ?? 0) === 0 && !exp.data?.all_actions?.length ? (
-              <div className="px-3 py-6 text-center text-sm text-muted-foreground">没有任何资产授权</div>
-            ) : null}
+
+          <div className="flex items-center gap-2">
+            <div className="relative max-w-xs flex-1">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="在可达资产中搜索…" className="pl-8" />
+            </div>
+            <span className="text-xs text-muted-foreground">实际可访问 {exp.data?.nodes.length ?? 0} 台</span>
+            <Button
+              variant="outline" size="sm" className="ml-auto h-8"
+              onClick={() => status.request(reach.map((r) => r.node_id))}
+            >
+              探测连通性
+            </Button>
           </div>
+
+          {selectedNodeIds.length > 0 && (
+            <BatchActionBar count={selectedNodeIds.length} noun="资产" onClear={() => setSelectedIds(new Set())}>
+              <NodeBatchActions
+                nodeIds={selectedNodeIds}
+                nodes={selectedNodes}
+                groups={assetGroups}
+                tags={tags as never}
+                canMutate
+                onChanged={onChanged}
+              />
+            </BatchActionBar>
+          )}
+
+          {tree.length === 0 && !exp.data?.all_actions?.length ? (
+            <EmptyHint text="没有任何资产授权。" />
+          ) : (
+            <div className="rounded-lg border p-1">
+              <TreeList<AccessTreeRow>
+                key={`${sel.type}:${sel.id}:${q}`}
+                nodes={tree}
+                getId={(r) => r.id}
+                getChildren={childrenOfRow}
+                defaultExpandedIds={expandedSeed}
+                selectable
+                selectedIds={selectedIds}
+                onSelectedChange={setSelectedIds}
+                canSelect={(r) => r.kind === "node"}
+                indent={16}
+                renderRow={(r) => (
+                  <AccessRow
+                    row={r}
+                    status={status}
+                    granteeName={(t, id) => granteeName2(t, id)}
+                    onOpenDetail={openDetail}
+                  />
+                )}
+              />
+            </div>
+          )}
         </div>
       )}
+
+      <NodeDetailPanel
+        node={detailNode}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        status={detailNode ? status.byId(detailNode.id) : null}
+        checking={detailNode ? status.isChecking?.(detailNode.id) : false}
+        onRecheck={(id) => status.request([id], true)}
+        access={detailNode ? exp.data?.nodes.find((n) => n.node_id === detailNode.id) ?? null : null}
+        granteeName={granteeName2}
+        withSessions
+      />
     </div>
+  )
+}
+
+// One row of the 按人看 access tree — folder header (count) or a node leaf with
+// status dot, action chips, source grantees and expiry.
+function AccessRow({
+  row, status, granteeName, onOpenDetail,
+}: {
+  row: AccessTreeRow
+  status: ReturnType<typeof useNodeStatus>
+  granteeName: (type: GranteeKind, id: number) => string
+  onOpenDetail: (n: Node) => void
+}) {
+  if (row.kind !== "node") {
+    return (
+      <div className="flex items-center gap-1.5 py-1 pr-1 text-sm">
+        <span className="flex-1 truncate font-medium">{row.label}</span>
+        <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{row.total}</span>
+      </div>
+    )
+  }
+  const n = row.node
+  const st = status.byId(row.nodeId)
+  return (
+    <button
+      type="button"
+      onClick={() => n && onOpenDetail(n)}
+      onMouseEnter={() => status.request([row.nodeId])}
+      className="flex w-full items-center gap-2 py-1 pr-1 text-left text-sm"
+    >
+      {n ? <AppIcon icon={nodeIcon(n)} className="h-3.5 w-3.5 shrink-0" /> : null}
+      <span className="min-w-0 flex-1 truncate">{n?.name ?? `节点#${row.nodeId}`}</span>
+      <StatusDot state={statusToState(st, status.isChecking?.(row.nodeId))} latencyMs={st?.latency_ms} />
+      {n ? <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{n.host}:{n.port}</span> : null}
+      {row.access ? <ActionChips actions={row.access.actions} className="hidden md:flex" /> : null}
+      {row.access?.sources?.length ? (
+        <span className="hidden shrink-0 text-[10px] text-muted-foreground lg:inline">
+          来自：{row.access.sources.map((s) => granteeName(s.type, s.id)).join("、")}
+        </span>
+      ) : null}
+      <ValidityCell to={row.access?.valid_to} className="shrink-0" />
+    </button>
   )
 }
 

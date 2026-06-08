@@ -36,6 +36,7 @@ import {
 import { EmptyState } from "@/components/common/empty-state"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { TreeList } from "@/components/common/tree-list"
+import { BatchActionBar } from "@/components/common/batch-action-bar"
 import { AppIcon } from "@/components/icons/app-icon"
 import { IconPicker } from "@/components/icons/icon-picker"
 import { OrgDetailPanel, type OrgEntity, type OrgKind } from "@/components/admin/org-detail-panel"
@@ -101,6 +102,7 @@ export default function OrganizationPage() {
   const [createParent, setCreateParent] = React.useState<number | null | undefined>(undefined)
   const [editing, setEditing] = React.useState<OrgEntity | null>(null)
   const [renamingId, setRenamingId] = React.useState<number | null>(null)
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
 
   function switchKind(next: OrgKind) {
     setKind(next)
@@ -108,6 +110,7 @@ export default function OrganizationPage() {
     setExpanded(new Set())
     setSelectedId(null)
     setRenamingId(null)
+    setSelectedIds(new Set())
   }
 
   const list = useQuery({ queryKey: meta.queryKey, queryFn: meta.listFn })
@@ -240,6 +243,26 @@ export default function OrganizationPage() {
     onError: (e: unknown) => toast.error("删除失败", { description: (e as Error).message }),
   })
 
+  const selectedEntityIds = React.useMemo(() => [...selectedIds].map(Number), [selectedIds])
+  const bulkMoveTop = useMutation({
+    mutationFn: () => Promise.all(selectedEntityIds.map((id) => meta.move(id, null))),
+    onSuccess: () => { setSelectedIds(new Set()); refresh(); toast.success("已移到顶层") },
+    onError: (e: unknown) => toast.error("移动失败", { description: (e as Error).message }),
+  })
+  const bulkRemove = useMutation({
+    mutationFn: () => Promise.all(selectedEntityIds.map((id) => meta.remove(id))),
+    onSuccess: () => { setSelectedIds(new Set()); setSelectedId(null); refresh(); toast.success(`已删除所选${meta.noun}（子级上提一级）`) },
+    onError: (e: unknown) => toast.error("删除失败", { description: (e as Error).message }),
+  })
+  async function askBulkDelete() {
+    const ok = await confirmDialog({
+      title: `删除所选 ${selectedEntityIds.length} 个${meta.noun}？`,
+      description: `成员关系会一并解除，它们的直接子${meta.noun}会自动上提一级。`,
+      destructive: true,
+    })
+    if (ok) bulkRemove.mutate()
+  }
+
   function commitRename(e: OrgEntity, name: string) {
     const t = name.trim()
     if (!t || t === e.name) {
@@ -330,12 +353,34 @@ export default function OrganizationPage() {
                 }
               />
             ) : (
+              <div className="space-y-2">
+              {selectedEntityIds.length > 0 && (
+                <BatchActionBar count={selectedEntityIds.length} noun={meta.noun} onClear={() => setSelectedIds(new Set())}>
+                  <Button
+                    variant="outline" size="sm" className="h-7 gap-1"
+                    disabled={bulkMoveTop.isPending}
+                    onClick={() => bulkMoveTop.mutate()}
+                  >
+                    <FolderTree className="h-3.5 w-3.5" /> 移到顶层
+                  </Button>
+                  <Button
+                    variant="outline" size="sm" className="h-7 gap-1 text-destructive hover:text-destructive"
+                    disabled={bulkRemove.isPending}
+                    onClick={askBulkDelete}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> 删除
+                  </Button>
+                </BatchActionBar>
+              )}
               <TreeList<OrgNode>
                 nodes={tree}
                 getId={(e) => String(e.id)}
                 getChildren={(e) => e.children}
                 expandedIds={searchExpanded ?? expanded}
                 onExpandedChange={setExpanded}
+                selectable
+                selectedIds={selectedIds}
+                onSelectedChange={setSelectedIds}
                 onMove={(sourceId, targetId) =>
                   move.mutate({ id: Number(sourceId), parent: targetId == null ? null : Number(targetId) })
                 }
@@ -414,6 +459,7 @@ export default function OrganizationPage() {
                   </div>
                 )}
               />
+              </div>
             )}
           </div>
         </div>

@@ -762,7 +762,13 @@ function LegacyDesktopDisplay({
           fullscreen && "fixed inset-0 z-[60]",
         )}
       >
-        <SessionWatermark targetRef={wrapRef} />
+        <SessionWatermark
+          targetRef={wrapRef}
+          sessionCtx={{
+            asset: nodeName,
+            host: nodeHost ? (nodePort ? `${nodeHost}:${nodePort}` : nodeHost) : undefined,
+          }}
+        />
         <PortalContainerProvider value={fullscreen ? wrapEl : undefined}>
         {/* Single control bar. In fullscreen it overlays the canvas and slides
             away when idle; in windowed mode it's pinned in normal flow. */}

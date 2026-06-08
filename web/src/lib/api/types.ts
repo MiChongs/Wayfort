@@ -222,6 +222,30 @@ export interface NodeTestResult {
   target?: string
 }
 
+// On-demand status verdict from POST /nodes/:id/probe (and the batch form).
+// Probes dial through the node's proxy chain and are cached ~20s server-side;
+// `forbidden` marks ids the caller has no connect grant for. `online` is the
+// single field the asset-tree status dot keys on.
+export interface NodeStatus {
+  id: number
+  online: boolean
+  mode?: "ssh" | "tcp" | "chain"
+  latency_ms?: number
+  target?: string
+  error?: string
+  forbidden?: boolean
+  cached?: boolean
+  checked_at?: string
+}
+
+// Result shape for the bulk tree actions (add/remove nodes to a group, attach/
+// detach a tag across nodes): a success count plus any per-id failures so
+// partial success is surfaced rather than swallowed.
+export interface BatchResult {
+  ok: number
+  failed?: { id: number; error: string }[]
+}
+
 // Server-side node list filter params (all optional).
 export interface NodeListParams {
   q?: string
@@ -632,6 +656,61 @@ export interface SessionStats {
   by_kind: SessionKeyCount[]
   by_status: SessionKeyCount[]
   trend: SessionDayCount[]
+}
+
+// ----- Global audit center -----
+
+// AuditLogRow is one row of the global audit trail: an AuditEvent decorated by
+// the backend with its category lane, an abnormal flag, and the resolved asset
+// name (audit_logs stores only node_id).
+export interface AuditLogRow extends AuditEvent {
+  category: string
+  abnormal: boolean
+  node_name?: string
+}
+
+export interface AuditKeyCount {
+  key: string
+  count: number
+}
+
+export interface AuditDayCount {
+  date: string
+  count: number
+  abnormal: number
+}
+
+export interface AuditStats {
+  total: number
+  today: number
+  abnormal: number
+  active_users: number
+  trend: AuditDayCount[]
+  by_category: AuditKeyCount[]
+  top_users: AuditKeyCount[]
+  top_nodes: AuditKeyCount[]
+  top_ips: AuditKeyCount[]
+  heatmap: number[][] // [7 weekdays][24 hours]
+}
+
+// AuditQuery is the filter set shared by the list, the live stream, and the
+// CSV export. `kind` is a single exact kind (click-to-filter); the segmented
+// control uses the coarser `category` lane instead.
+export interface AuditQuery {
+  category?: string
+  kind?: string
+  user_id?: number
+  username?: string
+  session_id?: string
+  node_id?: number
+  node_name?: string
+  client_ip?: string
+  q?: string
+  only_abnormal?: boolean
+  from?: string
+  to?: string
+  limit?: number
+  offset?: number
 }
 
 // DriveInfo describes the per-user file drive redirected into RDP sessions.
@@ -1450,10 +1529,16 @@ export interface NodeAccess {
   node_id: number
   actions: string[]
   sources: GranteeRef[]
+  // 该节点访问的最晚到期时间（贡献授权中最晚者；缺省=永久）。
+  valid_to?: string | null
+  // 该节点所属的资产组 ID，用于把扁平可达集挂回资产组层级树。
+  group_ids?: number[]
 }
 export interface AccessExplanation {
   all_actions: string[]
   all_sources: GranteeRef[]
+  // “全部资产”授权的到期（缺省=永久）。
+  all_valid_to?: string | null
   nodes: NodeAccess[]
 }
 
@@ -2281,7 +2366,20 @@ export interface WatermarkRuntime {
     hardened: boolean
     liveClock: boolean
     refreshSec: number
+    // When true, the client fills {asset}/{host}/{session} inside a live
+    // terminal/desktop session; plain pages always clear them.
+    sessionVars?: boolean
   }
+}
+
+// Session-scoped values the watermark engine fills client-side (analogous to
+// the {date}/{time} clock tokens). Only present inside a live connection; a
+// plain page passes none, so {asset}/{host}/{session} resolve to empty and
+// their lines are trimmed away.
+export interface WatermarkSessionContext {
+  asset?: string
+  host?: string
+  session?: string
 }
 
 export interface SettingEnumOption {

@@ -908,7 +908,14 @@ export function WebSSHTerminal({
         )}
         style={{ background: themePalette.colors.background }}
       >
-        <SessionWatermark targetRef={wrapRef} />
+        <SessionWatermark
+          targetRef={wrapRef}
+          sessionCtx={{
+            asset: displayName || bannerLabel,
+            host: host ? (port ? `${host}:${port}` : host) : undefined,
+            session: tabId,
+          }}
+        />
         <TerminalToolbar
           status={status}
           protocol={protocol}

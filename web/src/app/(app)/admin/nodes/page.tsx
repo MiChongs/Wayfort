@@ -7,17 +7,25 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  FolderTree,
   Loader2,
   Pencil,
   Plus,
   Search,
   Server,
   ShieldCheck,
+  Table2,
   Trash2,
+  Wifi,
   X,
 } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { GrantWizard } from "@/components/admin/grant-wizard"
+import { NodeTree } from "@/components/admin/nodes/node-tree"
+import { BatchActionBar } from "@/components/common/batch-action-bar"
+import { NodeBatchActions } from "@/components/asset-tree/node-batch-actions"
+import { NodeDetailPanel } from "@/components/asset-tree/node-detail"
+import { useNodeStatus } from "@/lib/hooks/use-node-status"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -47,7 +55,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { EmptyState } from "@/components/common/empty-state"
 import { ConfirmDeleteDialog } from "@/components/admin/confirm-delete"
-import { nodeService, proxyService, tagService } from "@/lib/api/services"
+import { assetGroupService, nodeService, proxyService, tagService } from "@/lib/api/services"
 import { TagPicker } from "@/components/tags/tag-picker"
 import { AppIcon } from "@/components/icons/app-icon"
 import { IconPicker } from "@/components/icons/icon-picker"
@@ -78,6 +86,21 @@ export default function AdminNodesPage() {
   const [selected, setSelected] = React.useState<Set<number>>(new Set())
   const [editing, setEditing] = React.useState<Node | null>(null)
   const [deleting, setDeleting] = React.useState<Node | null>(null)
+  // table ↔ tree view, persisted (SSR-safe: start on table, sync after mount).
+  const [viewMode, setViewMode] = React.useState<"table" | "tree">("table")
+  const [treeBy, setTreeBy] = React.useState<"group" | "tag">("group")
+  const [detailNode, setDetailNode] = React.useState<Node | null>(null)
+  const [detailOpen, setDetailOpen] = React.useState(false)
+  const nodeStatus = useNodeStatus()
+  React.useEffect(() => {
+    const v = window.localStorage.getItem("admin:nodes:view")
+    if (v === "tree" || v === "table") setViewMode(v)
+  }, [])
+  const changeView = (v: "table" | "tree") => {
+    setViewMode(v)
+    window.localStorage.setItem("admin:nodes:view", v)
+  }
+  const openDetail = (n: Node) => { setDetailNode(n); setDetailOpen(true); nodeStatus.request([n.id]) }
 
   // Debounce the free-text query so we don't refetch on every keystroke.
   React.useEffect(() => {
@@ -96,9 +119,15 @@ export default function AdminNodesPage() {
 
   const nodes = useQuery({ queryKey: [...NODES_KEY, params], queryFn: () => nodeService.search(params) })
   const proxies = useQuery({ queryKey: ["admin", "proxies"], queryFn: proxyService.list })
+  const assetGroups = useQuery({ queryKey: ["admin", "asset-groups"], queryFn: assetGroupService.list })
+  const tags = useQuery({ queryKey: ["admin", "tags"], queryFn: tagService.list })
 
   const rows = nodes.data?.nodes ?? []
-  const invalidate = () => qc.invalidateQueries({ queryKey: NODES_KEY })
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: NODES_KEY })
+    qc.invalidateQueries({ queryKey: ["admin", "asset-groups"] })
+  }
+  const selectedNodes = React.useMemo(() => rows.filter((n) => selected.has(n.id)), [rows, selected])
 
   const setDisabledMut = useMutation({
     mutationFn: async ({ ids, disabled }: { ids: number[]; disabled: boolean }) => {
@@ -146,7 +175,7 @@ export default function AdminNodesPage() {
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="space-y-1">
-          <h1 className="display-title flex items-center gap-2.5 text-3xl">
+          <h1 className="flex items-center gap-2.5 text-2xl font-semibold">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/12 text-primary">
               <Server className="h-5 w-5" />
             </span>
@@ -241,49 +270,95 @@ export default function AdminNodesPage() {
                 ))}
               </SelectContent>
             </Select>
-            <span className="ml-auto text-xs text-muted-foreground">{rows.length} 个节点</span>
+            {viewMode === "tree" && (
+              <Select value={treeBy} onValueChange={(v) => setTreeBy(v as "group" | "tag")}>
+                <SelectTrigger className="w-[120px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="group">按资产组</SelectItem>
+                  <SelectItem value="tag">按标签</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-9 gap-1 text-xs"
+                onClick={() => nodeStatus.request(rows.map((n) => n.id))}
+                title="探测可见节点连通性"
+              >
+                <Wifi className="h-3.5 w-3.5" /> 探测
+              </Button>
+              {/* table ↔ tree switch */}
+              <div className="inline-flex rounded-lg border bg-card p-0.5">
+                <button
+                  type="button"
+                  onClick={() => changeView("table")}
+                  className={cn(
+                    "inline-flex h-8 items-center gap-1 rounded-md px-2.5 text-xs font-medium transition-colors",
+                    viewMode === "table" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Table2 className="h-3.5 w-3.5" /> 表格
+                </button>
+                <button
+                  type="button"
+                  onClick={() => changeView("tree")}
+                  className={cn(
+                    "inline-flex h-8 items-center gap-1 rounded-md px-2.5 text-xs font-medium transition-colors",
+                    viewMode === "tree" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <FolderTree className="h-3.5 w-3.5" /> 树形
+                </button>
+              </div>
+              <span className="text-xs text-muted-foreground">{rows.length} 个节点</span>
+            </div>
           </div>
 
-          {/* Bulk bar */}
+          {/* Bulk bar — shared with the asset tree (authorize / group / tag /
+              enable / export), plus a node-delete that opens the confirm. */}
           {selectedIds.length > 0 && (
-            <div className="flex items-center gap-2 rounded-lg border bg-secondary/40 px-3 py-2 text-sm">
-              <span className="font-medium">已选 {selectedIds.length} 项</span>
-              <div className="ml-auto flex items-center gap-1.5">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={setDisabledMut.isPending}
-                  onClick={() => setDisabledMut.mutate({ ids: selectedIds, disabled: false })}
-                >
-                  启用
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={setDisabledMut.isPending}
-                  onClick={() => setDisabledMut.mutate({ ids: selectedIds, disabled: true })}
-                >
-                  停用
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive hover:text-destructive"
-                  disabled={removeMut.isPending}
-                  onClick={() => {
-                    if (confirm(`确认删除所选 ${selectedIds.length} 个节点？`)) removeMut.mutate(selectedIds)
-                  }}
-                >
-                  删除
-                </Button>
-                <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-                  取消
-                </Button>
-              </div>
-            </div>
+            <BatchActionBar count={selectedIds.length} noun="节点" onClear={() => setSelected(new Set())}>
+              <NodeBatchActions
+                nodeIds={selectedIds}
+                nodes={selectedNodes}
+                groups={assetGroups.data?.asset_groups ?? []}
+                tags={tags.data?.tags ?? []}
+                canMutate
+                onChanged={() => { setSelected(new Set()); invalidate() }}
+                onDelete={() => {
+                  if (confirm(`确认删除所选 ${selectedIds.length} 个节点？`)) removeMut.mutate(selectedIds)
+                }}
+              />
+            </BatchActionBar>
           )}
 
-          {/* Table */}
+          {/* Tree view */}
+          {viewMode === "tree" ? (
+            nodes.isLoading ? (
+              <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground">加载中…</div>
+            ) : rows.length === 0 ? (
+              <div className="rounded-xl border bg-card py-10 text-center text-muted-foreground">没有匹配的节点</div>
+            ) : (
+              <NodeTree
+                nodes={rows}
+                groups={assetGroups.data?.asset_groups ?? []}
+                treeBy={treeBy}
+                selectedNodeIds={selected}
+                onSelectedNodeIds={setSelected}
+                status={nodeStatus}
+                onEdit={setEditing}
+                onDelete={setDeleting}
+                onOpenDetail={openDetail}
+                onGranted={invalidate}
+                onChanged={invalidate}
+              />
+            )
+          ) : (
+          /* Table */
           <div className="overflow-x-auto rounded-xl border bg-card">
             <table className="w-full text-sm">
               <thead className="border-b bg-secondary/40 text-xs text-muted-foreground">
@@ -411,8 +486,19 @@ export default function AdminNodesPage() {
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
+
+      <NodeDetailPanel
+        node={detailNode}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        status={detailNode ? nodeStatus.byId(detailNode.id) : null}
+        checking={detailNode ? nodeStatus.isChecking(detailNode.id) : false}
+        onRecheck={(id) => nodeStatus.request([id], true)}
+        withSessions
+      />
 
       {/* Edit */}
       {editing && (

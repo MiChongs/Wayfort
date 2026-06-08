@@ -27,6 +27,8 @@ import type {
   DashboardSummary,
   NodeListParams,
   NodeTestResult,
+  NodeStatus,
+  BatchResult,
   AssetGrant,
   AssetGroup,
   AssetTag,
@@ -225,6 +227,15 @@ export const nodeService = {
   update: (id: number, body: Partial<Node>) => api<Node>("PATCH", `/nodes/${id}`, { body }),
   remove: (id: number) => api<void>("DELETE", `/nodes/${id}`),
   test: (id: number) => api<NodeTestResult>("POST", `/nodes/${id}/test`),
+  // On-demand status probe (dials through the proxy chain, cached ~20s). The
+  // single form powers a row's manual re-check; the batch form powers the
+  // asset tree's status dots. Both enforce a per-node connect grant server-side.
+  probe: (id: number) => api<NodeStatus>("POST", `/nodes/${id}/probe`),
+  probeBatch: (ids: number[]) =>
+    api<{ results: NodeStatus[] }>("POST", "/nodes/probe/batch", { body: { ids } }),
+  // Bulk enable/disable from the asset tree's batch bar.
+  batchEnable: (ids: number[]) => api<{ ok: number }>("POST", "/nodes/batch/enable", { body: { ids } }),
+  batchDisable: (ids: number[]) => api<{ ok: number }>("POST", "/nodes/batch/disable", { body: { ids } }),
 }
 export const proxyService = {
   list: () =>
@@ -1185,6 +1196,11 @@ export const assetGroupService = {
   remove: (id: number) => api<void>("DELETE", `/asset-groups/${id}`),
   addNode: (id: number, node_id: number) => api<void>("POST", `/asset-groups/${id}/nodes`, { body: { node_id } }),
   removeNode: (id: number, nid: number) => api<void>("DELETE", `/asset-groups/${id}/nodes/${nid}`),
+  // Bulk membership for the asset tree's batch bar / multi-node drag.
+  addNodesBatch: (id: number, node_ids: number[]) =>
+    api<BatchResult>("POST", `/asset-groups/${id}/nodes/batch`, { body: { node_ids } }),
+  removeNodesBatch: (id: number, node_ids: number[]) =>
+    api<BatchResult>("DELETE", `/asset-groups/${id}/nodes/batch`, { body: { node_ids } }),
 }
 export const tagService = {
   list: () => api<{ tags: AssetTag[]; groups: AssetTagGroup[] }>("GET", "/tags"),
@@ -1196,6 +1212,11 @@ export const tagService = {
   // Set a node's tags to exactly this set (the tag-picker save path).
   replaceNodeTags: (nodeId: number, tag_ids: number[]) =>
     api<void>("PUT", `/nodes/${nodeId}/tags`, { body: { tag_ids } }),
+  // Bulk: put / pull one tag across many nodes (asset tree batch tag actions).
+  attachBatch: (tagId: number, node_ids: number[]) =>
+    api<BatchResult>("POST", `/tags/${tagId}/nodes/batch`, { body: { node_ids } }),
+  detachBatch: (tagId: number, node_ids: number[]) =>
+    api<BatchResult>("DELETE", `/tags/${tagId}/nodes/batch`, { body: { node_ids } }),
 }
 export const tagGroupService = {
   list: () => api<{ groups: AssetTagGroup[] }>("GET", "/tag-groups"),

@@ -426,10 +426,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			TOTP: totpSvc, Email: emailOTP, Recovery: recoverySvc,
 			Passkey: passkeySvc, OIDC: oidcManager, OIDCRepo: oidcRepo,
 			Anomaly: anomalyDetector, Mailer: mailer,
+			Writer:   auditWriter,
 			AnonEna:  anonService != nil,
 			AnonSpec: cfg.Anonymous,
 		},
-		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver},
+		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, Chain: chain, Access: assetResolver, Cache: rc.Client()},
 		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
 		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
 		ProxyGroup:    &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},
@@ -438,6 +439,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault, Resolver: resolver, Nodes: nodeRepo},
 		Dashboard:     &api.DashboardHandler{DB: db, RBAC: rbacResolver, Asset: assetResolver},
 		Session:       &api.SessionHandler{Repo: sessionRepo, Audit: auditRepo, Writer: auditWriter, Terminators: []api.SessionTerminator{wsGateway}},
+		Audit:         &api.AuditHandler{Repo: auditRepo, Nodes: nodeRepo},
 		SFTP:          sftpHandler,
 		OSS:           ossHandler,
 		WS:            wsGateway,
@@ -490,7 +492,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		},
 
 		// System settings center — super-admin runtime configuration.
-		Settings: &api.SettingsHandler{Center: settingsCenter, Prober: settingsProber},
+		Settings: &api.SettingsHandler{Center: settingsCenter, Prober: settingsProber, Writer: auditWriter},
 		// Anti-leak watermark — readable by every authenticated user; reads the
 		// live settings snapshot so super-admin changes apply on the next poll.
 		Watermark: &api.WatermarkHandler{Users: userRepo, Center: settingsCenter},

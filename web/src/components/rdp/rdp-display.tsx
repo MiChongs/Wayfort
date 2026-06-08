@@ -226,7 +226,13 @@ export function RDPDisplay({
       className="relative h-full w-full bg-black overflow-hidden focus:outline-none"
       tabIndex={0}
     >
-      <SessionWatermark targetRef={wrapperRef} />
+      <SessionWatermark
+        targetRef={wrapperRef}
+        sessionCtx={{
+          asset: nodeName,
+          host: nodeHost ? (nodePort ? `${nodeHost}:${nodePort}` : nodeHost) : undefined,
+        }}
+      />
       {/* The host div is what RDPClient mounts into. After Plan 16 it
           contains: (1) the Guacamole display wrapper (event-receiving,
           renders the real desktop + cursor), (2) the Pixi canvas above

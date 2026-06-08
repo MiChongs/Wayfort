@@ -167,6 +167,23 @@ func (r *AssetGroupRepo) MembersByGroup(ctx context.Context, groupIDs []uint64) 
 	}
 	return out, nil
 }
+// GroupsForNodes is the inverse of MembersByGroup: it returns, for each node,
+// the asset-group IDs it belongs to. Lets a flat reachable-node set be hung on
+// the group hierarchy (授权树) in one query instead of N.
+func (r *AssetGroupRepo) GroupsForNodes(ctx context.Context, nodeIDs []uint64) (map[uint64][]uint64, error) {
+	out := map[uint64][]uint64{}
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	var rows []model.AssetGroupNode
+	if err := r.db.WithContext(ctx).Where("node_id IN ?", nodeIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		out[row.NodeID] = append(out[row.NodeID], row.GroupID)
+	}
+	return out, nil
+}
 func (r *AssetGroupRepo) AddNode(ctx context.Context, groupID, nodeID uint64) error {
 	rel := model.AssetGroupNode{GroupID: groupID, NodeID: nodeID}
 	return r.db.WithContext(ctx).Where("group_id = ? AND node_id = ?", groupID, nodeID).

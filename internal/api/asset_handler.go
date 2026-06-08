@@ -165,6 +165,71 @@ func (h *AssetGroupHandler) RemoveNode(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// batchNodeIDs is the shared body for the tree's bulk membership/tag actions.
+type batchNodeIDs struct {
+	NodeIDs []uint64 `json:"node_ids"`
+}
+
+// batchFailure reports one id that couldn't be processed, so partial success is
+// surfaced rather than swallowed.
+type batchFailure struct {
+	ID    uint64 `json:"id"`
+	Error string `json:"error"`
+}
+
+// AddNodesBatch attaches many nodes to a group in one request — the tree's bulk
+// "加入分组" action. Partial failures are reported, not fatal.
+func (h *AssetGroupHandler) AddNodesBatch(c *gin.Context) {
+	gid, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	var body batchNodeIDs
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.NodeIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_ids 不能为空"})
+		return
+	}
+	ctx := c.Request.Context()
+	ok := 0
+	failed := []batchFailure{}
+	for _, nid := range body.NodeIDs {
+		if err := h.Repo.AddNode(ctx, gid, nid); err != nil {
+			failed = append(failed, batchFailure{ID: nid, Error: err.Error()})
+			continue
+		}
+		ok++
+	}
+	h.Resolver.InvalidateAll(ctx)
+	c.JSON(http.StatusOK, gin.H{"ok": ok, "failed": failed})
+}
+
+// RemoveNodesBatch detaches many nodes from a group in one request (bulk "移出分组").
+func (h *AssetGroupHandler) RemoveNodesBatch(c *gin.Context) {
+	gid, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	var body batchNodeIDs
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.NodeIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_ids 不能为空"})
+		return
+	}
+	ctx := c.Request.Context()
+	ok := 0
+	failed := []batchFailure{}
+	for _, nid := range body.NodeIDs {
+		if err := h.Repo.RemoveNode(ctx, gid, nid); err != nil {
+			failed = append(failed, batchFailure{ID: nid, Error: err.Error()})
+			continue
+		}
+		ok++
+	}
+	h.Resolver.InvalidateAll(ctx)
+	c.JSON(http.StatusOK, gin.H{"ok": ok, "failed": failed})
+}
+
 // ----- Tags -----
 
 type TagHandler struct {
@@ -320,6 +385,59 @@ func (h *TagHandler) Replace(c *gin.Context) {
 	}
 	h.Resolver.InvalidateAll(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// AttachBatch puts one tag on many nodes at once — the tree's bulk "打标签"
+// action. The tag id comes from the path; node ids from the body.
+func (h *TagHandler) AttachBatch(c *gin.Context) {
+	tid, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	var body batchNodeIDs
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.NodeIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_ids 不能为空"})
+		return
+	}
+	ctx := c.Request.Context()
+	ok := 0
+	failed := []batchFailure{}
+	for _, nid := range body.NodeIDs {
+		if err := h.Repo.AttachToNode(ctx, nid, tid); err != nil {
+			failed = append(failed, batchFailure{ID: nid, Error: err.Error()})
+			continue
+		}
+		ok++
+	}
+	h.Resolver.InvalidateAll(ctx)
+	c.JSON(http.StatusOK, gin.H{"ok": ok, "failed": failed})
+}
+
+// DetachBatch removes one tag from many nodes at once (bulk "去标签").
+func (h *TagHandler) DetachBatch(c *gin.Context) {
+	tid, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	var body batchNodeIDs
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if len(body.NodeIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_ids 不能为空"})
+		return
+	}
+	ctx := c.Request.Context()
+	ok := 0
+	failed := []batchFailure{}
+	for _, nid := range body.NodeIDs {
+		if err := h.Repo.DetachFromNode(ctx, nid, tid); err != nil {
+			failed = append(failed, batchFailure{ID: nid, Error: err.Error()})
+			continue
+		}
+		ok++
+	}
+	h.Resolver.InvalidateAll(ctx)
+	c.JSON(http.StatusOK, gin.H{"ok": ok, "failed": failed})
 }
 
 // ----- Tag groups -----

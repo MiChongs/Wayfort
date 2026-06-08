@@ -378,6 +378,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		authed.GET("/tag-groups", rt.TagGroup.List)
 		authed.GET("/dashboard", rt.Dashboard.Summary)
 
+		// On-demand node status probe — open to every authenticated user, but
+		// the handler enforces a per-node connect grant (admins via 全部资产),
+		// so it never leaks reachability of assets the caller can't reach.
+		// Powers the asset tree's live status dots for the workspace too.
+		authed.POST("/nodes/:id/probe", rt.Node.Probe)
+		authed.POST("/nodes/probe/batch", rt.Node.ProbeBatch)
+
 		// Admin: users / roles / orgs
 		admin := authed.Group("")
 		admin.GET("/users", perm(auth.PermUserManage), rt.User.List)
@@ -426,6 +433,9 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.PATCH("/nodes/:id", perm(auth.PermNodeUpdate), rt.Node.Update)
 		admin.DELETE("/nodes/:id", perm(auth.PermNodeDelete), rt.Node.Delete)
 		admin.POST("/nodes/:id/test", perm(auth.PermNodeRead), rt.Node.Test)
+		// Bulk enable/disable from the asset tree's batch bar.
+		admin.POST("/nodes/batch/enable", perm(auth.PermNodeUpdate), rt.Node.BatchEnable)
+		admin.POST("/nodes/batch/disable", perm(auth.PermNodeUpdate), rt.Node.BatchDisable)
 		// OSS "test & discover": list buckets for a provider/endpoint +
 		// credential during node creation so the admin can visually pick a
 		// default bucket. Gated by node-create (no per-node grant yet).
@@ -473,6 +483,9 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.DELETE("/asset-groups/:id", perm(auth.PermAssetGroupManage), rt.AssetGroup.Delete)
 		admin.POST("/asset-groups/:id/nodes", perm(auth.PermAssetGroupManage), rt.AssetGroup.AddNode)
 		admin.DELETE("/asset-groups/:id/nodes/:nid", perm(auth.PermAssetGroupManage), rt.AssetGroup.RemoveNode)
+		// Bulk membership for the asset tree (drag many / batch "加入·移出分组").
+		admin.POST("/asset-groups/:id/nodes/batch", perm(auth.PermAssetGroupManage), rt.AssetGroup.AddNodesBatch)
+		admin.DELETE("/asset-groups/:id/nodes/batch", perm(auth.PermAssetGroupManage), rt.AssetGroup.RemoveNodesBatch)
 		admin.POST("/tags", perm(auth.PermTagManage), rt.Tag.Create)
 		admin.PATCH("/tags/:id", perm(auth.PermTagManage), rt.Tag.Update)
 		admin.DELETE("/tags/:id", perm(auth.PermTagManage), rt.Tag.Delete)
@@ -485,6 +498,9 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/nodes/:id/tags", perm(auth.PermTagManage), rt.Tag.Attach)
 		admin.PUT("/nodes/:id/tags", perm(auth.PermTagManage), rt.Tag.Replace)
 		admin.DELETE("/nodes/:id/tags/:tid", perm(auth.PermTagManage), rt.Tag.Detach)
+		// Bulk: put / pull one tag on many nodes (asset tree batch 打·去标签).
+		admin.POST("/tags/:id/nodes/batch", perm(auth.PermTagManage), rt.Tag.AttachBatch)
+		admin.DELETE("/tags/:id/nodes/batch", perm(auth.PermTagManage), rt.Tag.DetachBatch)
 		admin.GET("/asset-grants", perm(auth.PermGrantManage), rt.Grant.List)
 		admin.POST("/asset-grants", perm(auth.PermGrantManage), rt.Grant.Create)
 		admin.POST("/asset-grants/batch", perm(auth.PermGrantManage), rt.Grant.CreateBatch)

@@ -35,7 +35,9 @@ function useFieldValues(fields: SettingField[], valueOf: (f: SettingField) => un
   }, [fields, valueOf])
 }
 
-// Substitute sample identity tokens; leave {date}/{time}/{datetime} for the engine.
+// Substitute sample identity tokens; leave {date}/{time}/{datetime} and the
+// session tokens {asset}/{host}/{session} for the engine (so the preview honours
+// the session-vars switch exactly like a real session does).
 function sampleText(template: string): string {
   return template
     .replace(/\{username\}/g, "zhangsan")
@@ -44,6 +46,10 @@ function sampleText(template: string): string {
     .replace(/\{phone\}/g, "138****5678")
     .replace(/\{ip\}/g, "10.0.0.5")
 }
+
+// Sample connection context for the preview, so {asset}/{host}/{session} render
+// when session vars are enabled.
+const SAMPLE_SESSION_CTX = { asset: "prod-db-01", host: "10.0.0.9:5432", session: "sess-3f9a2" }
 
 export function WatermarkSettingsPanel({
   fields,
@@ -74,6 +80,7 @@ export function WatermarkSettingsPanel({
         hardened: false,
         liveClock: bool("watermark.live_clock", true),
         refreshSec: num("watermark.refresh_sec", 60),
+        sessionVars: bool("watermark.session_vars", false),
       },
     }),
     [num, str, bool],
@@ -105,7 +112,7 @@ function PreviewCard({ runtime, disabled }: { runtime: WatermarkRuntime; disable
     if (!el || disabled) return
     let engine: WatermarkEngine | null = null
     let cancelled = false
-    void mountWatermark(el, runtime, surface).then((e) => {
+    void mountWatermark(el, runtime, surface, SAMPLE_SESSION_CTX).then((e) => {
       if (cancelled) {
         e?.destroy()
         return
@@ -163,6 +170,7 @@ function PreviewCard({ runtime, disabled }: { runtime: WatermarkRuntime; disable
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
         示例身份（张三 / z***@corp.com / 10.0.0.5）。真实水印按登录用户与来源 IP 解析；时间实时刷新。
+        会话变量 {"{asset}"} / {"{host}"} / {"{session}"} 仅在终端 / 远程桌面连接内按当前资产实时填充，普通页面自动隐藏。
       </p>
     </div>
   )

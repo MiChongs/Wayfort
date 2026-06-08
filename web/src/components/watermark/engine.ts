@@ -13,7 +13,7 @@
 //     mount into our own fixed/absolute host div rather than into <body> raw, so
 //     positioning is predictable and we never reflow the app layout.
 
-import type { WatermarkRuntime } from "@/lib/api/types"
+import type { WatermarkRuntime, WatermarkSessionContext } from "@/lib/api/types"
 
 export type Surface = "auto" | "light" | "dark"
 
@@ -37,16 +37,32 @@ function pad2(n: number) {
   return n < 10 ? `0${n}` : `${n}`
 }
 
-/** Replace {date}/{time}/{datetime} with the current wall-clock values. */
-export function fillTimeTokens(template: string): string {
-  if (!/\{(date|time|datetime)\}/.test(template)) return template
+// Tokens the CLIENT fills (the server leaves them untouched): the live clock and
+// the session-scoped asset context. Session tokens resolve to "" when there's no
+// live connection (or the admin disabled session vars), and any line that thereby
+// becomes blank is dropped — mirroring the server's resolve() so a plain page
+// never shows an empty row or a stray "{asset}".
+export function fillTokens(template: string, ctx?: WatermarkSessionContext): string {
   const d = new Date()
   const date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
   const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
-  return template
+  const out = template
     .replace(/\{datetime\}/g, `${date} ${time}`)
     .replace(/\{date\}/g, date)
     .replace(/\{time\}/g, time)
+    .replace(/\{asset\}/g, ctx?.asset ?? "")
+    .replace(/\{host\}/g, ctx?.host ?? "")
+    .replace(/\{session\}/g, ctx?.session ?? "")
+  return out
+    .split("\n")
+    .map((l) => l.replace(/[ \t]+$/, ""))
+    .filter((l) => l.trim() !== "")
+    .join("\n")
+}
+
+/** Back-compat alias — fills the clock tokens with no session context. */
+export function fillTimeTokens(template: string): string {
+  return fillTokens(template)
 }
 
 // --- colour / contrast helpers (keep the mark legible on any surface) ---
@@ -117,6 +133,7 @@ export async function mountWatermark(
   target: HTMLElement,
   runtime: WatermarkRuntime,
   surface: Surface = "auto",
+  sessionCtx?: WatermarkSessionContext,
 ): Promise<WatermarkEngine | null> {
   if (typeof window === "undefined" || !runtime.enabled || !runtime.style || !runtime.text) return null
 
@@ -137,7 +154,10 @@ export async function mountWatermark(
 
   const { fill, halo } = effectiveColors(target, style.color, surface)
   const family = fontFamily()
-  const buildContent = () => fillTimeTokens(runtime.text ?? "")
+  // Session tokens are filled only when the admin enabled them AND we're inside a
+  // live connection (sessionCtx present); otherwise they clear + their lines drop.
+  const sessionFill = features?.sessionVars ? sessionCtx : undefined
+  const buildContent = () => fillTokens(runtime.text ?? "", sessionFill)
 
   const visibleHost = makeHost(rooted, Z_VISIBLE)
   target.appendChild(visibleHost)

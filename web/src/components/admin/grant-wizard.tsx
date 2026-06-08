@@ -82,11 +82,13 @@ export interface GrantWizardProps {
   onDone?: () => void
   /** 锁定客体（从资产进入）：例如 {type:"node", id, name}。 */
   fixedSubject?: Fixed
+  /** 锁定多个客体（从资产树多选进入批量授权）。优先于 fixedSubject。 */
+  fixedSubjects?: Fixed[]
   /** 锁定主体（从人进入）：例如 {type:"user", id, name}。 */
   fixedGrantee?: Fixed
 }
 
-export function GrantWizard({ trigger, onDone, fixedSubject, fixedGrantee }: GrantWizardProps) {
+export function GrantWizard({ trigger, onDone, fixedSubject, fixedSubjects, fixedGrantee }: GrantWizardProps) {
   const { granteeCats, subjectCats } = useGrantDirectories()
   const [open, setOpen] = React.useState(false)
   const [subjectAll, setSubjectAll] = React.useState(false)
@@ -107,14 +109,17 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedGrantee }: Gra
   const actions = presetKey === "custom" ? customActions : PRESETS.find((p) => p.key === presetKey)?.actions ?? []
   const presetLabel = presetKey === "custom" ? "自定义" : PRESETS.find((p) => p.key === presetKey)?.label ?? ""
 
+  const hasFixedSubjects = !!fixedSubjects && fixedSubjects.length > 0
   const grantees = fixedGrantee
     ? [{ type: fixedGrantee.type, id: fixedGrantee.id }]
     : [...granteeSel].map(parseRef)
-  const subjects = fixedSubject
-    ? [{ type: fixedSubject.type, id: fixedSubject.id }]
-    : subjectAll
-      ? [{ type: "all", id: 0 }]
-      : [...subjectSel].map(parseRef)
+  const subjects = hasFixedSubjects
+    ? fixedSubjects!.map((s) => ({ type: s.type, id: s.id }))
+    : fixedSubject
+      ? [{ type: fixedSubject.type, id: fixedSubject.id }]
+      : subjectAll
+        ? [{ type: "all", id: 0 }]
+        : [...subjectSel].map(parseRef)
 
   const canSubmit = grantees.length > 0 && subjects.length > 0 && actions.length > 0 && (validMode === "forever" || !!validTo)
 
@@ -144,6 +149,7 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedGrantee }: Gra
           <DialogTitle>
             新建授权
             {fixedSubject ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 资产：{fixedSubject.name}</span> : null}
+            {hasFixedSubjects ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 已选 {fixedSubjects!.length} 个资产</span> : null}
             {fixedGrantee ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 对象：{fixedGrantee.name}</span> : null}
           </DialogTitle>
         </DialogHeader>
@@ -154,11 +160,11 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedGrantee }: Gra
                 <MultiPicker cats={granteeCats} selected={granteeSel} onChange={setGranteeSel} />
               </Section>
             )}
-            {!fixedSubject && (
+            {!fixedSubject && !hasFixedSubjects && (
               <Section step={next()} title="可访问哪些资产">
                 <label className="mb-2 flex w-fit cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
                   <Checkbox checked={subjectAll} onCheckedChange={(v) => setSubjectAll(!!v)} />
-                  <span className="font-medium text-amber-700 dark:text-amber-400">全部资产</span>
+                  <span className="font-medium text-warning">全部资产</span>
                   <span className="text-xs text-muted-foreground">（慎用，等于放开所有节点）</span>
                 </label>
                 {!subjectAll && <MultiPicker cats={subjectCats} selected={subjectSel} onChange={setSubjectSel} />}
@@ -213,7 +219,7 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedGrantee }: Gra
             {canSubmit ? (
               <span>
                 给 <strong className="text-foreground">{fixedGrantee ? fixedGrantee.name : `${grantees.length} 个对象`}</strong> ×{" "}
-                <strong className="text-foreground">{fixedSubject ? fixedSubject.name : subjectAll ? "全部资产" : `${subjects.length} 个资产`}</strong> 授【
+                <strong className="text-foreground">{fixedSubject ? fixedSubject.name : hasFixedSubjects ? `${subjects.length} 个资产` : subjectAll ? "全部资产" : `${subjects.length} 个资产`}</strong> 授【
                 <strong className="text-foreground">{presetLabel}</strong>】
                 {validMode === "until" && validTo ? `，到期 ${validTo.replace("T", " ")}` : ""}
                 <span className="ml-1 text-xs">= {summarizeActions(actions)}</span>

@@ -37,10 +37,11 @@ type watermarkStyle struct {
 }
 
 type watermarkFeatures struct {
-	AntiTamper bool `json:"antiTamper"`
-	Hardened   bool `json:"hardened"`
-	LiveClock  bool `json:"liveClock"`
-	RefreshSec int  `json:"refreshSec"`
+	AntiTamper  bool `json:"antiTamper"`
+	Hardened    bool `json:"hardened"`
+	LiveClock   bool `json:"liveClock"`
+	RefreshSec  int  `json:"refreshSec"`
+	SessionVars bool `json:"sessionVars"`
 }
 
 type watermarkBlind struct {
@@ -88,17 +89,21 @@ func (h *WatermarkHandler) Get(c *gin.Context) {
 			Text:    blindText,
 		},
 		Features: watermarkFeatures{
-			AntiTamper: cfg.AntiTamper,
-			Hardened:   cfg.Hardened,
-			LiveClock:  cfg.LiveClock,
-			RefreshSec: cfg.RefreshSec,
+			AntiTamper:  cfg.AntiTamper,
+			Hardened:    cfg.Hardened,
+			LiveClock:   cfg.LiveClock,
+			RefreshSec:  cfg.RefreshSec,
+			SessionVars: cfg.SessionVars,
 		},
 	})
 }
 
 // resolve substitutes the identity + IP tokens into the template and drops any
 // line that became empty (e.g. an unset email) so the overlay has no blank
-// gaps. The {date}/{time}/{datetime} tokens are left for the browser.
+// gaps. The {date}/{time}/{datetime} clock tokens AND the session-scoped
+// {asset}/{host}/{session} tokens are left untouched for the browser to fill:
+// the client fills session tokens only inside a live connection and clears them
+// (then trims the now-empty lines) on plain pages.
 func (h *WatermarkHandler) resolve(c *gin.Context, cfg config.WatermarkConfig, claims *auth.Claims) string {
 	username, name, email, phone := "", "", "", ""
 	if claims != nil {

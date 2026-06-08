@@ -354,7 +354,7 @@ var specs = []Spec{
 	{Key: "watermark.content", Group: "watermark", Type: TypeText, Label: "内容模板", Live: true,
 		DependsOn: "watermark.enabled", DependsValue: "true",
 		Placeholder: "{name}\n{email}\n{ip}  {datetime}",
-		Help: "每行一段，可用变量：{username} 用户名、{name} 姓名、{email} 邮箱、{phone} 手机号、{ip} 客户端IP、{date} 日期、{time} 时间、{datetime} 日期时间。邮箱/手机号自动脱敏；日期时间实时刷新。"},
+		Help: "每行一段，可用变量：{username} 用户名、{name} 姓名、{email} 邮箱、{phone} 手机号、{ip} 客户端IP、{date} 日期、{time} 时间、{datetime} 日期时间；会话变量 {asset} 资产名、{host} 主机、{session} 会话ID 仅在终端/远程桌面连接内实时填充（普通页面自动隐藏）。邮箱/手机号自动脱敏。"},
 	{Key: "watermark.opacity", Group: "watermark", Type: TypeInt, Label: "不透明度", Unit: "%", Live: true,
 		Min: f(2), Max: f(100), DependsOn: "watermark.enabled", DependsValue: "true",
 		Help: "水印整体透明度，越低越淡。建议 10–25 兼顾可读与不打扰。"},
@@ -386,6 +386,9 @@ var specs = []Spec{
 	{Key: "watermark.refresh_sec", Group: "watermark", Type: TypeInt, Label: "刷新周期", Unit: "秒", Advanced: true, Live: true,
 		Min: f(10), Max: f(600), DependsOn: "watermark.enabled", DependsValue: "true",
 		Help: "实时时钟刷新与防篡改周期校验的时间间隔。"},
+	{Key: "watermark.session_vars", Group: "watermark", Type: TypeBool, Label: "会话/资产感知", Live: true,
+		DependsOn: "watermark.enabled", DependsValue: "true",
+		Help: "在终端/远程桌面会话内，把模板里的 {asset} {host} {session} 替换为当前连接的资产名、主机与会话标识；关闭则这些变量在会话中也留空。普通页面始终不显示会话变量。"},
 }
 
 // wiredLive is the set of keys whose owning subsystem actually re-reads the

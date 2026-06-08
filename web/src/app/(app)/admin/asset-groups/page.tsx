@@ -37,6 +37,7 @@ import {
 import { EmptyState } from "@/components/common/empty-state"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { TreeList } from "@/components/common/tree-list"
+import { BatchActionBar } from "@/components/common/batch-action-bar"
 import { AppIcon } from "@/components/icons/app-icon"
 import { GroupMembersSheet } from "@/components/admin/group-members-sheet"
 import { assetGroupService } from "@/lib/api/services"
@@ -57,6 +58,7 @@ export default function AssetGroupsPage() {
   const [editing, setEditing] = React.useState<AssetGroup | null>(null)
   const [memberGroup, setMemberGroup] = React.useState<AssetGroup | null>(null)
   const [renamingId, setRenamingId] = React.useState<number | null>(null)
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
 
   const refresh = React.useCallback(() => {
     qc.invalidateQueries({ queryKey: GROUPS_KEY })
@@ -190,6 +192,29 @@ export default function AssetGroupsPage() {
     if (ok) remove.mutate(g.id)
   }
 
+  const selectedGroupIds = React.useMemo(
+    () => [...selectedIds].map(Number).filter((n) => byId.has(n)),
+    [selectedIds, byId],
+  )
+  const bulkMoveTop = useMutation({
+    mutationFn: () => Promise.all(selectedGroupIds.map((id) => assetGroupService.move(id, null))),
+    onSuccess: () => { setSelectedIds(new Set()); refresh(); toast.success("已移到顶层") },
+    onError: (e: unknown) => toast.error("移动失败", { description: (e as Error).message }),
+  })
+  const bulkRemove = useMutation({
+    mutationFn: () => Promise.all(selectedGroupIds.map((id) => assetGroupService.remove(id))),
+    onSuccess: () => { setSelectedIds(new Set()); refresh(); toast.success("已删除所选资产组（子组上提一级）") },
+    onError: (e: unknown) => toast.error("删除失败", { description: (e as Error).message }),
+  })
+  async function askBulkDelete() {
+    const ok = await confirmDialog({
+      title: `删除所选 ${selectedGroupIds.length} 个资产组？`,
+      description: "组内节点不会被删除，只解除分组；它们的直接子组会自动上提一级。",
+      destructive: true,
+    })
+    if (ok) bulkRemove.mutate()
+  }
+
   const isEmpty = !list.isLoading && groups.length === 0
 
   return (
@@ -235,13 +260,35 @@ export default function AssetGroupsPage() {
           }
         />
       ) : (
-        <div className="rounded-xl border border-border bg-card p-2">
+        <div className="space-y-2">
+          {selectedGroupIds.length > 0 && (
+            <BatchActionBar count={selectedGroupIds.length} noun="资产组" onClear={() => setSelectedIds(new Set())}>
+              <Button
+                variant="outline" size="sm" className="h-7 gap-1"
+                disabled={bulkMoveTop.isPending}
+                onClick={() => bulkMoveTop.mutate()}
+              >
+                <FolderTree className="h-3.5 w-3.5" /> 移到顶层
+              </Button>
+              <Button
+                variant="outline" size="sm" className="h-7 gap-1 text-destructive hover:text-destructive"
+                disabled={bulkRemove.isPending}
+                onClick={askBulkDelete}
+              >
+                <Trash2 className="h-3.5 w-3.5" /> 删除
+              </Button>
+            </BatchActionBar>
+          )}
+          <div className="rounded-xl border border-border bg-card p-2">
           <TreeList<GNode>
             nodes={tree}
             getId={(g) => String(g.id)}
             getChildren={(g) => g.children}
             expandedIds={searchExpanded ?? expanded}
             onExpandedChange={setExpanded}
+            selectable
+            selectedIds={selectedIds}
+            onSelectedChange={setSelectedIds}
             onMove={(sourceId, targetId) =>
               move.mutate({ id: Number(sourceId), parent: targetId == null ? null : Number(targetId) })
             }
@@ -321,6 +368,7 @@ export default function AssetGroupsPage() {
               </div>
             )}
           />
+          </div>
         </div>
       )}
 

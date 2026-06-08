@@ -220,11 +220,16 @@ type GranteeRef struct {
 }
 
 // NodeAccess is one node a grantee can reach, with the merged action set and
-// every grant source that contributed it.
+// every grant source that contributed it. ValidTo summarises when access ends
+// (the latest expiry across contributing grants; nil = permanent, i.e. at least
+// one contributing grant has no end). GroupIDs lists the asset groups this node
+// belongs to so the frontend can hang it on the group hierarchy (授权树).
 type NodeAccess struct {
-	NodeID  uint64       `json:"node_id"`
-	Actions []string     `json:"actions"`
-	Sources []GranteeRef `json:"sources"`
+	NodeID   uint64       `json:"node_id"`
+	Actions  []string     `json:"actions"`
+	Sources  []GranteeRef `json:"sources"`
+	ValidTo  *time.Time   `json:"valid_to,omitempty"`
+	GroupIDs []uint64     `json:"group_ids,omitempty"`
 }
 
 // Explanation answers "what can this grantee actually reach?". For a user it is
@@ -233,6 +238,7 @@ type NodeAccess struct {
 type Explanation struct {
 	AllActions []string     `json:"all_actions"` // from "全部资产" grants
 	AllSources []GranteeRef `json:"all_sources"`
+	AllValidTo *time.Time   `json:"all_valid_to,omitempty"` // expiry of the "全部资产" grants; nil = permanent
 	Nodes      []NodeAccess `json:"nodes"`
 }
 
@@ -280,13 +286,27 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 	}
 
 	type acc struct {
-		actions map[string]bool
-		sources map[GranteeRef]bool
+		actions      map[string]bool
+		sources      map[GranteeRef]bool
+		hasPermanent bool       // a contributing grant has no end → access never expires
+		latest       *time.Time // otherwise, the latest expiry among contributing grants
 	}
 	nodeAcc := map[uint64]*acc{}
 	allActions := map[string]bool{}
 	allSources := map[GranteeRef]bool{}
-	add := func(nid uint64, actions []string, src GranteeRef) {
+	allHasPermanent := false
+	var allLatest *time.Time
+	bumpValidity := func(hasPermanent *bool, latest **time.Time, validTo *time.Time) {
+		if validTo == nil {
+			*hasPermanent = true
+			return
+		}
+		if *latest == nil || validTo.After(**latest) {
+			v := *validTo
+			*latest = &v
+		}
+	}
+	add := func(nid uint64, actions []string, src GranteeRef, validTo *time.Time) {
 		a := nodeAcc[nid]
 		if a == nil {
 			a = &acc{actions: map[string]bool{}, sources: map[GranteeRef]bool{}}
@@ -296,6 +316,7 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 			a.actions[x] = true
 		}
 		a.sources[src] = true
+		bumpValidity(&a.hasPermanent, &a.latest, validTo)
 	}
 
 	for gtype, ids := range granteeIDs {
@@ -312,15 +333,16 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 					allActions[a] = true
 				}
 				allSources[src] = true
+				bumpValidity(&allHasPermanent, &allLatest, g.ValidTo)
 			case model.SubjectNode:
-				add(g.SubjectID, actions, src)
+				add(g.SubjectID, actions, src, g.ValidTo)
 			case model.SubjectAssetGroup:
 				nodes, err := r.expandGroup(ctx, g.SubjectID)
 				if err != nil {
 					return nil, err
 				}
 				for _, nid := range nodes {
-					add(nid, actions, src)
+					add(nid, actions, src, g.ValidTo)
 				}
 			case model.SubjectTag:
 				nodes, err := r.tags.NodesWithTag(ctx, []uint64{g.SubjectID})
@@ -328,15 +350,31 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 					return nil, err
 				}
 				for _, nid := range nodes {
-					add(nid, actions, src)
+					add(nid, actions, src, g.ValidTo)
 				}
 			}
 		}
 	}
 
 	out := &Explanation{AllActions: sortedKeys(allActions), AllSources: refKeys(allSources), Nodes: make([]NodeAccess, 0, len(nodeAcc))}
+	if !allHasPermanent {
+		out.AllValidTo = allLatest
+	}
+	// One batch query to hang every reachable node on its asset groups.
+	nodeIDs := make([]uint64, 0, len(nodeAcc))
+	for nid := range nodeAcc {
+		nodeIDs = append(nodeIDs, nid)
+	}
+	groupsByNode, err := r.ag.GroupsForNodes(ctx, nodeIDs)
+	if err != nil {
+		return nil, err
+	}
 	for nid, a := range nodeAcc {
-		out.Nodes = append(out.Nodes, NodeAccess{NodeID: nid, Actions: sortedKeys(a.actions), Sources: refKeys(a.sources)})
+		na := NodeAccess{NodeID: nid, Actions: sortedKeys(a.actions), Sources: refKeys(a.sources), GroupIDs: groupsByNode[nid]}
+		if !a.hasPermanent {
+			na.ValidTo = a.latest
+		}
+		out.Nodes = append(out.Nodes, na)
 	}
 	return out, nil
 }
