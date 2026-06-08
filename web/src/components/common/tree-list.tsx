@@ -57,6 +57,8 @@ export interface TreeListProps<T> {
   rootDropLabel?: string
   indent?: number
   /** @deprecated indentation now comes from react-arborist; kept for prop compat. */
+  /** Vertical indent guide rails. Default true; set false for a flatter,
+   *  less busy tree (e.g. when a checkbox column already anchors the left edge). */
   showGuides?: boolean
   className?: string
   rowClassName?: (node: T, meta: TreeRowMeta) => string
@@ -118,6 +120,7 @@ export function TreeList<T>({
   rowClassName,
   emptyHint,
   virtualize = false,
+  showGuides = true,
   selectable = false,
   selectedIds,
   onSelectedChange,
@@ -270,11 +273,11 @@ export function TreeList<T>({
 
   // Stable node renderer — reads live callbacks from a ref so its identity never
   // changes (a fresh component type each render would remount every row).
-  const ctx = React.useRef({ renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect })
-  ctx.current = { renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect }
+  const ctx = React.useRef({ renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect, showGuides })
+  ctx.current = { renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect, showGuides }
   const Node = React.useCallback((props: NodeRendererProps<T>) => {
     const { node, style, dragHandle } = props
-    const { renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect } = ctx.current
+    const { renderRow, rowClassName, onActivate, selectable, showCheckbox, canSelect, showGuides } = ctx.current
     const selectableRow = !!selectable && (canSelect ? canSelect(node.data) : true)
     const meta: TreeRowMeta = {
       depth: node.level,
@@ -319,15 +322,20 @@ export function TreeList<T>({
                 checked={node.isSelected}
                 onCheckedChange={() => node.selectMulti()}
                 aria-label={node.isSelected ? "取消选择" : "选择"}
-                className="h-3.5 w-3.5"
+                // Hover-reveal: the checkbox stays out of the way until the row is
+                // hovered (or already selected), so the resting tree is uncluttered.
+                className={cn(
+                  "h-3.5 w-3.5 transition-opacity",
+                  node.isSelected ? "opacity-100" : "opacity-0 group-hover/tree:opacity-100",
+                )}
               />
             )}
           </span>
         )}
         {/* Indent-guide rails — one subtle vertical hairline per ancestor level,
-            descending from each ancestor's chevron column (VS Code-style). They
-            brighten slightly on row hover so the active branch reads clearly. */}
-        {node.level > 0 &&
+            descending from each ancestor's chevron column (VS Code-style). */}
+        {showGuides &&
+          node.level > 0 &&
           Array.from({ length: node.level }).map((_, k) => (
             <span
               key={k}

@@ -18,9 +18,10 @@ import {
   X,
 } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
-import { NodeTree, type AssetSelection } from "@/components/admin/nodes/node-tree"
+import { NodeTree, type AssetSelection, type GrantSubject } from "@/components/admin/nodes/node-tree"
 import { NodeInspector } from "@/components/admin/assets/node-inspector"
 import { GroupInspector } from "@/components/admin/assets/group-inspector"
+import { GrantWizard } from "@/components/admin/grant-wizard"
 import { BatchActionBar } from "@/components/common/batch-action-bar"
 import { NodeBatchActions } from "@/components/asset-tree/node-batch-actions"
 import { Button } from "@/components/ui/button"
@@ -91,6 +92,7 @@ export default function AdminNodesPage() {
   const [selection, setSelection] = React.useState<AssetSelection | null>(null) // single → inspector
   const [editing, setEditing] = React.useState<Node | null>(null)
   const [groupParent, setGroupParent] = React.useState<number | null | undefined>(undefined) // create-group dialog
+  const [grantSubject, setGrantSubject] = React.useState<GrantSubject | null>(null) // 右键「分配给用户」→ 受控授权 Sheet
 
   React.useEffect(() => {
     const t = setTimeout(() => setQ(search.trim()), 250)
@@ -326,6 +328,8 @@ export default function AdminNodesPage() {
                     selected={selection}
                     onSelect={setSelection}
                     onNewSubgroup={(parentId) => setGroupParent(parentId)}
+                    onEditNode={setEditing}
+                    onGrant={setGrantSubject}
                     onChanged={invalidate}
                   />
                 )}
@@ -395,6 +399,17 @@ export default function AdminNodesPage() {
         pending={createGroup.isPending}
         onClose={() => setGroupParent(undefined)}
         onCreate={(name) => createGroup.mutate({ name, parent_id: groupParent ?? null })}
+      />
+
+      {/* Assign (右键「分配给用户」) — controlled grant Sheet */}
+      <GrantWizard
+        open={!!grantSubject}
+        onOpenChange={(o) => !o && setGrantSubject(null)}
+        fixedSubject={grantSubject ?? undefined}
+        onDone={() => {
+          invalidate()
+          setGrantSubject(null)
+        }}
       />
     </div>
   )

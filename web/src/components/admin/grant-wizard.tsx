@@ -17,7 +17,15 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet"
 import {
   assetGroupService, departmentService, grantService, groupService, nodeService, roleService, tagService, userService,
 } from "@/lib/api/services"
@@ -86,11 +94,25 @@ export interface GrantWizardProps {
   fixedSubjects?: Fixed[]
   /** 锁定主体（从人进入）：例如 {type:"user", id, name}。 */
   fixedGrantee?: Fixed
+  /** 受控开关（如从右键菜单程序化打开）。不传则内部用 trigger 管理。 */
+  open?: boolean
+  onOpenChange?: (v: boolean) => void
 }
 
-export function GrantWizard({ trigger, onDone, fixedSubject, fixedSubjects, fixedGrantee }: GrantWizardProps) {
+export function GrantWizard({
+  trigger,
+  onDone,
+  fixedSubject,
+  fixedSubjects,
+  fixedGrantee,
+  open: controlledOpen,
+  onOpenChange,
+}: GrantWizardProps) {
   const { granteeCats, subjectCats } = useGrantDirectories()
-  const [open, setOpen] = React.useState(false)
+  const isControlled = controlledOpen !== undefined
+  const [internalOpen, setInternalOpen] = React.useState(false)
+  const open = isControlled ? controlledOpen! : internalOpen
+  const setOpen = (v: boolean) => (isControlled ? onOpenChange?.(v) : setInternalOpen(v))
   const [subjectAll, setSubjectAll] = React.useState(false)
   const [subjectSel, setSubjectSel] = React.useState<Set<string>>(new Set())
   const [granteeSel, setGranteeSel] = React.useState<Set<string>>(new Set())
@@ -142,19 +164,25 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedSubjects, fixe
   const next = () => ++stepNo
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger ?? <Button><Plus className="h-4 w-4" /> 新建授权</Button>}</DialogTrigger>
-      <DialogContent className="flex max-h-[88vh] max-w-3xl flex-col gap-0 p-0">
-        <DialogHeader className="border-b px-5 py-3">
-          <DialogTitle>
-            新建授权
-            {fixedSubject ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 资产：{fixedSubject.name}</span> : null}
-            {hasFixedSubjects ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 已选 {fixedSubjects!.length} 个资产</span> : null}
-            {fixedGrantee ? <span className="ml-2 text-sm font-normal text-muted-foreground">· 对象：{fixedGrantee.name}</span> : null}
-          </DialogTitle>
-        </DialogHeader>
+    <Sheet open={open} onOpenChange={setOpen}>
+      {!isControlled && (
+        <SheetTrigger asChild>{trigger ?? <Button><Plus className="h-4 w-4" /> 新建授权</Button>}</SheetTrigger>
+      )}
+      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-2xl lg:max-w-3xl">
+        <SheetHeader className="border-b px-6 py-4">
+          <SheetTitle className="text-lg">新建授权</SheetTitle>
+          <SheetDescription>
+            {fixedGrantee
+              ? `把资产分配给「${fixedGrantee.name}」`
+              : fixedSubject
+                ? `把「${fixedSubject.name}」分配给用户 / 部门 / 角色`
+                : hasFixedSubjects
+                  ? `把所选 ${fixedSubjects!.length} 个资产分配给用户 / 部门 / 角色`
+                  : "选择对象 × 资产 × 权限套餐 × 有效期，一次批量授权。"}
+          </SheetDescription>
+        </SheetHeader>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="space-y-5 px-5 py-4">
+          <div className="space-y-6 px-6 py-5">
             {!fixedGrantee && (
               <Section step={next()} title="给谁">
                 <MultiPicker cats={granteeCats} selected={granteeSel} onChange={setGranteeSel} />
@@ -214,10 +242,10 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedSubjects, fixe
           </div>
         </ScrollArea>
 
-        <DialogFooter className="flex-row items-center justify-between gap-2 border-t bg-muted/30 px-5 py-3">
-          <div className="text-sm text-muted-foreground">
+        <SheetFooter className="flex-row items-center justify-between gap-2 border-t bg-muted/30 px-6 py-4">
+          <div className="min-w-0 flex-1 text-sm text-muted-foreground">
             {canSubmit ? (
-              <span>
+              <span className="line-clamp-2">
                 给 <strong className="text-foreground">{fixedGrantee ? fixedGrantee.name : `${grantees.length} 个对象`}</strong> ×{" "}
                 <strong className="text-foreground">{fixedSubject ? fixedSubject.name : hasFixedSubjects ? `${subjects.length} 个资产` : subjectAll ? "全部资产" : `${subjects.length} 个资产`}</strong> 授【
                 <strong className="text-foreground">{presetLabel}</strong>】
@@ -228,13 +256,13 @@ export function GrantWizard({ trigger, onDone, fixedSubject, fixedSubjects, fixe
               <span>选择对象、资产与权限后可创建</span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <Button variant="outline" onClick={() => setOpen(false)} disabled={submit.isPending}>取消</Button>
             <Button disabled={!canSubmit || submit.isPending} onClick={() => submit.mutate()}>确认授权</Button>
           </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   )
 }
 
@@ -286,7 +314,7 @@ export function MultiPicker({
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索" className="h-8 pl-7 text-sm" />
         </div>
       </div>
-      <ScrollArea className="h-44">
+      <ScrollArea className="h-60">
         <div className="p-1.5">
           {items.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted-foreground">没有匹配项</div>

@@ -8,15 +8,37 @@
 
 import * as React from "react"
 import { useMutation } from "@tanstack/react-query"
-import { FolderPlus } from "lucide-react"
+import {
+  Activity,
+  Copy,
+  FolderInput,
+  FolderPlus,
+  Pencil,
+  Power,
+  PowerOff,
+  ShieldPlus,
+  Trash2,
+  Users,
+} from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { Badge } from "@/components/ui/badge"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLabel,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { AppIcon } from "@/components/icons/app-icon"
 import { TreeList } from "@/components/common/tree-list"
-import { assetGroupService } from "@/lib/api/services"
+import { confirmDialog } from "@/components/common/confirm-dialog"
+import { assetGroupService, nodeService } from "@/lib/api/services"
 import { nodeIcon } from "@/lib/icons/protocol"
 import { cn } from "@/lib/utils"
 import type { AssetGroup, Node } from "@/lib/api/types"
+
+export type GrantSubject = { type: "node" | "group"; id: number; name: string }
 
 export type AssetSelection = { kind: "group" | "node"; id: number }
 
@@ -140,6 +162,8 @@ export function NodeTree({
   selected,
   onSelect,
   onNewSubgroup,
+  onEditNode,
+  onGrant,
   onChanged,
 }: {
   nodes: Node[]
@@ -150,6 +174,8 @@ export function NodeTree({
   selected: AssetSelection | null
   onSelect: (sel: AssetSelection) => void
   onNewSubgroup: (parentId: number) => void
+  onEditNode: (n: Node) => void
+  onGrant: (s: GrantSubject) => void
   onChanged?: () => void
 }) {
   const tree = React.useMemo(
@@ -211,6 +237,83 @@ export function NodeTree({
         }
       : undefined
 
+  // Row-level mutations defined once (not per-row) — the context menus call them
+  // with the row's id.
+  const test = useMutation({
+    mutationFn: (n: Node) => nodeService.test(n.id),
+    onSuccess: (r, n) =>
+      r.ok
+        ? toast.success(`连通成功 · ${n.name}`, { description: `${r.mode?.toUpperCase()} · ${r.latency_ms}ms` })
+        : toast.error(`连通失败 · ${n.name}`, { description: r.error }),
+    onError: (e: Error) => toast.error("测试失败", { description: e.message }),
+  })
+  const setDisabled = useMutation({
+    mutationFn: ({ id, disabled }: { id: number; disabled: boolean }) => nodeService.update(id, { disabled }),
+    onSuccess: (_d, v) => {
+      toast.success(v.disabled ? "已停用" : "已启用")
+      onChanged?.()
+    },
+    onError: (e: Error) => toast.error("操作失败", { description: e.message }),
+  })
+  const removeNode = useMutation({
+    mutationFn: (id: number) => nodeService.remove(id),
+    onSuccess: () => {
+      toast.success("已删除节点")
+      onChanged?.()
+    },
+    onError: (e: Error) => toast.error("删除失败", { description: e.message }),
+  })
+  const moveTop = useMutation({
+    mutationFn: (id: number) => assetGroupService.move(id, null),
+    onSuccess: () => {
+      toast.success("已移到顶层")
+      onChanged?.()
+    },
+    onError: (e: Error) => toast.error("移动失败", { description: e.message }),
+  })
+  const removeGroup = useMutation({
+    mutationFn: (id: number) => assetGroupService.remove(id),
+    onSuccess: () => {
+      toast.success("已删除（子组上提一级）")
+      onChanged?.()
+    },
+    onError: (e: Error) => toast.error("删除失败", { description: e.message }),
+  })
+
+  const handlers: RowHandlers = {
+    onSelect,
+    onNewSubgroup,
+    onEditNode,
+    onGrant,
+    onTest: (n) => test.mutate(n),
+    onCopy: (n) => {
+      void navigator.clipboard?.writeText(`${n.host}:${n.port}`)
+      toast.success("已复制", { description: `${n.host}:${n.port}` })
+    },
+    onToggleDisabled: (n) => setDisabled.mutate({ id: n.id, disabled: !n.disabled }),
+    onDeleteNode: async (n) => {
+      if (
+        await confirmDialog({
+          title: `删除节点「${n.name}」？`,
+          description: "授权与会话历史保留，但用户将无法再连接它。",
+          destructive: true,
+        })
+      )
+        removeNode.mutate(n.id)
+    },
+    onMoveTop: (id) => moveTop.mutate(id),
+    onDeleteGroup: async (id, name) => {
+      if (
+        await confirmDialog({
+          title: `删除资产组「${name}」？`,
+          description: "组内节点不会被删除，只解除分组；直接子组自动上提一级。",
+          destructive: true,
+        })
+      )
+        removeGroup.mutate(id)
+    },
+  }
+
   return (
     <TreeList<NodeTreeRow>
       nodes={tree}
@@ -224,6 +327,7 @@ export function NodeTree({
       onMove={onMove}
       canDrag={(r) => r.kind === "node"}
       indent={16}
+      showGuides={false}
       rowClassName={(r) =>
         selected &&
         ((r.kind === "group" && selected.kind === "group" && r.id === `g:${selected.id}`) ||
@@ -233,33 +337,40 @@ export function NodeTree({
       }
       renderRow={(r) =>
         r.kind === "group" ? (
-          <GroupRow row={r} onSelect={onSelect} onNewSubgroup={onNewSubgroup} />
+          <GroupRowMenu row={r} h={handlers} />
         ) : (
-          <NodeRow node={r.node} onSelect={onSelect} />
+          <NodeRowMenu node={r.node} h={handlers} />
         )
       }
     />
   )
 }
 
-function GroupRow({
-  row,
-  onSelect,
-  onNewSubgroup,
-}: {
-  row: Extract<NodeTreeRow, { kind: "group" }>
+// Shared row action surface — passed once from NodeTree so per-row menus stay
+// pure (no hooks) and don't spin up a mutation each.
+interface RowHandlers {
   onSelect: (sel: AssetSelection) => void
   onNewSubgroup: (parentId: number) => void
-}) {
+  onEditNode: (n: Node) => void
+  onGrant: (s: GrantSubject) => void
+  onTest: (n: Node) => void
+  onCopy: (n: Node) => void
+  onToggleDisabled: (n: Node) => void
+  onDeleteNode: (n: Node) => void
+  onMoveTop: (id: number) => void
+  onDeleteGroup: (id: number, name: string) => void
+}
+
+function GroupRowMenu({ row, h }: { row: Extract<NodeTreeRow, { kind: "group" }>; h: RowHandlers }) {
   // Real asset groups have a "g:<id>" id; the synthetic 未分组 / 未打标签 / tag
-  // folders don't map to a group entity, so they only expand (no inspector).
+  // folders don't map to a group entity → no inspector, no context menu.
   const gid = row.id.startsWith("g:") ? Number(row.id.slice(2)) : null
-  return (
+  const content = (
     <div className="group/grouprow flex items-center gap-1.5 py-1 pr-1 text-sm">
       <button
         type="button"
         className="min-w-0 flex-1 truncate text-left font-medium disabled:cursor-default"
-        onClick={() => gid != null && onSelect({ kind: "group", id: gid })}
+        onClick={() => gid != null && h.onSelect({ kind: "group", id: gid })}
         disabled={gid == null}
       >
         {row.label}
@@ -271,7 +382,7 @@ function GroupRow({
           title="新建子组"
           onClick={(e) => {
             e.stopPropagation()
-            onNewSubgroup(gid)
+            h.onNewSubgroup(gid)
           }}
           className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground group-hover/grouprow:opacity-100"
         >
@@ -280,20 +391,75 @@ function GroupRow({
       )}
     </div>
   )
+  if (gid == null) return content
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{content}</ContextMenuTrigger>
+      <ContextMenuContent className="w-52">
+        <ContextMenuLabel className="truncate">{row.label}</ContextMenuLabel>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => h.onNewSubgroup(gid)}>
+          <FolderPlus className="h-4 w-4" /> 新建子组
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => h.onSelect({ kind: "group", id: gid })}>
+          <Users className="h-4 w-4" /> 管理成员
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => h.onGrant({ type: "group", id: gid, name: row.label })}>
+          <ShieldPlus className="h-4 w-4" /> 分配给用户
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => h.onMoveTop(gid)}>
+          <FolderInput className="h-4 w-4" /> 移到顶层
+        </ContextMenuItem>
+        <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={() => h.onDeleteGroup(gid, row.label)}>
+          <Trash2 className="h-4 w-4" /> 删除
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
 }
 
-function NodeRow({ node, onSelect }: { node: Node; onSelect: (sel: AssetSelection) => void }) {
+function NodeRowMenu({ node, h }: { node: Node; h: RowHandlers }) {
   return (
-    <button
-      type="button"
-      onClick={() => onSelect({ kind: "node", id: node.id })}
-      className={cn("flex w-full items-center gap-2 py-1 pr-1 text-left text-sm", node.disabled && "opacity-60")}
-    >
-      <AppIcon icon={nodeIcon(node)} className="h-4 w-4 shrink-0" />
-      <span className="min-w-0 flex-1 truncate">{node.name}</span>
-      <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{node.host}:{node.port}</span>
-      <Badge variant="soft" className="hidden shrink-0 font-mono text-[10px] md:inline-flex">{node.protocol}</Badge>
-      {node.disabled && <Badge variant="outline" className="shrink-0 text-[10px] text-muted-foreground">停用</Badge>}
-    </button>
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <button
+          type="button"
+          onClick={() => h.onSelect({ kind: "node", id: node.id })}
+          className={cn("flex w-full items-center gap-2 py-1 pr-1 text-left text-sm", node.disabled && "opacity-60")}
+        >
+          <AppIcon icon={nodeIcon(node)} className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+          <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{node.host}:{node.port}</span>
+          <Badge variant="soft" className="hidden shrink-0 font-mono text-[10px] md:inline-flex">{node.protocol}</Badge>
+          {node.disabled && <Badge variant="outline" className="shrink-0 text-[10px] text-muted-foreground">停用</Badge>}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-52">
+        <ContextMenuLabel className="truncate">{node.name}</ContextMenuLabel>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => h.onEditNode(node)}>
+          <Pencil className="h-4 w-4" /> 编辑
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => h.onGrant({ type: "node", id: node.id, name: node.name })}>
+          <ShieldPlus className="h-4 w-4" /> 分配给用户
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => h.onTest(node)}>
+          <Activity className="h-4 w-4" /> 测试连通
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => h.onCopy(node)}>
+          <Copy className="h-4 w-4" /> 复制 host:port
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => h.onToggleDisabled(node)}>
+          {node.disabled ? <Power className="h-4 w-4" /> : <PowerOff className="h-4 w-4" />}
+          {node.disabled ? "启用" : "停用"}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={() => h.onDeleteNode(node)}>
+          <Trash2 className="h-4 w-4" /> 删除
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
