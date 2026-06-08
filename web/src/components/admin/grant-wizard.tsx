@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { TreeList } from "@/components/common/tree-list"
 import {
   Sheet,
   SheetContent,
@@ -36,11 +37,15 @@ export interface PickerEntity {
   id: number
   name: string
   sub?: string
+  /** Parent id for hierarchical categories (用户组 / 部门 / 资产组). */
+  parentId?: number | null
 }
 export interface PickerCat {
   key: string
   label: string
   items: PickerEntity[]
+  /** Render this category as a real tree (parentId-driven) instead of a flat list. */
+  tree?: boolean
 }
 
 // useGrantDirectories 复用与访问策略页相同的 query key，react-query 自动去重，
@@ -58,15 +63,30 @@ export function useGrantDirectories() {
     () => [
       { key: "user", label: "用户", items: (users.data?.users || []).map((u) => ({ id: u.id, name: u.username })) },
       { key: "role", label: "角色", items: (roles.data?.roles || []).map((r) => ({ id: r.id, name: r.name })) },
-      { key: "group", label: "用户组", items: (groups.data?.groups || []).map((g) => ({ id: g.id, name: g.name })) },
-      { key: "department", label: "部门", items: (depts.data?.departments || []).map((d) => ({ id: d.id, name: d.name, sub: d.path })) },
+      {
+        key: "group",
+        label: "用户组",
+        tree: true,
+        items: (groups.data?.groups || []).map((g) => ({ id: g.id, name: g.name, parentId: g.parent_id ?? null })),
+      },
+      {
+        key: "department",
+        label: "部门",
+        tree: true,
+        items: (depts.data?.departments || []).map((d) => ({ id: d.id, name: d.name, parentId: d.parent_id ?? null })),
+      },
     ],
     [users.data, roles.data, groups.data, depts.data],
   )
   const subjectCats = React.useMemo<PickerCat[]>(
     () => [
       { key: "node", label: "节点", items: (nodes.data?.nodes || []).map((n) => ({ id: n.id, name: n.name, sub: `${n.host}:${n.port}` })) },
-      { key: "group", label: "资产组", items: (assetGroups.data?.asset_groups || []).map((g) => ({ id: g.id, name: g.name, sub: g.path })) },
+      {
+        key: "group",
+        label: "资产组",
+        tree: true,
+        items: (assetGroups.data?.asset_groups || []).map((g) => ({ id: g.id, name: g.name, parentId: g.parent_id ?? null })),
+      },
       { key: "tag", label: "标签", items: (tags.data?.tags || []).map((t) => ({ id: t.id, name: t.name })) },
     ],
     [nodes.data, assetGroups.data, tags.data],
@@ -278,6 +298,44 @@ function Section({ step, title, children }: { step: number; title: string; child
   )
 }
 
+type PickerTreeNode = PickerEntity & { children: PickerTreeNode[] }
+
+// Build a parentId-driven forest from a flat entity list (orphans → roots).
+function buildPickerForest(items: PickerEntity[]): PickerTreeNode[] {
+  const byId = new Map<number, PickerTreeNode>(items.map((i) => [i.id, { ...i, children: [] }]))
+  const roots: PickerTreeNode[] = []
+  for (const node of byId.values()) {
+    const parent = node.parentId != null ? byId.get(node.parentId) : undefined
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  const sortRec = (arr: PickerTreeNode[]) => {
+    arr.sort((a, b) => a.name.localeCompare(b.name))
+    arr.forEach((n) => sortRec(n.children))
+  }
+  sortRec(roots)
+  return roots
+}
+
+// Search keeps matches AND their ancestors so the tree path stays visible.
+function filterPickerItems(items: PickerEntity[], q: string): PickerEntity[] {
+  const k = q.trim().toLowerCase()
+  if (!k) return items
+  const byId = new Map(items.map((i) => [i.id, i]))
+  const keep = new Set<number>()
+  for (const i of items) {
+    if ((i.name + (i.sub ?? "")).toLowerCase().includes(k)) {
+      keep.add(i.id)
+      let cur: PickerEntity | undefined = i
+      while (cur && cur.parentId != null && byId.has(cur.parentId)) {
+        keep.add(cur.parentId)
+        cur = byId.get(cur.parentId)
+      }
+    }
+  }
+  return items.filter((i) => keep.has(i.id))
+}
+
 export function MultiPicker({
   cats, selected, onChange,
 }: {
@@ -296,7 +354,9 @@ export function MultiPicker({
     onChange(next)
   }
   const cat = cats.find((c) => c.key === tab)
-  const items = (cat?.items || []).filter((i) => !q || (i.name + (i.sub ?? "")).toLowerCase().includes(q.toLowerCase()))
+  const items = filterPickerItems(cat?.items || [], q)
+  const forest = React.useMemo(() => (cat?.tree ? buildPickerForest(items) : []), [cat?.tree, items])
+  const expandIds = React.useMemo(() => (cat?.tree ? items.map((i) => String(i.id)) : []), [cat?.tree, items])
 
   return (
     <div className="rounded-lg border">
@@ -314,10 +374,29 @@ export function MultiPicker({
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索" className="h-8 pl-7 text-sm" />
         </div>
       </div>
-      <ScrollArea className="h-60">
+      <ScrollArea className="h-64">
         <div className="p-1.5">
           {items.length === 0 ? (
             <div className="px-2 py-6 text-center text-xs text-muted-foreground">没有匹配项</div>
+          ) : cat?.tree ? (
+            // Hierarchical categories (用户组 / 部门 / 资产组) render as a real tree.
+            <TreeList<PickerTreeNode>
+              key={`${cat.key}:${q}`}
+              nodes={forest}
+              getId={(n) => String(n.id)}
+              getChildren={(n) => (n.children.length ? n.children : undefined)}
+              defaultExpandedIds={expandIds}
+              indent={16}
+              renderRow={(n) => {
+                const key = `${cat.key}:${n.id}`
+                return (
+                  <label className="flex cursor-pointer items-center gap-2 py-1 pr-1 text-sm" onClick={(e) => e.stopPropagation()}>
+                    <Checkbox checked={selected.has(key)} onCheckedChange={() => toggle(key)} />
+                    <span className="flex-1 truncate font-medium">{n.name}</span>
+                  </label>
+                )
+              }}
+            />
           ) : (
             items.map((i) => {
               const key = `${cat!.key}:${i.id}`
