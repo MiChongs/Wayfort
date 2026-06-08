@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils"
 import { ToolCard } from "./tool-card"
 import { toolIcon, isDangerName } from "./tool-icons"
+import { MaybeVirtualList } from "@/lib/ai/maybe-virtual"
 import type { ToolLike } from "@/lib/ai/group-tools"
 
 function summarize(items: ToolLike[]) {
@@ -110,20 +111,27 @@ export const ToolGroupCard = React.memo(function ToolGroupCard({
             <TooltipContent side="top">展开 / 折叠这组工具调用</TooltipContent>
           </Tooltip>
           <CollapsibleContent>
-            <div className="space-y-2 px-2 pb-2 pt-1">
-              {items.map((it) => (
-                // re-use ToolCard styling; pass danger from group's name
-                <ToolCard
-                  key={it.id}
-                  name={it.name}
-                  status={it.status}
-                  output={it.output}
-                  error={it.error}
-                  danger={it.danger ?? danger}
-                  defaultExpanded={false}
-                />
-              ))}
-            </div>
+            {/* Long groups (e.g. a 50-node sweep) virtualise; short ones render
+                plainly so the spring layout animation is preserved. */}
+            <MaybeVirtualList
+              items={items}
+              threshold={30}
+              height="min(60vh, 28rem)"
+              className="pt-1"
+              itemKey={(it) => it.id}
+              renderItem={(it) => (
+                <div className="px-2 pb-2">
+                  <ToolCard
+                    name={it.name}
+                    status={it.status}
+                    output={it.output}
+                    error={it.error}
+                    danger={it.danger ?? danger}
+                    defaultExpanded={false}
+                  />
+                </div>
+              )}
+            />
           </CollapsibleContent>
         </Collapsible>
       </motion.div>

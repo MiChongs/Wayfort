@@ -2,8 +2,8 @@
 
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
-import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts"
-import { Activity, Coins, Cpu, Zap } from "lucide-react"
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from "recharts"
+import { Activity, Coins, Cpu, Layers, Zap } from "lucide-react"
 import { aiUsageService, type AIUsageBucket } from "@/lib/api/services"
 import { DataTable, type Column } from "@/components/common/data-table"
 import {
@@ -15,6 +15,13 @@ import {
 import { cn } from "@/lib/utils"
 
 const DAY_OPTIONS = [7, 30, 90] as const
+const MODEL_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+]
 
 export default function AIUsagePage() {
   const [days, setDays] = React.useState<number>(30)
@@ -37,6 +44,27 @@ export default function AIUsagePage() {
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([day, cost]) => ({ day: day.slice(5), cost: cost / 1_000_000 }))
   }, [data])
+
+  // Cost & tokens grouped by model (top 8) — derived from existing buckets, no
+  // backend change. Colours cycle the chart token ramp.
+  const byModel = React.useMemo(() => {
+    const m = new Map<string, { cost: number; tokens: number }>()
+    for (const b of data?.buckets || []) {
+      const k = b.model || "—"
+      const cur = m.get(k) || { cost: 0, tokens: 0 }
+      cur.cost += b.cost_micros
+      cur.tokens += b.input_tokens + b.output_tokens
+      m.set(k, cur)
+    }
+    return [...m.entries()]
+      .map(([model, v]) => ({ model, cost: v.cost / 1_000_000, tokens: v.tokens }))
+      .sort((a, b) => b.cost - a.cost)
+      .slice(0, 8)
+  }, [data])
+  const modelCount = React.useMemo(
+    () => new Set((data?.buckets || []).map((b) => b.model).filter(Boolean)).size,
+    [data],
+  )
 
   const t = data?.totals
   const cacheRatio =
@@ -125,6 +153,46 @@ export default function AIUsagePage() {
               <ChartTooltip content={<ChartTooltipContent />} />
               <Area type="monotone" dataKey="cost" stroke="var(--color-cost)" strokeWidth={2} fill="url(#fill-cost)" />
             </AreaChart>
+          </ChartContainer>
+        )}
+      </div>
+
+      <div className="rounded-xl border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="eyebrow">按模型成本（Top 8）</div>
+          <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <Layers className="size-3.5" /> {modelCount} 个模型
+          </span>
+        </div>
+        {byModel.length === 0 ? (
+          <div className="flex h-[160px] items-center justify-center text-sm text-muted-foreground">
+            {q.isLoading ? "加载中…" : "暂无用量数据"}
+          </div>
+        ) : (
+          <ChartContainer
+            config={{ cost: { label: "成本 (USD)", color: "var(--chart-1)" } }}
+            className="aspect-auto w-full"
+            style={{ height: Math.max(120, byModel.length * 34) }}
+          >
+            <BarChart data={byModel} layout="vertical" margin={{ left: 8, right: 16, top: 0, bottom: 0 }}>
+              <CartesianGrid horizontal={false} strokeDasharray="3 3" className="stroke-border/50" />
+              <XAxis type="number" tickLine={false} axisLine={false} className="text-[10px]" />
+              <YAxis
+                type="category"
+                dataKey="model"
+                width={130}
+                tickLine={false}
+                axisLine={false}
+                className="text-[10px]"
+                tickFormatter={(v: string) => (v.length > 18 ? v.slice(0, 17) + "…" : v)}
+              />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Bar dataKey="cost" radius={[0, 4, 4, 0]}>
+                {byModel.map((_, i) => (
+                  <Cell key={i} fill={MODEL_COLORS[i % MODEL_COLORS.length]} />
+                ))}
+              </Bar>
+            </BarChart>
           </ChartContainer>
         )}
       </div>

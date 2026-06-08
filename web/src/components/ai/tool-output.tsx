@@ -20,11 +20,24 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
+import { pickToolView } from "./tool-views/views"
 
 // Pretty-print a tool result. We try JSON first (most of our backend tools
 // return JSON), fall back to a monospace block for plain text. Long output is
 // collapsed by default; theme-aware backgrounds via design tokens.
-export function ToolOutputView({ raw, danger }: { raw: string; danger?: boolean }) {
+//
+// Result routing: ops/db/oss tools wrap their payload in a {"_view","data"}
+// envelope — we hand that to a humanised family renderer (tool-views). Legacy
+// tools return bare {nodes|entries|…} and keep the NodeTable/FileTable path.
+export function ToolOutputView({
+  raw,
+  danger,
+  toolName,
+}: {
+  raw: string
+  danger?: boolean
+  toolName?: string
+}) {
   const parsed = React.useMemo(() => {
     const trimmed = raw.trim()
     if (!trimmed) return null
@@ -42,8 +55,16 @@ export function ToolOutputView({ raw, danger }: { raw: string; danger?: boolean 
   const [expanded, setExpanded] = React.useState(false)
   const longText = raw.length > 1200
 
-  const content =
-    parsed && typeof parsed === "object" && parsed !== null ? (
+  // Envelope routing first: {_view,data} → humanised family renderer.
+  const enveloped =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof (parsed as { _view?: unknown })._view === "string"
+      ? (parsed as { _view: string; data: unknown })
+      : null
+  const EnvView = enveloped ? pickToolView(enveloped._view) : null
+
+  const content = EnvView ? (
+    <EnvView data={enveloped!.data} />
+  ) : parsed && typeof parsed === "object" && parsed !== null ? (
       <JsonValue value={parsed} />
     ) : (
       <ScrollArea
@@ -83,7 +104,7 @@ export function ToolOutputView({ raw, danger }: { raw: string; danger?: boolean 
     )
 
   return (
-    <div className="group/toolout relative">
+    <div className="group/toolout relative" data-tool={toolName}>
       {raw.trim().length > 0 && <CopyOutputButton value={raw} />}
       {content}
     </div>

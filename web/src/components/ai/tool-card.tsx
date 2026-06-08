@@ -124,7 +124,7 @@ export const ToolCard = React.memo(function ToolCard({
           {hasBody && (
             <CollapsibleContent>
               <div className="border-t border-border/50 px-3 pb-3 pt-2">
-                {output && <ToolOutputView raw={output} danger={danger} />}
+                {output && <ToolOutputView raw={output} danger={danger} toolName={name} />}
                 {error && (
                   <div className="mt-1 whitespace-pre-wrap rounded bg-destructive/10 px-2 py-1.5 font-mono text-xs text-destructive">
                     {error}

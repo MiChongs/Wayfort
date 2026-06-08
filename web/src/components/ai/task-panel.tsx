@@ -2,11 +2,16 @@
 
 import * as React from "react"
 import { AnimatePresence, motion, useReducedMotion } from "motion/react"
+import { Virtuoso } from "react-virtuoso"
 import { Check, ChevronDown, ListChecks } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { planProgress, type AgentTask } from "@/lib/ai/plan"
 import { TaskRow } from "./task-row"
+
+// Above this many steps the plan list virtualises; below it the AnimatePresence
+// stagger (the panel's signature entrance) is kept.
+const VIRTUALIZE_AT = 30
 
 interface TaskPanelProps {
   tasks: AgentTask[]
@@ -35,6 +40,8 @@ export function TaskPanel({
   const allDone = prog.total > 0 && prog.done === prog.total
   const activeTitle = tasks.find((t) => t.status === "active")?.title
 
+  const virtual = tasks.length > VIRTUALIZE_AT
+
   const list = (
     <ol className="py-2">
       <AnimatePresence initial={false}>
@@ -49,6 +56,18 @@ export function TaskPanel({
         ))}
       </AnimatePresence>
     </ol>
+  )
+
+  const virtualList = (height: string) => (
+    <div style={{ height }}>
+      <Virtuoso
+        data={tasks}
+        className="no-scrollbar h-full"
+        itemContent={(i, t) => (
+          <TaskRow task={t} index={i} isFirst={i === 0} isLast={i === tasks.length - 1} />
+        )}
+      />
+    </div>
   )
 
   const head = (
@@ -75,7 +94,11 @@ export function TaskPanel({
         )}
       >
         <div className="shrink-0 border-b border-border/60 px-3 pb-3 pt-3.5">{head}</div>
-        <ScrollArea className="min-h-0 flex-1">{list}</ScrollArea>
+        {virtual ? (
+          <div className="min-h-0 flex-1">{virtualList("100%")}</div>
+        ) : (
+          <ScrollArea className="min-h-0 flex-1">{list}</ScrollArea>
+        )}
       </aside>
     )
   }
@@ -93,7 +116,11 @@ export function TaskPanel({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="max-h-[42vh] overflow-y-auto pb-1">{list}</div>
+            {virtual ? (
+              virtualList("42vh")
+            ) : (
+              <div className="max-h-[42vh] overflow-y-auto pb-1">{list}</div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

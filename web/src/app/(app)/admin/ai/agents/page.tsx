@@ -22,6 +22,7 @@ import { aiAgentService, aiProviderService } from "@/lib/api/services"
 import { AgentAvatar } from "@/components/ai/agent-avatar"
 import { IconPicker } from "@/components/icons/icon-picker"
 import { DataTable, type Column } from "@/components/common/data-table"
+import { ToolMultiSelect } from "@/components/ai/agent-form/tool-multiselect"
 import { Badge } from "@/components/ui/badge"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
 import type { AIAgent, AIProvider, AITool, PermissionMode } from "@/lib/api/types"
@@ -198,15 +199,6 @@ function AgentFormFields({
   providers: AIProvider[]
   canBeGlobal: boolean
 }) {
-  const grouped = React.useMemo(() => {
-    const map = new Map<string, AITool[]>()
-    for (const t of tools) {
-      const cat = t.danger
-      const arr = map.get(cat) || []
-      arr.push(t); map.set(cat, arr)
-    }
-    return map
-  }, [tools])
   return (
     <div className="space-y-3 mt-2 max-h-[65vh] overflow-y-auto pr-1">
       <div className="flex items-center gap-3 rounded-lg border border-border bg-muted/30 p-3">
@@ -303,51 +295,9 @@ function AgentFormFields({
           />
         </div>
       )}
-      <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <Label>允许的工具（{selectedTools.length} 个）</Label>
-          <div className="flex gap-1">
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => setSelectedTools(tools.map((t) => t.name))}
-            >全选</button>
-            <button
-              type="button"
-              className="text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => setSelectedTools([])}
-            >清空</button>
-          </div>
-        </div>
-        <div className="rounded-md border max-h-72 overflow-y-auto divide-y">
-          {Array.from(grouped.entries()).map(([cat, items]) => (
-            <div key={cat} className="p-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                {cat === "low" ? "Low（无需确认）" : cat === "medium" ? "Medium" : "High（normal 模式需确认）"}
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
-                {items.map((t) => {
-                  const on = selectedTools.includes(t.name)
-                  return (
-                    <button
-                      type="button"
-                      key={t.name}
-                      onClick={() => setSelectedTools(on ? selectedTools.filter((x) => x !== t.name) : [...selectedTools, t.name])}
-                      className={`text-left text-xs rounded px-2 py-1 border ${on ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
-                      title={t.description}
-                    >
-                      <div className="font-mono text-xs flex items-center gap-1">
-                        {t.name}
-                        {t.required_perm && <Badge variant="outline" className="text-[9px]">需 {t.required_perm}</Badge>}
-                      </div>
-                      <div className="text-[10px] opacity-80 truncate">{t.description}</div>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
+      <div className="space-y-1.5">
+        <Label>允许的工具</Label>
+        <ToolMultiSelect tools={tools} selected={selectedTools} onChange={setSelectedTools} />
       </div>
     </div>
   )
