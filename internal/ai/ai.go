@@ -82,7 +82,20 @@ type Set struct {
 	AgentRepo    *airepo.AgentRepo
 	ConvRepo     *airepo.ConversationRepo
 	Cfg          Config
+
+	// toolReg / nodeRunner are kept so optools.RegisterAll can extend the live
+	// tool catalogue from main.go after construction. The runner holds the same
+	// *tools.Registry pointer, so late registration is picked up per turn.
+	toolReg    *tools.Registry
+	nodeRunner tools.NodeRunner
 }
+
+// Registry exposes the live tool registry so host wiring (main.go) can register
+// additional tool families (see internal/ai/optools) after New() returns.
+func (s *Set) Registry() *tools.Registry { return s.toolReg }
+
+// NodeRunner exposes the SSH bridge so ops/k8s tools can run commands on nodes.
+func (s *Set) NodeRunner() tools.NodeRunner { return s.nodeRunner }
 
 // New builds the entire AI subsystem.
 func New(cfg Config, deps Deps) *Set {
@@ -114,6 +127,7 @@ func New(cfg Config, deps Deps) *Set {
 	// so the SubAgentRunner is filled below.
 	runner.ToolDepsView.Asset = deps.Asset
 	runner.ToolDepsView.RBAC = deps.RBAC
+	runner.ToolDepsView.Users = deps.Users
 
 	tdeps := tools.Deps{
 		Asset: deps.Asset, RBAC: deps.RBAC, Audit: deps.AuditWriter,
@@ -181,6 +195,8 @@ func New(cfg Config, deps Deps) *Set {
 		AgentRepo:    agentRepo,
 		ConvRepo:     convRepo,
 		Cfg:          cfg,
+		toolReg:      toolReg,
+		nodeRunner:   nodeRunner,
 	}
 }
 

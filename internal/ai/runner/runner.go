@@ -884,7 +884,7 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		inv.Status = aimodel.InvStatusDryRun
 		var output string
 		if tool.DryRun != nil {
-			out, err := tool.DryRun(ctx, makeToolCtx(conv, agent), json.RawMessage(tc.Arguments))
+			out, err := tool.DryRun(ctx, makeToolCtx(ctx, conv, agent), json.RawMessage(tc.Arguments))
 			if err != nil {
 				output = "[dry-run error] " + err.Error()
 			} else {
@@ -931,7 +931,7 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		_ = f.Inv.Update(ctx, inv)
 		sink.Emit(Event{Kind: KindToolStart, Data: map[string]any{"id": tc.ID, "invocation_id": invID}})
 		runCtx, cancel := context.WithTimeout(ctx, f.Cfg.ToolTimeout)
-		tctx := makeToolCtx(conv, agent)
+		tctx := makeToolCtx(ctx, conv, agent)
 		// Live output streaming: forward fragments to the UI as they arrive.
 		tctx.Stream = func(chunk string) {
 			sink.Emit(Event{Kind: KindToolOutputDelta, Data: map[string]any{
@@ -1727,6 +1727,10 @@ func buildApprovalSummary(toolName, raw string) string {
 	return fmt.Sprintf("调用工具 %s", toolName)
 }
 
-func makeToolCtx(conv *aimodel.AIConversation, _ *aimodel.AIAgent) tools.ToolCtx {
-	return tools.ToolCtx{UserID: conv.UserID, ConvID: conv.ID}
+func makeToolCtx(ctx context.Context, conv *aimodel.AIConversation, _ *aimodel.AIAgent) tools.ToolCtx {
+	return tools.ToolCtx{
+		UserID:   conv.UserID,
+		Username: resolveUsername(ctx, conv.UserID),
+		ConvID:   conv.ID,
+	}
 }

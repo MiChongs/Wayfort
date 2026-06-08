@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/ai"
+	"github.com/michongs/jumpserver-anonymous/internal/ai/optools"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
 	"github.com/michongs/jumpserver-anonymous/internal/api"
@@ -396,6 +397,10 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		}
 	}
 
+	// dbSvc is shared between the REST DB handler and the AI db_* tools so both
+	// use the same connection pools / proxy chains / dialect adapters.
+	dbSvc := dbquery.New(wsGateway, sealer, logger, assetResolver)
+
 	routes := &server.Routes{
 		Auth: &api.AuthHandler{
 			Registry: registry, Issuer: issuer,
@@ -418,7 +423,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		WS:            wsGateway,
 		Guacamole:     guacHandler,
 		DBCLI:         dbcliHandler,
-		DB:            api.NewDBHandler(dbquery.New(wsGateway, sealer, logger, assetResolver), nil, auditWriter),
+		DB:            api.NewDBHandler(dbSvc, nil, auditWriter),
 		TCPFwd:        pfHandler,
 		TCPRelay:      pfRelay,
 		TCPEvents:     pfEvents,
@@ -822,6 +827,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		SFTPConn: sftpConn, TCPFwd: pfManager, DialTimeout: cfg.SSHPool.DialTimeout,
 	})
 	routes.AI = aiSet
+
+	// Extend the AI tool catalogue with the ops/db/oss tool families by reusing
+	// the already-built subsystem managers (no SSH-shell reimplementation). The
+	// runner shares the same registry pointer, so these late registrations are
+	// visible from the next turn. nil managers simply skip their family.
+	if aiSet != nil && aiSet.Enabled {
+		optools.RegisterAll(aiSet.Registry(), optools.Deps{
+			Logger: logger, Audit: auditWriter, Asset: assetResolver, RBAC: rbacResolver,
+			Process: processMgr, Systemd: systemdMgr, Perf: perfMgr, Logs: logsMgr,
+			Docker: dockerMgr, Hardware: hardwareMgr, Kernel: kernelMgr, Storage: storageMgr,
+			NetTools: nettoolsMgr, Cron: cronMgr, Pkg: pkgMgr, SysUser: sysuserMgr,
+			SecAudit: secauditMgr, Firewall: firewallMgr,
+			DBQuery: dbSvc, OSS: ossConn,
+			NodeRunner: aiSet.NodeRunner(),
+		})
+	}
 
 	engine := server.NewEngine(cfg.Server, logger)
 	routes.Mount(engine)
