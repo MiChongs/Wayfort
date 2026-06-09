@@ -199,7 +199,7 @@ type Routes struct {
 	Tag        *api.TagHandler
 	TagGroup   *api.TagGroupHandler
 	Grant      *api.GrantHandler
-	Catalog    *api.CatalogHandler
+	AccessTree *api.AccessTreeHandler
 	Me         *api.MeHandler
 	Dashboard  *api.DashboardHandler
 	OIDCClient *api.OIDCClientHandler
@@ -340,7 +340,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/recent-nodes", rt.Me.RecentNodes)
 		me.GET("/login-history", rt.Me.LoginHistory)
 		me.GET("/nodes", rt.Me.VisibleNodes)
-		me.GET("/catalogs", rt.Catalog.MyCatalogs)
+		me.GET("/directory", rt.AccessTree.MyDirectory)
 		me.GET("/access", rt.Dashboard.Access)
 
 		// Phase 11 — terminal personalization. User-scoped (no admin
@@ -504,21 +504,16 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.GET("/access/by-grantee", perm(auth.PermGrantManage), rt.Grant.ByGrantee)
 		admin.GET("/access/by-subject", perm(auth.PermGrantManage), rt.Grant.BySubject)
 
-		// 授权目录（自定义资产目录，独立于全局资产树）。
-		catMgr := perm(auth.PermCatalogManage)
-		admin.GET("/catalogs", catMgr, rt.Catalog.List)
-		admin.POST("/catalogs", catMgr, rt.Catalog.Create)
-		admin.GET("/catalogs/:id", catMgr, rt.Catalog.Get)
-		admin.PATCH("/catalogs/:id", catMgr, rt.Catalog.Update)
-		admin.DELETE("/catalogs/:id", catMgr, rt.Catalog.Delete)
-		admin.POST("/catalogs/:id/folders", catMgr, rt.Catalog.CreateFolder)
-		admin.PATCH("/catalogs/:id/folders/:fid", catMgr, rt.Catalog.UpdateFolder)
-		admin.PUT("/catalogs/:id/folders/:fid/parent", catMgr, rt.Catalog.MoveFolder)
-		admin.DELETE("/catalogs/:id/folders/:fid", catMgr, rt.Catalog.DeleteFolder)
-		admin.POST("/catalogs/:id/placements", catMgr, rt.Catalog.AddPlacements)
-		admin.DELETE("/catalogs/:id/placements/:pid", catMgr, rt.Catalog.DeletePlacement)
-		admin.POST("/catalogs/:id/assignments", catMgr, rt.Catalog.CreateAssignments)
-		admin.DELETE("/catalogs/:id/assignments/:aid", catMgr, rt.Catalog.DeleteAssignment)
+		// 授权目录：按对象(用户/用户组/部门)编辑其专属资产树，树即授权。
+		// 与散列授权统一在 grant:manage 权限下。
+		admin.GET("/access-tree", perm(auth.PermGrantManage), rt.AccessTree.Get)
+		admin.POST("/access-tree/folders", perm(auth.PermGrantManage), rt.AccessTree.CreateFolder)
+		admin.PATCH("/access-tree/folders/:id", perm(auth.PermGrantManage), rt.AccessTree.UpdateFolder)
+		admin.PUT("/access-tree/folders/:id/parent", perm(auth.PermGrantManage), rt.AccessTree.MoveFolder)
+		admin.DELETE("/access-tree/folders/:id", perm(auth.PermGrantManage), rt.AccessTree.DeleteFolder)
+		admin.POST("/access-tree/items", perm(auth.PermGrantManage), rt.AccessTree.AddItems)
+		admin.PATCH("/access-tree/items/:id", perm(auth.PermGrantManage), rt.AccessTree.UpdateItem)
+		admin.DELETE("/access-tree/items/:id", perm(auth.PermGrantManage), rt.AccessTree.DeleteItem)
 
 		// OIDC client management
 		if rt.OIDCClient != nil {

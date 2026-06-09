@@ -30,6 +30,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 import { GrantWizard } from "@/components/admin/grant-wizard"
+import { AccessTreeTab } from "./access-tree-editor"
 import { TreeList } from "@/components/common/tree-list"
 import { AppIcon } from "@/components/icons/app-icon"
 import { BatchActionBar } from "@/components/common/batch-action-bar"
@@ -114,17 +115,23 @@ export default function AccessPolicyPage() {
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
             <FileLock2 className="h-5 w-5" /> 访问策略
           </h1>
-          <p className="text-sm text-muted-foreground">谁能访问哪些资产、能做什么、到什么时候 —— 都在这里管。</p>
+          <p className="text-sm text-muted-foreground">
+            选一个用户 / 组 / 部门，直接搭建 TA 的资产目录（树即授权）；按资产组 / 标签 / 全部的散列授权也在这里。
+          </p>
         </div>
         <GrantWizard onDone={() => qc.invalidateQueries({ queryKey: ["admin", "grants"] })} />
       </div>
 
-      <Tabs defaultValue="overview">
+      <Tabs defaultValue="tree">
         <TabsList>
-          <TabsTrigger value="overview">总览</TabsTrigger>
-          <TabsTrigger value="by-grantee">按人看</TabsTrigger>
+          <TabsTrigger value="tree">资产目录</TabsTrigger>
+          <TabsTrigger value="by-grantee">按对象看</TabsTrigger>
           <TabsTrigger value="by-subject">按资产看</TabsTrigger>
+          <TabsTrigger value="overview">散列授权</TabsTrigger>
         </TabsList>
+        <TabsContent value="tree" className="mt-4">
+          <AccessTreeTab cats={dirs.granteeCats} nodes={dirs.nodes.data?.nodes ?? []} />
+        </TabsContent>
         <TabsContent value="overview" className="mt-4">
           <OverviewTab granteeCat={dirs.granteeCat} subjectCat={dirs.subjectCat} />
         </TabsContent>

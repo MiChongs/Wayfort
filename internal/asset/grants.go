@@ -28,19 +28,18 @@ const (
 )
 
 type Resolver struct {
-	grants     *repo.GrantRepo
-	groups     *repo.UserGroupRepo
-	depts      *repo.DepartmentRepo
-	roles      *repo.RoleRepo
-	users      *repo.UserRepo
-	ag         *repo.AssetGroupRepo
-	tags       *repo.TagRepo
-	nodes      *repo.NodeRepo
-	folders    *repo.CatalogFolderRepo
-	placements *repo.CatalogPlacementRepo
-	catAssign  *repo.CatalogAssignmentRepo
-	cache      *redis.Client
-	ttl        time.Duration
+	grants        *repo.GrantRepo
+	groups        *repo.UserGroupRepo
+	depts         *repo.DepartmentRepo
+	roles         *repo.RoleRepo
+	users         *repo.UserRepo
+	ag            *repo.AssetGroupRepo
+	tags          *repo.TagRepo
+	nodes         *repo.NodeRepo
+	accessFolders *repo.AccessFolderRepo
+	accessItems   *repo.AccessItemRepo
+	cache         *redis.Client
+	ttl           time.Duration
 }
 
 func NewResolver(
@@ -52,42 +51,154 @@ func NewResolver(
 	ag *repo.AssetGroupRepo,
 	tags *repo.TagRepo,
 	nodes *repo.NodeRepo,
-	folders *repo.CatalogFolderRepo,
-	placements *repo.CatalogPlacementRepo,
-	catAssign *repo.CatalogAssignmentRepo,
+	accessFolders *repo.AccessFolderRepo,
+	accessItems *repo.AccessItemRepo,
 	cache *redis.Client,
 ) *Resolver {
-	return &Resolver{grants: grants, groups: groups, depts: depts, roles: roles, users: users, ag: ag, tags: tags, nodes: nodes, folders: folders, placements: placements, catAssign: catAssign, cache: cache, ttl: 60 * time.Second}
+	return &Resolver{grants: grants, groups: groups, depts: depts, roles: roles, users: users, ag: ag, tags: tags, nodes: nodes, accessFolders: accessFolders, accessItems: accessItems, cache: cache, ttl: 60 * time.Second}
 }
 
-// expandAssignment resolves a catalog assignment to the node IDs it grants:
-// the whole catalog when FolderID is nil, otherwise just the placements in that
-// folder's subtree. Reuses the materialised-path Subtree query.
-func (r *Resolver) expandAssignment(ctx context.Context, a model.CatalogAssignment) ([]uint64, error) {
-	if r.catAssign == nil || r.placements == nil {
+// treeNodeGrant is one node an owner's authorisation tree grants, with the
+// effective action set and expiry after folder inheritance is applied.
+type treeNodeGrant struct {
+	OwnerType model.GranteeType
+	OwnerID   uint64
+	NodeID    uint64
+	Actions   []string
+	ValidTo   *time.Time
+}
+
+// effFolder walks a folder's ancestor chain and returns the first non-empty
+// Actions and first non-nil ValidFrom/ValidTo it finds (the inherited defaults).
+func effFolder(folders map[uint64]model.AccessFolder, folderID uint64) (actions string, validFrom, validTo *time.Time) {
+	visited := map[uint64]bool{}
+	cur, ok := folders[folderID]
+	for ok && !visited[cur.ID] {
+		visited[cur.ID] = true
+		if actions == "" && cur.Actions != "" {
+			actions = cur.Actions
+		}
+		if validFrom == nil && cur.ValidFrom != nil {
+			validFrom = cur.ValidFrom
+		}
+		if validTo == nil && cur.ValidTo != nil {
+			validTo = cur.ValidTo
+		}
+		if cur.ParentID == nil {
+			break
+		}
+		cur, ok = folders[*cur.ParentID]
+	}
+	return actions, validFrom, validTo
+}
+
+// resolveTrees flattens access folders + items (possibly spanning many owners of
+// one type) into per-node effective grants, honouring folder inheritance. When
+// onlyValid is true, grants outside their effective validity window are dropped.
+func resolveTrees(folders []model.AccessFolder, items []model.AccessItem, now time.Time, onlyValid bool) []treeNodeGrant {
+	byOwner := map[uint64]map[uint64]model.AccessFolder{}
+	for _, f := range folders {
+		m := byOwner[f.OwnerID]
+		if m == nil {
+			m = map[uint64]model.AccessFolder{}
+			byOwner[f.OwnerID] = m
+		}
+		m[f.ID] = f
+	}
+	out := make([]treeNodeGrant, 0, len(items))
+	for _, it := range items {
+		fActions, fFrom, fTo := "", (*time.Time)(nil), (*time.Time)(nil)
+		if m := byOwner[it.OwnerID]; m != nil {
+			fActions, fFrom, fTo = effFolder(m, it.FolderID)
+		}
+		actions := it.Actions
+		if actions == "" {
+			actions = fActions
+		}
+		if actions == "" {
+			actions = ActionConnect
+		}
+		vf := it.ValidFrom
+		if vf == nil {
+			vf = fFrom
+		}
+		vt := it.ValidTo
+		if vt == nil {
+			vt = fTo
+		}
+		if onlyValid {
+			if vf != nil && vf.After(now) {
+				continue
+			}
+			if vt != nil && vt.Before(now) {
+				continue
+			}
+		}
+		out = append(out, treeNodeGrant{OwnerType: it.OwnerType, OwnerID: it.OwnerID, NodeID: it.NodeID, Actions: splitActions(actions), ValidTo: vt})
+	}
+	return out
+}
+
+// treeGrantsForGrantees resolves the authorisation trees owned by the supplied
+// grantees (roles excluded — they don't own trees). onlyValid drops expired.
+func (r *Resolver) treeGrantsForGrantees(ctx context.Context, granteeIDs map[model.GranteeType][]uint64, onlyValid bool) ([]treeNodeGrant, error) {
+	if r.accessItems == nil || r.accessFolders == nil {
 		return nil, nil
 	}
-	if a.FolderID == nil {
-		return r.placements.NodesInCatalog(ctx, a.CatalogID)
+	now := time.Now()
+	var out []treeNodeGrant
+	for gt, ids := range granteeIDs {
+		if gt == model.GranteeRole {
+			continue
+		}
+		folders, err := r.accessFolders.ListByOwnerSet(ctx, gt, ids)
+		if err != nil {
+			return nil, err
+		}
+		items, err := r.accessItems.ListByOwnerSet(ctx, gt, ids)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, resolveTrees(folders, items, now, onlyValid)...)
 	}
-	f, err := r.folders.FindByID(ctx, *a.FolderID)
-	if err != nil || f == nil {
-		return nil, err
+	return out, nil
+}
+
+// DirectoryForUser returns the raw access folders + items reaching a user
+// (their own tree plus the trees of their groups / departments). Backs
+// GET /me/directory; the handler filters by connectability and prunes.
+func (r *Resolver) DirectoryForUser(ctx context.Context, userID uint64) ([]model.AccessFolder, []model.AccessItem, error) {
+	if r.accessItems == nil {
+		return nil, nil, nil
 	}
-	sub, err := r.folders.Subtree(ctx, f.CatalogID, f.Path)
-	if err != nil {
-		return nil, err
+	user, err := r.users.FindByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, nil, err
 	}
-	ids := make([]uint64, 0, len(sub))
-	for _, s := range sub {
-		ids = append(ids, s.ID)
+	granteeIDs := r.granteesForUser(ctx, user)
+	var folders []model.AccessFolder
+	var items []model.AccessItem
+	for gt, ids := range granteeIDs {
+		if gt == model.GranteeRole {
+			continue
+		}
+		fs, err := r.accessFolders.ListByOwnerSet(ctx, gt, ids)
+		if err != nil {
+			return nil, nil, err
+		}
+		is, err := r.accessItems.ListByOwnerSet(ctx, gt, ids)
+		if err != nil {
+			return nil, nil, err
+		}
+		folders = append(folders, fs...)
+		items = append(items, is...)
 	}
-	return r.placements.NodesInFolders(ctx, ids)
+	return folders, items, nil
 }
 
 // granteesForUser gathers the (granteeType → ids) map for a user, expanding
 // department / user-group ancestors (a child inherits its ancestors' grants)
-// and the user's roles. Shared by compute() and AssignmentsForUser().
+// and the user's roles. Shared by compute() and the directory lookups.
 func (r *Resolver) granteesForUser(ctx context.Context, user *model.User) map[model.GranteeType][]uint64 {
 	granteeIDs := map[model.GranteeType][]uint64{
 		model.GranteeUser: {user.ID},
@@ -112,28 +223,6 @@ func (r *Resolver) granteesForUser(ctx context.Context, user *model.User) map[mo
 		granteeIDs[model.GranteeRole] = ids
 	}
 	return granteeIDs
-}
-
-// AssignmentsForUser returns the still-valid catalog assignments that reach a
-// user (through their groups / roles / departments). Backs GET /me/catalogs.
-func (r *Resolver) AssignmentsForUser(ctx context.Context, userID uint64) ([]model.CatalogAssignment, error) {
-	if r.catAssign == nil {
-		return nil, nil
-	}
-	user, err := r.users.FindByID(ctx, userID)
-	if err != nil || user == nil {
-		return nil, err
-	}
-	granteeIDs := r.granteesForUser(ctx, user)
-	var out []model.CatalogAssignment
-	for gt, ids := range granteeIDs {
-		rows, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gt}, ids)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, rows...)
-	}
-	return out, nil
 }
 
 type accessSet struct {
@@ -266,26 +355,16 @@ func (r *Resolver) compute(ctx context.Context, userID uint64) (*accessSet, erro
 		}
 	}
 
-	// Custom authorisation directories (授权目录): resolve assignments aimed at
-	// the same grantees into the same access set. A node reachable via both a
-	// catalog and an AssetGrant ends up with the union of actions (merge dedups).
-	if r.catAssign != nil {
-		for gt, ids := range granteeIDs {
-			assigns, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gt}, ids)
-			if err != nil {
-				return nil, err
-			}
-			for _, a := range assigns {
-				nodeIDs, err := r.expandAssignment(ctx, a)
-				if err != nil {
-					return nil, err
-				}
-				actions := splitActions(a.Actions)
-				for _, nid := range nodeIDs {
-					merge(set.Nodes, nid, actions)
-				}
-			}
-		}
+	// Per-object authorisation trees (授权目录): the user inherits the trees
+	// owned by themselves and by each group / department they belong to. Folder
+	// inheritance is applied and expired grants dropped; a node reachable via
+	// both a tree and an AssetGrant ends up with the union of actions.
+	treeGrants, err := r.treeGrantsForGrantees(ctx, granteeIDs, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range treeGrants {
+		merge(set.Nodes, g.NodeID, g.Actions)
 	}
 
 	r.persist(ctx, userID, set)
@@ -437,26 +516,14 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 		}
 	}
 
-	// Custom authorisation directories contribute node access for the same
-	// grantees (tracked under the grantee as the source).
-	if r.catAssign != nil {
-		for gtype, ids := range granteeIDs {
-			assigns, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gtype}, ids)
-			if err != nil {
-				return nil, err
-			}
-			for _, a := range assigns {
-				nodeIDs, err := r.expandAssignment(ctx, a)
-				if err != nil {
-					return nil, err
-				}
-				actions := splitActions(a.Actions)
-				src := GranteeRef{Type: a.GranteeType, ID: a.GranteeID}
-				for _, nid := range nodeIDs {
-					add(nid, actions, src, a.ValidTo)
-				}
-			}
-		}
+	// Per-object authorisation trees contribute node access for the same
+	// grantees (tracked under the owning grantee as the source).
+	treeGrants, err := r.treeGrantsForGrantees(ctx, granteeIDs, true)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range treeGrants {
+		add(g.NodeID, g.Actions, GranteeRef{Type: g.OwnerType, ID: g.OwnerID}, g.ValidTo)
 	}
 
 	out := &Explanation{AllActions: sortedKeys(allActions), AllSources: refKeys(allSources), Nodes: make([]NodeAccess, 0, len(nodeAcc))}
@@ -547,27 +614,47 @@ func (r *Resolver) WhoCanAccessNode(ctx context.Context, nodeID uint64) ([]Subje
 		})
 	}
 
-	// Custom authorisation directories that place this node.
-	if r.catAssign != nil {
-		assigns, err := r.catAssign.List(ctx)
+	// Per-object authorisation trees that place this node. Resolve each owning
+	// tree's effective permission for the node (folder inheritance applied).
+	if r.accessItems != nil {
+		items, err := r.accessItems.ListByNode(ctx, nodeID)
 		if err != nil {
 			return nil, err
 		}
-		for _, a := range assigns {
-			nodeIDs, err := r.expandAssignment(ctx, a)
-			if err != nil {
-				return nil, err
+		foldersCache := map[string]map[uint64]model.AccessFolder{}
+		for _, it := range items {
+			key := string(it.OwnerType) + ":" + fmt.Sprint(it.OwnerID)
+			fm := foldersCache[key]
+			if fm == nil {
+				fs, err := r.accessFolders.ListByOwner(ctx, it.OwnerType, it.OwnerID)
+				if err != nil {
+					return nil, err
+				}
+				fm = make(map[uint64]model.AccessFolder, len(fs))
+				for _, f := range fs {
+					fm[f.ID] = f
+				}
+				foldersCache[key] = fm
 			}
-			if !containsUint(nodeIDs, nodeID) {
-				continue
+			fActions, _, fTo := effFolder(fm, it.FolderID)
+			actions := it.Actions
+			if actions == "" {
+				actions = fActions
+			}
+			if actions == "" {
+				actions = ActionConnect
+			}
+			vt := it.ValidTo
+			if vt == nil {
+				vt = fTo
 			}
 			out = append(out, SubjectAccess{
-				GranteeType: a.GranteeType,
-				GranteeID:   a.GranteeID,
-				Actions:     splitActions(a.Actions),
+				GranteeType: it.OwnerType,
+				GranteeID:   it.OwnerID,
+				Actions:     splitActions(actions),
 				Via:         model.SubjectCatalog,
-				GrantID:     a.ID,
-				ValidTo:     a.ValidTo,
+				GrantID:     it.ID,
+				ValidTo:     vt,
 			})
 		}
 	}

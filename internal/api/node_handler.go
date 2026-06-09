@@ -26,11 +26,11 @@ type NodeHandler struct {
 	Proxies  *repo.ProxyRepo
 	Tags     *repo.TagRepo
 	Resolver *appssh.Resolver
-	// Placements + Access keep the 授权目录 consistent when a node is deleted:
-	// purge any catalog placements that referenced it and flush the ACL cache.
+	// AccessItems + Access keep the 授权目录 consistent when a node is deleted:
+	// purge any access-tree items that referenced it and flush the ACL cache.
 	// Both optional — Delete degrades gracefully when nil.
-	Placements *repo.CatalogPlacementRepo
-	Access     *asset.Resolver
+	AccessItems *repo.AccessItemRepo
+	Access      *asset.Resolver
 }
 
 // nodeView is the list projection — the node plus resolved human names for its
@@ -259,10 +259,10 @@ func (h *NodeHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	// Keep the 授权目录 clean: drop any placements that pointed at this node,
-	// then flush the ACL cache so it no longer appears in anyone's directory.
-	if h.Placements != nil {
-		_ = h.Placements.PurgeNode(c.Request.Context(), id)
+	// Keep the 授权目录 clean: drop any access-tree items that pointed at this
+	// node, then flush the ACL cache so it leaves everyone's directory.
+	if h.AccessItems != nil {
+		_ = h.AccessItems.PurgeNode(c.Request.Context(), id)
 	}
 	if h.Access != nil {
 		h.Access.InvalidateAll(c.Request.Context())

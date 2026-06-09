@@ -220,10 +220,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	tagRepo := repo.NewTagRepo(db)
 	tagGroupRepo := repo.NewTagGroupRepo(db)
 	grantRepo := repo.NewGrantRepo(db)
-	catalogRepo := repo.NewCatalogRepo(db)
-	catalogFolderRepo := repo.NewCatalogFolderRepo(db)
-	catalogPlacementRepo := repo.NewCatalogPlacementRepo(db)
-	catalogAssignmentRepo := repo.NewCatalogAssignmentRepo(db)
+	accessFolderRepo := repo.NewAccessFolderRepo(db)
+	accessItemRepo := repo.NewAccessItemRepo(db)
 	favoriteRepo := repo.NewFavoriteRepo(db)
 	recentRepo := repo.NewRecentRepo(db)
 
@@ -288,7 +286,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if cfg.Auth.Anomaly.Enabled {
 		anomalyDetector = anomaly.New(historyRepo, mailer, logger, cfg.Auth.Anomaly.NotifyEmail)
 	}
-	assetResolver := asset.NewResolver(grantRepo, groupRepo, deptRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, catalogFolderRepo, catalogPlacementRepo, catalogAssignmentRepo, rc.Client())
+	assetResolver := asset.NewResolver(grantRepo, groupRepo, deptRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, accessFolderRepo, accessItemRepo, rc.Client())
 
 	resolver := pkgssh.NewResolver(sealer)
 	hostKeyChecker, err := pkgssh.NewHostKeyChecker("", false)
@@ -434,7 +432,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			AnonEna:  anonService != nil,
 			AnonSpec: cfg.Anonymous,
 		},
-		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, Placements: catalogPlacementRepo, Access: assetResolver},
+		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, AccessItems: accessItemRepo, Access: assetResolver},
 		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
 		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
 		ProxyGroup:    &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},
@@ -468,9 +466,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Tag:        &api.TagHandler{Repo: tagRepo, Groups: tagGroupRepo, Resolver: assetResolver},
 		TagGroup:   &api.TagGroupHandler{Repo: tagGroupRepo},
 		Grant:      &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
-		Catalog: &api.CatalogHandler{
-			Catalogs: catalogRepo, Folders: catalogFolderRepo, Placements: catalogPlacementRepo,
-			Assignments: catalogAssignmentRepo, Nodes: nodeRepo, Resolver: assetResolver,
+		AccessTree: &api.AccessTreeHandler{
+			Folders: accessFolderRepo, Items: accessItemRepo, Nodes: nodeRepo, Resolver: assetResolver,
 		},
 		Me: &api.MeHandler{
 			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,

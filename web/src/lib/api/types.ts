@@ -1539,58 +1539,43 @@ export interface SubjectAccessRow {
   valid_to?: string | null
 }
 
-// ----- 授权目录 (custom authorisation directory / catalog) -----
-// Independent of the global asset tree: an admin builds a bespoke folder tree,
-// drops assets into folders, and assigns it to grantees. Resolved into the same
-// access set as AssetGrant on the backend.
-export interface Catalog {
+// ----- 授权目录 (per-object authorisation tree) -----
+// Each authorisation object (user / group / department) owns a folder tree of
+// assets with inline permissions; editing it IS authorising that object, and
+// members inherit their group / department tree. Resolved into the same access
+// set as AssetGrant on the backend.
+export interface AccessFolder {
   id: number
-  name: string
-  description?: string
-  icon?: string
-  is_template?: boolean
-  created_by?: number
-  created_at?: string
-  updated_at?: string
-}
-export interface CatalogFolder {
-  id: number
-  catalog_id: number
+  owner_type: GranteeKind
+  owner_id: number
   name: string
   parent_id?: number | null
   path: string
   icon?: string
   sort_order?: number
-  description?: string
+  actions?: string // csv, "" = inherit parent chain
+  valid_from?: string | null
+  valid_to?: string | null
 }
-export interface CatalogPlacement {
+export interface AccessItem {
   id: number
-  catalog_id: number
+  owner_type: GranteeKind
+  owner_id: number
   folder_id: number
   node_id: number
+  actions?: string // csv, "" = inherit folder
+  valid_from?: string | null
+  valid_to?: string | null
   sort_order?: number
 }
-export interface CatalogAssignment {
-  id: number
-  catalog_id: number
-  folder_id?: number | null // null = whole catalog; set = that folder subtree
-  grantee_type: GranteeKind
-  grantee_id: number
-  actions: string
-  valid_from?: string
-  valid_to?: string
-  created_by?: number
-  created_at?: string
+// Admin editor payload (GET /access-tree?owner_type=&owner_id=).
+export interface AccessTreeData {
+  folders: AccessFolder[]
+  items: AccessItem[]
 }
-// Admin editor payload (GET /catalogs/:id).
-export interface CatalogDetail {
-  catalog: Catalog
-  folders: CatalogFolder[]
-  placements: CatalogPlacement[]
-  assignments: CatalogAssignment[]
-}
-// Workspace "我的目录" payload (GET /me/catalogs) — filtered + pruned server-side.
-export interface MyCatalogFolder {
+// Workspace "我的目录" payload (GET /me/directory) — merged across the user's
+// own / inherited trees, filtered to connectable nodes and pruned server-side.
+export interface MyDirFolder {
   id: number
   parent_id?: number | null
   name: string
@@ -1598,18 +1583,14 @@ export interface MyCatalogFolder {
   icon?: string
   sort_order?: number
 }
-export interface MyCatalogPlacement {
+export interface MyDirItem {
   folder_id: number
   node_id: number
   sort_order?: number
 }
-export interface MyCatalog {
-  id: number
-  name: string
-  icon?: string
-  description?: string
-  folders: MyCatalogFolder[]
-  placements: MyCatalogPlacement[]
+export interface MyDirectory {
+  folders: MyDirFolder[]
+  items: MyDirItem[]
 }
 
 export interface LoginHistory {
