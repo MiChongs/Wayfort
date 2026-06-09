@@ -140,6 +140,11 @@ const (
 	EncodingJPEG     Encoding = "jpeg"
 	EncodingPNG      Encoding = "png"
 	EncodingZlibBGRA Encoding = "zlib_bgra"
+	// EncodingZstdBGRA is a zstd-compressed BGRA surface — the worker emits it
+	// instead of zlib_bgra when the browser advertises zstd decode support
+	// (ClientCaps.Zstd). zstd decompresses ~3× faster than zlib at a better
+	// ratio, so it cuts both decode time and bandwidth for the lossless path.
+	EncodingZstdBGRA Encoding = "zstd_bgra"
 	// EncodingH264 / EncodingRFX carry RDPGFX SURFACE_COMMAND payloads
 	// forwarded by libfreerdp untouched. They are AVC420 (H.264
 	// Constrained Baseline, single YUV4:2:0 stream — AVC444 is
@@ -353,6 +358,10 @@ type ClientCaps struct {
 	H264         bool `json:"h264"`
 	RFX          bool `json:"rfx"`
 	ImageDecoder bool `json:"imageDecoder"`
+	// Zstd reports the browser can inflate a zstd_bgra surface (decode worker
+	// bundles a zstd-wasm decoder). When true the worker compresses lossless
+	// BGRA rects with zstd instead of zlib — faster client decode + less wire.
+	Zstd bool `json:"zstd"`
 	// WebRTC reports that the browser can run an RTCPeerConnection and decode
 	// the VP8 video track. When true (and desktop.webrtc.enabled), the manager
 	// starts the worker in VP8 video mode and the gateway streams video over a

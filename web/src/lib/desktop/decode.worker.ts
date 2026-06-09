@@ -104,7 +104,7 @@ let warnedRFX = false
 async function decodeFrame(input: DecodeFrameInput, gpu: boolean): Promise<DecodedFrameOutput> {
   const { frame, payload } = input
   validateFrame(frame)
-  if (frame.encoding === "raw_bgra" || frame.encoding === "zlib_bgra") {
+  if (frame.encoding === "raw_bgra" || frame.encoding === "zlib_bgra" || frame.encoding === "zstd_bgra") {
     return await decodeBgraFrame(frame, payload, gpu)
   }
   if (frame.encoding === "jpeg" || frame.encoding === "png") {
@@ -343,6 +343,27 @@ function ensureInflateScratch(byteLength: number): Uint8Array {
   return inflateScratch
 }
 
+// zstd-wasm is initialised lazily on the first zstd_bgra frame and reused for the
+// worker's lifetime. The module's init() loads its .wasm via
+// `new URL('./zstd.wasm', import.meta.url)`, which the bundler emits as an asset.
+// decompress() returns a freshly allocated Uint8Array of the inflated bytes.
+let zstdReady: Promise<typeof import("@bokuweb/zstd-wasm")> | null = null
+
+async function zstdDecompress(payload: Uint8Array, expected: number): Promise<Uint8Array> {
+  if (!zstdReady) {
+    zstdReady = import("@bokuweb/zstd-wasm").then(async (m) => {
+      await m.init()
+      return m
+    })
+  }
+  const mod = await zstdReady
+  const out = mod.decompress(payload, { defaultHeapSize: expected + 1 * 1024 * 1024 })
+  if (out.length < expected) {
+    throw new Error(`zstd BGRA payload too small after inflate: got ${out.length}, need ${expected}`)
+  }
+  return out
+}
+
 // decodeBgraFrame turns a raw/zlib BGRA surface into an ImageBitmap (GPU-backed,
 // freed deterministically via .close() on the main thread) instead of a heap
 // ImageData that's transferred and left for the GC. The BGRA→RGBA channel swap
@@ -363,6 +384,11 @@ async function decodeBgraFrame(
   // inflate into a fresh transferable buffer because the inflate scratch is
   // reused across frames and can't be detached.
   if (gpu) {
+    if (frame.encoding === "zstd_bgra") {
+      const out = await zstdDecompress(payload, expected)
+      const bgra = out.byteLength === expected ? out : out.subarray(0, expected)
+      return { frame, bgra, decoderPath: "imagebitmap" }
+    }
     if (frame.encoding === "zlib_bgra") {
       const out = new Uint8Array(expected)
       const inflated = unzlibSync(payload, { out })
@@ -380,7 +406,11 @@ async function decodeBgraFrame(
     return { frame, bgra: exact, decoderPath: "imagebitmap" }
   }
   let bytes: Uint8Array
-  if (frame.encoding === "zlib_bgra") {
+  if (frame.encoding === "zstd_bgra") {
+    // zstd-wasm hands back a fresh buffer we own — swap in place below.
+    const out = await zstdDecompress(payload, expected)
+    bytes = out.byteLength === expected ? out : out.subarray(0, expected)
+  } else if (frame.encoding === "zlib_bgra") {
     const scratch = ensureInflateScratch(expected)
     const out = scratch.byteLength === expected ? scratch : new Uint8Array(scratch.buffer, 0, expected)
     const inflated = unzlibSync(payload, { out })

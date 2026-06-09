@@ -291,6 +291,13 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 			no := false
 			rdpOpts.EnableRemoteFx = &no
 		}
+		// zstd is opt-in per client: the worker only emits zstd_bgra when the
+		// browser advertised it can inflate it (its decode worker bundles a
+		// zstd-wasm decoder). Older/cached frontends stay on zlib_bgra.
+		if req.ClientCaps.Zstd {
+			yes := true
+			rdpOpts.PreferZstd = &yes
+		}
 	}
 	keyboard := req.Keyboard
 	if keyboard == "" {

@@ -9,7 +9,7 @@ export type Quality = "auto" | "high" | "medium" | "low"
 // rfx = RemoteFX progressive codec — wire-tagged today but no browser
 // decoder yet; servers that only emit rfx will get it forwarded and the
 // client will fall through to "unsupported" handling.
-export type Encoding = "raw_bgra" | "zlib_bgra" | "jpeg" | "png" | "h264" | "rfx"
+export type Encoding = "raw_bgra" | "zlib_bgra" | "zstd_bgra" | "jpeg" | "png" | "h264" | "rfx"
 export type CursorEncoding = "raw_bgra" | "png" | "system"
 
 export type Phase =
@@ -200,6 +200,9 @@ export interface ClientCaps {
   h264: boolean
   rfx: boolean
   imageDecoder: boolean
+  // zstd reports the bundled zstd-wasm decoder works here → server may emit
+  // zstd_bgra for the lossless path.
+  zstd: boolean
   // webrtc reports that the browser can run an RTCPeerConnection and decode the
   // VP8 video track. When true (and the server enabled it), the gateway streams
   // video over WebRTC instead of WS bitmap frames.

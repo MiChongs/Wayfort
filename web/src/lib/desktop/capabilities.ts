@@ -125,9 +125,31 @@ export function supportsWebRTCAV1(): boolean {
  * channel. `h264` is the async-probed truth; the rest are sync
  * presence checks.
  */
+/**
+ * Probe whether the bundled zstd-wasm decoder actually loads and round-trips on
+ * this device. We compress+decompress a tiny vector through the WASM so a broken
+ * wasm fetch / instantiation reports `false` and the server stays on zlib_bgra,
+ * rather than the server emitting zstd_bgra the worker can't inflate (which would
+ * break every lossless frame). Cached by the caller, like probeH264Avc420.
+ */
+export async function probeZstd(): Promise<boolean> {
+  try {
+    const { init, compress, decompress } = await import("@bokuweb/zstd-wasm")
+    await init()
+    const test = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])
+    const round = decompress(compress(test, 1))
+    return round.length === test.length && round[0] === 1 && round[7] === 8
+  } catch {
+    return false
+  }
+}
+
 export interface ClientCapabilities {
   h264: boolean
   imageDecoder: boolean
+  // zstd reports the bundled zstd-wasm decoder loads + round-trips here. When
+  // true the worker emits zstd_bgra (faster decode + smaller) for lossless rects.
+  zstd: boolean
   // Reserved — only true if a future build wires up an rfx decoder.
   // The server currently negotiates RFX when GFX is on, so we tell
   // the server "no" so it picks something we can render.
@@ -144,10 +166,11 @@ export interface ClientCapabilities {
 }
 
 export async function collectClientCapabilities(): Promise<ClientCapabilities> {
-  const [h264] = await Promise.all([probeH264Avc420()])
+  const [h264, zstd] = await Promise.all([probeH264Avc420(), probeZstd()])
   return {
     h264,
     imageDecoder: supportsImageDecoder(),
+    zstd,
     rfx: false,
     webrtc: supportsWebRTCVP8(),
     webrtcVP9: supportsWebRTCVP9(),

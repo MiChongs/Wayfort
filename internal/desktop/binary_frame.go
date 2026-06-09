@@ -35,6 +35,9 @@ const (
 	// browser-side decoder is wired up yet — kept here so the byte
 	// allocation stays stable when that work lands.
 	BinaryEncodingRFX BinaryFrameEncoding = 6
+	// zstd-compressed BGRA surface (browser decodes via zstd-wasm). Additive:
+	// only emitted when ClientCaps.Zstd is set.
+	BinaryEncodingZstdBGRA BinaryFrameEncoding = 7
 )
 
 // BinaryFrameFlags is the bit-packed flag byte at offset 2 of the
@@ -323,6 +326,8 @@ func binaryEncodingFromFrame(enc Encoding) (BinaryFrameEncoding, bool) {
 		return BinaryEncodingPNG, true
 	case EncodingZlibBGRA:
 		return BinaryEncodingZlibBGRA, true
+	case EncodingZstdBGRA:
+		return BinaryEncodingZstdBGRA, true
 	case EncodingH264:
 		return BinaryEncodingH264, true
 	case EncodingRFX:
@@ -342,6 +347,8 @@ func frameEncodingFromBinary(enc BinaryFrameEncoding) (Encoding, bool) {
 		return EncodingPNG, true
 	case BinaryEncodingZlibBGRA:
 		return EncodingZlibBGRA, true
+	case BinaryEncodingZstdBGRA:
+		return EncodingZstdBGRA, true
 	case BinaryEncodingH264:
 		return EncodingH264, true
 	case BinaryEncodingRFX:

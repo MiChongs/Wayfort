@@ -95,6 +95,11 @@ type RdpOptions struct {
 	EnableH264             *bool `json:"enable_h264,omitempty"`
 	EnableGraphicsPipeline *bool `json:"enable_graphics_pipeline,omitempty"`
 
+	// PreferZstd makes the worker compress the lossless BGRA fallback with zstd
+	// instead of zlib. Set from ClientCaps.Zstd at session start; the browser's
+	// decode worker bundles a zstd-wasm decoder so it can always inflate it.
+	PreferZstd *bool `json:"prefer_zstd,omitempty"`
+
 	// GfxCodec biases the RDPGFX codec negotiation for the legacy bitmap
 	// (non-WebRTC) path. Honoured only when the browser actually advertises the
 	// matching decode capability — otherwise the worker falls back to a codec

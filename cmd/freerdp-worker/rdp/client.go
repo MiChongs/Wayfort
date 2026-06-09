@@ -133,6 +133,7 @@ type Client struct {
 	framesEncodedRaw         atomic.Uint64
 	framesEncodedJPEG        atomic.Uint64
 	framesEncodedZlib        atomic.Uint64
+	framesEncodedZstd        atomic.Uint64
 	frameEncodeInBytes       atomic.Uint64
 	frameEncodeOutBytes      atomic.Uint64
 	frameResyncPending       atomic.Bool
@@ -212,6 +213,11 @@ type Client struct {
 	// framebuffer to VP8/VP9/AV1 (videoEnc) instead of emitting dirty-bitmap
 	// frames, and the gateway feeds those access units to a Pion track. videoDirty
 	// is set by the paint/gfx callbacks; forceKeyframe is set on a gateway PLI.
+	// preferZstd: compress the lossless BGRA fallback with zstd instead of zlib
+	// (client advertised zstd decode). Set once at connect, read by the encode
+	// pool goroutines.
+	preferZstd atomic.Bool
+
 	// The video* fields are touched only on the run-loop thread.
 	webrtcMode    atomic.Bool
 	videoDirty    atomic.Bool
@@ -710,6 +716,7 @@ func (c *Client) applySettings() error {
 		c.videoDirty.Store(true)
 	}
 
+	c.preferZstd.Store(goBool(cBoolDefault(opts.PreferZstd, false)))
 	enableGFX := !webrtc && !c.safeGraphicsProfile && goBool(cBoolDefault(opts.EnableGraphicsPipeline, true))
 	enableH264 := enableGFX && !c.gfxCompatProfile && goBool(cBoolDefault(opts.EnableH264, true))
 	// AVC444 (4:4:4 full-chroma H.264) — sharpest coloured text. The browser can't

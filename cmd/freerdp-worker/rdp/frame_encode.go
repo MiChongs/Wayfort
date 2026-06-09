@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zlib"
+	"github.com/klauspost/compress/zstd"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	ants "github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
@@ -115,41 +116,38 @@ func (c *Client) chooseFrameEncoding(rawBGRA []byte, width, height uint32) (desk
 	if !c.shouldCompressedEncode(rawBGRA, width, height) {
 		return desktop.EncodingRawBGRA, rawBGRA
 	}
-	zlibPayload, zlibOK := []byte(nil), false
+	// Lossless compressed fallback: zstd when the client advertised it, else
+	// zlib. The downstream size heuristics (acceptZlib / preferLosslessOverJPEG)
+	// are codec-agnostic — they compare byte counts — so they apply unchanged.
+	lossEnc, lossPayload, lossOK := desktop.EncodingZlibBGRA, []byte(nil), false
 	if c.shouldZlibEncode(rawBGRA, width, height) {
-		zlibPayload, zlibOK = compressZlibBGRA(rawBGRA)
+		lossEnc, lossPayload, lossOK = c.compressLosslessBGRA(rawBGRA)
 	}
-	if zlibOK && c.acceptZlib(len(rawBGRA), len(zlibPayload)) {
-		return desktop.EncodingZlibBGRA, zlibPayload
+	if lossOK && c.acceptZlib(len(rawBGRA), len(lossPayload)) {
+		return lossEnc, lossPayload
 	}
-	if !c.shouldJPEGEncode(rawBGRA, width, height) {
-		if zlibOK && len(zlibPayload) < len(rawBGRA) {
-			return desktop.EncodingZlibBGRA, zlibPayload
+	losslessOrRaw := func() (desktop.Encoding, []byte) {
+		if lossOK && len(lossPayload) < len(rawBGRA) {
+			return lossEnc, lossPayload
 		}
 		return desktop.EncodingRawBGRA, rawBGRA
+	}
+	if !c.shouldJPEGEncode(rawBGRA, width, height) {
+		return losslessOrRaw()
 	}
 	rgba, ok := bgraToRGBA(rawBGRA, width, height)
 	if !ok {
-		if zlibOK && len(zlibPayload) < len(rawBGRA) {
-			return desktop.EncodingZlibBGRA, zlibPayload
-		}
-		return desktop.EncodingRawBGRA, rawBGRA
+		return losslessOrRaw()
 	}
 	var out bytes.Buffer
 	if err := jpeg.Encode(&out, rgba, &jpeg.Options{Quality: c.jpegQuality()}); err != nil {
-		if zlibOK && len(zlibPayload) < len(rawBGRA) {
-			return desktop.EncodingZlibBGRA, zlibPayload
-		}
-		return desktop.EncodingRawBGRA, rawBGRA
+		return losslessOrRaw()
 	}
 	if out.Len() == 0 || out.Len() >= len(rawBGRA) {
-		if zlibOK && len(zlibPayload) < len(rawBGRA) {
-			return desktop.EncodingZlibBGRA, zlibPayload
-		}
-		return desktop.EncodingRawBGRA, rawBGRA
+		return losslessOrRaw()
 	}
-	if zlibOK && len(zlibPayload) < out.Len() && c.preferLosslessOverJPEG(len(rawBGRA), len(zlibPayload), out.Len()) {
-		return desktop.EncodingZlibBGRA, zlibPayload
+	if lossOK && len(lossPayload) < out.Len() && c.preferLosslessOverJPEG(len(rawBGRA), len(lossPayload), out.Len()) {
+		return lossEnc, lossPayload
 	}
 	return desktop.EncodingJPEG, out.Bytes()
 }
@@ -302,6 +300,8 @@ func (c *Client) recordFrameEncoding(enc desktop.Encoding, rawBytes, encodedByte
 		c.framesEncodedJPEG.Add(1)
 	case desktop.EncodingZlibBGRA:
 		c.framesEncodedZlib.Add(1)
+	case desktop.EncodingZstdBGRA:
+		c.framesEncodedZstd.Add(1)
 	default:
 		c.framesEncodedRaw.Add(1)
 	}
@@ -398,6 +398,22 @@ func (c *Client) isNearFullDesktopFrame(width, height uint32) bool {
 	return uint64(width)*uint64(height)*100 >= uint64(c.width)*uint64(c.height)*95
 }
 
+// compressLosslessBGRA compresses a raw BGRA rect with the best codec the client
+// can decode: zstd (faster client decode + better ratio) when advertised, else
+// zlib. Returns the chosen wire encoding so the caller's size heuristics stay
+// codec-agnostic.
+func (c *Client) compressLosslessBGRA(raw []byte) (desktop.Encoding, []byte, bool) {
+	if c.preferZstd.Load() {
+		if payload, ok := compressZstdBGRA(raw); ok {
+			return desktop.EncodingZstdBGRA, payload, true
+		}
+	}
+	if payload, ok := compressZlibBGRA(raw); ok {
+		return desktop.EncodingZlibBGRA, payload, true
+	}
+	return desktop.EncodingZlibBGRA, nil, false
+}
+
 func compressZlibBGRA(raw []byte) ([]byte, bool) {
 	if len(raw) == 0 {
 		return nil, false
@@ -416,6 +432,27 @@ func compressZlibBGRA(raw []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return out.Bytes(), true
+}
+
+// zstdEncoder is a process-wide encoder reused across the concurrent frame-
+// encode pool. klauspost/compress's EncodeAll is safe for concurrent use, and
+// SpeedFastest mirrors zlib.BestSpeed for low per-frame latency while still
+// beating zlib on both ratio and (especially) client-side decode speed.
+var zstdEncoder, _ = zstd.NewWriter(nil,
+	zstd.WithEncoderLevel(zstd.SpeedFastest),
+	zstd.WithEncoderConcurrency(1),
+	zstd.WithWindowSize(1<<20),
+)
+
+func compressZstdBGRA(raw []byte) ([]byte, bool) {
+	if len(raw) == 0 || zstdEncoder == nil {
+		return nil, false
+	}
+	out := zstdEncoder.EncodeAll(raw, make([]byte, 0, len(raw)/3))
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
 }
 
 func looksCompressibleBGRA(raw []byte) bool {
