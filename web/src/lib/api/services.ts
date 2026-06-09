@@ -1279,8 +1279,11 @@ export const accessTreeService = {
     valid_from?: string
     valid_to?: string
   }) => api<{ added: number }>("POST", "/access-tree/items", { body }),
-  updateItem: (id: number, body: { actions?: string; valid_from?: string; valid_to?: string }) =>
-    api<AccessItem>("PATCH", `/access-tree/items/${id}`, { body }),
+  // folder_id re-homes the item into another folder (drag between folders).
+  updateItem: (
+    id: number,
+    body: { actions?: string; valid_from?: string; valid_to?: string; folder_id?: number },
+  ) => api<AccessItem>("PATCH", `/access-tree/items/${id}`, { body }),
   removeItem: (id: number) => api<void>("DELETE", `/access-tree/items/${id}`),
 }
 

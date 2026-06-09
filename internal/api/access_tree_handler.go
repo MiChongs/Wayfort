@@ -186,6 +186,15 @@ func (h *AccessTreeHandler) AddItems(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"added": added})
 }
 
+// itemUpdatePayload uses pointers so a move (folder_id only) doesn't wipe the
+// item's permission override, and a permission edit doesn't move it.
+type itemUpdatePayload struct {
+	Actions   *string `json:"actions"`
+	ValidFrom *string `json:"valid_from"`
+	ValidTo   *string `json:"valid_to"`
+	FolderID  *uint64 `json:"folder_id"` // re-home the item into another folder (drag)
+}
+
 func (h *AccessTreeHandler) UpdateItem(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	it, err := h.Items.FindByID(c.Request.Context(), id)
@@ -193,14 +202,27 @@ func (h *AccessTreeHandler) UpdateItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	var p itemPayload
+	var p itemUpdatePayload
 	if err := c.ShouldBindJSON(&p); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	it.Actions = p.Actions
-	it.ValidFrom = parseGrantTime(p.ValidFrom)
-	it.ValidTo = parseGrantTime(p.ValidTo)
+	if p.Actions != nil {
+		it.Actions = *p.Actions
+	}
+	if p.ValidFrom != nil {
+		it.ValidFrom = parseGrantTime(*p.ValidFrom)
+	}
+	if p.ValidTo != nil {
+		it.ValidTo = parseGrantTime(*p.ValidTo)
+	}
+	// Move: only into a folder owned by the same object.
+	if p.FolderID != nil && *p.FolderID != 0 && *p.FolderID != it.FolderID {
+		f, err := h.Folders.FindByID(c.Request.Context(), *p.FolderID)
+		if err == nil && f != nil && f.OwnerType == it.OwnerType && f.OwnerID == it.OwnerID {
+			it.FolderID = *p.FolderID
+		}
+	}
 	if err := h.Items.Update(c.Request.Context(), it); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
