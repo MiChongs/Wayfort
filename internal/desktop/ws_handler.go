@@ -264,10 +264,11 @@ func (h *WSHandler) Handle(c *gin.Context) {
 					return err
 				}
 				// Ping blocks until the pong — elapsed time is the server-side
-				// RTT, the connection-quality sink's latency reading.
+				// RTT. Round microseconds up to ms so a sub-ms LAN/loopback
+				// round-trip records as 1ms instead of truncating to 0.
 				if sess.sink != nil {
-					if rtt := time.Since(start).Milliseconds(); rtt > 0 {
-						sess.sink.ObserveRTT(uint32(rtt))
+					if us := time.Since(start).Microseconds(); us > 0 {
+						sess.sink.ObserveRTT(uint32((us + 999) / 1000))
 					}
 				}
 			}

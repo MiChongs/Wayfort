@@ -37,8 +37,10 @@ export function CastPlayer({
   const onControllerRef = React.useRef(onController)
   onControllerRef.current = onController
 
-  // Markers are derived once per events/start change; the player is recreated
-  // with them (asciinema takes markers at create time).
+  // asciinema takes markers at create time only; the player is created once per
+  // url (NOT per events/duration change, which would recreate it on every audit
+  // refetch and — because the effect calls setController — loop). Latest markers
+  // are read from a ref at create time.
   const markers = React.useMemo(
     () =>
       events
@@ -46,6 +48,10 @@ export function CastPlayer({
         .filter(([t]) => t >= 0),
     [events, sessionStart, sessionDurationMs],
   )
+  const markersRef = React.useRef(markers)
+  markersRef.current = markers
+  const durationRef = React.useRef(sessionDurationMs)
+  durationRef.current = sessionDurationMs
 
   React.useEffect(() => {
     let disposed = false
@@ -54,7 +60,7 @@ export function CastPlayer({
     const timeSubs = new Set<(ms: number) => void>()
     const playSubs = new Set<(p: boolean) => void>()
     let playing = false
-    let maxSeen = sessionDurationMs
+    let maxSeen = durationRef.current
 
     const emitTime = () => {
       const ms = (inst?.getCurrentTime?.() ?? 0) * 1000
@@ -89,7 +95,7 @@ export function CastPlayer({
           preload: true,
           terminalFontSize: "14px",
           idleTimeLimit: 2,
-          markers,
+          markers: markersRef.current,
         }) as AsciinemaInstance
         inst.addEventListener?.("play", () => setPlaying(true))
         inst.addEventListener?.("playing", () => setPlaying(true))
@@ -127,7 +133,10 @@ export function CastPlayer({
       onControllerRef.current?.(null)
       inst?.dispose?.()
     }
-  }, [url, markers, sessionDurationMs])
+    // Create once per recording url. markers/duration are read from refs so a
+    // later audit refetch doesn't tear down and recreate the player.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url])
 
   return (
     <div className="overflow-hidden rounded-md border bg-black">

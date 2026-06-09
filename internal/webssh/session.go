@@ -185,6 +185,33 @@ func (s *Session) pumpBackendToWS(ctx context.Context) error {
 }
 
 func (s *Session) heartbeat(ctx context.Context) error {
+	// measure pings the browser and records the round-trip as RTT. Bound the
+	// ping: on a half-open TCP (laptop slept, network dropped) an unbounded Ping
+	// waits for the OS TCP timeout (minutes) before the session is detected dead;
+	// a per-ping deadline turns a missing pong into a clean teardown within one
+	// interval. RTT is measured in microseconds and rounded up to ms so a sub-ms
+	// LAN/loopback round-trip records as 1ms rather than truncating to 0 (which
+	// the sink then drops, leaving the quality chart flat at zero).
+	measure := func() error {
+		start := time.Now()
+		pctx, pcancel := context.WithTimeout(ctx, s.Cfg.PingInterval)
+		err := s.Conn.Ping(pctx)
+		pcancel()
+		if err != nil {
+			return err
+		}
+		if s.OnRTT != nil {
+			if us := time.Since(start).Microseconds(); us > 0 {
+				s.OnRTT(uint32((us + 999) / 1000))
+			}
+		}
+		return nil
+	}
+	// One immediate probe so RTT is populated from the very first metric sample
+	// instead of reading 0 until the first tick fires.
+	if err := measure(); err != nil {
+		return err
+	}
 	t := time.NewTicker(s.Cfg.PingInterval)
 	defer t.Stop()
 	for {
@@ -192,22 +219,8 @@ func (s *Session) heartbeat(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			start := time.Now()
-			// Bound the ping: on a half-open TCP (laptop slept, network dropped)
-			// an unbounded Ping waits for the OS TCP timeout (minutes) before the
-			// session is detected dead. A per-ping deadline turns a missing pong
-			// into a clean teardown within one interval.
-			pctx, pcancel := context.WithTimeout(ctx, s.Cfg.PingInterval)
-			err := s.Conn.Ping(pctx)
-			pcancel()
-			if err != nil {
+			if err := measure(); err != nil {
 				return err
-			}
-			// Ping blocks until the pong, so the elapsed time is the RTT.
-			if s.OnRTT != nil {
-				if rtt := time.Since(start).Milliseconds(); rtt > 0 {
-					s.OnRTT(uint32(rtt))
-				}
 			}
 		}
 	}

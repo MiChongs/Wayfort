@@ -4,7 +4,7 @@ import * as React from "react"
 import { Group } from "@visx/group"
 import { LinePath, AreaClosed, Line } from "@visx/shape"
 import { scaleTime, scaleLinear } from "@visx/scale"
-import { AxisBottom, AxisLeft } from "@visx/axis"
+import { AxisBottom, AxisLeft, AxisRight } from "@visx/axis"
 import { GridRows } from "@visx/grid"
 import { LinearGradient } from "@visx/gradient"
 import { curveMonotoneX } from "@visx/curve"
@@ -13,15 +13,18 @@ import { localPoint } from "@visx/event"
 import { bisector } from "d3-array"
 import { Gauge } from "lucide-react"
 import type { SessionMetricSample } from "@/lib/api/types"
-import { fullTime } from "@/lib/format"
+import { fmtBytes, fullTime } from "@/lib/format"
 import { VIZ } from "@/lib/viz/theme"
 import { AbnormalDot } from "@/lib/viz/dots"
 import { VizTooltip, useTooltip } from "@/lib/viz/tooltip"
 
 const HEIGHT = 220
-const MARGIN = { top: 12, right: 44, bottom: 26, left: 40 }
+const MARGIN = { top: 12, right: 52, bottom: 26, left: 56 }
+// Samples are written on a fixed ≈5s cadence; turn the per-window byte delta
+// into a bytes/second throughput for the bandwidth series.
+const SAMPLE_SECONDS = 5
 
-type Pt = { t: number; rtt: number; loss: number; reconnect: boolean }
+type Pt = { t: number; rtt: number; bps: number; reconnect: boolean }
 
 const bisectT = bisector<Pt, number>((d) => d.t).center
 
@@ -32,7 +35,7 @@ export function SessionQualityChart({ samples }: { samples: SessionMetricSample[
         .map((s) => ({
           t: new Date(s.at).getTime(),
           rtt: s.rtt_ms || 0,
-          loss: (s.loss_pct || 0) / 100,
+          bps: ((s.bytes_in_delta || 0) + (s.bytes_out_delta || 0)) / SAMPLE_SECONDS,
           reconnect: (s.reconnects || 0) > 0,
         }))
         .sort((a, b) => a.t - b.t),
@@ -48,7 +51,7 @@ export function SessionQualityChart({ samples }: { samples: SessionMetricSample[
       </div>
       {pts.length < 2 ? (
         <div className="flex items-center justify-center rounded-md border border-dashed py-8 text-sm text-muted-foreground">
-          本次会话未采集连接质量指标
+          连接质量指标采集中…（每 5 秒一个采样点，稍候即出现）
         </div>
       ) : (
         <ParentSize>
@@ -70,56 +73,57 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
     domain: [new Date(pts[0].t), new Date(pts[pts.length - 1].t)],
     range: [0, innerW],
   })
-  const maxRtt = Math.max(10, ...pts.map((p) => p.rtt))
-  const ys = scaleLinear({ domain: [0, maxRtt * 1.15], range: [innerH, 0], nice: true })
-  const maxLoss = Math.max(1, ...pts.map((p) => p.loss))
-  const yLoss = scaleLinear({ domain: [0, maxLoss * 1.2], range: [innerH, 0], nice: true })
+  const maxBps = Math.max(1, ...pts.map((p) => p.bps))
+  const yBps = scaleLinear({ domain: [0, maxBps * 1.15], range: [innerH, 0], nice: true })
+  const maxRtt = Math.max(5, ...pts.map((p) => p.rtt))
+  const yRtt = scaleLinear({ domain: [0, maxRtt * 1.2], range: [innerH, 0], nice: true })
 
   function handleMove(e: React.MouseEvent | React.TouchEvent) {
     const pt = localPoint(e)
     if (!pt) return
     const t = xs.invert(pt.x - MARGIN.left).getTime()
     const d = pts[bisectT(pts, t)]
+    if (!d) return
     showTooltip({
       tooltipData: d,
       tooltipLeft: MARGIN.left + xs(new Date(d.t)),
-      tooltipTop: MARGIN.top + ys(d.rtt),
+      tooltipTop: MARGIN.top + yBps(d.bps),
     })
   }
 
   return (
     <div className="relative">
       <svg width={width} height={HEIGHT} onMouseMove={handleMove} onMouseLeave={hideTooltip}>
-        <LinearGradient id="rtt-grad" from={VIZ.teal} to={VIZ.teal} fromOpacity={0.32} toOpacity={0.02} />
+        <LinearGradient id="bw-grad" from={VIZ.coral} to={VIZ.coral} fromOpacity={0.3} toOpacity={0.02} />
         <Group left={MARGIN.left} top={MARGIN.top}>
-          <GridRows scale={ys} width={innerW} height={innerH} stroke={VIZ.grid} strokeOpacity={0.5} numTicks={4} />
+          <GridRows scale={yBps} width={innerW} height={innerH} stroke={VIZ.grid} strokeOpacity={0.5} numTicks={4} />
+          {/* Bandwidth — primary, always-present series */}
           <AreaClosed
             data={pts}
             x={(d) => xs(new Date(d.t))}
-            y={(d) => ys(d.rtt)}
-            yScale={ys}
+            y={(d) => yBps(d.bps)}
+            yScale={yBps}
             curve={curveMonotoneX}
-            fill="url(#rtt-grad)"
+            fill="url(#bw-grad)"
           />
           <LinePath
             data={pts}
             x={(d) => xs(new Date(d.t))}
-            y={(d) => ys(d.rtt)}
-            stroke={VIZ.teal}
+            y={(d) => yBps(d.bps)}
+            stroke={VIZ.coral}
             strokeWidth={1.75}
             curve={curveMonotoneX}
           />
-          {maxLoss > 0 && (
-            <LinePath
-              data={pts}
-              x={(d) => xs(new Date(d.t))}
-              y={(d) => yLoss(d.loss)}
-              stroke={VIZ.amber}
-              strokeWidth={1.5}
-              strokeDasharray="3 3"
-              curve={curveMonotoneX}
-            />
-          )}
+          {/* RTT — right axis */}
+          <LinePath
+            data={pts}
+            x={(d) => xs(new Date(d.t))}
+            y={(d) => yRtt(d.rtt)}
+            stroke={VIZ.teal}
+            strokeWidth={1.5}
+            curve={curveMonotoneX}
+          />
+          {/* Reconnect markers */}
           {pts.map((d, i) =>
             d.reconnect ? (
               <Group key={i}>
@@ -146,11 +150,21 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
             />
           )}
           <AxisLeft
-            scale={ys}
+            scale={yBps}
             numTicks={4}
+            tickFormat={(v) => fmtBytes(Number(v)) + "/s"}
             stroke={VIZ.axis}
             tickStroke={VIZ.axis}
-            tickLabelProps={() => ({ fill: VIZ.tick, fontSize: 10, textAnchor: "end", dx: -2, dy: 3 })}
+            tickLabelProps={() => ({ fill: VIZ.tick, fontSize: 9, textAnchor: "end", dx: -2, dy: 3 })}
+          />
+          <AxisRight
+            left={innerW}
+            scale={yRtt}
+            numTicks={4}
+            tickFormat={(v) => `${Number(v)}ms`}
+            stroke={VIZ.axis}
+            tickStroke={VIZ.axis}
+            tickLabelProps={() => ({ fill: VIZ.teal, fontSize: 9, textAnchor: "start", dx: 2, dy: 3 })}
           />
           <AxisBottom
             top={innerH}
@@ -165,8 +179,8 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
       {tooltipData && (
         <VizTooltip top={(tooltipTop ?? 0) + 8} left={(tooltipLeft ?? 0) + 8}>
           <div className="text-muted-foreground">{fullTime(new Date(tooltipData.t).toISOString())}</div>
-          <div className="mt-0.5">RTT {tooltipData.rtt} ms</div>
-          {tooltipData.loss > 0 && <div>丢包 {tooltipData.loss.toFixed(2)}%</div>}
+          <div className="mt-0.5">吞吐 {fmtBytes(tooltipData.bps)}/s</div>
+          <div>RTT {tooltipData.rtt || "<1"} ms</div>
           {tooltipData.reconnect && <div className="text-destructive">发生重连</div>}
         </VizTooltip>
       )}
@@ -178,10 +192,10 @@ function Legend() {
   return (
     <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1">
-        <span className="h-2 w-3 rounded-sm" style={{ background: VIZ.teal }} /> RTT
+        <span className="h-2 w-3 rounded-sm" style={{ background: VIZ.coral }} /> 吞吐
       </span>
       <span className="inline-flex items-center gap-1">
-        <span className="h-0.5 w-3" style={{ background: VIZ.amber }} /> 丢包
+        <span className="h-0.5 w-3" style={{ background: VIZ.teal }} /> RTT
       </span>
     </div>
   )

@@ -30,9 +30,16 @@ export function SyncedReplay({
   const [controller, setController] = React.useState<ReplayController | null>(null)
   const type = session.recording_type
   const hasRec = !!session.recording_path
-  const durationMs =
-    (session.ended_at ? new Date(session.ended_at).getTime() : Date.now()) -
-    new Date(session.started_at).getTime()
+  // Stable across renders: for a closed session it's the real length; for a live
+  // one we leave it 0 (unknown) rather than Date.now() — a per-render value would
+  // re-fire the player effect every frame and loop on setController.
+  const durationMs = React.useMemo(
+    () =>
+      session.ended_at
+        ? new Date(session.ended_at).getTime() - new Date(session.started_at).getTime()
+        : 0,
+    [session.started_at, session.ended_at],
+  )
 
   if (type === "asciicast" && hasRec) {
     return (
