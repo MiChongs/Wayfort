@@ -1,22 +1,25 @@
 "use client"
 
-// DesktopPerfPanel — slide-in performance dashboard for an active
-// desktop session. Lives in a shadcn <Sheet> on the right edge so it
-// overlays the canvas without resizing it (no jank when toggled).
+// DesktopPerfPanel — the slide-in performance monitor for a live desktop
+// session. Redesigned to the warm design system: coral-accented header, metric
+// cards with inline sparklines, a render-pipeline strip, a stability strip, and
+// two warm-themed trend charts. Tones use the warm semantic tokens
+// (success/warning/destructive) — never cool emerald/red.
 //
-// What it shows:
-//   • 6 KPI cards — FPS / Latency / Decode / Paint / ↓ KB/s / ↑ KB/s
-//   • 3 Recharts area charts — FPS, latency, bandwidth (in+out lines)
-//   • Cumulative dropped-frames + JS heap (when measurable)
-//   • Export-as-JSON + Reset buffer buttons
-//
-// All metrics come from the parent's live `stats` object (driven by the
-// render worker + heartbeat). The panel itself owns no measurement
-// state — `use-perf-metrics` does the ring-buffer bookkeeping.
+// All metrics come from the parent's live `stats`; `use-perf-metrics` owns the
+// ring-buffer bookkeeping. The panel renders, it doesn't measure.
 
 import * as React from "react"
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, XAxis, YAxis } from "recharts"
-import { Activity, Download, RotateCw } from "lucide-react"
+import {
+  Activity,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Download,
+  Gauge,
+  RotateCw,
+  Zap,
+} from "lucide-react"
 import {
   Sheet,
   SheetContent,
@@ -25,10 +28,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
 import { cn } from "@/lib/utils"
+import { VIZ } from "@/lib/viz/theme"
 import type { SessionStats } from "./desktop-types"
 import { usePerfMetrics, type PerfSample } from "@/lib/desktop/use-perf-metrics"
+import { Sparkline } from "./perf-sparkline"
 
 interface Props {
   open: boolean
@@ -41,22 +45,13 @@ interface Props {
   nodeName?: string
 }
 
-// Recharts reads each `stroke={...}` directly so we don't need
-// ChartContainer's CSS-variable plumbing here. The `var(--chart-N)`
-// values are defined at `:root` in globals.css (added by `npx shadcn
-// add chart`) so they resolve in both light + dark mode.
+type Tone = "good" | "warn" | "bad"
 
 export function DesktopPerfPanel({ open, onOpenChange, sessionKey, stats, nodeName }: Props) {
-  // Only sample while the panel is mounted. Closing it still keeps
-  // the buffer (Sheet stays mounted by shadcn's design) so reopening
-  // is instant; if the consumer truly unmounts the panel the hook's
-  // session-key effect cleans up.
   const { samples, summary, reset } = usePerfMetrics(sessionKey, stats, open)
 
   function handleExport() {
-    const blob = new Blob([JSON.stringify({ sessionKey, samples }, null, 2)], {
-      type: "application/json",
-    })
+    const blob = new Blob([JSON.stringify({ sessionKey, samples }, null, 2)], { type: "application/json" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
@@ -72,172 +67,211 @@ export function DesktopPerfPanel({ open, onOpenChange, sessionKey, stats, nodeNa
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-[460px] sm:max-w-[460px] flex flex-col gap-0 p-0">
-        <SheetHeader className="px-5 pt-5 pb-3 border-b">
-          <div className="flex items-center justify-between gap-2">
-            <div className="min-w-0">
-              <SheetTitle className="flex items-center gap-2 text-base">
-                <Activity className="w-4 h-4 text-primary" />
+      <SheetContent side="right" className="flex w-[460px] flex-col gap-0 p-0 sm:max-w-[460px]">
+        {/* ── Header ── */}
+        <SheetHeader className="space-y-0 border-b px-5 pb-4 pt-5">
+          <div className="flex items-start gap-3">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+              <Activity className="h-4 w-4" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <SheetTitle className="flex items-center gap-2 text-base font-semibold">
                 性能监视
+                <span className="inline-flex items-center gap-1 text-xs font-normal text-success">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success/60" />
+                    <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
+                  </span>
+                  实时
+                </span>
               </SheetTitle>
-              <SheetDescription className="text-xs truncate">
-                {nodeName ? `${nodeName} · ` : ""}Client-side metrics（服务端 telemetry 待 Devolutions Gateway 暴露）
+              <SheetDescription className="truncate text-xs">
+                {nodeName ? `${nodeName} · ` : ""}客户端实时指标 · {samples.length} 个采样
               </SheetDescription>
             </div>
-            <Badge variant="secondary" className="text-[10px] uppercase shrink-0">
-              {samples.length} samples
-            </Badge>
           </div>
         </SheetHeader>
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-5">
-          {/* KPI grid */}
-          <div className="grid grid-cols-4 gap-2">
-            <KpiCard label="FPS" value={current?.fps ?? null} tone={fpsTone(current?.fps)} />
-            <KpiCard
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          {/* ── Hero metric cards with sparklines ── */}
+          <div className="grid grid-cols-2 gap-2.5">
+            <MetricCard
+              icon={Gauge}
+              label="帧率"
+              value={current?.fps ?? null}
+              unit="fps"
+              tone={fpsTone(current?.fps)}
+              accent={VIZ.coral}
+              series={samples.map((s) => s.fps)}
+            />
+            <MetricCard
+              icon={Zap}
               label="延迟"
               value={current?.latencyMs ?? null}
-              suffix="ms"
+              unit="ms"
               tone={latencyTone(current?.latencyMs)}
+              accent={VIZ.teal}
+              series={samples.map((s) => s.latencyMs)}
             />
-            <KpiCard
-              label="解码"
-              value={current?.avgDecodeMs ?? null}
-              suffix="ms"
-              precision={1}
+            <MetricCard
+              icon={ArrowDownToLine}
+              label="下行带宽"
+              value={current ? bytesPerSec(current.bytesInPerSec) : null}
+              unit="/s"
+              accent={VIZ.amber}
+              series={samples.map((s) => s.bytesInPerSec)}
             />
-            <KpiCard label="绘制" value={current?.avgPaintMs ?? null} suffix="ms" precision={1} />
-            <KpiCard
-              label="↓ 流量"
-              value={current ? bytesPerSecForCard(current.bytesInPerSec) : null}
-              suffix="/s"
+            <MetricCard
+              icon={ArrowUpFromLine}
+              label="上行带宽"
+              value={current ? bytesPerSec(current.bytesOutPerSec) : null}
+              unit="/s"
+              accent={VIZ.green}
+              series={samples.map((s) => s.bytesOutPerSec)}
             />
-            <KpiCard
-              label="↑ 流量"
-              value={current ? bytesPerSecForCard(current.bytesOutPerSec) : null}
-              suffix="/s"
-            />
-            <KpiCard label="编码" value={codecLabel(stats.codec)} tone={codecTone(stats.codec)} />
-            <KpiCard label="解码器" value={decoderPathLabel(stats.decoderPath)} tone={decoderPathTone(stats.decoderPath)} />
           </div>
 
-          {/* Mini meta strip */}
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground border rounded-md px-3 py-2 bg-muted/30">
-            <div>
-              <span className="text-foreground/80 font-mono">{summary.avgFps ?? "—"}</span> 平均FPS
-              <span className="mx-2 opacity-30">|</span>
-              p95 <span className="text-foreground/80 font-mono">{summary.p95LatencyMs ?? "—"}</span>ms
+          {/* ── Render pipeline ── */}
+          <Section title="渲染管线">
+            <div className="flex flex-wrap gap-1.5">
+              <Pill label="编码" value={codecLabel(stats.codec)} tone={codecTone(stats.codec)} />
+              <Pill label="解码器" value={decoderPathLabel(stats.decoderPath)} tone={decoderPathTone(stats.decoderPath)} />
               {stats.renderSurface && (
-                <>
-                  <span className="mx-2 opacity-30">|</span>
-                  渲染{" "}
-                  <span
-                    className={cn(
-                      "font-mono",
-                      stats.renderSurface === "webgpu"
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : "text-foreground/80",
-                    )}
-                  >
-                    {renderSurfaceLabel(stats.renderSurface)}
-                  </span>
-                </>
+                <Pill
+                  label="渲染面"
+                  value={renderSurfaceLabel(stats.renderSurface)}
+                  tone={stats.renderSurface === "webgpu" ? "good" : undefined}
+                />
               )}
+              <Pill label="解码" value={fmtMs(current?.avgDecodeMs)} />
+              <Pill label="绘制" value={fmtMs(current?.avgPaintMs)} />
             </div>
-            <div>
-              丢帧 <span className="text-foreground/80 font-mono">{current?.droppedFramesTotal ?? 0}</span>
-              {heapMb != null && (
-                <>
-                  <span className="mx-2 opacity-30">|</span>
-                  堆 <span className="text-foreground/80 font-mono">{heapMb.toFixed(1)}</span>MB
-                </>
-              )}
-            </div>
-          </div>
+          </Section>
 
-          {/* Charts */}
+          {/* ── Stability ── */}
+          <Section title="稳定性">
+            <div className="grid grid-cols-4 gap-2">
+              <Stat label="平均帧率" value={summary.avgFps != null ? String(summary.avgFps) : "—"} suffix="fps" />
+              <Stat label="p95 延迟" value={summary.p95LatencyMs != null ? String(summary.p95LatencyMs) : "—"} suffix="ms" />
+              <Stat
+                label="丢帧"
+                value={String(current?.droppedFramesTotal ?? 0)}
+                tone={(current?.droppedFramesTotal ?? 0) > 0 ? "warn" : undefined}
+              />
+              <Stat label="堆内存" value={heapMb != null ? heapMb.toFixed(0) : "—"} suffix="MB" />
+            </div>
+          </Section>
+
+          {/* ── Detailed trends ── */}
+          <PerfChart title="帧率" subtitle="fps" samples={samples} dataKey="fps" color={VIZ.coral} domain={[0, 60]} />
           <PerfChart
-            title="FPS"
-            samples={samples}
-            dataKey="fps"
-            color="var(--chart-1)"
-            unit="fps"
-            domain={[0, 60]}
-          />
-          <PerfChart
-            title="延迟 (ms)"
-            samples={samples}
-            dataKey="latencyMs"
-            color="var(--chart-2)"
-            unit="ms"
-          />
-          <PerfChart
-            title="带宽 (B/s)"
+            title="带宽"
+            subtitle="↓ 下行 · ↑ 上行"
             samples={samples}
             dataKey="bytesInPerSec"
             secondaryKey="bytesOutPerSec"
-            color="var(--chart-3)"
-            secondaryColor="var(--chart-4)"
-            unit="B/s"
+            color={VIZ.amber}
+            secondaryColor={VIZ.green}
+            byteAxis
           />
         </div>
 
-        {/* Footer actions */}
-        <div className="flex items-center gap-2 px-5 py-3 border-t bg-muted/20">
+        {/* ── Footer ── */}
+        <div className="flex items-center gap-2 border-t bg-muted/20 px-5 py-3">
           <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
-            <Download className="w-3.5 h-3.5" />
+            <Download className="h-3.5 w-3.5" />
             导出 JSON
           </Button>
           <Button variant="ghost" size="sm" onClick={reset} className="gap-1.5">
-            <RotateCw className="w-3.5 h-3.5" />
+            <RotateCw className="h-3.5 w-3.5" />
             重置数据
           </Button>
         </div>
-
       </SheetContent>
     </Sheet>
   )
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────
+// ─── Building blocks ────────────────────────────────────────────────────────
 
-function KpiCard({
+function toneClass(tone?: Tone): string {
+  switch (tone) {
+    case "good":
+      return "text-success"
+    case "warn":
+      return "text-warning"
+    case "bad":
+      return "text-destructive"
+    default:
+      return "text-foreground"
+  }
+}
+
+function MetricCard({
+  icon: Icon,
   label,
   value,
-  suffix,
-  precision,
+  unit,
   tone,
+  accent,
+  series,
 }: {
+  icon: React.ComponentType<{ className?: string }>
   label: string
   value: number | string | null
-  suffix?: string
-  precision?: number
-  tone?: "good" | "warn" | "bad"
+  unit?: string
+  tone?: Tone
+  accent: string
+  series: (number | null)[]
 }) {
   const display =
-    value == null
-      ? "—"
-      : typeof value === "string"
-        ? value
-        : precision != null
-          ? value.toFixed(precision)
-          : String(Math.round(value))
-  const toneClass =
-    tone === "good"
-      ? "text-emerald-600 dark:text-emerald-400"
-      : tone === "warn"
-        ? "text-amber-600 dark:text-amber-400"
-        : tone === "bad"
-          ? "text-red-600 dark:text-red-400"
-          : "text-foreground"
+    value == null ? "—" : typeof value === "string" ? value : String(Math.round(value))
   return (
-    <div className="rounded-md border px-3 py-2 bg-card flex flex-col gap-0.5">
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className={cn("text-lg font-mono tabular-nums leading-tight", toneClass)}>
-        {display}
-        {suffix && value != null && (
-          <span className="text-[10px] text-muted-foreground ml-0.5">{suffix}</span>
-        )}
+    <div className="rounded-xl border bg-card p-3">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+      </div>
+      <div className="mt-1 flex items-baseline gap-1">
+        <span className={cn("text-2xl font-semibold tabular-nums leading-none", toneClass(tone))}>{display}</span>
+        {unit && value != null && <span className="text-xs text-muted-foreground">{unit}</span>}
+      </div>
+      <div className="mt-2">
+        <Sparkline data={series} color={accent} />
+      </div>
+    </div>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">{title}</div>
+      {children}
+    </div>
+  )
+}
+
+function Pill({ label, value, tone }: { label: string; value: string | null; tone?: Tone }) {
+  if (!value) return null
+  const dot =
+    tone === "good" ? "bg-success" : tone === "warn" ? "bg-warning" : tone === "bad" ? "bg-destructive" : "bg-muted-foreground/40"
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-xs">
+      <span className={cn("h-1.5 w-1.5 rounded-full", dot)} />
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </span>
+  )
+}
+
+function Stat({ label, value, suffix, tone }: { label: string; value: string; suffix?: string; tone?: Tone }) {
+  return (
+    <div className="rounded-lg border bg-card px-2.5 py-2">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className={cn("mt-0.5 text-base font-semibold tabular-nums leading-none", toneClass(tone))}>
+        {value}
+        {suffix && value !== "—" && <span className="ml-0.5 text-[10px] font-normal text-muted-foreground">{suffix}</span>}
       </div>
     </div>
   )
@@ -245,81 +279,52 @@ function KpiCard({
 
 interface PerfChartProps {
   title: string
+  subtitle?: string
   samples: PerfSample[]
   dataKey: keyof PerfSample
   secondaryKey?: keyof PerfSample
   color: string
   secondaryColor?: string
-  unit: string
   domain?: [number, number]
+  byteAxis?: boolean
 }
 
-function PerfChart({
-  title,
-  samples,
-  dataKey,
-  secondaryKey,
-  color,
-  secondaryColor,
-  unit,
-  domain,
-}: PerfChartProps) {
-  // recharts coerces null values to gaps — exactly what we want when
-  // latency / decode aren't measurable, so the chart line breaks where
-  // the metric is unavailable rather than dropping to zero.
+function PerfChart({ title, subtitle, samples, dataKey, secondaryKey, color, secondaryColor, domain, byteAxis }: PerfChartProps) {
   return (
-    <div className="rounded-md border bg-card overflow-hidden">
-      <div className="px-3 py-1.5 flex items-center justify-between border-b">
+    <div className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center justify-between border-b px-3 py-2">
         <div className="text-xs font-medium">{title}</div>
-        <div className="text-[10px] text-muted-foreground tabular-nums">
-          {samples.length > 0 ? `${samples.length}s` : "等待数据…"}
-          {unit ? <span className="ml-1 opacity-70">· {unit}</span> : null}
+        <div className="text-[10px] tabular-nums text-muted-foreground">
+          {subtitle ? <span className="opacity-70">{subtitle}</span> : null}
+          <span className="ml-1.5">{samples.length > 0 ? `${samples.length}s` : "等待数据…"}</span>
         </div>
       </div>
-      <div className="h-[120px] px-1 py-1">
-        {/* minWidth={0} silences Recharts' "width(-1)/height(-1)" warning while
-            the panel's container is briefly unsized (Sheet open transition). */}
+      <div className="h-[112px] px-1 py-1">
         <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-          <AreaChart data={samples} margin={{ top: 4, right: 8, left: 4, bottom: 0 }}>
+          <AreaChart data={samples} margin={{ top: 6, right: 8, left: 4, bottom: 0 }}>
             <defs>
-              <linearGradient id={`fill-${dataKey}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={color} stopOpacity={0.5} />
-                <stop offset="95%" stopColor={color} stopOpacity={0.05} />
+              <linearGradient id={`pf-${String(dataKey)}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={color} stopOpacity={0.4} />
+                <stop offset="95%" stopColor={color} stopOpacity={0.03} />
               </linearGradient>
               {secondaryKey && secondaryColor && (
-                <linearGradient id={`fill-${secondaryKey}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor={secondaryColor} stopOpacity={0.5} />
-                  <stop offset="95%" stopColor={secondaryColor} stopOpacity={0.05} />
+                <linearGradient id={`pf-${String(secondaryKey)}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={secondaryColor} stopOpacity={0.4} />
+                  <stop offset="95%" stopColor={secondaryColor} stopOpacity={0.03} />
                 </linearGradient>
               )}
             </defs>
-            <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+            <CartesianGrid stroke={VIZ.grid} strokeOpacity={0.5} strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="t" tick={false} axisLine={false} height={0} />
             <YAxis
-              tick={{ fontSize: 9, fill: "var(--muted-foreground)" }}
-              width={28}
+              tick={{ fontSize: 9, fill: VIZ.tick }}
+              width={byteAxis ? 38 : 26}
               domain={domain ?? ["auto", "auto"]}
-              tickFormatter={(v: number) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
+              tickFormatter={byteAxis ? (v: number) => bytesPerSec(v) : (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v))}
             />
-            <Area
-              type="monotone"
-              dataKey={dataKey}
-              stroke={color}
-              strokeWidth={1.5}
-              fill={`url(#fill-${dataKey})`}
-              isAnimationActive={false}
-              connectNulls={false}
-            />
+            <Area type="monotone" dataKey={dataKey} stroke={color} strokeWidth={1.5} fill={`url(#pf-${String(dataKey)})`} isAnimationActive={false} connectNulls={false} />
             {secondaryKey && secondaryColor && (
-              <Area
-                type="monotone"
-                dataKey={secondaryKey}
-                stroke={secondaryColor}
-                strokeWidth={1.5}
-                fill={`url(#fill-${secondaryKey})`}
-                isAnimationActive={false}
-                connectNulls={false}
-              />
+              <Area type="monotone" dataKey={secondaryKey} stroke={secondaryColor} strokeWidth={1.5} fill={`url(#pf-${String(secondaryKey)})`} isAnimationActive={false} connectNulls={false} />
             )}
           </AreaChart>
         </ResponsiveContainer>
@@ -328,25 +333,21 @@ function PerfChart({
   )
 }
 
-function fpsTone(fps: number | null | undefined): "good" | "warn" | "bad" | undefined {
+// ─── Metric helpers (tones use warm semantic tokens) ────────────────────────
+
+function fpsTone(fps: number | null | undefined): Tone | undefined {
   if (fps == null) return undefined
   if (fps >= 30) return "good"
   if (fps >= 15) return "warn"
   return "bad"
 }
-function latencyTone(ms: number | null | undefined): "good" | "warn" | "bad" | undefined {
+function latencyTone(ms: number | null | undefined): Tone | undefined {
   if (ms == null) return undefined
   if (ms <= 80) return "good"
   if (ms <= 200) return "warn"
   return "bad"
 }
 
-// Codec + decoderPath KPI helpers. Tones tell the operator at a glance
-// which decoder stack the session ended up on: GPU H.264 is the
-// fastest + most bandwidth-efficient (good); ImageDecoder beats
-// createImageBitmap which beats JS decode on JPEG/PNG (good → warn →
-// bad). raw_bgra means GFX wasn't negotiated so the screen is being
-// shipped uncompressed (warn — flags a bandwidth bill).
 function codecLabel(codec: string | null | undefined): string | null {
   if (!codec) return null
   switch (codec) {
@@ -359,7 +360,7 @@ function codecLabel(codec: string | null | undefined): string | null {
     default: return codec
   }
 }
-function codecTone(codec: string | null | undefined): "good" | "warn" | "bad" | undefined {
+function codecTone(codec: string | null | undefined): Tone | undefined {
   if (!codec) return undefined
   if (codec === "h264") return "good"
   if (codec === "rfx" || codec === "jpeg") return "warn"
@@ -370,32 +371,29 @@ function decoderPathLabel(path: string | null | undefined): string | null {
   switch (path) {
     case "videodecoder": return "VideoDecoder"
     case "imagedecoder": return "ImageDecoder"
-    case "imagebitmap": return "createImageBitmap"
+    case "imagebitmap": return "ImageBitmap"
     case "js": return "JS"
     default: return path
   }
 }
-function decoderPathTone(path: string | null | undefined): "good" | "warn" | "bad" | undefined {
+function decoderPathTone(path: string | null | undefined): Tone | undefined {
   if (!path) return undefined
-  if (path === "videodecoder") return "good"
-  if (path === "imagedecoder") return "good"
+  if (path === "videodecoder" || path === "imagedecoder") return "good"
   if (path === "imagebitmap") return "warn"
   if (path === "js") return "bad"
   return undefined
 }
-
-// Render-surface label for the meta strip. "webgpu" means the raw-BGRA GPU
-// fast path is live (skips the CPU channel swap + ImageBitmap copy); "canvas2d"
-// is the fallback. Only set on the legacy bitmap path.
 function renderSurfaceLabel(s: "webgpu" | "canvas2d" | null | undefined): string {
   if (s === "webgpu") return "WebGPU"
   if (s === "canvas2d") return "Canvas2D"
   return "—"
 }
 
-// Chrome / Edge expose `performance.memory.usedJSHeapSize`; Safari /
-// Firefox don't. Return null when missing so the meta strip hides
-// that column instead of showing 0.
+function fmtMs(v: number | null | undefined): string | null {
+  if (v == null) return null
+  return `${v.toFixed(1)} ms`
+}
+
 function readJsHeapMb(): number | null {
   if (typeof performance === "undefined") return null
   const mem = (performance as Performance & { memory?: { usedJSHeapSize: number } }).memory
@@ -403,10 +401,8 @@ function readJsHeapMb(): number | null {
   return mem.usedJSHeapSize / (1024 * 1024)
 }
 
-// Bytes/sec preformatted for a small card slot — KB if it exceeds 1KB,
-// MB if >1MB. Returns a string so KpiCard's "precision" path is skipped.
-function bytesPerSecForCard(n: number): string {
-  if (n < 1024) return `${n} B`
+function bytesPerSec(n: number): string {
+  if (n < 1024) return `${Math.round(n)} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
