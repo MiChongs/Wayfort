@@ -81,7 +81,14 @@ func (t *Tracker) Touch(ctx context.Context, userID uint64, username, clientIP s
 		e.bytesIn += inDelta
 		e.bytesOut += outDelta
 		id := e.sessionID
+		in, out := e.bytesIn, e.bytesOut
 		t.mu.Unlock()
+		// Persist the running totals immediately when an operation actually
+		// moved bytes (upload/download), so the session's "流量" shows live —
+		// the reaper otherwise only flushes every ~30s.
+		if inDelta > 0 || outDelta > 0 {
+			_ = t.sessions.Finish(ctx, id, map[string]any{"bytes_in": in, "bytes_out": out})
+		}
 		return id
 	}
 	e = &entry{
@@ -136,19 +143,33 @@ func (t *Tracker) Run(ctx context.Context) error {
 	}
 }
 
+type byteFlush struct {
+	id  string
+	in  uint64
+	out uint64
+}
+
 func (t *Tracker) reap(ctx context.Context) {
 	cutoff := time.Now().Add(-t.ttl)
 	var stale []*entry
+	var active []byteFlush
 	t.mu.Lock()
 	for k, e := range t.live {
 		if e.lastSeen.Before(cutoff) {
 			stale = append(stale, e)
 			delete(t.live, k)
+		} else {
+			active = append(active, byteFlush{e.sessionID, e.bytesIn, e.bytesOut})
 		}
 	}
 	t.mu.Unlock()
 	for _, e := range stale {
 		t.closeEntry(ctx, e)
+	}
+	// Backstop: keep live rows' byte totals fresh even if the last op was a
+	// metadata-only listing (Touch only flushes on byte-moving ops).
+	for _, f := range active {
+		_ = t.sessions.Finish(ctx, f.id, map[string]any{"bytes_in": f.in, "bytes_out": f.out})
 	}
 }
 

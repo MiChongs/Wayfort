@@ -27,6 +27,14 @@ export function SessionKpiBar({
     session.reconnect_count ??
     samples.reduce((n, s) => n + (s.reconnects || 0), 0)
 
+  // Traffic: prefer the row's persisted totals, but fall back to the summed
+  // sample deltas so a freshly-opened session shows traffic instantly (before
+  // the backend's first ~5s byte flush lands on the row).
+  const sumIn = samples.reduce((a, s) => a + (s.bytes_in_delta || 0), 0)
+  const sumOut = samples.reduce((a, s) => a + (s.bytes_out_delta || 0), 0)
+  const bytesIn = Math.max(session.bytes_in || 0, sumIn)
+  const bytesOut = Math.max(session.bytes_out || 0, sumOut)
+
   const recLabel =
     session.recording_type === "asciicast"
       ? "终端回放"
@@ -47,7 +55,7 @@ export function SessionKpiBar({
       <Kpi
         icon={Gauge}
         label="流量"
-        value={`↑${fmtBytes(session.bytes_in)} ↓${fmtBytes(session.bytes_out)}`}
+        value={`↑${fmtBytes(bytesIn)} ↓${fmtBytes(bytesOut)}`}
       />
       <Kpi
         icon={RefreshCw}

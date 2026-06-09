@@ -175,6 +175,14 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	unreg := h.GW.RegisterLive(sessionID, cancel)
 	defer unreg()
 
+	// Sample connection quality + persist live byte totals.
+	if sink := h.GW.MetricSink(sessionID); sink != nil {
+		sess.OnLatency = sink.ObserveLatency
+		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
+			return sess.BytesIn.Load(), sess.BytesOut.Load()
+		})
+	}
+
 	runErr := sess.Run(sctx)
 	endErr := runErr
 	if errors.Is(endErr, context.Canceled) {

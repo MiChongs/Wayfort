@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -128,6 +129,15 @@ func (g *Gateway) runTelnetSession(ctx context.Context, conn *websocket.Conn, se
 	defer cancel()
 	unreg := g.RegisterLive(sessionID, cancel)
 	defer unreg()
+
+	// Sample connection quality + persist live byte totals (client RTT only —
+	// telnet has no SSH keepalive hop).
+	if sink := g.MetricSink(sessionID); sink != nil {
+		sess.OnLatency = sink.ObserveLatency
+		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
+			return sess.BytesIn.Load(), sess.BytesOut.Load()
+		})
+	}
 
 	runErr := sess.Run(sctx)
 	endErr := runErr

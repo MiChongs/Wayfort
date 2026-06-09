@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -307,6 +308,17 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	defer cancel()
 	unreg := h.GW.RegisterLive(sessionID, cancel)
 	defer unreg()
+
+	// Live byte counters: the bridge increments these as it proxies; the metric
+	// sink samples them every 5s and persists the running totals onto the
+	// session row so an in-progress graphical session shows real traffic.
+	var inCtr, outCtr atomic.Uint64
+	params.BytesIn, params.BytesOut = &inCtr, &outCtr
+	if sink := h.GW.MetricSink(sessionID); sink != nil {
+		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
+			return inCtr.Load(), outCtr.Load()
+		})
+	}
 
 	start := time.Now()
 	bytesIn, bytesOut, runErr := h.Bridge.Serve(sctx, ws, params)

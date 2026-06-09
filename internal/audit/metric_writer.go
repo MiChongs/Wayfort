@@ -121,6 +121,8 @@ type MetricSink struct {
 	reconnects atomic.Uint32 // reconnects accumulated since the last sample
 	lastIn     uint64
 	lastOut    uint64
+	flushedIn  uint64 // last byte totals persisted to the session row
+	flushedOut uint64
 
 	// latMu guards the latest latency snapshots fed by the session's prober.
 	// server is the gateway↔target path (SSH keepalive); client is the
@@ -234,4 +236,16 @@ func (s *MetricSink) emit(at time.Time, in, out uint64) {
 		BytesOutDelta: dOut,
 		Reconnects:    s.reconnects.Swap(0),
 	})
+
+	// Persist the running byte totals onto the session row so an in-progress
+	// session shows live traffic — the row is otherwise only finalised at
+	// teardown, leaving the "流量" KPI at 0 for the whole session. Skipped when
+	// nothing moved (idle window) to avoid needless writes.
+	if s.w != nil && s.w.repo != nil && (in != s.flushedIn || out != s.flushedOut) {
+		s.flushedIn, s.flushedOut = in, out
+		_ = s.w.repo.Finish(context.Background(), s.sessionID, map[string]any{
+			"bytes_in":  in,
+			"bytes_out": out,
+		})
+	}
 }

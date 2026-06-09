@@ -67,6 +67,13 @@ type ConnectParams struct {
 	// (Plan 13.A.2). Lets the gateway translate to an audit row + log line
 	// without coupling Bridge to the audit package.
 	OnError func(code int, msg string)
+
+	// BytesIn / BytesOut, if non-nil, are the live byte counters the bridge
+	// increments as it proxies — the gateway reads them on a cadence to persist
+	// live traffic onto the session row (otherwise bytes only land at teardown).
+	// nil → the bridge uses its own local counters.
+	BytesIn  *atomic.Uint64
+	BytesOut *atomic.Uint64
 }
 
 // Bridge orchestrates a single guacd session: dial guacd, perform the
@@ -123,8 +130,15 @@ func (b *Bridge) Serve(ctx context.Context, ws *websocket.Conn, p ConnectParams)
 		return 0, 0, fmt.Errorf("guacd handshake: %w", err)
 	}
 
-	// Plan 13.A.4: byte counters. Pass atomics to the copy goroutines.
-	var bytesIn, bytesOut atomic.Uint64
+	// Plan 13.A.4: byte counters. Pass atomics to the copy goroutines. Use the
+	// caller's live counters when provided so the gateway can sample mid-session.
+	bytesIn, bytesOut := p.BytesIn, p.BytesOut
+	if bytesIn == nil {
+		bytesIn = new(atomic.Uint64)
+	}
+	if bytesOut == nil {
+		bytesOut = new(atomic.Uint64)
+	}
 
 	// Plan 13.A.2: error callback fires at most once per session.
 	var errorOnce sync.Once
@@ -150,7 +164,7 @@ func (b *Bridge) Serve(ctx context.Context, ws *websocket.Conn, p ConnectParams)
 		_ = conn.SetDeadline(time.Now())
 		return nil
 	})
-	g.Go(func() error { return copyWSToGuacd(gctx, ws, conn, &bytesIn) })
+	g.Go(func() error { return copyWSToGuacd(gctx, ws, conn, bytesIn) })
 	// Plan 13.A.1 — ★ THE BUG FIX ★. We must read from `br`, not `conn`,
 	// because `bufio.Reader` greedily pre-fetched bytes from the TCP socket
 	// into its 128KB buffer during handshake. Any data guacd sent
@@ -160,7 +174,7 @@ func (b *Bridge) Serve(ctx context.Context, ws *websocket.Conn, p ConnectParams)
 	// never see the post-handshake stream, and 2-4 seconds later the
 	// Guacamole client gives up and closes the WebSocket with no status
 	// code — which is exactly the symptom users reported.
-	g.Go(func() error { return copyGuacdToWS(gctx, br, ws, &bytesOut, fireErr) })
+	g.Go(func() error { return copyGuacdToWS(gctx, br, ws, bytesOut, fireErr) })
 	// Plan 13.A.3: 15s WS ping defeats reverse-proxy idle timeouts (Nginx
 	// 60s default, AWS ALB 60s default) and keeps stateful NAT entries warm.
 	g.Go(func() error { return wsPing(gctx, ws) })
