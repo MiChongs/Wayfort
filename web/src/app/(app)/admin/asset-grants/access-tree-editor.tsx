@@ -1,14 +1,10 @@
 "use client"
 
 // 资产目录（按对象）：选一个用户 / 用户组 / 部门 → 直接搭建 TA 专属的多级资产树。
-// 把资产放进文件夹就等于授权；权限/有效期可在文件夹或单个资产上行内设置（子级
-// 继承父文件夹、可覆盖）。组/部门的树被成员继承。树即授权，无单独分配步骤。
+// 放进文件夹即授权；权限/有效期可在文件夹或资产上行内设，子级继承父文件夹、可覆盖。
 //
-// 拖拽全部基于 @dnd-kit/core（统一 DndContext）：
-//   · 从右侧资产库把资产拖进文件夹           （新增放置）
-//   · 把已放置的资产在文件夹之间拖动           （改归属，保留权限覆盖）
-//   · 把文件夹拖到另一个文件夹 / 顶层条        （改层级）
-// PointerSensor 6px 阈值 → 行内点击/双击仍正常；拖动用 DragOverlay 呈现。
+// 体验:@dnd-kit/core 拖拽(资产库→文件夹 / 资产跨文件夹 / 文件夹改层级,PointerSensor
+// 6px 阈值不误触 + DragOverlay) · motion 展开折叠动效 · react-virtuoso 虚拟化资产库。
 
 import * as React from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -23,14 +19,18 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core"
+import { AnimatePresence, motion, useReducedMotion } from "motion/react"
+import { Virtuoso } from "react-virtuoso"
 import {
   Check,
   ChevronRight,
   ChevronsUpDown,
+  Clock,
   CornerLeftUp,
   FolderPlus,
   GripVertical,
   Pencil,
+  Plus,
   Search,
   Settings2,
   Trash2,
@@ -43,16 +43,8 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { AppIcon } from "@/components/icons/app-icon"
 import { IconPicker } from "@/components/icons/icon-picker"
 import { accessTreeService } from "@/lib/api/services"
@@ -76,39 +68,64 @@ export function AccessTreeTab({ cats, nodes }: { cats: OwnerCat[]; nodes: Node[]
     <div className="space-y-3">
       <OwnerPicker cats={ownerCats} value={owner} onChange={setOwner} />
       {!owner ? (
-        <div className="rounded-lg border border-dashed px-3 py-10 text-center text-sm text-muted-foreground">
-          选一个用户 / 用户组 / 部门，直接搭建 TA 专属的资产树。放进去就等于授权；组 / 部门的树会被成员继承。
-        </div>
+        <EmptyState
+          icon="lucide:folder-tree"
+          title="选一个对象，开始搭建资产树"
+          hint="用户 / 用户组 / 部门都行，组和部门的树会被成员继承。"
+        />
       ) : (
-        <OwnerTreeEditor key={`${owner.type}:${owner.id}`} owner={owner} nodes={nodes} />
+        <OwnerTreeEditor key={`${owner.type}:${owner.id}`} owner={owner} ownerCats={ownerCats} nodes={nodes} />
       )}
     </div>
   )
 }
 
-// ---- owner picker (跨类目搜索的单选) ----
+function EmptyState({ icon, title, hint }: { icon: string; title: string; hint?: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed px-3 py-12 text-center">
+      <AppIcon icon={icon} size={28} className="text-muted-foreground/60" />
+      <p className="text-sm font-medium">{title}</p>
+      {hint ? <p className="max-w-sm text-xs text-muted-foreground">{hint}</p> : null}
+    </div>
+  )
+}
 
-function OwnerPicker({
-  cats,
-  value,
-  onChange,
-}: {
-  cats: OwnerCat[]
-  value: Owner | null
-  onChange: (v: Owner) => void
-}) {
+// ---- owner picker (头像 + 分组搜索) ----
+
+function OwnerAvatar({ cat, size = 22 }: { cat?: OwnerCat; size?: number }) {
+  const Icon = cat?.icon
+  return (
+    <span
+      className="grid shrink-0 place-items-center rounded-md bg-muted text-muted-foreground"
+      style={{ width: size, height: size }}
+    >
+      {Icon ? <Icon className="h-3.5 w-3.5" /> : null}
+    </span>
+  )
+}
+
+function OwnerPicker({ cats, value, onChange }: { cats: OwnerCat[]; value: Owner | null; onChange: (v: Owner) => void }) {
   const [open, setOpen] = React.useState(false)
+  const cur = value ? cats.find((c) => c.key === value.type) : undefined
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" role="combobox" className="w-full max-w-md justify-between">
-          {value ? value.name : <span className="text-muted-foreground">选一个用户 / 用户组 / 部门</span>}
-          <ChevronsUpDown className="h-4 w-4 opacity-50" />
+        <Button variant="outline" role="combobox" className="h-11 w-full max-w-md justify-start gap-2 px-2.5">
+          <OwnerAvatar cat={cur} />
+          {value ? (
+            <span className="min-w-0 text-left">
+              <span className="block truncate text-sm font-medium leading-tight">{value.name}</span>
+              <span className="block text-[11px] leading-tight text-muted-foreground">{cur?.label}</span>
+            </span>
+          ) : (
+            <span className="text-muted-foreground">选一个用户 / 用户组 / 部门</span>
+          )}
+          <ChevronsUpDown className="ml-auto h-4 w-4 opacity-50" />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[var(--radix-popover-trigger-width)] p-0" align="start">
         <Command>
-          <CommandInput placeholder="搜索…" />
+          <CommandInput placeholder="搜索用户 / 组 / 部门…" />
           <CommandList>
             <CommandEmpty>没有匹配项</CommandEmpty>
             {cats.map((c) => (
@@ -121,10 +138,11 @@ function OwnerPicker({
                       onChange({ type: c.key, id: i.id, name: i.name })
                       setOpen(false)
                     }}
+                    className="gap-2"
                   >
-                    <Check className={cn("mr-2 h-4 w-4", value?.type === c.key && value?.id === i.id ? "opacity-100" : "opacity-0")} />
-                    <span className="flex-1">{i.name}</span>
-                    {i.sub ? <span className="text-xs text-muted-foreground">{i.sub}</span> : null}
+                    <OwnerAvatar cat={c} size={20} />
+                    <span className="flex-1 truncate">{i.name}</span>
+                    {value?.type === c.key && value?.id === i.id ? <Check className="h-4 w-4" /> : null}
                   </CommandItem>
                 ))}
               </CommandGroup>
@@ -165,20 +183,15 @@ function buildTree(folders: AccessFolder[], items: AccessItem[], nodeById: Map<n
   return (childrenOf.get(0) ?? []).sort((a, b) => a.name.localeCompare(b.name)).map(makeFolder)
 }
 
-// ids of all folders that are descendants of fid (incl. self) — client-side
-// cycle guard so we don't even attempt an illegal folder move.
 function subtreeFolderIds(folders: AccessFolder[], fid: number): Set<number> {
   const self = folders.find((f) => f.id === fid)
   const out = new Set<number>([fid])
   if (!self) return out
-  const prefix = self.path
-  for (const f of folders) {
-    if (f.path === prefix || f.path.startsWith(prefix + "/")) out.add(f.id)
-  }
+  for (const f of folders) if (f.path === self.path || f.path.startsWith(self.path + "/")) out.add(f.id)
   return out
 }
 
-// ---- editor context (so deep rows reach the handlers without prop drilling) ----
+// ---- editor context ----
 
 interface EditorCtx {
   target: number | null
@@ -201,16 +214,15 @@ interface EditorCtx {
 const Ctx = React.createContext<EditorCtx | null>(null)
 const useEditor = () => React.useContext(Ctx)!
 
-// ---- per-owner tree editor ----
-
 type DragData =
   | { kind: "lib"; nodeId: number; label: string }
   | { kind: "item"; itemId: number; fromFolder: number; label: string }
   | { kind: "folder"; folderId: number; label: string }
 type DropData = { kind: "folder"; folderId: number } | { kind: "root" }
 
-function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
+function OwnerTreeEditor({ owner, ownerCats, nodes }: { owner: Owner; ownerCats: OwnerCat[]; nodes: Node[] }) {
   const qc = useQueryClient()
+  const cur = ownerCats.find((c) => c.key === owner.type)
   const nodeById = React.useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes])
   const detail = useQuery({
     queryKey: ["access-tree", owner.type, owner.id],
@@ -219,6 +231,7 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
   const folders = detail.data?.folders ?? []
   const items = detail.data?.items ?? []
   const tree = React.useMemo(() => buildTree(folders, items, nodeById), [folders, items, nodeById])
+  const placed = React.useMemo(() => new Set(items.map((i) => i.node_id)), [items])
 
   const [target, setTarget] = React.useState<number | null>(null)
   const [collapsed, setCollapsed] = React.useState<Set<number>>(new Set())
@@ -233,7 +246,7 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: ["access-tree", owner.type, owner.id] })
-    void qc.invalidateQueries({ queryKey: ["access"] }) // 按人看 / 按资产看 also change
+    void qc.invalidateQueries({ queryKey: ["access"] })
   }
   const onErr = (e: Error) => toast.error("操作失败", { description: e.message })
 
@@ -244,6 +257,7 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
       refresh()
       setEditing(f.id)
       setEditName(f.name)
+      setTarget(f.id)
     },
     onError: onErr,
   })
@@ -333,7 +347,6 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
   }
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
-
   const onDragStart = (e: DragStartEvent) => setDrag((e.active.data.current as DragData) ?? null)
   const onDragEnd = (e: DragEndEvent) => {
     setDrag(null)
@@ -345,9 +358,8 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
     } else if (a.kind === "item") {
       if (o.kind === "folder" && o.folderId !== a.fromFolder) mMoveItem.mutate({ id: a.itemId, folder_id: o.folderId })
     } else if (a.kind === "folder") {
-      if (o.kind === "root") {
-        mMoveFolder.mutate({ id: a.folderId, parent: null })
-      } else if (o.kind === "folder" && o.folderId !== a.folderId) {
+      if (o.kind === "root") mMoveFolder.mutate({ id: a.folderId, parent: null })
+      else if (o.kind === "folder" && o.folderId !== a.folderId) {
         if (subtreeFolderIds(folders, a.folderId).has(o.folderId)) {
           toast.error("不能移动到自己的子文件夹下")
           return
@@ -357,27 +369,34 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
     }
   }
 
+  const targetName = target != null ? folders.find((f) => f.id === target)?.name : undefined
+
   return (
     <Ctx.Provider value={ctx}>
       <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDrag(null)}>
-        <div className="grid h-[calc(100vh-15rem)] grid-cols-1 overflow-hidden rounded-lg border lg:grid-cols-[1fr_320px]">
+        <div className="grid h-[calc(100vh-14rem)] grid-cols-1 overflow-hidden rounded-xl border lg:grid-cols-[1fr_320px]">
           {/* tree */}
           <div className="flex min-h-0 flex-col border-r">
-            <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-              <span className="truncate text-xs font-semibold text-muted-foreground">
-                {owner.name} 的资产树 · 拖拽组织层级
-              </span>
+            <div className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
+              <OwnerAvatar cat={cur} />
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">{owner.name}</span>
               <Button variant="outline" size="sm" onClick={() => mCreate.mutate(null)}>
-                <FolderPlus className="h-3.5 w-3.5" /> 新建根文件夹
+                <FolderPlus className="h-3.5 w-3.5" /> 新建文件夹
               </Button>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-2">
               {detail.isLoading ? (
                 <div className="px-2 py-10 text-center text-xs text-muted-foreground">加载中…</div>
               ) : tree.length === 0 ? (
-                <div className="px-2 py-10 text-center text-xs text-muted-foreground">
-                  还没有文件夹。先「新建根文件夹」，再从右侧把资产拖进来。
-                </div>
+                <button
+                  type="button"
+                  onClick={() => mCreate.mutate(null)}
+                  className="flex w-full flex-col items-center gap-1.5 rounded-lg border border-dashed px-3 py-10 text-center text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <Plus className="h-5 w-5" />
+                  <span className="text-sm font-medium">新建第一个文件夹</span>
+                  <span className="text-xs">再把右侧资产拖进来</span>
+                </button>
               ) : (
                 <>
                   <RootDropBar active={drag?.kind === "folder"} />
@@ -390,9 +409,9 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
           {/* asset library */}
           <AssetLibrary
             nodes={nodes}
-            folders={folders}
+            placed={placed}
             target={target}
-            onTarget={setTarget}
+            targetName={targetName}
             onAdd={(nodeIds) => {
               if (target == null) {
                 toast.error("先在左侧选择一个目标文件夹")
@@ -405,7 +424,7 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
 
         <DragOverlay dropAnimation={null}>
           {drag ? (
-            <div className="flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-sm shadow-md">
+            <div className="flex items-center gap-1.5 rounded-md border bg-card px-2 py-1 text-sm shadow-lg">
               <GripVertical className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="max-w-[200px] truncate">{drag.label}</span>
             </div>
@@ -417,34 +436,60 @@ function OwnerTreeEditor({ owner, nodes }: { owner: Owner; nodes: Node[] }) {
 }
 
 function renderNode(node: DirItem, depth: number): React.ReactNode {
-  if (node.type === "asset") {
-    return <ItemRowDnD key={`asset:${node.item.id}`} item={node.item} node={node.node} depth={depth} />
-  }
+  if (node.type === "asset") return <ItemRowDnD key={`asset:${node.item.id}`} item={node.item} node={node.node} depth={depth} />
   return <FolderNodeDnD key={`folder:${node.fid}`} node={node} depth={depth} />
 }
 
-// ---- the "move to top level" drop zone (only meaningful while dragging a folder) ----
-
 function RootDropBar({ active }: { active: boolean }) {
   const { setNodeRef, isOver } = useDroppable({ id: "droproot", data: { kind: "root" } as DropData })
-  if (!active) return null
   return (
-    <div
-      ref={setNodeRef}
-      className={cn(
-        "mb-1 flex items-center gap-1.5 rounded-md border border-dashed px-2 py-1.5 text-xs text-muted-foreground",
-        isOver ? "border-primary bg-primary/[0.06] text-primary" : "",
-      )}
-    >
-      <CornerLeftUp className="h-3.5 w-3.5" /> 拖到此处移到顶层
-    </div>
+    <AnimatePresence initial={false}>
+      {active ? (
+        <motion.div
+          ref={setNodeRef}
+          initial={{ height: 0, opacity: 0 }}
+          animate={{ height: "auto", opacity: 1 }}
+          exit={{ height: 0, opacity: 0 }}
+          transition={{ duration: 0.14 }}
+          className="overflow-hidden"
+        >
+          <div
+            className={cn(
+              "mb-1 flex items-center gap-1.5 rounded-md border border-dashed px-2 py-1.5 text-xs text-muted-foreground",
+              isOver && "border-primary bg-primary/[0.06] text-primary",
+            )}
+          >
+            <CornerLeftUp className="h-3.5 w-3.5" /> 拖到此处移到顶层
+          </div>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   )
 }
 
-// ---- folder node (draggable + droppable + recursive children) ----
+// override-only permission chip (inherited rows show nothing → clean tree)
+function PermBadge({ actions, validTo }: { actions?: string; validTo?: string | null }) {
+  const codes = (actions ?? "").split(",").filter(Boolean)
+  if (codes.length === 0 && !validTo) return null
+  const label = codes.length
+    ? PRESETS.find((p) => p.actions.slice().sort().join(",") === codes.slice().sort().join(","))?.label ??
+      codes.map(actionLabel).join(" · ")
+    : null
+  return (
+    <span className="flex shrink-0 items-center gap-1">
+      {label ? (
+        <Badge variant="secondary" className="font-normal text-[10px]">
+          {label}
+        </Badge>
+      ) : null}
+      {validTo ? <Clock className="h-3 w-3 text-warning" /> : null}
+    </span>
+  )
+}
 
 function FolderNodeDnD({ node, depth }: { node: Extract<DirItem, { type: "folder" }>; depth: number }) {
   const ed = useEditor()
+  const reduce = useReducedMotion()
   const f = node.folder
   const drag = useDraggable({ id: `folder:${f.id}`, data: { kind: "folder", folderId: f.id, label: f.name } as DragData })
   const drop = useDroppable({ id: `dropf:${f.id}`, data: { kind: "folder", folderId: f.id } as DropData })
@@ -466,7 +511,7 @@ function FolderNodeDnD({ node, depth }: { node: Extract<DirItem, { type: "folder
         onClick={() => ed.setTarget(f.id)}
         style={{ paddingLeft: depth * 16 }}
         className={cn(
-          "group/row flex items-center gap-1 rounded-md py-1 pr-1 text-sm",
+          "group/row flex cursor-grab items-center gap-1 rounded-md py-1 pr-1 text-sm active:cursor-grabbing",
           drag.isDragging && "opacity-40",
           drop.isOver
             ? "bg-primary/[0.08] ring-2 ring-inset ring-primary/50"
@@ -511,10 +556,8 @@ function FolderNodeDnD({ node, depth }: { node: Extract<DirItem, { type: "folder
           <>
             <AppIcon icon={f.icon} fallback="lucide:folder" size={15} className="shrink-0 text-muted-foreground" />
             <span className="flex-1 truncate font-medium">{f.name}</span>
-            <Badge variant="outline" className="shrink-0 font-normal text-[10px]">
-              {permSummary(f.actions)}
-            </Badge>
-            <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{count}</span>
+            <PermBadge actions={f.actions} validTo={f.valid_to} />
+            {count > 0 ? <span className="shrink-0 tabular-nums text-[10px] text-muted-foreground">{count}</span> : null}
             <span className="hidden shrink-0 items-center gap-0.5 group-hover/row:flex">
               <PermPopover actions={f.actions} validTo={f.valid_to} onApply={(a, t) => ed.folderPerm(f.id, a, t)} />
               <RowBtn title="新建子文件夹" onClick={() => ed.newSub(f.id)}>
@@ -530,12 +573,22 @@ function FolderNodeDnD({ node, depth }: { node: Extract<DirItem, { type: "folder
           </>
         )}
       </div>
-      {open && hasKids ? <div>{node.children.map((c) => renderNode(c, depth + 1))}</div> : null}
+      <AnimatePresence initial={false}>
+        {open && hasKids ? (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={reduce ? { duration: 0 } : { duration: 0.16, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            {node.children.map((c) => renderNode(c, depth + 1))}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   )
 }
-
-// ---- asset item row (draggable between folders) ----
 
 function ItemRowDnD({ item, node, depth }: { item: AccessItem; node?: Node; depth: number }) {
   const ed = useEditor()
@@ -550,16 +603,14 @@ function ItemRowDnD({ item, node, depth }: { item: AccessItem; node?: Node; dept
       {...drag.attributes}
       style={{ paddingLeft: depth * 16 + 20 }}
       className={cn(
-        "group/row flex items-center gap-1.5 rounded-md py-1 pr-1 text-sm hover:bg-muted/50",
+        "group/row flex cursor-grab items-center gap-1.5 rounded-md py-1 pr-1 text-sm hover:bg-muted/50 active:cursor-grabbing",
         drag.isDragging && "opacity-40",
       )}
     >
       <AppIcon icon={node?.icon} fallback="lucide:server" size={14} className="shrink-0 text-muted-foreground" />
       <span className="flex-1 truncate">{node ? node.name : `#${item.node_id}（已删除）`}</span>
-      <Badge variant="outline" className="shrink-0 font-normal text-[10px]">
-        {permSummary(item.actions)}
-      </Badge>
-      {node && <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{node.host}</span>}
+      <PermBadge actions={item.actions} validTo={item.valid_to} />
+      {node ? <span className="hidden shrink-0 font-mono text-[10px] text-muted-foreground sm:inline">{node.host}</span> : null}
       <span className="flex shrink-0 items-center gap-0.5">
         <PermPopover actions={item.actions} validTo={item.valid_to} onApply={(a, t) => ed.itemPerm(item.id, a, t)} />
         <RowBtn title="移除" onClick={() => ed.removeItem(item.id)} danger>
@@ -570,17 +621,7 @@ function ItemRowDnD({ item, node, depth }: { item: AccessItem; node?: Node; dept
   )
 }
 
-function RowBtn({
-  children,
-  title,
-  onClick,
-  danger,
-}: {
-  children: React.ReactNode
-  title: string
-  onClick: () => void
-  danger?: boolean
-}) {
+function RowBtn({ children, title, onClick, danger }: { children: React.ReactNode; title: string; onClick: () => void; danger?: boolean }) {
   return (
     <button
       type="button"
@@ -598,13 +639,6 @@ function RowBtn({
       {children}
     </button>
   )
-}
-
-function permSummary(actions?: string): string {
-  if (!actions) return "继承"
-  const codes = actions.split(",").filter(Boolean)
-  const preset = PRESETS.find((p) => p.actions.slice().sort().join(",") === codes.slice().sort().join(","))
-  return preset ? preset.label : codes.map(actionLabel).join(" · ")
 }
 
 // ---- inline permission editor ----
@@ -687,9 +721,9 @@ function PermPopover({
               </Chip>
             ))}
           </div>
-          {validMode === "custom" && (
+          {validMode === "custom" ? (
             <Input type="datetime-local" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-8" />
-          )}
+          ) : null}
         </div>
         <div className="flex justify-end">
           <Button size="sm" onClick={apply}>
@@ -701,17 +735,7 @@ function PermPopover({
   )
 }
 
-function Chip({
-  children,
-  on,
-  onClick,
-  title,
-}: {
-  children: React.ReactNode
-  on: boolean
-  onClick: () => void
-  title?: string
-}) {
+function Chip({ children, on, onClick, title }: { children: React.ReactNode; on: boolean; onClick: () => void; title?: string }) {
   return (
     <button
       type="button"
@@ -727,19 +751,19 @@ function Chip({
   )
 }
 
-// ---- asset library (rows draggable into folders; button is the fallback) ----
+// ---- asset library (虚拟化 + 可拖入 + 已放置标记) ----
 
 function AssetLibrary({
   nodes,
-  folders,
+  placed,
   target,
-  onTarget,
+  targetName,
   onAdd,
 }: {
   nodes: Node[]
-  folders: AccessFolder[]
+  placed: Set<number>
   target: number | null
-  onTarget: (id: number) => void
+  targetName?: string
   onAdd: (nodeIds: number[]) => void
 }) {
   const [q, setQ] = React.useState("")
@@ -747,64 +771,43 @@ function AssetLibrary({
   const filtered = React.useMemo(() => {
     const k = q.trim().toLowerCase()
     if (!k) return nodes
-    return nodes.filter((n) =>
-      [n.name, n.host, n.protocol].filter(Boolean).some((v) => String(v).toLowerCase().includes(k)),
-    )
+    return nodes.filter((n) => [n.name, n.host, n.protocol].filter(Boolean).some((v) => String(v).toLowerCase().includes(k)))
   }, [nodes, q])
-  const toggle = (id: number) => {
-    const next = new Set(checked)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
-    setChecked(next)
-  }
-  const folderLabel = React.useMemo(() => {
-    const byId = new Map(folders.map((f) => [f.id, f]))
-    return (f: AccessFolder) => {
-      const parts: string[] = []
-      let cur: AccessFolder | undefined = f
-      let guard = 0
-      while (cur && guard++ < 50) {
-        parts.unshift(cur.name)
-        cur = cur.parent_id != null ? byId.get(cur.parent_id) : undefined
-      }
-      return parts.join(" / ")
-    }
-  }, [folders])
+  const toggle = (id: number) =>
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
 
   return (
     <div className="flex min-h-0 flex-col">
       <div className="shrink-0 space-y-2 border-b p-3">
-        <div className="text-xs font-semibold text-muted-foreground">资产库（全局）· 可拖入左侧文件夹</div>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-muted-foreground">资产库</span>
+          <span className="text-[10px] text-muted-foreground">拖到左侧文件夹</span>
+        </div>
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索 名称 / IP / 协议…" className="h-8 pl-7 text-sm" />
         </div>
-        <div className="space-y-1">
-          <Label className="text-xs text-muted-foreground">目标文件夹（勾选后用按钮加入）</Label>
-          <Select value={target != null ? String(target) : undefined} onValueChange={(v) => onTarget(Number(v))}>
-            <SelectTrigger className="h-8 text-sm">
-              <SelectValue placeholder={folders.length ? "选择文件夹" : "先建文件夹"} />
-            </SelectTrigger>
-            <SelectContent>
-              {folders.map((f) => (
-                <SelectItem key={f.id} value={String(f.id)}>
-                  {folderLabel(f)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-[10px] text-muted-foreground">新资产默认继承文件夹权限，可在行内单独调整。</p>
-        </div>
       </div>
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="space-y-0.5 p-2">
-          {filtered.length === 0 ? (
-            <div className="px-2 py-8 text-center text-xs text-muted-foreground">没有匹配的资产</div>
-          ) : (
-            filtered.map((n) => <LibRowDnD key={n.id} node={n} checked={checked.has(n.id)} onToggle={() => toggle(n.id)} />)
-          )}
-        </div>
-      </ScrollArea>
+      <div className="min-h-0 flex-1">
+        {filtered.length === 0 ? (
+          <div className="px-2 py-8 text-center text-xs text-muted-foreground">没有匹配的资产</div>
+        ) : (
+          <Virtuoso
+            style={{ height: "100%" }}
+            data={filtered}
+            itemContent={(_, n) => (
+              <div className="px-2">
+                <LibRowDnD node={n} checked={checked.has(n.id)} onToggle={() => toggle(n.id)} placed={placed.has(n.id)} />
+              </div>
+            )}
+          />
+        )}
+      </div>
       <div className="flex shrink-0 items-center justify-between gap-2 border-t bg-muted/30 px-3 py-2.5">
         <span className="text-xs text-muted-foreground">已选 {checked.size}</span>
         <Button
@@ -814,15 +817,16 @@ function AssetLibrary({
             onAdd([...checked])
             setChecked(new Set())
           }}
+          title={target == null ? "先在左侧选择文件夹" : undefined}
         >
-          <ChevronRight className="h-3.5 w-3.5" /> 加入目录
+          <ChevronRight className="h-3.5 w-3.5" /> {targetName ? `加入「${targetName}」` : "加入目录"}
         </Button>
       </div>
     </div>
   )
 }
 
-function LibRowDnD({ node, checked, onToggle }: { node: Node; checked: boolean; onToggle: () => void }) {
+function LibRowDnD({ node, checked, onToggle, placed }: { node: Node; checked: boolean; onToggle: () => void; placed: boolean }) {
   const drag = useDraggable({ id: `lib:${node.id}`, data: { kind: "lib", nodeId: node.id, label: node.name } as DragData })
   return (
     <div
@@ -830,7 +834,7 @@ function LibRowDnD({ node, checked, onToggle }: { node: Node; checked: boolean; 
       {...drag.listeners}
       {...drag.attributes}
       className={cn(
-        "flex cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent active:cursor-grabbing",
+        "my-0.5 flex cursor-grab items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent active:cursor-grabbing",
         drag.isDragging && "opacity-40",
       )}
     >
@@ -839,6 +843,11 @@ function LibRowDnD({ node, checked, onToggle }: { node: Node; checked: boolean; 
       </span>
       <AppIcon icon={node.icon} fallback="lucide:server" size={14} className="shrink-0 text-muted-foreground" />
       <span className="flex-1 truncate">{node.name}</span>
+      {placed ? (
+        <Badge variant="outline" className="shrink-0 gap-0.5 font-normal text-[10px] text-muted-foreground">
+          <Check className="h-2.5 w-2.5" /> 已在目录
+        </Badge>
+      ) : null}
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{node.host}</span>
     </div>
   )

@@ -115,9 +115,6 @@ export default function AccessPolicyPage() {
           <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
             <FileLock2 className="h-5 w-5" /> 访问策略
           </h1>
-          <p className="text-sm text-muted-foreground">
-            选一个用户 / 组 / 部门，直接搭建 TA 的资产目录（树即授权）；按资产组 / 标签 / 全部的散列授权也在这里。
-          </p>
         </div>
         <GrantWizard onDone={() => qc.invalidateQueries({ queryKey: ["admin", "grants"] })} />
       </div>
