@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	appssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -25,6 +26,11 @@ type NodeHandler struct {
 	Proxies  *repo.ProxyRepo
 	Tags     *repo.TagRepo
 	Resolver *appssh.Resolver
+	// Placements + Access keep the 授权目录 consistent when a node is deleted:
+	// purge any catalog placements that referenced it and flush the ACL cache.
+	// Both optional — Delete degrades gracefully when nil.
+	Placements *repo.CatalogPlacementRepo
+	Access     *asset.Resolver
 }
 
 // nodeView is the list projection — the node plus resolved human names for its
@@ -252,6 +258,14 @@ func (h *NodeHandler) Delete(c *gin.Context) {
 	if err := h.Repo.Delete(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// Keep the 授权目录 clean: drop any placements that pointed at this node,
+	// then flush the ACL cache so it no longer appears in anyone's directory.
+	if h.Placements != nil {
+		_ = h.Placements.PurgeNode(c.Request.Context(), id)
+	}
+	if h.Access != nil {
+		h.Access.InvalidateAll(c.Request.Context())
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }

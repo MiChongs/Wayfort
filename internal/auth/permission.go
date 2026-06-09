@@ -22,6 +22,7 @@ const (
 	PermAssetGroupManage = "asset_group:manage"
 	PermTagManage        = "tag:manage"
 	PermGrantManage      = "grant:manage"
+	PermCatalogManage    = "catalog:manage"
 
 	// sessions
 	PermSessionList      = "session:list"
@@ -95,6 +96,7 @@ var AllPermissions = []struct {
 	{PermAssetGroupManage, "asset", "管理资产组"},
 	{PermTagManage, "asset", "管理标签"},
 	{PermGrantManage, "asset", "管理资产授权"},
+	{PermCatalogManage, "asset", "管理授权目录"},
 	{PermSessionList, "session", "查看会话列表"},
 	{PermSessionRead, "session", "查看/回放会话"},
 	{PermSessionTerminate, "session", "强制断开会话"},
@@ -134,7 +136,7 @@ var BuiltinRoles = map[string][]string{
 	"admin": {PermSystemAdmin},
 	"operator": {
 		PermNodeList, PermNodeRead, PermSessionList, PermSessionRead,
-		PermPortForward, PermAssetGroupManage, PermTagManage,
+		PermPortForward, PermAssetGroupManage, PermTagManage, PermCatalogManage,
 		PermAIUse, PermAIAgentCreate, PermAIProviderUser,
 		PermApprovalDecide,
 	},
@@ -170,7 +172,7 @@ const (
 var adminTierPerms = []string{
 	PermNodeCreate, PermNodeUpdate, PermNodeDelete,
 	PermProxyManage, PermCredentialManage,
-	PermAssetGroupManage, PermTagManage, PermGrantManage,
+	PermAssetGroupManage, PermTagManage, PermGrantManage, PermCatalogManage,
 	PermSessionTerminate, PermAuditRead,
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
 	PermFirewallManage, PermDockerManage, PermServiceManage,

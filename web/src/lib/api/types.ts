@@ -1502,7 +1502,9 @@ export interface AssetGrant {
 }
 
 export type GranteeKind = "user" | "role" | "group" | "department"
-export type SubjectKind = "node" | "group" | "tag" | "all"
+// "catalog" only ever appears as the `via` label on SubjectAccessRow (access
+// derived from a 授权目录); it is never a grant subject the picker can choose.
+export type SubjectKind = "node" | "group" | "tag" | "all" | "catalog"
 
 export interface GranteeRef {
   type: GranteeKind
@@ -1535,6 +1537,79 @@ export interface SubjectAccessRow {
   via: SubjectKind
   grant_id: number
   valid_to?: string | null
+}
+
+// ----- 授权目录 (custom authorisation directory / catalog) -----
+// Independent of the global asset tree: an admin builds a bespoke folder tree,
+// drops assets into folders, and assigns it to grantees. Resolved into the same
+// access set as AssetGrant on the backend.
+export interface Catalog {
+  id: number
+  name: string
+  description?: string
+  icon?: string
+  is_template?: boolean
+  created_by?: number
+  created_at?: string
+  updated_at?: string
+}
+export interface CatalogFolder {
+  id: number
+  catalog_id: number
+  name: string
+  parent_id?: number | null
+  path: string
+  icon?: string
+  sort_order?: number
+  description?: string
+}
+export interface CatalogPlacement {
+  id: number
+  catalog_id: number
+  folder_id: number
+  node_id: number
+  sort_order?: number
+}
+export interface CatalogAssignment {
+  id: number
+  catalog_id: number
+  folder_id?: number | null // null = whole catalog; set = that folder subtree
+  grantee_type: GranteeKind
+  grantee_id: number
+  actions: string
+  valid_from?: string
+  valid_to?: string
+  created_by?: number
+  created_at?: string
+}
+// Admin editor payload (GET /catalogs/:id).
+export interface CatalogDetail {
+  catalog: Catalog
+  folders: CatalogFolder[]
+  placements: CatalogPlacement[]
+  assignments: CatalogAssignment[]
+}
+// Workspace "我的目录" payload (GET /me/catalogs) — filtered + pruned server-side.
+export interface MyCatalogFolder {
+  id: number
+  parent_id?: number | null
+  name: string
+  path: string
+  icon?: string
+  sort_order?: number
+}
+export interface MyCatalogPlacement {
+  folder_id: number
+  node_id: number
+  sort_order?: number
+}
+export interface MyCatalog {
+  id: number
+  name: string
+  icon?: string
+  description?: string
+  folders: MyCatalogFolder[]
+  placements: MyCatalogPlacement[]
 }
 
 export interface LoginHistory {

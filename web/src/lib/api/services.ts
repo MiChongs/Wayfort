@@ -32,6 +32,10 @@ import type {
   AssetGroup,
   AssetTag,
   AssetTagGroup,
+  Catalog,
+  CatalogDetail,
+  CatalogFolder,
+  MyCatalog,
   GranteeKind,
   GranteeRef,
   SubjectAccessRow,
@@ -188,6 +192,8 @@ export const meService = {
     api<void>("POST", "/me/password", { body: { old_password, new_password } }),
   loginHistory: (limit = 50) => api<{ history: LoginHistory[] }>("GET", "/me/login-history", { query: { limit } }),
   visibleNodes: () => api<{ nodes: Node[]; scope: "all" | "scoped" }>("GET", "/me/nodes"),
+  // 我的目录：管理员分配给我的自定义授权目录（已按可连资产过滤、空文件夹裁剪）。
+  catalogs: () => api<{ catalogs: MyCatalog[] }>("GET", "/me/catalogs"),
   favorites: () => api<{ node_ids: number[] }>("GET", "/me/favorites"),
   addFavorite: (nodeId: number) => api<void>("POST", `/me/favorites/${nodeId}`),
   removeFavorite: (nodeId: number) => api<void>("DELETE", `/me/favorites/${nodeId}`),
@@ -1236,6 +1242,53 @@ export const grantService = {
   // 按资产看：某节点谁能访问、经由什么、何时到期。
   bySubject: (nodeId: number) =>
     api<{ grantees: SubjectAccessRow[] }>("GET", `/access/by-subject?node_id=${nodeId}`),
+}
+
+// ----- 授权目录 (custom authorisation directory / catalog) -----
+export const catalogService = {
+  list: () => api<{ catalogs: Catalog[] }>("GET", "/catalogs"),
+  create: (body: { name: string; description?: string; icon?: string; is_template?: boolean }) =>
+    api<Catalog>("POST", "/catalogs", { body }),
+  get: (id: number) => api<CatalogDetail>("GET", `/catalogs/${id}`),
+  update: (id: number, body: { name?: string; description?: string; icon?: string; is_template?: boolean }) =>
+    api<Catalog>("PATCH", `/catalogs/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/catalogs/${id}`),
+
+  // folders
+  createFolder: (
+    catalogId: number,
+    body: { name: string; parent_id?: number | null; icon?: string; description?: string },
+  ) => api<CatalogFolder>("POST", `/catalogs/${catalogId}/folders`, { body }),
+  updateFolder: (
+    catalogId: number,
+    folderId: number,
+    body: { name?: string; icon?: string; description?: string },
+  ) => api<CatalogFolder>("PATCH", `/catalogs/${catalogId}/folders/${folderId}`, { body }),
+  // Reparent (drag-and-drop / "move to…"); parent_id null = top level.
+  moveFolder: (catalogId: number, folderId: number, parent_id: number | null) =>
+    api<void>("PUT", `/catalogs/${catalogId}/folders/${folderId}/parent`, { body: { parent_id } }),
+  removeFolder: (catalogId: number, folderId: number) =>
+    api<void>("DELETE", `/catalogs/${catalogId}/folders/${folderId}`),
+
+  // placements (drop one or more assets into a folder)
+  addPlacements: (catalogId: number, folder_id: number, node_ids: number[]) =>
+    api<{ added: number }>("POST", `/catalogs/${catalogId}/placements`, { body: { folder_id, node_ids } }),
+  removePlacement: (catalogId: number, placementId: number) =>
+    api<void>("DELETE", `/catalogs/${catalogId}/placements/${placementId}`),
+
+  // assignments (bind the catalog or one folder subtree to grantees)
+  createAssignments: (
+    catalogId: number,
+    body: {
+      folder_id?: number | null
+      grantees: GranteeRef[]
+      actions: string
+      valid_from?: string
+      valid_to?: string
+    },
+  ) => api<{ created: number }>("POST", `/catalogs/${catalogId}/assignments`, { body }),
+  removeAssignment: (catalogId: number, assignmentId: number) =>
+    api<void>("DELETE", `/catalogs/${catalogId}/assignments/${assignmentId}`),
 }
 
 // ----- OIDC -----

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Loader2, RefreshCcw, Search, X } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { assetGroupService, meService, tagService } from "@/lib/api/services"
-import type { AssetGroup, Node } from "@/lib/api/types"
+import type { AssetGroup, MyCatalog, MyCatalogFolder, MyCatalogPlacement, Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -42,6 +42,7 @@ export function AssetTree({ onOpenTab }: Props) {
   const recents = useQuery({ queryKey: ["me", "recents"], queryFn: () => meService.recentNodes(50) })
   const groups = useQuery({ queryKey: ["asset-groups"], queryFn: assetGroupService.list })
   const tags = useQuery({ queryKey: ["tags"], queryFn: tagService.list })
+  const catalogs = useQuery({ queryKey: ["me", "catalogs"], queryFn: meService.catalogs })
 
   const allNodes: Node[] = nodes.data?.nodes ?? []
   const favIds = new Set(favorites.data?.node_ids ?? [])
@@ -67,6 +68,8 @@ export function AssetTree({ onOpenTab }: Props) {
         return buildFavorites(filteredNodes, favIds)
       case "recent":
         return buildRecent(filteredNodes, recents.data?.recent ?? [])
+      case "directory":
+        return buildCatalogTree(catalogs.data?.catalogs ?? [], filteredNodes, favIds)
       case "groups":
         return buildGroups(filteredNodes, groups.data?.asset_groups ?? [], favIds)
       case "tags":
@@ -77,7 +80,7 @@ export function AssetTree({ onOpenTab }: Props) {
       default:
         return buildAll(filteredNodes, favIds)
     }
-  }, [filteredNodes, favIds, treeView, recents.data, groups.data, tags.data])
+  }, [filteredNodes, favIds, treeView, recents.data, groups.data, tags.data, catalogs.data])
 
   const toggleFav = useMutation({
     mutationFn: async (node: Node) => {
@@ -96,9 +99,13 @@ export function AssetTree({ onOpenTab }: Props) {
     void qc.invalidateQueries({ queryKey: ["me", "recents"] })
     void qc.invalidateQueries({ queryKey: ["asset-groups"] })
     void qc.invalidateQueries({ queryKey: ["tags"] })
+    void qc.invalidateQueries({ queryKey: ["me", "catalogs"] })
   }
 
-  const loading = nodes.isLoading || (treeView === "groups" && groups.isLoading)
+  const loading =
+    nodes.isLoading ||
+    (treeView === "groups" && groups.isLoading) ||
+    (treeView === "directory" && catalogs.isLoading)
   const empty = !loading && tree.length === 0
 
   return (
@@ -369,6 +376,79 @@ function buildGroups(nodes: Node[], groups: AssetGroup[], favIds: Set<number>): 
       count: ungrouped.length,
       defaultOpen: true,
       children: ungrouped.map((n) => leaf(n, favIds, "group-default")),
+    })
+  }
+  return out
+}
+
+function countLeavesIn(items: TreeItem[]): number {
+  let c = 0
+  for (const it of items) {
+    if (it.type === "leaf") c++
+    else c += countLeavesIn(it.children)
+  }
+  return c
+}
+
+// 我的目录：管理员分配的自定义授权目录。后端已按可连资产过滤并裁剪空文件夹；
+// 这里再按搜索词过滤（join 到可见节点集），并裁掉因搜索而清空的文件夹。每个目录
+// 自身渲染为一个顶层文件夹，内部沿 parent_id 还原层级，叶子是放置的资产。
+function buildCatalogTree(catalogs: MyCatalog[], nodes: Node[], favIds: Set<number>): TreeItem[] {
+  const byNode = new Map(nodes.map((n) => [n.id, n]))
+  const out: TreeItem[] = []
+  const ordered = (a: { sort_order?: number; name: string }, b: { sort_order?: number; name: string }) =>
+    (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name)
+
+  for (const cat of catalogs) {
+    const folderIds = new Set(cat.folders.map((f) => f.id))
+    const childrenOf = new Map<number, MyCatalogFolder[]>()
+    for (const f of cat.folders) {
+      const key = f.parent_id != null && folderIds.has(f.parent_id) ? f.parent_id : 0
+      const arr = childrenOf.get(key) ?? []
+      arr.push(f)
+      childrenOf.set(key, arr)
+    }
+    const plByFolder = new Map<number, MyCatalogPlacement[]>()
+    for (const p of cat.placements) {
+      const arr = plByFolder.get(p.folder_id) ?? []
+      arr.push(p)
+      plByFolder.set(p.folder_id, arr)
+    }
+
+    const makeFolder = (f: MyCatalogFolder): TreeFolder | null => {
+      const childFolders = (childrenOf.get(f.id) ?? [])
+        .sort(ordered)
+        .map(makeFolder)
+        .filter((x): x is TreeFolder => x !== null)
+      const leaves: TreeLeaf[] = []
+      for (const p of plByFolder.get(f.id) ?? []) {
+        const n = byNode.get(p.node_id)
+        if (n) leaves.push(leaf(n, favIds, `cat-${cat.id}-${f.id}`))
+      }
+      const children = [...childFolders, ...leaves]
+      if (children.length === 0) return null // pruned away by the search filter
+      return {
+        type: "folder",
+        id: `cat:${cat.id}:f:${f.id}`,
+        label: f.name,
+        count: leaves.length,
+        defaultOpen: true,
+        children,
+      }
+    }
+
+    const roots = (childrenOf.get(0) ?? [])
+      .sort(ordered)
+      .map(makeFolder)
+      .filter((x): x is TreeFolder => x !== null)
+    if (roots.length === 0) continue // whole catalog empty after filtering
+    out.push({
+      type: "folder",
+      id: `cat:${cat.id}`,
+      label: cat.name,
+      count: countLeavesIn(roots),
+      defaultOpen: true,
+      children: roots,
     })
   }
   return out

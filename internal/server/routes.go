@@ -199,6 +199,7 @@ type Routes struct {
 	Tag        *api.TagHandler
 	TagGroup   *api.TagGroupHandler
 	Grant      *api.GrantHandler
+	Catalog    *api.CatalogHandler
 	Me         *api.MeHandler
 	Dashboard  *api.DashboardHandler
 	OIDCClient *api.OIDCClientHandler
@@ -339,6 +340,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/recent-nodes", rt.Me.RecentNodes)
 		me.GET("/login-history", rt.Me.LoginHistory)
 		me.GET("/nodes", rt.Me.VisibleNodes)
+		me.GET("/catalogs", rt.Catalog.MyCatalogs)
 		me.GET("/access", rt.Dashboard.Access)
 
 		// Phase 11 — terminal personalization. User-scoped (no admin
@@ -501,6 +503,22 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// 访问策略透视：按人看（穿透解析）/ 按资产看（谁能访问）。
 		admin.GET("/access/by-grantee", perm(auth.PermGrantManage), rt.Grant.ByGrantee)
 		admin.GET("/access/by-subject", perm(auth.PermGrantManage), rt.Grant.BySubject)
+
+		// 授权目录（自定义资产目录，独立于全局资产树）。
+		catMgr := perm(auth.PermCatalogManage)
+		admin.GET("/catalogs", catMgr, rt.Catalog.List)
+		admin.POST("/catalogs", catMgr, rt.Catalog.Create)
+		admin.GET("/catalogs/:id", catMgr, rt.Catalog.Get)
+		admin.PATCH("/catalogs/:id", catMgr, rt.Catalog.Update)
+		admin.DELETE("/catalogs/:id", catMgr, rt.Catalog.Delete)
+		admin.POST("/catalogs/:id/folders", catMgr, rt.Catalog.CreateFolder)
+		admin.PATCH("/catalogs/:id/folders/:fid", catMgr, rt.Catalog.UpdateFolder)
+		admin.PUT("/catalogs/:id/folders/:fid/parent", catMgr, rt.Catalog.MoveFolder)
+		admin.DELETE("/catalogs/:id/folders/:fid", catMgr, rt.Catalog.DeleteFolder)
+		admin.POST("/catalogs/:id/placements", catMgr, rt.Catalog.AddPlacements)
+		admin.DELETE("/catalogs/:id/placements/:pid", catMgr, rt.Catalog.DeletePlacement)
+		admin.POST("/catalogs/:id/assignments", catMgr, rt.Catalog.CreateAssignments)
+		admin.DELETE("/catalogs/:id/assignments/:aid", catMgr, rt.Catalog.DeleteAssignment)
 
 		// OIDC client management
 		if rt.OIDCClient != nil {

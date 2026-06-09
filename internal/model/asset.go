@@ -77,6 +77,9 @@ const (
 	SubjectAssetGroup SubjectType = "group"
 	SubjectTag        SubjectType = "tag"
 	SubjectAll        SubjectType = "all"
+	// SubjectCatalog is not an AssetGrant subject — it is only used as the "via"
+	// label in access explanations to mark access derived from a 授权目录.
+	SubjectCatalog SubjectType = "catalog"
 )
 
 // AssetGrant is the core authorisation record. Actions is a comma-separated set

@@ -1,11 +1,12 @@
 "use client"
 
 import * as React from "react"
-import { Clock, FolderTree, Network, Star, Tag, ListChecks } from "lucide-react"
+import { Clock, FolderKanban, FolderTree, Network, Star, Tag, ListChecks } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { TreeView } from "./useWorkspaceStore"
 
 const ITEMS: { key: TreeView; label: string; icon: React.ComponentType<{ className?: string }>; title: string }[] = [
+  { key: "directory", label: "目录", icon: FolderKanban, title: "我的目录（管理员分配）" },
   { key: "favorites", label: "收藏", icon: Star, title: "收藏夹" },
   { key: "recent", label: "最近", icon: Clock, title: "最近访问" },
   { key: "groups", label: "组", icon: FolderTree, title: "按资产组" },
@@ -25,7 +26,7 @@ export function AssetTreeViewSwitcher({
     <div
       role="tablist"
       aria-label="资产树视图"
-      className="grid grid-cols-6 gap-0.5 p-1 mx-2 mt-2 mb-1 rounded-md bg-muted/40"
+      className="grid grid-cols-7 gap-0.5 p-1 mx-2 mt-2 mb-1 rounded-md bg-muted/40"
     >
       {ITEMS.map((it) => {
         const active = value === it.key

@@ -70,6 +70,12 @@ export const GROUP_COLOR_ORDER: GroupColor[] = [
 
 export type GroupingMode = "off" | "manual" | "by-node" | "by-protocol"
 
+// Tab strip visual idiom. Replaces the old Chrome-style floating card.
+//   vscode → 满高矩形页 + 激活左侧 2px 主题色竖条(VS Code 编辑器页)
+//   warp   → 圆角段 + 激活填充 + 底部 2px 主题色下划线(Warp 终端页)
+// 两者都走「沉稳 IDE」语言:单色协议图标、语义状态点、仅 120ms 淡入。
+export type TabStyle = "vscode" | "warp"
+
 export interface TabGroup {
   id: string
   name: string
@@ -110,7 +116,7 @@ export type WorkspaceTab = {
   unread?: boolean
 }
 
-export type TreeView = "favorites" | "recent" | "groups" | "tags" | "protocols" | "all"
+export type TreeView = "favorites" | "recent" | "directory" | "groups" | "tags" | "protocols" | "all"
 
 // Which panel the activity bar has selected. The side panel renders one of
 // these at a time. "assets" is the asset tree; "sessions" / "monitor" arrive
@@ -135,6 +141,7 @@ const RECENT_LIMIT = 10
 // upgrading from a pre-Phase 7 persisted store does not look broken.
 export interface WorkspacePrefs {
   groupingMode: GroupingMode
+  tabStyle: TabStyle
   showProtocolIcon: boolean
   showHostPort: boolean
   showLatencyBadge: boolean
@@ -142,6 +149,7 @@ export interface WorkspacePrefs {
 
 const DEFAULT_PREFS: WorkspacePrefs = {
   groupingMode: "off",
+  tabStyle: "vscode",
   showProtocolIcon: true,
   showHostPort: true,
   showLatencyBadge: true,
@@ -742,7 +750,9 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
           },
         }
       },
-      version: 4,
+      // v5 — adds prefs.tabStyle. migrate spreads DEFAULT_PREFS so existing
+      // payloads default to "vscode" without a bespoke migration branch.
+      version: 5,
     },
   ),
 )

@@ -28,16 +28,19 @@ const (
 )
 
 type Resolver struct {
-	grants *repo.GrantRepo
-	groups *repo.UserGroupRepo
-	depts  *repo.DepartmentRepo
-	roles  *repo.RoleRepo
-	users  *repo.UserRepo
-	ag     *repo.AssetGroupRepo
-	tags   *repo.TagRepo
-	nodes  *repo.NodeRepo
-	cache  *redis.Client
-	ttl    time.Duration
+	grants     *repo.GrantRepo
+	groups     *repo.UserGroupRepo
+	depts      *repo.DepartmentRepo
+	roles      *repo.RoleRepo
+	users      *repo.UserRepo
+	ag         *repo.AssetGroupRepo
+	tags       *repo.TagRepo
+	nodes      *repo.NodeRepo
+	folders    *repo.CatalogFolderRepo
+	placements *repo.CatalogPlacementRepo
+	catAssign  *repo.CatalogAssignmentRepo
+	cache      *redis.Client
+	ttl        time.Duration
 }
 
 func NewResolver(
@@ -49,9 +52,88 @@ func NewResolver(
 	ag *repo.AssetGroupRepo,
 	tags *repo.TagRepo,
 	nodes *repo.NodeRepo,
+	folders *repo.CatalogFolderRepo,
+	placements *repo.CatalogPlacementRepo,
+	catAssign *repo.CatalogAssignmentRepo,
 	cache *redis.Client,
 ) *Resolver {
-	return &Resolver{grants: grants, groups: groups, depts: depts, roles: roles, users: users, ag: ag, tags: tags, nodes: nodes, cache: cache, ttl: 60 * time.Second}
+	return &Resolver{grants: grants, groups: groups, depts: depts, roles: roles, users: users, ag: ag, tags: tags, nodes: nodes, folders: folders, placements: placements, catAssign: catAssign, cache: cache, ttl: 60 * time.Second}
+}
+
+// expandAssignment resolves a catalog assignment to the node IDs it grants:
+// the whole catalog when FolderID is nil, otherwise just the placements in that
+// folder's subtree. Reuses the materialised-path Subtree query.
+func (r *Resolver) expandAssignment(ctx context.Context, a model.CatalogAssignment) ([]uint64, error) {
+	if r.catAssign == nil || r.placements == nil {
+		return nil, nil
+	}
+	if a.FolderID == nil {
+		return r.placements.NodesInCatalog(ctx, a.CatalogID)
+	}
+	f, err := r.folders.FindByID(ctx, *a.FolderID)
+	if err != nil || f == nil {
+		return nil, err
+	}
+	sub, err := r.folders.Subtree(ctx, f.CatalogID, f.Path)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uint64, 0, len(sub))
+	for _, s := range sub {
+		ids = append(ids, s.ID)
+	}
+	return r.placements.NodesInFolders(ctx, ids)
+}
+
+// granteesForUser gathers the (granteeType → ids) map for a user, expanding
+// department / user-group ancestors (a child inherits its ancestors' grants)
+// and the user's roles. Shared by compute() and AssignmentsForUser().
+func (r *Resolver) granteesForUser(ctx context.Context, user *model.User) map[model.GranteeType][]uint64 {
+	granteeIDs := map[model.GranteeType][]uint64{
+		model.GranteeUser: {user.ID},
+	}
+	if deptIDs, err := r.depts.DepartmentsForUser(ctx, user.ID); err == nil && len(deptIDs) > 0 {
+		if expanded, err := r.depts.ExpandWithAncestors(ctx, deptIDs); err == nil && len(expanded) > 0 {
+			granteeIDs[model.GranteeDepartment] = expanded
+		}
+	}
+	if groupIDs, err := r.groups.GroupsForUser(ctx, user.ID); err == nil && len(groupIDs) > 0 {
+		if expanded, err := r.groups.ExpandWithAncestors(ctx, groupIDs); err == nil && len(expanded) > 0 {
+			granteeIDs[model.GranteeGroup] = expanded
+		} else {
+			granteeIDs[model.GranteeGroup] = groupIDs
+		}
+	}
+	if roles, err := r.roles.RolesForUser(ctx, user.ID); err == nil && len(roles) > 0 {
+		ids := make([]uint64, 0, len(roles))
+		for _, role := range roles {
+			ids = append(ids, role.ID)
+		}
+		granteeIDs[model.GranteeRole] = ids
+	}
+	return granteeIDs
+}
+
+// AssignmentsForUser returns the still-valid catalog assignments that reach a
+// user (through their groups / roles / departments). Backs GET /me/catalogs.
+func (r *Resolver) AssignmentsForUser(ctx context.Context, userID uint64) ([]model.CatalogAssignment, error) {
+	if r.catAssign == nil {
+		return nil, nil
+	}
+	user, err := r.users.FindByID(ctx, userID)
+	if err != nil || user == nil {
+		return nil, err
+	}
+	granteeIDs := r.granteesForUser(ctx, user)
+	var out []model.CatalogAssignment
+	for gt, ids := range granteeIDs {
+		rows, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gt}, ids)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rows...)
+	}
+	return out, nil
 }
 
 type accessSet struct {
@@ -143,30 +225,7 @@ func (r *Resolver) compute(ctx context.Context, userID uint64) (*accessSet, erro
 	// Gather grantees: the user, their groups, their roles, their departments.
 	// Departments and groups are trees — a child inherits its ancestors' grants,
 	// so we expand both to include every ancestor before matching grants.
-	granteeIDs := map[model.GranteeType][]uint64{
-		model.GranteeUser: {user.ID},
-	}
-	if deptIDs, err := r.depts.DepartmentsForUser(ctx, userID); err == nil && len(deptIDs) > 0 {
-		if expanded, err := r.depts.ExpandWithAncestors(ctx, deptIDs); err == nil && len(expanded) > 0 {
-			granteeIDs[model.GranteeDepartment] = expanded
-		}
-	}
-	groupIDs, err := r.groups.GroupsForUser(ctx, userID)
-	if err == nil && len(groupIDs) > 0 {
-		if expanded, err := r.groups.ExpandWithAncestors(ctx, groupIDs); err == nil && len(expanded) > 0 {
-			granteeIDs[model.GranteeGroup] = expanded
-		} else {
-			granteeIDs[model.GranteeGroup] = groupIDs
-		}
-	}
-	roles, err := r.roles.RolesForUser(ctx, userID)
-	if err == nil && len(roles) > 0 {
-		ids := make([]uint64, 0, len(roles))
-		for _, role := range roles {
-			ids = append(ids, role.ID)
-		}
-		granteeIDs[model.GranteeRole] = ids
-	}
+	granteeIDs := r.granteesForUser(ctx, user)
 
 	// Fetch every grant that targets one of these grantees.
 	grants := make([]model.AssetGrant, 0)
@@ -203,6 +262,28 @@ func (r *Resolver) compute(ctx context.Context, userID uint64) (*accessSet, erro
 			}
 			for _, nid := range nodes {
 				merge(set.Nodes, nid, actions)
+			}
+		}
+	}
+
+	// Custom authorisation directories (授权目录): resolve assignments aimed at
+	// the same grantees into the same access set. A node reachable via both a
+	// catalog and an AssetGrant ends up with the union of actions (merge dedups).
+	if r.catAssign != nil {
+		for gt, ids := range granteeIDs {
+			assigns, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gt}, ids)
+			if err != nil {
+				return nil, err
+			}
+			for _, a := range assigns {
+				nodeIDs, err := r.expandAssignment(ctx, a)
+				if err != nil {
+					return nil, err
+				}
+				actions := splitActions(a.Actions)
+				for _, nid := range nodeIDs {
+					merge(set.Nodes, nid, actions)
+				}
 			}
 		}
 	}
@@ -356,6 +437,28 @@ func (r *Resolver) Explain(ctx context.Context, gt model.GranteeType, id uint64)
 		}
 	}
 
+	// Custom authorisation directories contribute node access for the same
+	// grantees (tracked under the grantee as the source).
+	if r.catAssign != nil {
+		for gtype, ids := range granteeIDs {
+			assigns, err := r.catAssign.ListForGrantees(ctx, []model.GranteeType{gtype}, ids)
+			if err != nil {
+				return nil, err
+			}
+			for _, a := range assigns {
+				nodeIDs, err := r.expandAssignment(ctx, a)
+				if err != nil {
+					return nil, err
+				}
+				actions := splitActions(a.Actions)
+				src := GranteeRef{Type: a.GranteeType, ID: a.GranteeID}
+				for _, nid := range nodeIDs {
+					add(nid, actions, src, a.ValidTo)
+				}
+			}
+		}
+	}
+
 	out := &Explanation{AllActions: sortedKeys(allActions), AllSources: refKeys(allSources), Nodes: make([]NodeAccess, 0, len(nodeAcc))}
 	if !allHasPermanent {
 		out.AllValidTo = allLatest
@@ -442,6 +545,31 @@ func (r *Resolver) WhoCanAccessNode(ctx context.Context, nodeID uint64) ([]Subje
 			GrantID:     g.ID,
 			ValidTo:     g.ValidTo,
 		})
+	}
+
+	// Custom authorisation directories that place this node.
+	if r.catAssign != nil {
+		assigns, err := r.catAssign.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range assigns {
+			nodeIDs, err := r.expandAssignment(ctx, a)
+			if err != nil {
+				return nil, err
+			}
+			if !containsUint(nodeIDs, nodeID) {
+				continue
+			}
+			out = append(out, SubjectAccess{
+				GranteeType: a.GranteeType,
+				GranteeID:   a.GranteeID,
+				Actions:     splitActions(a.Actions),
+				Via:         model.SubjectCatalog,
+				GrantID:     a.ID,
+				ValidTo:     a.ValidTo,
+			})
+		}
 	}
 	return out, nil
 }

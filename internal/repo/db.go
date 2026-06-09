@@ -111,6 +111,13 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.NodeFavorite{},
 		&model.NodeRecent{},
 
+		// Custom authorisation directories (授权目录) — independent of the
+		// global asset tree; resolved into the same access set as AssetGrant.
+		&model.Catalog{},
+		&model.CatalogFolder{},
+		&model.CatalogPlacement{},
+		&model.CatalogAssignment{},
+
 		// MFA / Passkey / auth audit
 		&model.UserMFA{},
 		&model.UserRecoveryCode{},
