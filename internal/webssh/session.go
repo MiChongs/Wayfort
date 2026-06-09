@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/latency"
 	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -41,9 +42,13 @@ type Session struct {
 	BytesIn   atomic.Uint64
 	BytesOut  atomic.Uint64
 	onCommand func(string) // optional command tracker for audit
-	// OnRTT, when set, receives the round-trip time (ms) measured by each
-	// heartbeat ping — feeds the connection-quality metric sink.
-	OnRTT func(ms uint32)
+	// OnLatency, when set, receives the dual-path latency snapshots produced by
+	// the prober on each tick (server = gateway↔target, client = browser↔gateway)
+	// — feeds the connection-quality metric sink.
+	OnLatency func(server, client latency.Stats)
+	// ServerPing, when set, measures the gateway↔target RTT (SSH keepalive). Nil
+	// for backends with no measurable server hop (anonymous container, telnet).
+	ServerPing func(ctx context.Context) (time.Duration, error)
 	// LiveHub, when set, mirrors this session's output to read-only observers.
 	// All Hub methods are nil-safe, so the tee is free when monitoring is off.
 	LiveHub *livewatch.Hub
@@ -83,7 +88,7 @@ func (s *Session) Run(ctx context.Context) error {
 	g.Go(func() error { return s.pumpWSToBackend(gctx) })
 	g.Go(func() error { return s.pumpBackendToWS(gctx) })
 	if s.Cfg.PingInterval > 0 {
-		g.Go(func() error { return s.heartbeat(gctx) })
+		g.Go(func() error { return s.probe(gctx) })
 	}
 
 	_ = s.sendFrame(Frame{T: TReady})
@@ -184,42 +189,83 @@ func (s *Session) pumpBackendToWS(ctx context.Context) error {
 	}
 }
 
-func (s *Session) heartbeat(ctx context.Context) error {
-	// measure pings the browser and records the round-trip as RTT. Bound the
-	// ping: on a half-open TCP (laptop slept, network dropped) an unbounded Ping
-	// waits for the OS TCP timeout (minutes) before the session is detected dead;
-	// a per-ping deadline turns a missing pong into a clean teardown within one
-	// interval. RTT is measured in microseconds and rounded up to ms so a sub-ms
-	// LAN/loopback round-trip records as 1ms rather than truncating to 0 (which
-	// the sink then drops, leaving the quality chart flat at zero).
-	measure := func() error {
+// probeInterval is the latency-probe cadence. It is capped at 5s for a dense
+// RTT curve and fast dead-connection detection, but honours a smaller configured
+// keepalive interval. The WS ping doubles as the keepalive.
+const probeInterval = 5 * time.Second
+
+func (s *Session) probeEvery() time.Duration {
+	if s.Cfg.PingInterval > 0 && s.Cfg.PingInterval < probeInterval {
+		return s.Cfg.PingInterval
+	}
+	return probeInterval
+}
+
+// probe runs the dual-path latency prober: every tick it measures the
+// client↔gateway RTT via a WebSocket ping (which also keeps the connection alive
+// and detects a dead browser) and, when ServerPing is set, the gateway↔target
+// RTT via an SSH keepalive. Both feed HdrHistogram/EWMA trackers; the smoothed
+// snapshots are pushed to the metric sink. RTT is timed in microseconds and the
+// tracker floors it at 1ms so a sub-ms LAN/loopback hop never reads as 0.
+//
+// A failed client ping is fatal (the browser is gone → tear the session down); a
+// failed server ping is only counted as loss — a momentarily slow target must
+// not kill an otherwise-healthy session.
+func (s *Session) probe(ctx context.Context) error {
+	interval := s.probeEvery()
+	client := latency.New()
+	var server *latency.Tracker
+	if s.ServerPing != nil {
+		server = latency.New()
+	}
+
+	tick := func() error {
+		// client↔gateway via WS ping (bounded so a half-open TCP is detected
+		// within one interval instead of waiting for the OS TCP timeout).
 		start := time.Now()
-		pctx, pcancel := context.WithTimeout(ctx, s.Cfg.PingInterval)
+		pctx, pcancel := context.WithTimeout(ctx, interval)
 		err := s.Conn.Ping(pctx)
 		pcancel()
 		if err != nil {
+			client.ObserveTimeout()
 			return err
 		}
-		if s.OnRTT != nil {
-			if us := time.Since(start).Microseconds(); us > 0 {
-				s.OnRTT(uint32((us + 999) / 1000))
+		client.Observe(time.Since(start))
+
+		// gateway↔target via SSH keepalive (best-effort).
+		if server != nil {
+			sctx, scancel := context.WithTimeout(ctx, interval)
+			d, serr := s.ServerPing(sctx)
+			scancel()
+			if serr != nil {
+				server.ObserveTimeout()
+			} else {
+				server.Observe(d)
 			}
+		}
+
+		if s.OnLatency != nil {
+			var ss latency.Stats
+			if server != nil {
+				ss = server.Snapshot()
+			}
+			s.OnLatency(ss, client.Snapshot())
 		}
 		return nil
 	}
-	// One immediate probe so RTT is populated from the very first metric sample
-	// instead of reading 0 until the first tick fires.
-	if err := measure(); err != nil {
+
+	// One immediate probe so latency is populated from the very first sample.
+	if err := tick(); err != nil {
 		return err
 	}
-	t := time.NewTicker(s.Cfg.PingInterval)
+	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			if err := measure(); err != nil {
+			if err := tick(); err != nil {
 				return err
 			}
 		}

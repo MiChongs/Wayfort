@@ -642,7 +642,10 @@ export interface SessionMetricSample {
   id: number
   session_id: string
   at: string
-  rtt_ms: number
+  rtt_ms: number // primary: server RTT if measured, else client
+  server_rtt_ms?: number // gateway↔target (SSH keepalive)
+  client_rtt_ms?: number // browser↔gateway (WS ping)
+  jitter_ms?: number // RTT variation (EWMA of |Δrtt|)
   loss_pct: number // ×100 (250 == 2.50%)
   bytes_in_delta: number
   bytes_out_delta: number

@@ -407,8 +407,13 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 
 	// ---- ready: the interactive loop, sampled for connection quality ----
 	doneReady := g.OpenPhase(sessionID, model.PhaseReady, claims, clientIP, &nodeID)
+	// Dual-path latency: the SSH client measures the real gateway↔target hop via
+	// keepalive, while the prober's WS ping measures the operator's link.
+	sess.ServerPing = func(pctx context.Context) (time.Duration, error) {
+		return pkgssh.ProbeRTT(pctx, client)
+	}
 	if sink := g.MetricSink(sessionID); sink != nil {
-		sess.OnRTT = sink.ObserveRTT
+		sess.OnLatency = sink.ObserveLatency
 		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
 			return sess.BytesIn.Load(), sess.BytesOut.Load()
 		})
@@ -484,10 +489,12 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 	}
 
 	// A sandbox is interactive from the moment it launches — record a ready
-	// phase and sample its connection quality like any other session.
+	// phase and sample its connection quality like any other session. There's no
+	// SSH hop to a target (it's a local container), so only the client path is
+	// measured (ServerPing left nil).
 	doneReady := g.OpenPhase(sessionID, model.PhaseReady, claims, clientIP, nil)
 	if sink := g.MetricSink(sessionID); sink != nil {
-		sess.OnRTT = sink.ObserveRTT
+		sess.OnLatency = sink.ObserveLatency
 		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
 			return sess.BytesIn.Load(), sess.BytesOut.Load()
 		})

@@ -24,7 +24,14 @@ const MARGIN = { top: 12, right: 52, bottom: 26, left: 56 }
 // into a bytes/second throughput for the bandwidth series.
 const SAMPLE_SECONDS = 5
 
-type Pt = { t: number; rtt: number; bps: number; reconnect: boolean }
+type Pt = {
+  t: number
+  serverRtt: number
+  clientRtt: number
+  jitter: number
+  bps: number
+  reconnect: boolean
+}
 
 const bisectT = bisector<Pt, number>((d) => d.t).center
 
@@ -34,20 +41,25 @@ export function SessionQualityChart({ samples }: { samples: SessionMetricSample[
       samples
         .map((s) => ({
           t: new Date(s.at).getTime(),
-          rtt: s.rtt_ms || 0,
+          // server RTT falls back to the primary rtt_ms when the split fields
+          // aren't present (older rows); client is its own field.
+          serverRtt: s.server_rtt_ms ?? s.rtt_ms ?? 0,
+          clientRtt: s.client_rtt_ms ?? 0,
+          jitter: s.jitter_ms ?? 0,
           bps: ((s.bytes_in_delta || 0) + (s.bytes_out_delta || 0)) / SAMPLE_SECONDS,
           reconnect: (s.reconnects || 0) > 0,
         }))
         .sort((a, b) => a.t - b.t),
     [samples],
   )
+  const hasClient = pts.some((p) => p.clientRtt > 0)
 
   return (
     <div className="rounded-xl border bg-card p-4">
       <div className="mb-3 flex items-center gap-2">
         <Gauge className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium">连接质量</span>
-        <Legend />
+        <Legend hasClient={hasClient} />
       </div>
       {pts.length < 2 ? (
         <div className="flex items-center justify-center rounded-md border border-dashed py-8 text-sm text-muted-foreground">
@@ -55,14 +67,14 @@ export function SessionQualityChart({ samples }: { samples: SessionMetricSample[
         </div>
       ) : (
         <ParentSize>
-          {({ width }) => (width < 60 ? null : <Chart width={width} pts={pts} />)}
+          {({ width }) => (width < 60 ? null : <Chart width={width} pts={pts} hasClient={hasClient} />)}
         </ParentSize>
       )}
     </div>
   )
 }
 
-function Chart({ width, pts }: { width: number; pts: Pt[] }) {
+function Chart({ width, pts, hasClient }: { width: number; pts: Pt[]; hasClient: boolean }) {
   const { tooltipData, tooltipLeft, tooltipTop, showTooltip, hideTooltip } =
     useTooltip<Pt>()
 
@@ -75,7 +87,7 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
   })
   const maxBps = Math.max(1, ...pts.map((p) => p.bps))
   const yBps = scaleLinear({ domain: [0, maxBps * 1.15], range: [innerH, 0], nice: true })
-  const maxRtt = Math.max(5, ...pts.map((p) => p.rtt))
+  const maxRtt = Math.max(5, ...pts.map((p) => Math.max(p.serverRtt, p.clientRtt)))
   const yRtt = scaleLinear({ domain: [0, maxRtt * 1.2], range: [innerH, 0], nice: true })
 
   function handleMove(e: React.MouseEvent | React.TouchEvent) {
@@ -114,11 +126,23 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
             strokeWidth={1.75}
             curve={curveMonotoneX}
           />
-          {/* RTT — right axis */}
+          {/* Client RTT (browser↔gateway) — secondary, faint dashed */}
+          {hasClient && (
+            <LinePath
+              data={pts}
+              x={(d) => xs(new Date(d.t))}
+              y={(d) => yRtt(d.clientRtt)}
+              stroke={VIZ.neutral}
+              strokeWidth={1.25}
+              strokeDasharray="3 3"
+              curve={curveMonotoneX}
+            />
+          )}
+          {/* Server RTT (gateway↔target) — the meaningful session latency */}
           <LinePath
             data={pts}
             x={(d) => xs(new Date(d.t))}
-            y={(d) => yRtt(d.rtt)}
+            y={(d) => yRtt(d.serverRtt)}
             stroke={VIZ.teal}
             strokeWidth={1.5}
             curve={curveMonotoneX}
@@ -180,7 +204,9 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
         <VizTooltip top={(tooltipTop ?? 0) + 8} left={(tooltipLeft ?? 0) + 8}>
           <div className="text-muted-foreground">{fullTime(new Date(tooltipData.t).toISOString())}</div>
           <div className="mt-0.5">吞吐 {fmtBytes(tooltipData.bps)}/s</div>
-          <div>RTT {tooltipData.rtt || "<1"} ms</div>
+          <div>服务端 RTT {tooltipData.serverRtt || "<1"} ms</div>
+          {hasClient && <div>客户端 RTT {tooltipData.clientRtt || "<1"} ms</div>}
+          {tooltipData.jitter > 0 && <div>抖动 {tooltipData.jitter} ms</div>}
           {tooltipData.reconnect && <div className="text-destructive">发生重连</div>}
         </VizTooltip>
       )}
@@ -188,15 +214,20 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
   )
 }
 
-function Legend() {
+function Legend({ hasClient }: { hasClient: boolean }) {
   return (
     <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
       <span className="inline-flex items-center gap-1">
         <span className="h-2 w-3 rounded-sm" style={{ background: VIZ.coral }} /> 吞吐
       </span>
       <span className="inline-flex items-center gap-1">
-        <span className="h-0.5 w-3" style={{ background: VIZ.teal }} /> RTT
+        <span className="h-0.5 w-3" style={{ background: VIZ.teal }} /> 服务端 RTT
       </span>
+      {hasClient && (
+        <span className="inline-flex items-center gap-1">
+          <span className="h-0.5 w-3 border-t border-dashed" style={{ borderColor: VIZ.neutral }} /> 客户端 RTT
+        </span>
+      )}
     </div>
   )
 }

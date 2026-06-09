@@ -79,6 +79,31 @@ func KeepAlive(ctx context.Context, c *xssh.Client, interval time.Duration) {
 	}
 }
 
+// ProbeRTT measures the gateway↔target round-trip time by sending one
+// keepalive@openssh.com global request and timing the reply. The server doesn't
+// recognise that request so it answers with FAILURE (ok=false, err=nil) — the
+// round trip itself is what we time, exactly as OpenSSH's ServerAlive probe
+// does. A non-nil error means the connection is dead. The send runs in a
+// goroutine so ctx can bound a stalled link; the buffered channel prevents a
+// goroutine leak if ctx fires first.
+func ProbeRTT(ctx context.Context, c *xssh.Client) (time.Duration, error) {
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := c.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			return 0, err
+		}
+		return time.Since(start), nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
 // AddrOf assembles a host:port string.
 func AddrOf(host string, port int) string {
 	if port == 0 {

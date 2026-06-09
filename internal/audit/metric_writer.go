@@ -2,9 +2,11 @@ package audit
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/latency"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"go.uber.org/zap"
@@ -116,25 +118,42 @@ type MetricSink struct {
 	w         *MetricWriter
 	sessionID string
 
-	lastRTT    atomic.Uint32 // most recent observed RTT (ms)
-	peakRTT    atomic.Uint32
 	reconnects atomic.Uint32 // reconnects accumulated since the last sample
 	lastIn     uint64
 	lastOut    uint64
+
+	// latMu guards the latest latency snapshots fed by the session's prober.
+	// server is the gateway↔target path (SSH keepalive); client is the
+	// browser↔gateway path (WS ping). emit() reads them into each sample.
+	latMu  sync.Mutex
+	server latency.Stats
+	client latency.Stats
 }
 
-// ObserveRTT records the most recent round-trip time (ms). Safe on a nil sink.
+// ObserveLatency stores the latest dual-path latency snapshots (rich path —
+// webssh prober). Safe on a nil sink.
+func (s *MetricSink) ObserveLatency(server, client latency.Stats) {
+	if s == nil {
+		return
+	}
+	s.latMu.Lock()
+	s.server, s.client = server, client
+	s.latMu.Unlock()
+}
+
+// ObserveRTT records a single client-side RTT (ms) — the simple path used by
+// the desktop manager, which has no SSH keepalive. Safe on a nil sink.
 func (s *MetricSink) ObserveRTT(rttMs uint32) {
 	if s == nil || rttMs == 0 {
 		return
 	}
-	s.lastRTT.Store(rttMs)
-	for {
-		p := s.peakRTT.Load()
-		if rttMs <= p || s.peakRTT.CompareAndSwap(p, rttMs) {
-			break
-		}
+	s.latMu.Lock()
+	s.client.CurrentMs = rttMs
+	s.client.LastMs = rttMs
+	if rttMs > s.client.MaxMs {
+		s.client.MaxMs = rttMs
 	}
+	s.latMu.Unlock()
 }
 
 // AddReconnect bumps the reconnect counter for the current window. Safe on nil.
@@ -180,7 +199,9 @@ func (s *MetricSink) Sample(in, out uint64) {
 	s.emit(time.Now(), in, out)
 }
 
-// emit diffs the running totals into per-window deltas and enqueues one sample.
+// emit diffs the running totals into per-window deltas and enqueues one sample,
+// stamping it with the latest dual-path latency. The primary RTTMs is the server
+// (gateway↔target) path when measured, else the client path.
 func (s *MetricSink) emit(at time.Time, in, out uint64) {
 	var dIn, dOut uint64
 	if in >= s.lastIn {
@@ -190,10 +211,25 @@ func (s *MetricSink) emit(at time.Time, in, out uint64) {
 		dOut = out - s.lastOut
 	}
 	s.lastIn, s.lastOut = in, out
+
+	s.latMu.Lock()
+	server, client := s.server, s.client
+	s.latMu.Unlock()
+	primary := server.CurrentMs
+	if primary == 0 {
+		primary = client.CurrentMs
+	}
+	jitter := max(server.JitterMs, client.JitterMs)
+	loss := max(server.LossPct, client.LossPct)
+
 	s.w.Enqueue(model.SessionMetricSample{
 		SessionID:     s.sessionID,
 		At:            at,
-		RTTMs:         s.lastRTT.Load(),
+		RTTMs:         primary,
+		ServerRTTMs:   server.CurrentMs,
+		ClientRTTMs:   client.CurrentMs,
+		JitterMs:      jitter,
+		LossPct:       loss,
 		BytesInDelta:  dIn,
 		BytesOutDelta: dOut,
 		Reconnects:    s.reconnects.Swap(0),
