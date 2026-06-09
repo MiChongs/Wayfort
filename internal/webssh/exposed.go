@@ -31,17 +31,17 @@ func AcceptWS(c *gin.Context, subprotocols ...string) (*websocket.Conn, error) {
 // Exposed accessors used by sibling protocol packages so they can reuse the
 // gateway's bookkeeping (audit, session rows, proxy chain) without duplicating
 // dependency wiring.
-func (g *Gateway) Logger() *zap.Logger              { return g.logger }
-func (g *Gateway) Audit() *audit.Writer             { return g.audit }
-func (g *Gateway) Sessions() *repo.SessionRepo      { return g.sessions }
-func (g *Gateway) Cache() *cache.Cache              { return g.cache }
-func (g *Gateway) WSConfig() config.WebSSHConfig    { return g.cfg }
+func (g *Gateway) Logger() *zap.Logger                   { return g.logger }
+func (g *Gateway) Audit() *audit.Writer                  { return g.audit }
+func (g *Gateway) Sessions() *repo.SessionRepo           { return g.sessions }
+func (g *Gateway) Cache() *cache.Cache                   { return g.cache }
+func (g *Gateway) WSConfig() config.WebSSHConfig         { return g.cfg }
 func (g *Gateway) RecorderConfig() config.RecorderConfig { return g.recorder }
-func (g *Gateway) Storage() string                  { return g.storage }
-func (g *Gateway) NodeRepo() *repo.NodeRepo         { return g.nodes }
-func (g *Gateway) CredentialRepo() *repo.CredentialRepo { return g.creds }
-func (g *Gateway) ProxyRepo() *repo.ProxyRepo       { return g.proxies }
-func (g *Gateway) Chain() *dialer.ChainBuilder      { return g.chain }
+func (g *Gateway) Storage() string                       { return g.storage }
+func (g *Gateway) NodeRepo() *repo.NodeRepo              { return g.nodes }
+func (g *Gateway) CredentialRepo() *repo.CredentialRepo  { return g.creds }
+func (g *Gateway) ProxyRepo() *repo.ProxyRepo            { return g.proxies }
+func (g *Gateway) Chain() *dialer.ChainBuilder           { return g.chain }
 
 // ResolveHops parses Node.ProxyChain ("1,3,7") into ordered Proxy rows.
 func (g *Gateway) ResolveHops(ctx context.Context, chain string) ([]*model.Proxy, error) {
@@ -86,6 +86,11 @@ func (g *Gateway) BeginSession(ctx context.Context, sessionID string, kind model
 		NodeID:    row.NodeID,
 		ClientIP:  clientIP,
 	})
+	// Sibling protocols (dbcli / telnet / guacamole) call BeginSession only
+	// after the connection is established, so the session is ready here. Open a
+	// ready phase; EndSession's finalize closes it. Protocols that want the full
+	// dial/auth/handshake breakdown can call OpenPhase around their connect.
+	_ = g.OpenPhase(sessionID, model.PhaseReady, claims, clientIP, row.NodeID)
 	return row
 }
 
@@ -144,8 +149,21 @@ func (g *Gateway) EndSession(ctx context.Context, row *model.Session, claims *au
 	default:
 		row.Status = model.SessionClosed
 	}
-	if err := g.sessions.Update(ctx, row); err != nil {
-		g.logger.Warn("session row update failed", zap.Error(err))
+	// Backfill phase + quality rollups, then persist the end fields with a
+	// partial update (mirrors the SSH main path's recordEnd).
+	g.finalizeLifecycle(row)
+	if err := g.sessions.Finish(ctx, row.ID, map[string]any{
+		"ended_at":        end,
+		"bytes_in":        row.BytesIn,
+		"bytes_out":       row.BytesOut,
+		"status":          row.Status,
+		"reason":          row.Reason,
+		"current_phase":   row.CurrentPhase,
+		"peak_rtt_ms":     row.PeakRTTMs,
+		"avg_rtt_ms":      row.AvgRTTMs,
+		"reconnect_count": row.ReconnectCount,
+	}); err != nil {
+		g.logger.Warn("session row finish failed", zap.Error(err))
 	}
 	if g.cache != nil {
 		_ = g.cache.UnregisterSession(ctx, row.ID)

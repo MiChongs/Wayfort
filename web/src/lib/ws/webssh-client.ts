@@ -27,6 +27,10 @@ export type WSSshHandler = {
   // few times per second so there's no need to debounce in the consumer.
   onStats?: (stats: SessionStats) => void
   onLatency?: (ms: number) => void
+  // onResize fires when the server sends a resize frame — used by the read-only
+  // monitor to follow the watched terminal's dimensions. The interactive
+  // terminal drives its own size and ignores this.
+  onResize?: (cols: number, rows: number) => void
 }
 
 const WS_BASE = process.env.NEXT_PUBLIC_BACKEND_WS_URL || "ws://127.0.0.1:8080"
@@ -118,6 +122,11 @@ export class WebSSHConnection {
           for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
           this._bytesIn += buf.length
           this.handlers.onOutput(buf)
+        }
+        break
+      case "resize":
+        if (typeof f.cols === "number" && typeof f.rows === "number") {
+          this.handlers.onResize?.(f.cols, f.rows)
         }
         break
       case "pong":

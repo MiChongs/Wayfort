@@ -54,9 +54,21 @@ type Session struct {
 	// is retained for backward compatibility with the v1 schema.
 	RecordingPath string        `gorm:"column:cast_path;size:512" json:"recording_path,omitempty"`
 	RecordingType RecordingType `gorm:"size:16" json:"recording_type,omitempty"`
-	BytesIn   uint64        `json:"bytes_in"`
-	BytesOut  uint64        `json:"bytes_out"`
-	Reason    string        `gorm:"size:255" json:"reason,omitempty"`
+	BytesIn       uint64        `json:"bytes_in"`
+	BytesOut      uint64        `json:"bytes_out"`
+	Reason        string        `gorm:"size:255" json:"reason,omitempty"`
+
+	// ---- Lifecycle telemetry rollups (v3). All zero/nullable so existing
+	// rows survive AutoMigrate as a plain ADD COLUMN. CurrentPhase lets the
+	// session list show "stuck in handshake" without a join; the RTT/reconnect
+	// rollups are backfilled from session_metric_samples at EndSession. ----
+	CurrentPhase   SessionPhaseKind `gorm:"size:24" json:"current_phase,omitempty"`
+	ReconnectCount uint32           `json:"reconnect_count"`
+	PeakRTTMs      uint32           `json:"peak_rtt_ms"`
+	AvgRTTMs       uint32           `json:"avg_rtt_ms"`
+	// ReadyAt marks when the session entered the ready phase; ReadyAt-StartedAt
+	// is the time-to-interactive.
+	ReadyAt *time.Time `json:"ready_at,omitempty"`
 }
 
 func (Session) TableName() string { return "sessions" }

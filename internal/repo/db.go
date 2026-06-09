@@ -87,6 +87,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.ProxyGroupMember{},
 		&model.Node{},
 		&model.Session{},
+		&model.SessionPhase{},        // lifecycle v3 — per-stage timeline
+		&model.SessionMetricSample{}, // lifecycle v3 — connection-quality samples
 		&model.AuditLog{},
 		&model.PortForward{},
 

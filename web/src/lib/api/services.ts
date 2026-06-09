@@ -128,6 +128,9 @@ import type {
   SSHKey,
   Session,
   SessionStats,
+  SessionPhase,
+  SessionMetricSample,
+  SessionLifecycle,
   AuditEvent,
   AuditLogRow,
   AuditStats,
@@ -395,6 +398,20 @@ export const sessionService = {
   terminate: (id: string) =>
     api<{ ok: boolean; live: boolean }>("POST", `/sessions/${id}/terminate`),
   recordingURL: (id: string) => withTokenQuery(`/api/proxy/api/v1/sessions/${id}/recording`),
+  // Lifecycle v3 — connection-stage timeline, quality samples, and the bundled
+  // one-shot lifecycle fetch for the detail dashboard.
+  phases: (id: string) =>
+    api<{ phases: SessionPhase[] }>("GET", `/sessions/${id}/phases`),
+  metrics: (id: string, opts: { from?: string; to?: string; limit?: number } = {}) =>
+    api<{ samples: SessionMetricSample[] }>("GET", `/sessions/${id}/metrics`, { query: opts }),
+  lifecycle: (id: string) =>
+    api<SessionLifecycle>("GET", `/sessions/${id}/lifecycle`),
+  // Read-only live monitoring WS (over-the-shoulder). The browser opens these
+  // directly; the token rides the query string like recordingURL.
+  observeTerminalURL: (id: string) =>
+    withTokenQuery(`/api/proxy/api/v1/ws/observe/terminal/${id}`),
+  observeDesktopURL: (id: string) =>
+    withTokenQuery(`/api/proxy/api/v1/ws/observe/desktop/${id}`),
 }
 
 // auditService backs the global audit center. `list`/`stats` go through the

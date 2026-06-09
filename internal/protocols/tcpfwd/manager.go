@@ -27,6 +27,11 @@ type Manager struct {
 	logger     *zap.Logger
 	makeDialer DialerFactory
 	bus        *EventBus
+	// sessions/metrics back the lifecycle-v3 Session row for each tunnel (so a
+	// forward shows in the sessions list with duration + bandwidth). Both
+	// optional; nil = forwards keep their PortForward row only.
+	sessions *repo.SessionRepo
+	metrics  *audit.MetricWriter
 
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -41,6 +46,7 @@ type entry struct {
 	forwarder *Forwarder
 	release   func()
 	expiresAt time.Time
+	sink      *audit.MetricSink // nil when lifecycle sessions are unwired
 }
 
 func NewManager(cfg config.TCPFwdConfig, r *repo.PortForwardRepo, nodes *repo.NodeRepo, c *cache.Cache, aud *audit.Writer, logger *zap.Logger, df DialerFactory) *Manager {
@@ -51,6 +57,56 @@ func NewManager(cfg config.TCPFwdConfig, r *repo.PortForwardRepo, nodes *repo.No
 	}
 	m.cfg.Store(&cfg)
 	return m
+}
+
+// SetLifecycle wires the Session repo + metric queue so each tunnel gets a
+// lifecycle-v3 Session row (kind=tcp_forward) with bandwidth samples. Optional;
+// call after NewManager to keep its signature stable.
+func (m *Manager) SetLifecycle(sessions *repo.SessionRepo, metrics *audit.MetricWriter) {
+	m.sessions = sessions
+	m.metrics = metrics
+}
+
+// openSession creates the lifecycle Session row + ready phase for a tunnel and
+// attaches a metric sink to the entry. nodeName is best-effort. No-op when the
+// session repo is unwired.
+func (m *Manager) openSession(ctx context.Context, e *entry, nodeName string) {
+	if m.sessions == nil {
+		return
+	}
+	now := time.Now()
+	nid := e.row.NodeID
+	sess := &model.Session{
+		ID: e.row.ID, Kind: model.SessionTCPForward,
+		UserID: e.row.UserID, Username: e.row.Username,
+		NodeID: &nid, NodeName: nodeName,
+		StartedAt: now, Status: model.SessionActive,
+		CurrentPhase: model.PhaseReady, ReadyAt: &now,
+	}
+	if err := m.sessions.Create(ctx, sess); err != nil {
+		m.logger.Warn("tcpfwd session create failed", zap.Error(err))
+		return
+	}
+	_ = m.sessions.AppendPhase(ctx, &model.SessionPhase{
+		SessionID: e.row.ID, Phase: model.PhaseReady, Status: model.PhaseRunning, StartedAt: now,
+	})
+	e.sink = m.metrics.Sink(e.row.ID)
+}
+
+// closeSession finalises the tunnel's Session row with its byte totals.
+func (m *Manager) closeSession(ctx context.Context, e *entry) {
+	if m.sessions == nil {
+		return
+	}
+	end := time.Now()
+	_ = m.sessions.ClosePhaseAny(ctx, e.row.ID, model.PhaseSucceeded, end)
+	_ = m.sessions.Finish(ctx, e.row.ID, map[string]any{
+		"ended_at":      end,
+		"bytes_in":      e.forwarder.BytesIn.Load(),
+		"bytes_out":     e.forwarder.BytesOut.Load(),
+		"status":        model.SessionClosed,
+		"current_phase": model.PhaseClosed,
+	})
 }
 
 // conf returns the current live config snapshot.
@@ -175,8 +231,10 @@ func (m *Manager) Create(ctx context.Context, userID uint64, username string, no
 	if m.cache != nil {
 		_ = m.cache.TrackPortForward(ctx, id, ttl)
 	}
+	e := &entry{row: row, forwarder: fwd, release: release, expiresAt: row.ExpiresAt}
+	m.openSession(ctx, e, node.Name)
 	m.mu.Lock()
-	m.entries[id] = &entry{row: row, forwarder: fwd, release: release, expiresAt: row.ExpiresAt}
+	m.entries[id] = e
 	m.mu.Unlock()
 	m.audit.Log(model.AuditLog{
 		Kind: model.AuditPortForwardOpen, UserID: userID, Username: username,
@@ -250,6 +308,7 @@ func (m *Manager) Close(ctx context.Context, id string) error {
 	m.mu.Unlock()
 	_ = e.forwarder.Close()
 	e.release()
+	m.closeSession(ctx, e)
 	_ = m.repo.MarkClosed(ctx, id, e.forwarder.BytesIn.Load(), e.forwarder.BytesOut.Load())
 	if m.cache != nil {
 		_ = m.cache.UntrackPortForward(ctx, id)
@@ -327,10 +386,12 @@ func (m *Manager) Resume(ctx context.Context) (int, error) {
 			row.LocalPort = fwd.Addr().Port
 			_ = m.repo.Update(ctx, &row)
 		}
-		m.mu.Lock()
-		m.entries[row.ID] = &entry{
+		e := &entry{
 			row: &row, forwarder: fwd, release: release, expiresAt: row.ExpiresAt,
 		}
+		m.openSession(ctx, e, node.Name)
+		m.mu.Lock()
+		m.entries[row.ID] = e
 		m.mu.Unlock()
 		resumed++
 	}
@@ -360,12 +421,20 @@ func (m *Manager) sweep(ctx context.Context) {
 	now := time.Now()
 	m.mu.Lock()
 	expired := make([]string, 0)
+	active := make([]*entry, 0, len(m.entries))
 	for id, e := range m.entries {
 		if now.After(e.expiresAt) {
 			expired = append(expired, id)
+		} else if e.sink != nil {
+			active = append(active, e)
 		}
 	}
 	m.mu.Unlock()
+	// Sample bandwidth for live tunnels — the only quality signal a forward has
+	// (no RTT). One sample per sweep tick.
+	for _, e := range active {
+		e.sink.Sample(e.forwarder.BytesIn.Load(), e.forwarder.BytesOut.Load())
+	}
 	for _, id := range expired {
 		_ = m.Close(ctx, id)
 	}

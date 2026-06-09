@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 )
 
@@ -46,6 +47,16 @@ type Session struct {
 	// a .dtr tape. nil when recording is disabled. Close is idempotent.
 	recorder      *Recorder
 	recordingPath string
+
+	// Lifecycle-v3 telemetry. bytesIn/bytesOut accumulate the WS payload sizes
+	// in each direction for the bandwidth curve; sink samples them on a cadence.
+	// curPhase tracks the last model phase bridged from the worker's status
+	// stream — read/written only on the single worker→browser goroutine and at
+	// teardown (after that goroutine exits), so no extra lock is needed.
+	bytesIn  atomic.Uint64
+	bytesOut atomic.Uint64
+	sink     *audit.MetricSink
+	curPhase model.SessionPhaseKind
 
 	closeOnce sync.Once
 

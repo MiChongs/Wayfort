@@ -56,6 +56,10 @@ export interface FrameClientStats {
 
 export interface FrameClientOpts {
   sessionId: string
+  // wsPath overrides the default /ws/v2/desktop/:id endpoint — used by the
+  // read-only monitor, which connects to /ws/observe/desktop/:id instead. The
+  // wire format (desktop.v2) is identical, so the decode path is unchanged.
+  wsPath?: string
   // Decoded display events. The renderer owns canvas painting; FrameClient
   // only understands the WebSocket wire format.
   onFrame(frame: FrameRect): void
@@ -115,7 +119,8 @@ export class FrameClient {
   connect(): void {
     if (this.ws || this.closed) return
     const token = getAccessToken() ?? ""
-    const url = `${WS_BASE}/api/v1/ws/v2/desktop/${this.opts.sessionId}?token=${encodeURIComponent(token)}`
+    const path = this.opts.wsPath ?? `/ws/v2/desktop/${this.opts.sessionId}`
+    const url = `${WS_BASE}/api/v1${path}?token=${encodeURIComponent(token)}`
     const ws = new WebSocket(url, ["desktop.v2", "desktop.v1"])
     ws.binaryType = "arraybuffer"
     this.ws = ws

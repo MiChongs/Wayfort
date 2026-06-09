@@ -18,6 +18,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	"github.com/michongs/jumpserver-anonymous/internal/socks5"
@@ -46,6 +47,10 @@ type Manager struct {
 	sealer   PasswordOpener
 	audit    *audit.Writer
 	sessions *repo.SessionRepo
+	// metrics is the lifecycle-v3 connection-quality sample queue. Nil-safe.
+	metrics *audit.MetricWriter
+	// liveHub fans a desktop session's frames to read-only observers. Nil-safe.
+	liveHub *livewatch.Hub
 	// approval is wired post-construction via SetApproval; nil = no
 	// gating (StartSession behaves as before Phase 16).
 	approval *approval.Service
@@ -96,6 +101,12 @@ type Deps struct {
 	Sealer   PasswordOpener
 	Audit    *audit.Writer
 	Sessions *repo.SessionRepo
+	// Metrics (optional) is the connection-quality sample queue. Leave nil to
+	// disable RTT / bandwidth sampling for desktop sessions.
+	Metrics *audit.MetricWriter
+	// LiveHub (optional) fans desktop frames to read-only observers. Nil disables
+	// monitoring.
+	LiveHub *livewatch.Hub
 	// DialChain (optional) routes the freerdp worker through the node's proxy
 	// chain. Leave nil to keep direct-dial behaviour.
 	DialChain DialChainFunc
@@ -115,6 +126,8 @@ func NewManager(cfg config.DesktopConfig, deps Deps) *Manager {
 		sealer:    deps.Sealer,
 		audit:     deps.Audit,
 		sessions:  deps.Sessions,
+		metrics:   deps.Metrics,
+		liveHub:   deps.LiveHub,
 		dialChain: deps.DialChain,
 		live:      map[string]*Session{},
 		maxLive:   max,
@@ -734,6 +747,9 @@ func (m *Manager) Take(sessionID string) *Session {
 	return s
 }
 
+// LiveHub exposes the read-only monitoring hub to the observe handler.
+func (m *Manager) LiveHub() *livewatch.Hub { return m.liveHub }
+
 func (m *Manager) End(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	s, ok := m.live[sessionID]
@@ -860,6 +876,10 @@ func (m *Manager) recordStart(ctx context.Context, s *Session, node *model.Node)
 		m.logger.Warn("desktop session create failed", zap.Error(err))
 	}
 	s.sessionRow = row
+	s.sink = m.metrics.Sink(s.ID)
+	if m.liveHub != nil {
+		m.liveHub.EnsureSession(s.ID, livewatch.ModeDesktop)
+	}
 	m.audit.Log(model.AuditLog{
 		Kind:      model.AuditGraphicalStart,
 		UserID:    s.UserID,
@@ -872,6 +892,9 @@ func (m *Manager) recordStart(ctx context.Context, s *Session, node *model.Node)
 }
 
 func (m *Manager) recordEnd(ctx context.Context, s *Session, runErr error) {
+	if m.liveHub != nil {
+		m.liveHub.CloseSession(s.ID)
+	}
 	if m.sessions == nil || m.audit == nil || s.sessionRow == nil {
 		return
 	}
@@ -883,12 +906,26 @@ func (m *Manager) recordEnd(ctx context.Context, s *Session, runErr error) {
 		s.sessionRow.Reason = "管理员强制下线"
 	case runErr != nil:
 		s.sessionRow.Status = model.SessionErrored
-		s.sessionRow.Reason = runErr.Error()
+		s.sessionRow.Reason = truncateReason(runErr.Error())
 	default:
 		s.sessionRow.Status = model.SessionClosed
 	}
-	if err := m.sessions.Update(ctx, s.sessionRow); err != nil {
-		m.logger.Warn("desktop session update failed", zap.Error(err))
+	// Backfill phase + quality rollups, then persist the end fields with a
+	// partial update so ready_at / current_phase set mid-session aren't
+	// clobbered by a full-row Save.
+	m.finalizeLifecycle(s)
+	if err := m.sessions.Finish(ctx, s.ID, map[string]any{
+		"ended_at":        end,
+		"bytes_in":        s.bytesIn.Load(),
+		"bytes_out":       s.bytesOut.Load(),
+		"status":          s.sessionRow.Status,
+		"reason":          s.sessionRow.Reason,
+		"current_phase":   s.sessionRow.CurrentPhase,
+		"peak_rtt_ms":     s.sessionRow.PeakRTTMs,
+		"avg_rtt_ms":      s.sessionRow.AvgRTTMs,
+		"reconnect_count": s.sessionRow.ReconnectCount,
+	}); err != nil {
+		m.logger.Warn("desktop session finish failed", zap.Error(err))
 	}
 	m.audit.Log(model.AuditLog{
 		Kind:      model.AuditSessionEnd,
@@ -898,4 +935,11 @@ func (m *Manager) recordEnd(ctx context.Context, s *Session, runErr error) {
 		NodeID:    s.sessionRow.NodeID,
 		ClientIP:  s.ClientIP,
 	})
+}
+
+func truncateReason(s string) string {
+	if len(s) > 250 {
+		return s[:250]
+	}
+	return s
 }

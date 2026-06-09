@@ -607,6 +607,52 @@ export interface Session {
   bytes_in?: number
   bytes_out?: number
   reason?: string
+  // Lifecycle v3 rollups (zero/absent on pre-v3 rows).
+  current_phase?: SessionPhaseKind | ""
+  reconnect_count?: number
+  peak_rtt_ms?: number
+  avg_rtt_ms?: number
+  ready_at?: string | null
+}
+
+// Lifecycle v3 — connection-stage timeline + connection-quality samples.
+export type SessionPhaseKind =
+  | "dial"
+  | "auth"
+  | "handshake"
+  | "ready"
+  | "reconnect"
+  | "closed"
+
+export type SessionPhaseStatus = "running" | "succeeded" | "failed"
+
+export interface SessionPhase {
+  id: number
+  session_id: string
+  seq: number
+  phase: SessionPhaseKind
+  status: SessionPhaseStatus
+  started_at: string
+  ended_at?: string | null
+  duration_ms?: number | null
+  detail?: string
+}
+
+export interface SessionMetricSample {
+  id: number
+  session_id: string
+  at: string
+  rtt_ms: number
+  loss_pct: number // ×100 (250 == 2.50%)
+  bytes_in_delta: number
+  bytes_out_delta: number
+  reconnects: number
+}
+
+export interface SessionLifecycle {
+  session: Session
+  phases: SessionPhase[]
+  samples: SessionMetricSample[]
 }
 
 // AuditEvent is one row of the per-session timeline — a reconstructed command,

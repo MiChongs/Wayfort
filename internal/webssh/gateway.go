@@ -19,6 +19,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -62,10 +63,39 @@ type Gateway struct {
 	// set and the requesting user has no active grant.
 	approval *approval.Service
 
+	// metrics is the lifecycle-v3 connection-quality sample queue. Nil-safe:
+	// when unwired, MetricSink returns a no-op sink and sampling is skipped.
+	metrics *audit.MetricWriter
+
+	// liveHub fans an in-progress terminal session's output to read-only
+	// observers (over-the-shoulder monitoring). Nil until SetLiveHub; all Hub
+	// methods are nil-safe so the tee costs nothing when unwired.
+	liveHub *livewatch.Hub
+
 	// live tracks in-process interactive sessions so an admin can force one
 	// off from the sessions audit page. Keyed by session id.
 	liveMu sync.Mutex
 	live   map[string]*liveSession
+}
+
+// SetMetrics wires the connection-quality sample queue after construction so the
+// NewGateway signature stays stable. Pass nil to disable sampling.
+func (g *Gateway) SetMetrics(m *audit.MetricWriter) { g.metrics = m }
+
+// SetLiveHub wires the read-only live-watch hub. Pass nil to disable monitoring.
+func (g *Gateway) SetLiveHub(h *livewatch.Hub) { g.liveHub = h }
+
+// LiveHub exposes the hub so sibling protocol packages (dbcli) can attach it to
+// the webssh.Session they build.
+func (g *Gateway) LiveHub() *livewatch.Hub { return g.liveHub }
+
+// IsLive reports whether an interactive session is currently running in this
+// process — the precondition for monitoring it (the tee only exists here).
+func (g *Gateway) IsLive(sessionID string) bool {
+	g.liveMu.Lock()
+	_, ok := g.live[sessionID]
+	g.liveMu.Unlock()
+	return ok
 }
 
 // liveSession is the handle the gateway keeps for a running interactive
@@ -270,26 +300,46 @@ func (g *Gateway) HandleAnonymousSSH(c *gin.Context) {
 	_ = conn.Close(websocket.StatusNormalClosure, "bye")
 }
 
-func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, cols, rows int) error {
+func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, cols, rows int) (rerr error) {
+	nodeID := node.ID
+
+	// Create the session row up front so a connection that fails to dial or
+	// authenticate still produces a lifecycle record (phases + an end row) and
+	// shows up in the audit center. The recording path is backfilled once the
+	// recorder exists. recordEnd runs on every return path via defer.
+	row := g.recordStart(sessionID, model.SessionInteractive, claims, clientIP, node, nil)
+	var sess *Session
+	terminated := false
+	defer func() { g.recordEnd(row, sess, claims, rerr, terminated) }()
+
 	dctx, dcancel := context.WithTimeout(ctx, g.dialTO+5*time.Second)
 	defer dcancel()
 
+	// ---- dial: resolve the proxy chain and build the dialer ----
+	doneDial := g.OpenPhase(sessionID, model.PhaseDial, claims, clientIP, &nodeID)
 	hops, err := g.resolveHops(dctx, node.ProxyChain)
 	if err != nil {
+		doneDial(model.PhaseFailed, err.Error())
 		return fmt.Errorf("resolve hops: %w", err)
 	}
 	finalDialer, release, err := g.chain.Build(dctx, hops, nil)
 	if err != nil {
+		doneDial(model.PhaseFailed, err.Error())
 		return fmt.Errorf("build chain: %w", err)
 	}
 	defer release()
+	doneDial(model.PhaseSucceeded, fmt.Sprintf("hops=%d", len(hops)))
 
+	// ---- auth: connect TCP to the target and authenticate SSH ----
+	doneAuth := g.OpenPhase(sessionID, model.PhaseAuth, claims, clientIP, &nodeID)
 	cred, err := g.creds.FindByID(dctx, node.CredentialID)
 	if err != nil || cred == nil {
+		doneAuth(model.PhaseFailed, "credential lookup failed")
 		return fmt.Errorf("credential lookup: %w", err)
 	}
 	methods, err := g.resolver.AuthMethods(cred)
 	if err != nil {
+		doneAuth(model.PhaseFailed, err.Error())
 		return err
 	}
 	client, err := pkgssh.Connect(dctx, finalDialer, pkgssh.DialConfig{
@@ -300,36 +350,48 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 		Timeout: g.dialTO,
 	})
 	if err != nil {
+		doneAuth(model.PhaseFailed, truncate(err.Error(), 200))
 		return err
 	}
 	defer client.Close()
+	doneAuth(model.PhaseSucceeded, "")
 
 	// Best-effort: stamp the credential's last-used time for the admin
 	// freshness signal. Detached context so it outlives the dial scope; a
 	// failure here must never affect the session.
 	go func(cid uint64) { _ = g.creds.TouchLastUsed(context.Background(), cid) }(node.CredentialID)
 
+	// ---- handshake: open the SSH channel, allocate the PTY, init recording ----
+	doneHS := g.OpenPhase(sessionID, model.PhaseHandshake, claims, clientIP, &nodeID)
 	sshSess, err := client.NewSession()
 	if err != nil {
+		doneHS(model.PhaseFailed, err.Error())
 		return err
 	}
 	backend, err := NewSSHBackend(sshSess, "xterm-256color", cols, rows)
 	if err != nil {
 		_ = sshSess.Close()
+		doneHS(model.PhaseFailed, err.Error())
 		return err
 	}
-
-	rec, rerr := audit.NewRecorder(sessionID, g.storage, g.recorder, cols, rows, g.logger)
-	if rerr != nil {
-		g.logger.Warn("recorder init failed", zap.Error(rerr))
+	rec, recErr := audit.NewRecorder(sessionID, g.storage, g.recorder, cols, rows, g.logger)
+	if recErr != nil {
+		g.logger.Warn("recorder init failed", zap.Error(recErr))
 	}
+	if rec != nil {
+		row.RecordingPath = rec.Path()
+		row.RecordingType = model.RecordingAsciicast
+		_ = g.sessions.Finish(context.Background(), sessionID, map[string]any{
+			"cast_path":      rec.Path(),
+			"recording_type": model.RecordingAsciicast,
+		})
+	}
+	doneHS(model.PhaseSucceeded, "")
 
-	row := g.recordStart(sessionID, model.SessionInteractive, claims, clientIP, node, rec)
-	sess := &Session{
+	sess = &Session{
 		ID: sessionID, Conn: conn, Backend: backend,
-		Recorder: rec, Cfg: g.cfg, Logger: g.logger,
+		Recorder: rec, Cfg: g.cfg, Logger: g.logger, LiveHub: g.liveHub,
 	}
-	nodeID := node.ID
 	tracker := newCmdTracker(func(cmd string) {
 		g.audit.Log(model.AuditLog{
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
@@ -343,8 +405,18 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 	ls := g.registerLive(sessionID, scancel)
 	defer g.unregisterLive(sessionID)
 
+	// ---- ready: the interactive loop, sampled for connection quality ----
+	doneReady := g.OpenPhase(sessionID, model.PhaseReady, claims, clientIP, &nodeID)
+	if sink := g.MetricSink(sessionID); sink != nil {
+		sess.OnRTT = sink.ObserveRTT
+		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
+			return sess.BytesIn.Load(), sess.BytesOut.Load()
+		})
+	}
+
 	runErr := sess.Run(sctx)
-	g.recordEnd(row, sess, claims, runErr, ls.terminated.Load())
+	doneReady(model.PhaseSucceeded, "")
+	terminated = ls.terminated.Load()
 	return runErr
 }
 
@@ -384,7 +456,7 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 		SessionID: sessionID, ClientIP: clientIP, Payload: containerID,
 	})
 
-	sess := &Session{ID: sessionID, Conn: conn, Backend: backend, Recorder: rec, Cfg: g.cfg, Logger: g.logger}
+	sess := &Session{ID: sessionID, Conn: conn, Backend: backend, Recorder: rec, Cfg: g.cfg, Logger: g.logger, LiveHub: g.liveHub}
 	tracker := newCmdTracker(func(cmd string) {
 		g.audit.Log(model.AuditLog{
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
@@ -411,7 +483,18 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 		defer timer.Stop()
 	}
 
+	// A sandbox is interactive from the moment it launches — record a ready
+	// phase and sample its connection quality like any other session.
+	doneReady := g.OpenPhase(sessionID, model.PhaseReady, claims, clientIP, nil)
+	if sink := g.MetricSink(sessionID); sink != nil {
+		sess.OnRTT = sink.ObserveRTT
+		go sink.Run(sctx, 5*time.Second, func() (uint64, uint64) {
+			return sess.BytesIn.Load(), sess.BytesOut.Load()
+		})
+	}
+
 	runErr := sess.Run(sctx)
+	doneReady(model.PhaseSucceeded, "")
 	g.recordEnd(row, sess, claims, runErr, ls.terminated.Load())
 	return runErr
 }
@@ -445,7 +528,7 @@ func (g *Gateway) recordStart(sessionID string, kind model.SessionKind, claims *
 		ID: sessionID, Kind: kind,
 		UserID: claims.UserID, Username: claims.Username,
 		NodeID: &nodeID, NodeName: node.Name,
-		ClientIP: clientIP,
+		ClientIP:  clientIP,
 		StartedAt: now, Status: model.SessionActive,
 	}
 	if rec != nil {
@@ -468,8 +551,10 @@ func (g *Gateway) recordStart(sessionID string, kind model.SessionKind, claims *
 func (g *Gateway) recordEnd(row *model.Session, sess *Session, claims *auth.Claims, runErr error, terminated bool) {
 	end := time.Now()
 	row.EndedAt = &end
-	row.BytesIn = sess.BytesIn.Load()
-	row.BytesOut = sess.BytesOut.Load()
+	if sess != nil {
+		row.BytesIn = sess.BytesIn.Load()
+		row.BytesOut = sess.BytesOut.Load()
+	}
 	switch {
 	case terminated:
 		row.Status = model.SessionTerminated
@@ -480,8 +565,22 @@ func (g *Gateway) recordEnd(row *model.Session, sess *Session, claims *auth.Clai
 	default:
 		row.Status = model.SessionClosed
 	}
-	if err := g.sessions.Update(context.Background(), row); err != nil {
-		g.logger.Warn("session row update failed", zap.Error(err))
+	// Backfill phase + quality rollups, then persist the end fields with a
+	// partial update so ready_at / current_phase set mid-session aren't
+	// clobbered by a full-row Save.
+	g.finalizeLifecycle(row)
+	if err := g.sessions.Finish(context.Background(), row.ID, map[string]any{
+		"ended_at":        end,
+		"bytes_in":        row.BytesIn,
+		"bytes_out":       row.BytesOut,
+		"status":          row.Status,
+		"reason":          row.Reason,
+		"current_phase":   row.CurrentPhase,
+		"peak_rtt_ms":     row.PeakRTTMs,
+		"avg_rtt_ms":      row.AvgRTTMs,
+		"reconnect_count": row.ReconnectCount,
+	}); err != nil {
+		g.logger.Warn("session row finish failed", zap.Error(err))
 	}
 	if g.cache != nil {
 		_ = g.cache.UnregisterSession(context.Background(), row.ID)

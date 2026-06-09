@@ -109,6 +109,67 @@ func (h *SessionHandler) AuditTimeline(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"events": rows})
 }
 
+// Phases returns the connection-stage timeline of a session (dial → auth →
+// handshake → ready → … → closed) for the lifecycle gantt.
+func (h *SessionHandler) Phases(c *gin.Context) {
+	rows, err := h.Repo.Phases(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"phases": rows})
+}
+
+// Metrics returns the connection-quality samples (RTT / loss / bandwidth /
+// reconnects) of a session within an optional [from, to] window.
+func (h *SessionHandler) Metrics(c *gin.Context) {
+	var from, to *time.Time
+	if raw := c.Query("from"); raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			from = &t
+		}
+	}
+	if raw := c.Query("to"); raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			to = &t
+		}
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "2000"))
+	rows, err := h.Repo.Metrics(c.Request.Context(), c.Param("id"), from, to, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"samples": rows})
+}
+
+// Lifecycle bundles the session row, its phase timeline, and its quality
+// samples in one response so the detail dashboard loads in a single request.
+func (h *SessionHandler) Lifecycle(c *gin.Context) {
+	ctx := c.Request.Context()
+	id := c.Param("id")
+	row, err := h.Repo.FindByID(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if row == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	phases, err := h.Repo.Phases(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	samples, err := h.Repo.Metrics(ctx, id, nil, nil, 2000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"session": row, "phases": phases, "samples": samples})
+}
+
 // Stats backs the overview strip and trend on the sessions audit page.
 func (h *SessionHandler) Stats(c *gin.Context) {
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "14"))

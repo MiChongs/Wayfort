@@ -64,6 +64,7 @@ function rangeFrom(key: string): string | undefined {
 export default function SessionsPage() {
   const access = useAccess()
   const canTerminate = access.isSuperadmin || access.permissions.includes("session:terminate")
+  const canObserve = access.isSuperadmin || access.permissions.includes("session:observe")
 
   const [tab, setTab] = React.useState<"all" | "live">("all")
   const [status, setStatus] = React.useState("")
@@ -255,7 +256,7 @@ export default function SessionsPage() {
           </thead>
           <tbody>
             {rows.map((s) => (
-              <SessionRow key={s.id} s={s} canTerminate={canTerminate} onTerminate={terminate} />
+              <SessionRow key={s.id} s={s} canTerminate={canTerminate} canObserve={canObserve} onTerminate={terminate} />
             ))}
             {list.isLoading &&
               Array.from({ length: 6 }).map((_, i) => (
@@ -407,10 +408,11 @@ function SegBtn({ active, onClick, children }: { active: boolean; onClick: () =>
 }
 
 function SessionRow({
-  s, canTerminate, onTerminate,
+  s, canTerminate, canObserve, onTerminate,
 }: {
   s: Session
   canTerminate: boolean
+  canObserve: boolean
   onTerminate: (s: Session) => void
 }) {
   const km = kindMeta(s.kind)
@@ -418,6 +420,8 @@ function SessionRow({
   const Icon = km.icon
   const isActive = s.status === "active"
   const hasRec = !!s.recording_path
+  const canMonitor =
+    isActive && canObserve && (s.kind === "interactive" || s.kind === "anonymous" || s.kind === "graphical")
   return (
     <tr className="border-t transition-colors hover:bg-accent/30">
       <td className="px-4 py-2.5">
@@ -464,6 +468,14 @@ function SessionRow({
               className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-primary hover:bg-primary/10"
             >
               <Clapperboard className="h-3.5 w-3.5" /> 回放
+            </Link>
+          )}
+          {canMonitor && (
+            <Link
+              href={`/sessions/${s.id}/monitor` as Parameters<typeof Link>[0]["href"]}
+              className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-primary hover:bg-primary/10"
+            >
+              <Radio className="h-3.5 w-3.5" /> 监看
             </Link>
           )}
           {isActive && canTerminate && (

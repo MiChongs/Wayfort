@@ -27,6 +27,10 @@ const (
 	PermSessionList      = "session:list"
 	PermSessionRead      = "session:read"
 	PermSessionTerminate = "session:terminate"
+	// PermSessionObserve gates read-only live monitoring (over-the-shoulder) of
+	// an in-progress session. Kept separate from session:read (historical replay)
+	// because watching a live user is more sensitive — least-privilege.
+	PermSessionObserve = "session:observe"
 
 	// audit & history
 	PermAuditRead = "audit:read"
@@ -97,6 +101,7 @@ var AllPermissions = []struct {
 	{PermGrantManage, "asset", "管理资产授权"},
 	{PermSessionList, "session", "查看会话列表"},
 	{PermSessionRead, "session", "查看/回放会话"},
+	{PermSessionObserve, "session", "实时监看进行中的会话"},
 	{PermSessionTerminate, "session", "强制断开会话"},
 	{PermAuditRead, "audit", "审计日志查阅"},
 	{PermUserManage, "user", "管理用户"},
@@ -139,7 +144,7 @@ var BuiltinRoles = map[string][]string{
 		PermApprovalDecide,
 	},
 	"auditor": {
-		PermNodeList, PermSessionList, PermSessionRead, PermAuditRead,
+		PermNodeList, PermSessionList, PermSessionRead, PermSessionObserve, PermAuditRead,
 		PermAIUse,
 		PermApprovalAuditRead,
 	},
@@ -171,7 +176,7 @@ var adminTierPerms = []string{
 	PermNodeCreate, PermNodeUpdate, PermNodeDelete,
 	PermProxyManage, PermCredentialManage,
 	PermAssetGroupManage, PermTagManage, PermGrantManage,
-	PermSessionTerminate, PermAuditRead,
+	PermSessionTerminate, PermSessionObserve, PermAuditRead,
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,
 	PermFirewallManage, PermDockerManage, PermServiceManage,
 	PermProcessManage, PermCronManage, PermPackageManage, PermStorageManage,

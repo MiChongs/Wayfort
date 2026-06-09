@@ -11,6 +11,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -143,9 +144,13 @@ func (h *WSHandler) Handle(c *gin.Context) {
 			if err := sess.Worker.Send(msg); err != nil {
 				h.Logger.Warn("worker send", zap.Error(err))
 			}
+			sess.bytesIn.Add(uint64(len(payload)))
 			// Audit: tee inbound input (key / mouse / clipboard) onto the tape.
 			// nil-safe and filters heartbeats/caps internally.
 			sess.recorder.WriteInput(msg)
+			// Lifecycle: lift high-value interactions (clipboard / resize) into
+			// the searchable audit log (metadata only).
+			h.Manager.auditGraphicalInput(sess, msg)
 		}
 	})
 
@@ -201,6 +206,16 @@ func (h *WSHandler) Handle(c *gin.Context) {
 				}
 				// Audit: tee onto the recording tape (nil-safe).
 				recordServerMessage(sess.recorder, msg, body, useBinaryV2, &lastPhase)
+				// Lifecycle: bridge the worker's connection status into the
+				// shared phase timeline, and lift a server→client clipboard
+				// transfer into the searchable audit log. bridgePhase de-dupes
+				// repeated phases internally.
+				if msg.Status != nil {
+					h.Manager.bridgePhase(sess, msg.Status.Phase, msg.Status.Message)
+				}
+				if msg.Clipboard != nil {
+					h.Manager.auditGraphicalClipboardOut(sess, msg.Clipboard)
+				}
 				// Bound each write. coder/websocket has no built-in write
 				// deadline; without one a browser with a stuck TCP receive
 				// window blocks this goroutine indefinitely, the worker's out
@@ -214,6 +229,15 @@ func (h *WSHandler) Handle(c *gin.Context) {
 						return nil
 					}
 					return err
+				}
+				sess.bytesOut.Add(uint64(len(body)))
+				// Mirror frames to read-only observers off the same binary body
+				// (only the v2 wire form is monitorable). Copy because body is
+				// reused; the hub holds the slice.
+				if hub := h.Manager.LiveHub(); hub != nil && useBinaryV2 {
+					cp := make([]byte, len(body))
+					copy(cp, body)
+					hub.Publish(sess.ID, livewatch.Frame{Kind: livewatch.KindOutput, Data: cp})
 				}
 				// If worker emits CLOSED or ERROR, tear down the WS.
 				if msg.Status != nil && (msg.Status.Phase == PhaseClosed || msg.Status.Phase == PhaseError) {
@@ -233,14 +257,30 @@ func (h *WSHandler) Handle(c *gin.Context) {
 				return nil
 			case <-t.C:
 				pctx, pcancel := context.WithTimeout(gctx, 10*time.Second)
+				start := time.Now()
 				err := conn.Ping(pctx)
 				pcancel()
 				if err != nil {
 					return err
 				}
+				// Ping blocks until the pong — elapsed time is the server-side
+				// RTT, the connection-quality sink's latency reading.
+				if sess.sink != nil {
+					if rtt := time.Since(start).Milliseconds(); rtt > 0 {
+						sess.sink.ObserveRTT(uint32(rtt))
+					}
+				}
 			}
 		}
 	})
+
+	// Sample connection quality (RTT / bandwidth / reconnects) on a fixed
+	// cadence for the session's lifetime; stops when gctx cancels.
+	if sess.sink != nil {
+		go sess.sink.Run(gctx, 5*time.Second, func() (uint64, uint64) {
+			return sess.bytesIn.Load(), sess.bytesOut.Load()
+		})
+	}
 
 	werr := g.Wait()
 	_ = sess.Worker.Close()

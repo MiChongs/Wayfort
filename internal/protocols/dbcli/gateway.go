@@ -166,7 +166,7 @@ func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string,
 	row := h.GW.BeginSession(context.Background(), sessionID, model.SessionInteractive, claims, clientIP, node, recPath, recType)
 	sess := &webssh.Session{
 		ID: sessionID, Conn: ws, Backend: backend,
-		Recorder: rec, Cfg: h.GW.WSConfig(), Logger: h.GW.Logger(),
+		Recorder: rec, Cfg: h.GW.WSConfig(), Logger: h.GW.Logger(), LiveHub: h.GW.LiveHub(),
 	}
 	sess.OnCommand(h.GW.CommandAuditor(sessionID, claims, clientIP, node))
 

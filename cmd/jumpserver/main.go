@@ -23,49 +23,51 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/backup"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
+	"github.com/michongs/jumpserver-anonymous/internal/capture"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/cron"
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
 	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/files"
 	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/hardware"
 	"github.com/michongs/jumpserver-anonymous/internal/health"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
+	"github.com/michongs/jumpserver-anonymous/internal/kernel"
+	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
+	"github.com/michongs/jumpserver-anonymous/internal/loganalytics"
+	"github.com/michongs/jumpserver-anonymous/internal/logs"
 	"github.com/michongs/jumpserver-anonymous/internal/metrics"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/jumpserver-anonymous/internal/nettools"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
+	"github.com/michongs/jumpserver-anonymous/internal/office"
 	"github.com/michongs/jumpserver-anonymous/internal/passkey"
+	"github.com/michongs/jumpserver-anonymous/internal/perf"
+	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
+	"github.com/michongs/jumpserver-anonymous/internal/process"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
 	"github.com/michongs/jumpserver-anonymous/internal/secrets"
 	"github.com/michongs/jumpserver-anonymous/internal/server"
+	"github.com/michongs/jumpserver-anonymous/internal/sesswin"
 	"github.com/michongs/jumpserver-anonymous/internal/settings"
-	"github.com/michongs/jumpserver-anonymous/internal/office"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
-	"github.com/michongs/jumpserver-anonymous/internal/cron"
-	"github.com/michongs/jumpserver-anonymous/internal/hardware"
-	"github.com/michongs/jumpserver-anonymous/internal/kernel"
-	"github.com/michongs/jumpserver-anonymous/internal/logs"
-	"github.com/michongs/jumpserver-anonymous/internal/backup"
-	"github.com/michongs/jumpserver-anonymous/internal/capture"
-	"github.com/michongs/jumpserver-anonymous/internal/files"
-	"github.com/michongs/jumpserver-anonymous/internal/loganalytics"
-	"github.com/michongs/jumpserver-anonymous/internal/nettools"
-	"github.com/michongs/jumpserver-anonymous/internal/perf"
-	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
-	"github.com/michongs/jumpserver-anonymous/internal/process"
-	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
 	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
 	"github.com/michongs/jumpserver-anonymous/internal/storage"
-	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
 	"github.com/michongs/jumpserver-anonymous/internal/systemd"
+	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	"github.com/michongs/jumpserver-anonymous/internal/wireguard"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -318,6 +320,10 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}, logger)
 
 	auditWriter := audit.NewWriter(cfg.Audit, auditRepo, logger)
+	// Lifecycle v3 — connection-quality sample queue (RTT / loss / bandwidth /
+	// reconnects). Batched to the DB through its own single worker like the
+	// audit writer; sessions feed it via per-session MetricSinks.
+	metricWriter := audit.NewMetricWriter(sessionRepo, logger)
 
 	var anonService *anonymous.Service
 	var anonJanitor *anonymous.Janitor
@@ -353,6 +359,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		auditWriter, resolver, chain, hostKeyChecker.Callback(), rc,
 		launcherIface,
 	)
+	wsGateway.SetMetrics(metricWriter)
+	// Lifecycle v3 — read-only live-watch hub, shared by the terminal gateway
+	// and the desktop manager so admins can monitor in-progress sessions.
+	liveHub := livewatch.NewHub()
+	wsGateway.SetLiveHub(liveHub)
 
 	sftpConn := &sftp.Connector{
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
@@ -364,7 +375,19 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		JWTSecret:         cfg.Office.JWTSecret,
 		CallbackBaseURL:   cfg.Office.CallbackBaseURL,
 	})
-	sftpHandler := &sftp.Handler{Conn: sftpConn, Audit: auditWriter, Logger: logger, Office: officeSvc}
+	// Lifecycle v3 — synthesise a browsing-window Session row for the stateless
+	// SFTP / OSS REST browsers, so file/object operations link to a real session
+	// (duration + bytes + timeline) instead of orphan audit rows. Reapers run in
+	// the root errgroup below.
+	nodeNamer := func(ctx context.Context, id uint64) string {
+		if n, err := nodeRepo.FindByID(ctx, id); err == nil && n != nil {
+			return n.Name
+		}
+		return ""
+	}
+	sftpSessions := sesswin.New(model.SessionSFTP, sessionRepo, auditWriter, nodeNamer, 30*time.Minute, logger)
+	ossSessions := sesswin.New(model.SessionOSS, sessionRepo, auditWriter, nodeNamer, 30*time.Minute, logger)
+	sftpHandler := &sftp.Handler{Conn: sftpConn, Audit: auditWriter, Logger: logger, Office: officeSvc, Sessions: sftpSessions}
 
 	// Object-storage bastion (OSS): reaches Aliyun OSS / Tencent COS / S3
 	// through the same credential pool + proxy chain as every other protocol.
@@ -372,7 +395,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
 		Chain: chain, Vault: sealer,
 	}
-	ossHandler := &oss.Handler{Conn: ossConn, Asset: assetResolver, Audit: auditWriter, Logger: logger, Office: officeSvc}
+	ossHandler := &oss.Handler{Conn: ossConn, Asset: assetResolver, Audit: auditWriter, Logger: logger, Office: officeSvc, Sessions: ossSessions}
 
 	// Optional protocol handlers
 	var guacHandler *guacamole.Handler
@@ -406,6 +429,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			return pkgssh.AddrOf(node.Host, node.Port), dlr, rel, nil
 		}
 		pfManager = tcpfwd.NewManager(cfg.Protocols.TCPFwd, pfRepo, nodeRepo, rc, auditWriter, logger, factory)
+		pfManager.SetLifecycle(sessionRepo, metricWriter)
 		settingsCenter.OnReload(func(c *config.Config) { pfManager.ApplyConfig(c.Protocols.TCPFwd) })
 		pfHandler = &tcpfwd.Handler{Manager: pfManager, Nodes: nodeRepo, Repo: pfRepo}
 		pfRelay = &tcpfwd.WSRelay{GW: wsGateway, Nodes: nodeRepo}
@@ -708,6 +732,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Sealer:   sealer,
 			Audit:    auditWriter,
 			Sessions: sessionRepo,
+			Metrics:  metricWriter,
+			LiveHub:  liveHub,
 			// Route the freerdp worker through the node's proxy chain (SSH
 			// bastion / SOCKS5 hops) — same ResolveHops + BuildChain path
 			// guacamole and tcpfwd use — so WebRDP reaches bastion-only nodes.
@@ -886,6 +912,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 
 	g, gctx := errgroup.WithContext(rootCtx)
 	g.Go(func() error { return auditWriter.Run(gctx) })
+	g.Go(func() error { return metricWriter.Run(gctx) })
+	g.Go(func() error { return sftpSessions.Run(gctx) })
+	g.Go(func() error { return ossSessions.Run(gctx) })
 	g.Go(func() error { return pool.Run(gctx) })
 	if cfg.Health.Enabled {
 		g.Go(func() error { return proxyProber.Run(gctx) })
@@ -1117,13 +1146,14 @@ func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, b
 // is enabled in YAML.
 //
 // Path conventions:
-//   InstallPrefix       /opt/jumpserver/devolutions-gateway          (Linux)
-//                       ~/Library/Application Support/JumpServer/... (macOS)
-//                       %LOCALAPPDATA%\Programs\JumpServer\...       (Windows)
-//   BinaryPath          <InstallPrefix>/devolutions-gateway[.exe]
-//   ConfigPath          <InstallPrefix>/config/gateway.json
-//   IDFile              <InstallPrefix>/config/gateway-id
-//   JWTPrivateKeyFile   <InstallPrefix>/config/jwt.key   (+ jwt.key.pub auto-generated)
+//
+//	InstallPrefix       /opt/jumpserver/devolutions-gateway          (Linux)
+//	                    ~/Library/Application Support/JumpServer/... (macOS)
+//	                    %LOCALAPPDATA%\Programs\JumpServer\...       (Windows)
+//	BinaryPath          <InstallPrefix>/devolutions-gateway[.exe]
+//	ConfigPath          <InstallPrefix>/config/gateway.json
+//	IDFile              <InstallPrefix>/config/gateway-id
+//	JWTPrivateKeyFile   <InstallPrefix>/config/jwt.key   (+ jwt.key.pub auto-generated)
 //
 // Operators can override every path in YAML — these are just sensible
 // defaults so a clean install needs zero extra knobs.

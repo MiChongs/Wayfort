@@ -11,6 +11,7 @@ import {
   Download,
   ListTree,
   Power,
+  Radio,
   Terminal as TerminalIcon,
   Upload,
 } from "lucide-react"
@@ -26,11 +27,15 @@ import { useAccess } from "@/lib/hooks/use-access"
 import { fmtBytes, fullTime, relTime } from "@/lib/format"
 import { auditMeta, kindMeta, statusMeta, fmtDuration } from "@/lib/session-meta"
 import { cn } from "@/lib/utils"
+import { SessionKpiBar } from "./components/session-kpi-bar"
+import { SessionPhaseGantt } from "./components/session-phase-gantt"
+import { SessionQualityChart } from "./components/session-quality-chart"
 
 export default function SessionDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const access = useAccess()
   const canTerminate = access.isSuperadmin || access.permissions.includes("session:terminate")
+  const canObserve = access.isSuperadmin || access.permissions.includes("session:observe")
 
   const sq = useQuery({ queryKey: ["session", id], queryFn: () => sessionService.get(id) })
   const s = sq.data?.session
@@ -38,6 +43,15 @@ export default function SessionDetail({ params }: { params: Promise<{ id: string
   const audit = useQuery({
     queryKey: ["session", id, "audit"],
     queryFn: () => sessionService.audit(id),
+    enabled: !!s,
+    refetchInterval: s?.status === "active" ? 5000 : false,
+  })
+
+  // Lifecycle bundle (phases + quality samples) drives the dashboard. Polls
+  // while the session is live so the gantt/quality curve grow in place.
+  const life = useQuery({
+    queryKey: ["session", id, "lifecycle"],
+    queryFn: () => sessionService.lifecycle(id),
     enabled: !!s,
     refetchInterval: s?.status === "active" ? 5000 : false,
   })
@@ -114,10 +128,21 @@ export default function SessionDetail({ params }: { params: Promise<{ id: string
               </div>
             </div>
           </div>
-          {isActive && canTerminate && (
-            <Button variant="destructive" size="sm" onClick={terminate}>
-              <Power className="h-4 w-4" /> 强制下线
-            </Button>
+          {isActive && (
+            <div className="flex items-center gap-2">
+              {canObserve && (
+                <Link href={`/sessions/${s.id}/monitor`}>
+                  <Button variant="outline" size="sm" className="text-primary">
+                    <Radio className="h-4 w-4" /> 实时监看
+                  </Button>
+                </Link>
+              )}
+              {canTerminate && (
+                <Button variant="destructive" size="sm" onClick={terminate}>
+                  <Power className="h-4 w-4" /> 强制下线
+                </Button>
+              )}
+            </div>
           )}
         </div>
 
@@ -131,6 +156,15 @@ export default function SessionDetail({ params }: { params: Promise<{ id: string
           {s.reason && <Field label="结束原因" value={s.reason} className="col-span-2 sm:col-span-3 lg:col-span-4" />}
         </dl>
       </div>
+
+      {/* Lifecycle dashboard — KPIs, connection-stage gantt, quality curve */}
+      <SessionKpiBar session={life.data?.session ?? s} samples={life.data?.samples ?? []} />
+      <SessionPhaseGantt
+        phases={life.data?.phases ?? []}
+        startedAt={s.started_at}
+        endedAt={isActive ? null : s.ended_at}
+      />
+      <SessionQualityChart samples={life.data?.samples ?? []} />
 
       {/* Recording */}
       <Recording session={s} url={url} />

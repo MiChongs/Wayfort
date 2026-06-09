@@ -549,6 +549,10 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/sessions/stats", perm(auth.PermSessionList), rt.Session.Stats)
 		ops.GET("/sessions/:id", perm(auth.PermSessionRead), rt.Session.Get)
 		ops.GET("/sessions/:id/audit", perm(auth.PermSessionRead), rt.Session.AuditTimeline)
+		// Lifecycle v3 — connection-stage timeline + connection-quality samples.
+		ops.GET("/sessions/:id/phases", perm(auth.PermSessionRead), rt.Session.Phases)
+		ops.GET("/sessions/:id/metrics", perm(auth.PermSessionRead), rt.Session.Metrics)
+		ops.GET("/sessions/:id/lifecycle", perm(auth.PermSessionRead), rt.Session.Lifecycle)
 		ops.POST("/sessions/:id/terminate", perm(auth.PermSessionTerminate), rt.Session.Terminate)
 		ops.GET("/sessions/:id/recording", perm(auth.PermSessionRead), rt.Session.Recording)
 		ops.GET("/sessions/:id/cast", perm(auth.PermSessionRead), rt.Session.Recording)
@@ -855,6 +859,11 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
 		ops.GET("/ws/telnet/:node_id", rt.WS.HandleNodeTelnet)
+		// Lifecycle v3 — read-only live monitoring (over-the-shoulder). Separate
+		// session:observe permission; the terminal endpoint covers SSH/Telnet/DB
+		// CLI (all reuse webssh.Session's hub tee).
+		ops.GET("/ws/observe/terminal/:session_id", perm(auth.PermSessionObserve), rt.WS.HandleObserveTerminal)
+		ops.GET("/ws/observe/desktop/:session_id", perm(auth.PermSessionObserve), desktopWS(rt).HandleObserve)
 		if rt.Guacamole != nil {
 			ops.GET("/ws/rdp/:node_id", rt.Guacamole.HandleRDP)
 			ops.GET("/ws/vnc/:node_id", rt.Guacamole.HandleVNC)

@@ -18,6 +18,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/office"
+	"github.com/michongs/jumpserver-anonymous/internal/sesswin"
 	"go.uber.org/zap"
 )
 
@@ -44,6 +45,9 @@ type Handler struct {
 	Approval *approval.Service
 	Office   *office.Service
 	Logger   *zap.Logger
+	// Sessions (optional) synthesises a per-(user,node) browsing-window Session
+	// row so object operations link to a session. Nil → ops audited without it.
+	Sessions *sesswin.Tracker
 }
 
 // ---- helpers -------------------------------------------------------------
@@ -117,13 +121,15 @@ func (h *Handler) logEvent(c *gin.Context, nodeID uint64, kind model.AuditEventK
 		userID = claims.UserID
 	}
 	nid := nodeID
+	sessionID := h.Sessions.Touch(c.Request.Context(), userID, username, c.ClientIP(), nodeID, 0, 0)
 	h.Audit.Log(model.AuditLog{
-		Kind:     kind,
-		UserID:   userID,
-		Username: username,
-		NodeID:   &nid,
-		ClientIP: c.ClientIP(),
-		Payload:  payload,
+		Kind:      kind,
+		UserID:    userID,
+		Username:  username,
+		SessionID: sessionID,
+		NodeID:    &nid,
+		ClientIP:  c.ClientIP(),
+		Payload:   payload,
 	})
 }
 

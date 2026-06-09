@@ -18,6 +18,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/office"
+	"github.com/michongs/jumpserver-anonymous/internal/sesswin"
 	pkgsftp "github.com/pkg/sftp"
 	"go.uber.org/zap"
 )
@@ -31,6 +32,10 @@ type Handler struct {
 	Conn   *Connector
 	Audit  *audit.Writer
 	Logger *zap.Logger
+	// Sessions (optional) synthesises a per-(user,node) browsing-window Session
+	// row so file operations link to a session in the audit timeline. Nil → file
+	// ops are still audited, just without a SessionID.
+	Sessions *sesswin.Tracker
 	// Approval gates write-side operations (Upload, WriteText, Remove,
 	// Rename, Mkdir, Chmod) when the target node has
 	// RequiresApprovalForFileXfer set. Reads (List, Stat, Download,
@@ -654,9 +659,22 @@ func (h *Handler) recordFile(c *gin.Context, nodeID uint64, kind model.AuditEven
 		username = claims.Username
 	}
 	nid := nodeID
+	// Link the file op to a browsing-window session: uploads count toward
+	// bytes-in (client→server), downloads toward bytes-out.
+	var inDelta, outDelta uint64
+	if bytes > 0 {
+		switch kind {
+		case model.AuditFileUpload, model.AuditFileWrite:
+			inDelta = uint64(bytes)
+		case model.AuditFileDownload:
+			outDelta = uint64(bytes)
+		}
+	}
+	sessionID := h.Sessions.Touch(c.Request.Context(), uid, username, c.ClientIP(), nodeID, inDelta, outDelta)
 	h.Audit.Log(model.AuditLog{
 		Kind: kind, UserID: uid, Username: username,
-		NodeID: &nid, ClientIP: c.ClientIP(),
+		SessionID: sessionID,
+		NodeID:    &nid, ClientIP: c.ClientIP(),
 		Payload: target + " bytes=" + strconv.FormatInt(bytes, 10),
 	})
 }

@@ -114,7 +114,7 @@ func (g *Gateway) runTelnetSession(ctx context.Context, conn *websocket.Conn, se
 	}
 	row := g.BeginSession(context.Background(), sessionID, model.SessionInteractive, claims, clientIP, node, recPath, recType)
 
-	sess := &Session{ID: sessionID, Conn: conn, Backend: backend, Recorder: rec, Cfg: g.cfg, Logger: g.logger}
+	sess := &Session{ID: sessionID, Conn: conn, Backend: backend, Recorder: rec, Cfg: g.cfg, Logger: g.logger, LiveHub: g.liveHub}
 	nodeID := node.ID
 	tracker := newCmdTracker(func(cmd string) {
 		g.Audit().Log(model.AuditLog{

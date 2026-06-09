@@ -12,6 +12,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -19,8 +20,8 @@ import (
 // Backend abstracts the remote side of the WebSocket so this file works for
 // both an SSH ssh.Session and a Docker exec hijacked stream.
 type Backend interface {
-	io.Reader            // stdout/stderr merged
-	io.Writer            // stdin
+	io.Reader // stdout/stderr merged
+	io.Writer // stdin
 	Resize(cols, rows uint32) error
 	Close() error
 }
@@ -40,6 +41,12 @@ type Session struct {
 	BytesIn   atomic.Uint64
 	BytesOut  atomic.Uint64
 	onCommand func(string) // optional command tracker for audit
+	// OnRTT, when set, receives the round-trip time (ms) measured by each
+	// heartbeat ping — feeds the connection-quality metric sink.
+	OnRTT func(ms uint32)
+	// LiveHub, when set, mirrors this session's output to read-only observers.
+	// All Hub methods are nil-safe, so the tee is free when monitoring is off.
+	LiveHub *livewatch.Hub
 }
 
 func (s *Session) OnCommand(fn func(string)) { s.onCommand = fn }
@@ -47,6 +54,12 @@ func (s *Session) OnCommand(fn func(string)) { s.onCommand = fn }
 func (s *Session) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Register for read-only monitoring for the lifetime of the session.
+	if s.LiveHub != nil {
+		s.LiveHub.EnsureSession(s.ID, livewatch.ModeTerminal)
+		defer s.LiveHub.CloseSession(s.ID)
+	}
 
 	g, gctx := errgroup.WithContext(ctx)
 	// Recorder lives the lifetime of the session.
@@ -114,6 +127,9 @@ func (s *Session) pumpWSToBackend(ctx context.Context) error {
 				if s.Recorder != nil {
 					s.Recorder.Resize(f.Cols, f.Rows)
 				}
+				if s.LiveHub != nil {
+					s.LiveHub.Publish(s.ID, livewatch.Frame{Kind: livewatch.KindResize, Cols: f.Cols, Rows: f.Rows})
+				}
 			}
 		case TPing:
 			_ = s.sendFrame(Frame{T: TPong})
@@ -134,6 +150,13 @@ func (s *Session) pumpBackendToWS(ctx context.Context) error {
 			chunk := buf[:n]
 			if s.Recorder != nil {
 				s.Recorder.WriteOutput(chunk)
+			}
+			// Mirror to read-only observers off the same bytes. Copy because the
+			// shared buf is overwritten on the next Read; the Hub holds the slice.
+			if s.LiveHub != nil {
+				cp := make([]byte, n)
+				copy(cp, chunk)
+				s.LiveHub.Publish(s.ID, livewatch.Frame{Kind: livewatch.KindOutput, Data: cp})
 			}
 			s.BytesOut.Add(uint64(n))
 			if werr := s.sendFrame(Frame{T: TOutput, Data: base64.StdEncoding.EncodeToString(chunk)}); werr != nil {
@@ -161,8 +184,15 @@ func (s *Session) heartbeat(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
+			start := time.Now()
 			if err := s.Conn.Ping(ctx); err != nil {
 				return err
+			}
+			// Ping blocks until the pong, so the elapsed time is the RTT.
+			if s.OnRTT != nil {
+				if rtt := time.Since(start).Milliseconds(); rtt > 0 {
+					s.OnRTT(uint32(rtt))
+				}
 			}
 		}
 	}
