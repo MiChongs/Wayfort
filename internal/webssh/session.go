@@ -62,6 +62,14 @@ func (s *Session) Run(ctx context.Context) error {
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
+	// Teardown unblock: the moment any goroutine exits (browser closed the WS,
+	// an error, an admin force-off, or a dead-connection ping failure), close
+	// the backend. Without this, pumpBackendToWS stays blocked on a quiet SSH
+	// stdout Read — ctx cancellation can't interrupt it — so g.Wait() never
+	// returns and the row lingers forever as a phantom "active" session. Closing
+	// stdin+session makes that Read return EOF and the session tears down
+	// promptly. Idempotent with the Close() after g.Wait().
+	context.AfterFunc(gctx, func() { _ = s.Backend.Close() })
 	// Recorder lives the lifetime of the session.
 	if s.Recorder != nil {
 		g.Go(func() error {
@@ -185,7 +193,14 @@ func (s *Session) heartbeat(ctx context.Context) error {
 			return ctx.Err()
 		case <-t.C:
 			start := time.Now()
-			if err := s.Conn.Ping(ctx); err != nil {
+			// Bound the ping: on a half-open TCP (laptop slept, network dropped)
+			// an unbounded Ping waits for the OS TCP timeout (minutes) before the
+			// session is detected dead. A per-ping deadline turns a missing pong
+			// into a clean teardown within one interval.
+			pctx, pcancel := context.WithTimeout(ctx, s.Cfg.PingInterval)
+			err := s.Conn.Ping(pctx)
+			pcancel()
+			if err != nil {
 				return err
 			}
 			// Ping blocks until the pong, so the elapsed time is the RTT.

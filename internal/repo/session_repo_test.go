@@ -90,6 +90,57 @@ func TestSessionPhaseLifecycle(t *testing.T) {
 	_ = db
 }
 
+func TestCloseOrphans(t *testing.T) {
+	_, r := newSessionTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	// Two active (orphan) sessions + one already-closed.
+	must := func(s *model.Session) {
+		if err := r.Create(ctx, s); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	must(&model.Session{ID: "a", Kind: model.SessionInteractive, StartedAt: now, Status: model.SessionActive, CurrentPhase: model.PhaseReady})
+	must(&model.Session{ID: "b", Kind: model.SessionGraphical, StartedAt: now, Status: model.SessionActive})
+	must(&model.Session{ID: "c", Kind: model.SessionInteractive, StartedAt: now, Status: model.SessionClosed})
+	// A running phase on session a must be closed too.
+	if err := r.AppendPhase(ctx, &model.SessionPhase{SessionID: "a", Phase: model.PhaseReady, Status: model.PhaseRunning, StartedAt: now}); err != nil {
+		t.Fatalf("append phase: %v", err)
+	}
+
+	n, err := r.CloseOrphans(ctx)
+	if err != nil {
+		t.Fatalf("close orphans: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("reaped = %d, want 2", n)
+	}
+	for _, id := range []string{"a", "b"} {
+		s, _ := r.FindByID(ctx, id)
+		if s.Status != model.SessionErrored || s.EndedAt == nil || s.CurrentPhase != model.PhaseClosed {
+			t.Fatalf("orphan %s not closed: %+v", id, s)
+		}
+	}
+	// Already-closed row is untouched.
+	if s, _ := r.FindByID(ctx, "c"); s.Status != model.SessionClosed || s.EndedAt != nil {
+		t.Fatalf("closed row c was modified: %+v", s)
+	}
+	// The running phase is now closed.
+	phases, _ := r.Phases(ctx, "a")
+	if len(phases) != 1 || phases[0].Status != model.PhaseSucceeded || phases[0].EndedAt == nil {
+		t.Fatalf("phase not closed: %+v", phases)
+	}
+
+	// Reactivate brings an orphaned row back to life with ended_at cleared.
+	if err := r.Reactivate(ctx, "a", time.Now()); err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if s, _ := r.FindByID(ctx, "a"); s.Status != model.SessionActive || s.EndedAt != nil || s.CurrentPhase != model.PhaseReady {
+		t.Fatalf("reactivate failed: %+v", s)
+	}
+}
+
 func TestSessionMetrics(t *testing.T) {
 	_, r := newSessionTestDB(t)
 	ctx := context.Background()

@@ -52,6 +52,20 @@ export function SecurityTab({ nodeId, tabId, active }: Props) {
     },
   })
 
+  // All hooks must run before any early return — `grouped` used to sit after
+  // the `!active` / `isError` guards, so an errored query rendered fewer hooks
+  // than a loaded one ("Rendered fewer hooks than expected"). Compute it here,
+  // unconditionally, from report.data.
+  const grouped = React.useMemo(() => {
+    const checks = report.data?.checks ?? []
+    const cats = Array.from(new Set(checks.map((c) => c.category)))
+    cats.sort((a, b) => (CAT_ORDER.indexOf(a) + 99 * (CAT_ORDER.indexOf(a) < 0 ? 1 : 0)) - (CAT_ORDER.indexOf(b) + 99 * (CAT_ORDER.indexOf(b) < 0 ? 1 : 0)))
+    return cats.map((cat) => ({
+      cat,
+      checks: checks.filter((c) => c.category === cat).sort((a, b) => RANK[a.status] - RANK[b.status]),
+    }))
+  }, [report.data])
+
   if (!active) return null
   if (report.isError) {
     return (
@@ -64,15 +78,6 @@ export function SecurityTab({ nodeId, tabId, active }: Props) {
     )
   }
   const d = report.data
-  const grouped = React.useMemo(() => {
-    const checks = d?.checks ?? []
-    const cats = Array.from(new Set(checks.map((c) => c.category)))
-    cats.sort((a, b) => (CAT_ORDER.indexOf(a) + 99 * (CAT_ORDER.indexOf(a) < 0 ? 1 : 0)) - (CAT_ORDER.indexOf(b) + 99 * (CAT_ORDER.indexOf(b) < 0 ? 1 : 0)))
-    return cats.map((cat) => ({
-      cat,
-      checks: checks.filter((c) => c.category === cat).sort((a, b) => RANK[a.status] - RANK[b.status]),
-    }))
-  }, [d])
 
   const onApply = async (c: SecCheck) => {
     const ok = await confirm({ title: `应用修复：${c.title}？`, description: "将在节点上以当前 SSH 用户执行加固命令（需 root/sudo）。", confirmLabel: "应用" })

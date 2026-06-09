@@ -209,6 +209,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	bulkRunRepo := repo.NewBulkRunRepo(db)
 	credRepo := repo.NewCredentialRepo(db)
 	sessionRepo := repo.NewSessionRepo(db)
+	// Reap orphaned sessions left "active" by the previous run: after a restart
+	// the in-memory live registries are empty, so any active row is a phantom no
+	// teardown ever closed. Runs before tcpfwd.Resume so resumed forwards can
+	// reactivate their rows. This is the fix for piled-up phantom online sessions.
+	if reaped, oerr := sessionRepo.CloseOrphans(rootCtx); oerr != nil {
+		logger.Warn("orphan session cleanup failed", zap.Error(oerr))
+	} else if reaped > 0 {
+		logger.Info("reaped orphaned sessions on startup", zap.Int64("count", reaped))
+	}
 	auditRepo := repo.NewAuditRepo(db)
 	roleRepo := repo.NewRoleRepo(db)
 	deptRepo := repo.NewDepartmentRepo(db)
@@ -955,6 +964,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			zap.Bool("auto_install", cfg.Desktop.AutoInstall),
 			zap.String("default_backend", cfg.Desktop.DefaultBackend))
 		g.Go(func() error { return desktopMgr.EnsureWorker(gctx) })
+		// Reap desktop sessions whose browser never opened the data WS, so they
+		// don't linger as phantom "active" rows.
+		g.Go(func() error { return desktopMgr.RunReaper(gctx) })
 		if cfg.Desktop.DevolutionsGateway.Enabled {
 			g.Go(func() error {
 				if err := desktopMgr.EnsureGateway(gctx); err != nil {

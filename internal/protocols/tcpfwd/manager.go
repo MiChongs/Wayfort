@@ -84,8 +84,13 @@ func (m *Manager) openSession(ctx context.Context, e *entry, nodeName string) {
 		CurrentPhase: model.PhaseReady, ReadyAt: &now,
 	}
 	if err := m.sessions.Create(ctx, sess); err != nil {
-		m.logger.Warn("tcpfwd session create failed", zap.Error(err))
-		return
+		// On Resume after a restart the row already exists (CloseOrphans closed
+		// it) — reactivate it instead of leaving the resumed forward showing as
+		// closed.
+		if rerr := m.sessions.Reactivate(ctx, e.row.ID, now); rerr != nil {
+			m.logger.Warn("tcpfwd session create/reactivate failed", zap.Error(err))
+			return
+		}
 	}
 	_ = m.sessions.AppendPhase(ctx, &model.SessionPhase{
 		SessionID: e.row.ID, Phase: model.PhaseReady, Status: model.PhaseRunning, StartedAt: now,

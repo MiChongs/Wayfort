@@ -17,6 +17,7 @@ import {
   CircleDot,
   Clapperboard,
   History,
+  Layers,
   Power,
   RefreshCw,
   Search,
@@ -145,9 +146,16 @@ export default function SessionsPage() {
             每一次接入都在这里留痕——谁、从哪、连了什么、做了什么，都能回看与追责。
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => { list.refetch(); stats.refetch() }}>
-          <RefreshCw className={cn("h-4 w-4", list.isFetching && "animate-spin")} /> 刷新
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <Link href="/sessions/timeline">
+            <Button variant="outline" size="sm">
+              <Layers className="h-4 w-4" /> 时间线
+            </Button>
+          </Link>
+          <Button variant="ghost" size="sm" onClick={() => { list.refetch(); stats.refetch() }}>
+            <RefreshCw className={cn("h-4 w-4", list.isFetching && "animate-spin")} /> 刷新
+          </Button>
+        </div>
       </header>
 
       {/* Overview strip + trend */}

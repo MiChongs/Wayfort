@@ -10,6 +10,7 @@ import { LinearGradient } from "@visx/gradient"
 import { curveMonotoneX } from "@visx/curve"
 import { ParentSize } from "@visx/responsive"
 import { localPoint } from "@visx/event"
+import { bisector } from "d3-array"
 import { Gauge } from "lucide-react"
 import type { SessionMetricSample } from "@/lib/api/types"
 import { fullTime } from "@/lib/format"
@@ -22,19 +23,7 @@ const MARGIN = { top: 12, right: 44, bottom: 26, left: 40 }
 
 type Pt = { t: number; rtt: number; loss: number; reconnect: boolean }
 
-// nearestIndex returns the index of the sample closest to time t (binary search
-// over the ascending-by-t points), avoiding a d3-array dependency.
-function nearestIndex(pts: Pt[], t: number): number {
-  let lo = 0
-  let hi = pts.length - 1
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (pts[mid].t < t) lo = mid + 1
-    else hi = mid
-  }
-  if (lo > 0 && Math.abs(pts[lo - 1].t - t) <= Math.abs(pts[lo].t - t)) return lo - 1
-  return lo
-}
+const bisectT = bisector<Pt, number>((d) => d.t).center
 
 export function SessionQualityChart({ samples }: { samples: SessionMetricSample[] }) {
   const pts: Pt[] = React.useMemo(
@@ -90,7 +79,7 @@ function Chart({ width, pts }: { width: number; pts: Pt[] }) {
     const pt = localPoint(e)
     if (!pt) return
     const t = xs.invert(pt.x - MARGIN.left).getTime()
-    const d = pts[nearestIndex(pts, t)]
+    const d = pts[bisectT(pts, t)]
     showTooltip({
       tooltipData: d,
       tooltipLeft: MARGIN.left + xs(new Date(d.t)),

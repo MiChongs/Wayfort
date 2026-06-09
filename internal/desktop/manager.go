@@ -750,6 +750,37 @@ func (m *Manager) Take(sessionID string) *Session {
 // LiveHub exposes the read-only monitoring hub to the observe handler.
 func (m *Manager) LiveHub() *livewatch.Hub { return m.liveHub }
 
+// RunReaper closes desktop sessions whose browser never opened the data WS
+// within the grace window. StartSession registers a live session + active row
+// before the browser connects /ws/v2/desktop/:id; if that WS never arrives
+// (tab closed during connect, network drop), nothing else would ever close the
+// row — it would linger as a phantom "active" session. Attached sessions clean
+// themselves up via the WS handler's teardown, so this only reaps the stragglers.
+func (m *Manager) RunReaper(ctx context.Context) error {
+	const attachGrace = 2 * time.Minute
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case now := <-t.C:
+			var stale []string
+			m.mu.Lock()
+			for id, s := range m.live {
+				if !s.attached.Load() && now.Sub(s.StartedAt) > attachGrace {
+					stale = append(stale, id)
+				}
+			}
+			m.mu.Unlock()
+			for _, id := range stale {
+				m.logger.Info("reaping desktop session that never attached", zap.String("session", id))
+				_ = m.End(context.Background(), id)
+			}
+		}
+	}
+}
+
 func (m *Manager) End(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	s, ok := m.live[sessionID]

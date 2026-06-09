@@ -133,6 +133,53 @@ func (r *SessionRepo) Finish(ctx context.Context, sessionID string, updates map[
 		Where("id = ?", sessionID).Updates(updates).Error
 }
 
+// CloseOrphans marks every still-active session as errored at startup. After a
+// process exit the in-memory live registries are empty, so any row left `active`
+// is an orphan from the previous run that no teardown ever closed — the root
+// cause of "thousands of phantom online sessions" piling up across restarts.
+// Their running phases are closed too, so the lifecycle gantt isn't left
+// dangling. Assumes a single gateway process owns these rows (this deployment's
+// live registries are in-memory, not distributed); a multi-instance setup would
+// scope this by owner instead.
+//
+// Returns the number of rows reaped so the caller can log it.
+func (r *SessionRepo) CloseOrphans(ctx context.Context) (int64, error) {
+	now := time.Now()
+	res := r.db.WithContext(ctx).Model(&model.Session{}).
+		Where("status = ?", model.SessionActive).
+		Updates(map[string]any{
+			"status":        model.SessionErrored,
+			"reason":        "服务重启时回收的孤儿会话",
+			"ended_at":      now,
+			"current_phase": model.PhaseClosed,
+		})
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	// Close any phase left running on those (now-closed) sessions.
+	if err := r.db.WithContext(ctx).Model(&model.SessionPhase{}).
+		Where("status = ?", model.PhaseRunning).
+		Updates(map[string]any{"status": model.PhaseSucceeded, "ended_at": now}).Error; err != nil {
+		return res.RowsAffected, err
+	}
+	return res.RowsAffected, nil
+}
+
+// Reactivate flips a previously-closed row back to active — used when a tcp
+// forward is resumed after a restart and CloseOrphans had already closed its
+// row. ended_at is cleared (NULL) via the map so the row reads as live again.
+func (r *SessionRepo) Reactivate(ctx context.Context, sessionID string, at time.Time) error {
+	return r.db.WithContext(ctx).Model(&model.Session{}).
+		Where("id = ?", sessionID).
+		Updates(map[string]any{
+			"status":        model.SessionActive,
+			"current_phase": model.PhaseReady,
+			"ready_at":      at,
+			"ended_at":      nil,
+			"reason":        "",
+		}).Error
+}
+
 func truncatePhase(s string) string {
 	if len(s) > 512 {
 		return s[:512]
