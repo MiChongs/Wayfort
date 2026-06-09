@@ -51,3 +51,21 @@ type AccessItem struct {
 }
 
 func (AccessItem) TableName() string { return "access_items" }
+
+// AccessTemplate is a named, reusable directory blueprint. Its folder tree is
+// stored as AccessFolder/AccessItem rows with OwnerType "template" and
+// OwnerID == the template ID — so it grants nobody (the resolver only expands
+// user/group/department owners) and can be cloned onto a real object on demand.
+type AccessTemplate struct {
+	ID          uint64    `gorm:"primaryKey" json:"id"`
+	Name        string    `gorm:"size:128;not null" json:"name"`
+	Description string    `gorm:"size:255" json:"description"`
+	CreatedBy   uint64    `json:"created_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (AccessTemplate) TableName() string { return "access_templates" }
+
+// OwnerTemplate is the synthetic owner_type used by AccessTemplate trees.
+const OwnerTemplate GranteeType = "template"

@@ -18,18 +18,19 @@ import (
 // Resolver merges tree-derived access with AssetGrant, and these endpoints share
 // the grant:manage permission. Every mutation flushes the ACL cache.
 type AccessTreeHandler struct {
-	Folders  *repo.AccessFolderRepo
-	Items    *repo.AccessItemRepo
-	Nodes    *repo.NodeRepo
-	Resolver *asset.Resolver
+	Folders   *repo.AccessFolderRepo
+	Items     *repo.AccessItemRepo
+	Templates *repo.AccessTemplateRepo
+	Nodes     *repo.NodeRepo
+	Resolver  *asset.Resolver
 }
 
 func (h *AccessTreeHandler) invalidate(c *gin.Context) { h.Resolver.InvalidateAll(c.Request.Context()) }
 
-// validOwnerType limits tree ownership to the grantee kinds that make sense to
-// hand-build a tree for (roles are flat-grant only).
+// validOwnerType limits tree ownership to user / group / department, plus the
+// synthetic "template" owner (templates grant nobody but are editable trees).
 func validOwnerType(t model.GranteeType) bool {
-	return t == model.GranteeUser || t == model.GranteeGroup || t == model.GranteeDepartment
+	return t == model.GranteeUser || t == model.GranteeGroup || t == model.GranteeDepartment || t == model.OwnerTemplate
 }
 
 // ----- Admin: read an object's tree -----
@@ -238,6 +239,131 @@ func (h *AccessTreeHandler) DeleteItem(c *gin.Context) {
 		return
 	}
 	h.invalidate(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ----- Clone / template / subtree / reorder -----
+
+type clonePayload struct {
+	FromOwnerType model.GranteeType `json:"from_owner_type"`
+	FromOwnerID   uint64            `json:"from_owner_id"`
+	ToOwnerType   model.GranteeType `json:"to_owner_type"`
+	ToOwnerID     uint64            `json:"to_owner_id"`
+}
+
+// Clone deep-copies one owner's (or template's) tree onto another object.
+func (h *AccessTreeHandler) Clone(c *gin.Context) {
+	var p clonePayload
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !validOwnerType(p.FromOwnerType) || p.FromOwnerID == 0 || !validOwnerType(p.ToOwnerType) || p.ToOwnerID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少来源 / 目标对象"})
+		return
+	}
+	if err := h.Folders.CopyTree(c.Request.Context(), p.FromOwnerType, p.FromOwnerID, p.ToOwnerType, p.ToOwnerID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.invalidate(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ApplySubtree pushes a folder's actions + validity down its whole subtree.
+func (h *AccessTreeHandler) ApplySubtree(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	f, err := h.Folders.FindByID(c.Request.Context(), id)
+	if err != nil || f == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	var p struct {
+		Actions string `json:"actions"`
+		ValidTo string `json:"valid_to"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.Folders.ApplySubtreePerm(c.Request.Context(), f.OwnerType, f.OwnerID, id, p.Actions, parseGrantTime(p.ValidTo)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.invalidate(c)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// Reorder persists drag-reordering of siblings (no ACL impact).
+func (h *AccessTreeHandler) Reorder(c *gin.Context) {
+	var p struct {
+		Kind string   `json:"kind"` // "folder" | "item"
+		IDs  []uint64 `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var err error
+	if p.Kind == "folder" {
+		err = h.Folders.SetSortOrder(c.Request.Context(), p.IDs)
+	} else {
+		err = h.Items.SetSortOrder(c.Request.Context(), p.IDs)
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *AccessTreeHandler) ListTemplates(c *gin.Context) {
+	rows, err := h.Templates.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"templates": rows})
+}
+
+// CreateTemplate makes a named template, optionally seeded from an object's tree.
+func (h *AccessTreeHandler) CreateTemplate(c *gin.Context) {
+	var p struct {
+		Name          string            `json:"name"`
+		Description   string            `json:"description"`
+		FromOwnerType model.GranteeType `json:"from_owner_type"`
+		FromOwnerID   uint64            `json:"from_owner_id"`
+	}
+	if err := c.ShouldBindJSON(&p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "模板名称必填"})
+		return
+	}
+	claims := auth.FromContext(c.Request.Context())
+	t := &model.AccessTemplate{Name: p.Name, Description: p.Description}
+	if claims != nil {
+		t.CreatedBy = claims.UserID
+	}
+	if err := h.Templates.Create(c.Request.Context(), t); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if validOwnerType(p.FromOwnerType) && p.FromOwnerID != 0 {
+		_ = h.Folders.CopyTree(c.Request.Context(), p.FromOwnerType, p.FromOwnerID, model.OwnerTemplate, t.ID)
+	}
+	c.JSON(http.StatusCreated, t)
+}
+
+func (h *AccessTreeHandler) DeleteTemplate(c *gin.Context) {
+	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err := h.Templates.Delete(c.Request.Context(), id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	_ = h.Folders.PurgeOwner(c.Request.Context(), model.OwnerTemplate, id)
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

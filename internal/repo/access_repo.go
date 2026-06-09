@@ -137,6 +137,117 @@ func (r *AccessFolderRepo) moveTx(tx *gorm.DB, id uint64, newParent *uint64) err
 	return nil
 }
 
+// SetSortOrder writes sort_order = index for the given folder ids (drag reorder).
+func (r *AccessFolderRepo) SetSortOrder(ctx context.Context, ids []uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i, id := range ids {
+			if err := tx.Model(&model.AccessFolder{}).Where("id = ?", id).Update("sort_order", i).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ApplySubtreePerm sets actions + validity on a folder and everything beneath it
+// (descendant folders + the items in them) in one transaction — "应用到整棵子树".
+func (r *AccessFolderRepo) ApplySubtreePerm(ctx context.Context, ownerType model.GranteeType, ownerID, folderID uint64, actions string, validTo *time.Time) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var f model.AccessFolder
+		if err := tx.First(&f, folderID).Error; err != nil {
+			return err
+		}
+		path := f.Path
+		if path == "" {
+			path = fmt.Sprint(folderID)
+		}
+		var subtree []model.AccessFolder
+		if err := tx.Where("owner_type = ? AND owner_id = ?", ownerType, ownerID).
+			Where("path = ? OR path LIKE ?", path, path+"/%").Find(&subtree).Error; err != nil {
+			return err
+		}
+		ids := make([]uint64, 0, len(subtree))
+		for _, s := range subtree {
+			ids = append(ids, s.ID)
+		}
+		if len(ids) == 0 {
+			ids = []uint64{folderID}
+		}
+		upd := map[string]any{"actions": actions, "valid_to": validTo}
+		if err := tx.Model(&model.AccessFolder{}).Where("id IN ?", ids).Updates(upd).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.AccessItem{}).Where("folder_id IN ?", ids).Updates(upd).Error
+	})
+}
+
+// CopyTree deep-copies every folder + item from one owner into another (remaps
+// parent ids, recomputes paths). Powers 从对象/模板复制目录 and 存为模板.
+func (r *AccessFolderRepo) CopyTree(ctx context.Context, srcType model.GranteeType, srcID uint64, dstType model.GranteeType, dstID uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var folders []model.AccessFolder
+		// path order guarantees a parent is created before its children.
+		if err := tx.Where("owner_type = ? AND owner_id = ?", srcType, srcID).Order("path").Find(&folders).Error; err != nil {
+			return err
+		}
+		var items []model.AccessItem
+		if err := tx.Where("owner_type = ? AND owner_id = ?", srcType, srcID).Find(&items).Error; err != nil {
+			return err
+		}
+		idMap := make(map[uint64]uint64, len(folders))
+		for _, f := range folders {
+			nf := model.AccessFolder{
+				OwnerType: dstType, OwnerID: dstID, Name: f.Name, Icon: f.Icon, SortOrder: f.SortOrder,
+				Actions: f.Actions, ValidFrom: f.ValidFrom, ValidTo: f.ValidTo,
+			}
+			if f.ParentID != nil {
+				if np, ok := idMap[*f.ParentID]; ok {
+					nf.ParentID = &np
+				}
+			}
+			if err := tx.Create(&nf).Error; err != nil {
+				return err
+			}
+			path := fmt.Sprint(nf.ID)
+			if nf.ParentID != nil {
+				var p model.AccessFolder
+				if err := tx.First(&p, *nf.ParentID).Error; err == nil && p.Path != "" {
+					path = p.Path + "/" + fmt.Sprint(nf.ID)
+				}
+			}
+			if err := tx.Model(&model.AccessFolder{}).Where("id = ?", nf.ID).Update("path", path).Error; err != nil {
+				return err
+			}
+			idMap[f.ID] = nf.ID
+		}
+		for _, it := range items {
+			nfid, ok := idMap[it.FolderID]
+			if !ok {
+				continue
+			}
+			ni := model.AccessItem{
+				OwnerType: dstType, OwnerID: dstID, FolderID: nfid, NodeID: it.NodeID,
+				Actions: it.Actions, ValidFrom: it.ValidFrom, ValidTo: it.ValidTo, SortOrder: it.SortOrder, CreatedAt: time.Now(),
+			}
+			if err := tx.Create(&ni).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// PurgeOwner removes an owner's whole tree (folders + items) — used when a
+// template is deleted.
+func (r *AccessFolderRepo) PurgeOwner(ctx context.Context, ownerType model.GranteeType, ownerID uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("owner_type = ? AND owner_id = ?", ownerType, ownerID).Delete(&model.AccessItem{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("owner_type = ? AND owner_id = ?", ownerType, ownerID).Delete(&model.AccessFolder{}).Error
+	})
+}
+
 // Delete removes a folder AND its whole subtree (descendant folders + the items
 // inside them). It does NOT promote children — a folder carries grants, and
 // promoting would silently re-scope access.
@@ -225,4 +336,42 @@ func (r *AccessItemRepo) ListByNode(ctx context.Context, nodeID uint64) ([]model
 // PurgeNode drops every item referencing a node — called when a node is deleted.
 func (r *AccessItemRepo) PurgeNode(ctx context.Context, nodeID uint64) error {
 	return r.db.WithContext(ctx).Where("node_id = ?", nodeID).Delete(&model.AccessItem{}).Error
+}
+
+// SetSortOrder writes sort_order = index for the given item ids (drag reorder).
+func (r *AccessItemRepo) SetSortOrder(ctx context.Context, ids []uint64) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for i, id := range ids {
+			if err := tx.Model(&model.AccessItem{}).Where("id = ?", id).Update("sort_order", i).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ----- AccessTemplate -----
+
+type AccessTemplateRepo struct{ db *gorm.DB }
+
+func NewAccessTemplateRepo(db *gorm.DB) *AccessTemplateRepo { return &AccessTemplateRepo{db: db} }
+
+func (r *AccessTemplateRepo) Create(ctx context.Context, t *model.AccessTemplate) error {
+	return r.db.WithContext(ctx).Create(t).Error
+}
+func (r *AccessTemplateRepo) Delete(ctx context.Context, id uint64) error {
+	return r.db.WithContext(ctx).Delete(&model.AccessTemplate{}, id).Error
+}
+func (r *AccessTemplateRepo) List(ctx context.Context) ([]model.AccessTemplate, error) {
+	var out []model.AccessTemplate
+	err := r.db.WithContext(ctx).Order("id DESC").Find(&out).Error
+	return out, err
+}
+func (r *AccessTemplateRepo) FindByID(ctx context.Context, id uint64) (*model.AccessTemplate, error) {
+	var t model.AccessTemplate
+	err := r.db.WithContext(ctx).First(&t, id).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	return &t, err
 }

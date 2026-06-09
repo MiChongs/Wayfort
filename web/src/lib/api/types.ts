@@ -1573,6 +1573,14 @@ export interface AccessTreeData {
   folders: AccessFolder[]
   items: AccessItem[]
 }
+// A named, reusable directory blueprint (cloned onto an object on demand).
+export interface AccessTemplate {
+  id: number
+  name: string
+  description?: string
+  created_by?: number
+  created_at?: string
+}
 // Workspace "我的目录" payload (GET /me/directory) — merged across the user's
 // own / inherited trees, filtered to connectable nodes and pruned server-side.
 export interface MyDirFolder {

@@ -222,6 +222,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	grantRepo := repo.NewGrantRepo(db)
 	accessFolderRepo := repo.NewAccessFolderRepo(db)
 	accessItemRepo := repo.NewAccessItemRepo(db)
+	accessTemplateRepo := repo.NewAccessTemplateRepo(db)
 	favoriteRepo := repo.NewFavoriteRepo(db)
 	recentRepo := repo.NewRecentRepo(db)
 
@@ -467,7 +468,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		TagGroup:   &api.TagGroupHandler{Repo: tagGroupRepo},
 		Grant:      &api.GrantHandler{Repo: grantRepo, Resolver: assetResolver},
 		AccessTree: &api.AccessTreeHandler{
-			Folders: accessFolderRepo, Items: accessItemRepo, Nodes: nodeRepo, Resolver: assetResolver,
+			Folders: accessFolderRepo, Items: accessItemRepo, Templates: accessTemplateRepo,
+			Nodes: nodeRepo, Resolver: assetResolver,
 		},
 		Me: &api.MeHandler{
 			Users: userRepo, MFA: mfaRepo, WebAuthn: passkeySvc, TOTP: totpSvc,

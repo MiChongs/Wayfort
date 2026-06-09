@@ -514,6 +514,12 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/access-tree/items", perm(auth.PermGrantManage), rt.AccessTree.AddItems)
 		admin.PATCH("/access-tree/items/:id", perm(auth.PermGrantManage), rt.AccessTree.UpdateItem)
 		admin.DELETE("/access-tree/items/:id", perm(auth.PermGrantManage), rt.AccessTree.DeleteItem)
+		admin.POST("/access-tree/folders/:id/apply-subtree", perm(auth.PermGrantManage), rt.AccessTree.ApplySubtree)
+		admin.POST("/access-tree/clone", perm(auth.PermGrantManage), rt.AccessTree.Clone)
+		admin.POST("/access-tree/reorder", perm(auth.PermGrantManage), rt.AccessTree.Reorder)
+		admin.GET("/access-templates", perm(auth.PermGrantManage), rt.AccessTree.ListTemplates)
+		admin.POST("/access-templates", perm(auth.PermGrantManage), rt.AccessTree.CreateTemplate)
+		admin.DELETE("/access-templates/:id", perm(auth.PermGrantManage), rt.AccessTree.DeleteTemplate)
 
 		// OIDC client management
 		if rt.OIDCClient != nil {

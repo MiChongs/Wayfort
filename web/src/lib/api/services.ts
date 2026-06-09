@@ -34,6 +34,7 @@ import type {
   AssetTagGroup,
   AccessFolder,
   AccessItem,
+  AccessTemplate,
   AccessTreeData,
   MyDirectory,
   GranteeKind,
@@ -1285,6 +1286,25 @@ export const accessTreeService = {
     body: { actions?: string; valid_from?: string; valid_to?: string; folder_id?: number },
   ) => api<AccessItem>("PATCH", `/access-tree/items/${id}`, { body }),
   removeItem: (id: number) => api<void>("DELETE", `/access-tree/items/${id}`),
+
+  // push a folder's permission + validity down its whole subtree
+  applySubtree: (id: number, body: { actions: string; valid_to: string }) =>
+    api<void>("POST", `/access-tree/folders/${id}/apply-subtree`, { body }),
+  // deep-copy one owner's / template's tree onto another object
+  clone: (body: {
+    from_owner_type: GranteeKind | "template"
+    from_owner_id: number
+    to_owner_type: GranteeKind | "template"
+    to_owner_id: number
+  }) => api<void>("POST", "/access-tree/clone", { body }),
+  // persist drag-reordering of siblings
+  reorder: (kind: "folder" | "item", ids: number[]) =>
+    api<void>("POST", "/access-tree/reorder", { body: { kind, ids } }),
+
+  listTemplates: () => api<{ templates: AccessTemplate[] }>("GET", "/access-templates"),
+  createTemplate: (body: { name: string; description?: string; from_owner_type?: GranteeKind; from_owner_id?: number }) =>
+    api<AccessTemplate>("POST", "/access-templates", { body }),
+  removeTemplate: (id: number) => api<void>("DELETE", `/access-templates/${id}`),
 }
 
 // ----- OIDC -----

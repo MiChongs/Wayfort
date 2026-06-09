@@ -116,6 +116,7 @@ func AutoMigrate(db *gorm.DB) error {
 		// set as AssetGrant, members inherit their group / department tree.
 		&model.AccessFolder{},
 		&model.AccessItem{},
+		&model.AccessTemplate{},
 
 		// MFA / Passkey / auth audit
 		&model.UserMFA{},
