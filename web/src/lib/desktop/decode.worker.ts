@@ -439,69 +439,26 @@ async function decodeBgraFrame(
   return { frame, bitmap, decoderPath: "imagebitmap" }
 }
 
+// JS fallback decode — reached only when BOTH ImageDecoder and
+// createImageBitmap are unavailable at runtime. Uses jSquash (the Squoosh WASM
+// codecs): markedly faster than the pure-JS jpeg-js / fast-png it replaces, and
+// each returns an RGBA ImageData directly so no manual channel normalisation is
+// needed. The WASM is dynamically imported on first use so it never sits in the
+// worker's baseline memory.
 async function decodeEncodedImage(
   bytes: Uint8Array,
   encoding: Extract<Encoding, "jpeg" | "png">,
 ): Promise<ImageData> {
+  // jSquash decode takes a tight ArrayBuffer; reuse the payload's buffer when it
+  // already spans it exactly, else copy the view into one.
+  const ab: ArrayBuffer =
+    bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+      ? (bytes.buffer as ArrayBuffer)
+      : (bytes.slice().buffer as ArrayBuffer)
   if (encoding === "jpeg") {
-    const { decode: decodeJpeg } = await import("jpeg-js")
-    const jpeg = decodeJpeg(bytes, {
-      colorTransform: true,
-      formatAsRGBA: true,
-      maxMemoryUsageInMB: 256,
-      maxResolutionInMP: 64,
-      tolerantDecoding: true,
-      useTArray: true,
-    })
-    return new ImageData(new Uint8ClampedArray(jpeg.data), jpeg.width, jpeg.height)
+    const { decode } = await import("@jsquash/jpeg")
+    return await decode(ab)
   }
-
-  const { decode: decodePng } = await import("fast-png")
-  const png = decodePng(bytes)
-  return new ImageData(
-    normalizePngData(png.data, png.width, png.height, png.channels, png.depth),
-    png.width,
-    png.height,
-  )
-}
-
-function normalizePngData(
-  data: Uint8Array | Uint8ClampedArray | Uint16Array,
-  width: number,
-  height: number,
-  channels: number,
-  depth: number,
-) {
-  const pixels = width * height
-  const rgba = new Uint8ClampedArray(pixels * 4)
-  const max = depth >= 16 ? 65535 : (1 << depth) - 1
-
-  for (let i = 0; i < pixels; i++) {
-    const src = i * channels
-    const dst = i * 4
-    if (channels === 1) {
-      const gray = scaleSample(data[src], max)
-      rgba[dst] = gray
-      rgba[dst + 1] = gray
-      rgba[dst + 2] = gray
-      rgba[dst + 3] = 255
-    } else if (channels === 2) {
-      const gray = scaleSample(data[src], max)
-      rgba[dst] = gray
-      rgba[dst + 1] = gray
-      rgba[dst + 2] = gray
-      rgba[dst + 3] = scaleSample(data[src + 1], max)
-    } else {
-      rgba[dst] = scaleSample(data[src], max)
-      rgba[dst + 1] = scaleSample(data[src + 1], max)
-      rgba[dst + 2] = scaleSample(data[src + 2], max)
-      rgba[dst + 3] = channels >= 4 ? scaleSample(data[src + 3], max) : 255
-    }
-  }
-  return rgba
-}
-
-function scaleSample(value: number, max: number) {
-  if (max === 255) return value
-  return Math.round((value / max) * 255)
+  const { decode } = await import("@jsquash/png")
+  return await decode(ab)
 }

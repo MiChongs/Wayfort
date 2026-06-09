@@ -129,7 +129,13 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
   let destroyed = false
   let decodeSeq = 0
   const decodeRequests = new Map<number, DecodeRequest>()
-  const decodeWorker = createDecodeWorker(
+  // Decode worker pool. A batch's stateless rects (raw/zlib/zstd BGRA, JPEG, PNG)
+  // are split across workers to use multiple cores; H.264 batches stay whole on
+  // worker 0 because the VideoDecoder is stateful (deltas reference frames only
+  // it remembers). Capped at 4 like the worker-side encode pool.
+  const poolSize = Math.max(1, Math.min(4, (globalThis.navigator?.hardwareConcurrency ?? 4) - 1))
+  const decodeWorkers = createDecodeWorkers(
+    poolSize,
     (message) => emitError(message),
     decodeRequests,
     () => {
@@ -379,20 +385,38 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
     }
   }
 
-  function decodeBatch(batch: FrameBytes[]) {
-    if (!decodeWorker) {
+  function decodeBatch(batch: FrameBytes[]): Promise<DecodedFrame[]> {
+    if (decodeWorkers.length === 0) {
       return Promise.reject(new Error("desktop decode worker unavailable"))
     }
-    const id = ++decodeSeq
-    const transfer = uniquePayloadTransferList(batch)
     // On the WebGPU surface, ask the worker for raw BGRA bytes (no swap, no
-    // ImageBitmap) for raw_bgra/zlib_bgra frames; Canvas 2D wants the swapped
+    // ImageBitmap) for raw/zlib/zstd BGRA frames; Canvas 2D wants the swapped
     // ImageBitmap as before.
     const gpu = surface?.wantsRawBGRA === true
+    const hasH264 = batch.some((f) => f.frame.encoding === "h264")
+    // Whole batch on worker 0 when there's nothing to parallelise, or an H.264
+    // frame pins the batch to the stateful decoder there.
+    if (decodeWorkers.length === 1 || batch.length <= 1 || hasH264) {
+      return decodeOn(0, batch, gpu)
+    }
+    // Split the stateless batch into contiguous chunks (one per worker): order is
+    // preserved within each chunk and across chunks (concatenated in order), so
+    // overlapping dirty rects still composite last-writer-wins correctly.
+    const n = Math.min(decodeWorkers.length, batch.length)
+    const chunkSize = Math.ceil(batch.length / n)
+    const chunks: FrameBytes[][] = []
+    for (let i = 0; i < batch.length; i += chunkSize) chunks.push(batch.slice(i, i + chunkSize))
+    return Promise.all(chunks.map((c, i) => decodeOn(i, c, gpu))).then((parts) => parts.flat())
+  }
+
+  function decodeOn(workerIdx: number, batch: FrameBytes[], gpu: boolean): Promise<DecodedFrame[]> {
+    const worker = decodeWorkers[workerIdx] ?? decodeWorkers[0]
+    const id = ++decodeSeq
+    const transfer = uniquePayloadTransferList(batch)
     return new Promise<DecodedFrame[]>((resolve, reject) => {
       decodeRequests.set(id, { resolve, reject })
       try {
-        decodeWorker.postMessage({ type: "decode", id, frames: batch, gpu }, transfer)
+        worker.postMessage({ type: "decode", id, frames: batch, gpu }, transfer)
       } catch (error) {
         decodeRequests.delete(id)
         reject(error instanceof Error ? error : new Error(String(error)))
@@ -461,13 +485,13 @@ export function createRenderer(initialW: number, initialH: number): CanvasRender
         request.reject(new Error("renderer destroyed"))
       }
       decodeRequests.clear()
-      if (decodeWorker) {
+      for (const worker of decodeWorkers) {
         try {
-          decodeWorker.postMessage({ type: "close" })
+          worker.postMessage({ type: "close" })
         } catch {
           /* ignore */
         }
-        decodeWorker.terminate()
+        worker.terminate()
       }
       resizeCbs.length = 0
       cursorCbs.length = 0
@@ -559,6 +583,20 @@ function createCanvas2DSurface(
       /* the 2D context is released when the canvas element is removed. */
     },
   }
+}
+
+function createDecodeWorkers(
+  count: number,
+  emitError: (message: string) => void,
+  requests: Map<number, DecodeRequest>,
+  emitRefreshNeeded: () => void,
+): Worker[] {
+  const workers: Worker[] = []
+  for (let i = 0; i < count; i++) {
+    const w = createDecodeWorker(emitError, requests, emitRefreshNeeded)
+    if (w) workers.push(w)
+  }
+  return workers
 }
 
 function createDecodeWorker(
