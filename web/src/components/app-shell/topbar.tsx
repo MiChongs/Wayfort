@@ -44,6 +44,8 @@ const PATH_LABELS: Record<string, string> = {
   "/admin/oidc-clients": "OIDC 客户端",
   "/admin/ai/providers": "AI 提供商",
   "/admin/ai/agents": "AI Agent",
+  "/admin/ai/knowledge": "AI 知识库",
+  "/admin/ai/memory": "AI 记忆",
   "/admin/ai/usage": "AI 用量",
   "/admin/audit": "审计日志",
 }

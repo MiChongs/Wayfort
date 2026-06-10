@@ -18,19 +18,28 @@ import {
 import {
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle,
 } from "@/components/ui/sheet"
-import { aiAgentService, aiProviderService } from "@/lib/api/services"
+import { aiAgentService, aiKnowledgeService, aiProviderService } from "@/lib/api/services"
 import { AgentAvatar } from "@/components/ai/agent-avatar"
 import { IconPicker } from "@/components/icons/icon-picker"
 import { DataTable, type Column } from "@/components/common/data-table"
 import { ToolMultiSelect } from "@/components/ai/agent-form/tool-multiselect"
+import { KbMultiSelect } from "@/components/ai/agent-form/kb-multiselect"
 import { Badge } from "@/components/ui/badge"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
-import type { AIAgent, AIProvider, AITool, PermissionMode } from "@/lib/api/types"
+import type { AIAgent, AIKnowledgeBase, AIProvider, AITool, PermissionMode } from "@/lib/api/types"
 import { confirmDialog } from "@/components/common/confirm-dialog"
 
 function parseList(s: string): string[] {
   if (!s) return []
   try { return JSON.parse(s) as string[] } catch { return s.split(",").filter(Boolean) }
+}
+
+function parseNumList(s?: string): number[] {
+  if (!s) return []
+  try {
+    const v = JSON.parse(s)
+    return Array.isArray(v) ? v.map(Number).filter((n) => !Number.isNaN(n)) : []
+  } catch { return [] }
 }
 
 export default function AIAgentsPage() {
@@ -39,6 +48,7 @@ export default function AIAgentsPage() {
   const list = useQuery({ queryKey: ["ai", "agents"], queryFn: aiAgentService.list })
   const providers = useQuery({ queryKey: ["ai", "providers"], queryFn: aiProviderService.list })
   const tools = useQuery({ queryKey: ["ai", "tools"], queryFn: aiAgentService.tools })
+  const kbs = useQuery({ queryKey: ["ai", "knowledge-bases"], queryFn: aiKnowledgeService.listKBs })
   const remove = useMutation({
     mutationFn: (id: number) => aiAgentService.remove(id),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["ai", "agents"] }); toast.success("已删除") },
@@ -88,6 +98,7 @@ export default function AIAgentsPage() {
         <CreateDialog
           providers={providers.data?.providers || []}
           tools={tools.data?.tools || []}
+          knowledgeBases={kbs.data?.knowledge_bases || []}
           canBeGlobal={!!me?.adm}
           onCreated={() => qc.invalidateQueries({ queryKey: ["ai", "agents"] })}
         />
@@ -98,6 +109,7 @@ export default function AIAgentsPage() {
           agent={editing}
           providers={providers.data?.providers || []}
           tools={tools.data?.tools || []}
+          knowledgeBases={kbs.data?.knowledge_bases || []}
           canBeGlobal={!!me?.adm}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); qc.invalidateQueries({ queryKey: ["ai", "agents"] }) }}
@@ -108,10 +120,11 @@ export default function AIAgentsPage() {
 }
 
 function CreateDialog({
-  providers, tools, canBeGlobal, onCreated,
+  providers, tools, knowledgeBases, canBeGlobal, onCreated,
 }: {
   providers: AIProvider[]
   tools: AITool[]
+  knowledgeBases: AIKnowledgeBase[]
   canBeGlobal: boolean
   onCreated: () => void
 }) {
@@ -122,9 +135,14 @@ function CreateDialog({
     is_sub_agent: false, allowed_tools: "[]", enabled: true,
   })
   const [selectedTools, setSelectedTools] = React.useState<string[]>([])
+  const [selectedKBs, setSelectedKBs] = React.useState<number[]>([])
 
   const create = useMutation({
-    mutationFn: () => aiAgentService.create({ ...a, allowed_tools: JSON.stringify(selectedTools) }),
+    mutationFn: () => aiAgentService.create({
+      ...a,
+      allowed_tools: JSON.stringify(selectedTools),
+      knowledge_base_ids: JSON.stringify(selectedKBs),
+    }),
     onSuccess: () => { setOpen(false); onCreated(); toast.success("已创建 Agent") },
     onError: (e: unknown) => toast.error("创建失败", { description: (e as Error).message }),
   })
@@ -137,7 +155,8 @@ function CreateDialog({
         <AgentFormFields
           a={a} setA={setA}
           selectedTools={selectedTools} setSelectedTools={setSelectedTools}
-          tools={tools} providers={providers} canBeGlobal={canBeGlobal}
+          selectedKBs={selectedKBs} setSelectedKBs={setSelectedKBs}
+          tools={tools} providers={providers} knowledgeBases={knowledgeBases} canBeGlobal={canBeGlobal}
         />
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>取消</Button>
@@ -149,19 +168,25 @@ function CreateDialog({
 }
 
 function EditAgentSheet({
-  agent, providers, tools, canBeGlobal, onClose, onSaved,
+  agent, providers, tools, knowledgeBases, canBeGlobal, onClose, onSaved,
 }: {
   agent: AIAgent
   providers: AIProvider[]
   tools: AITool[]
+  knowledgeBases: AIKnowledgeBase[]
   canBeGlobal: boolean
   onClose: () => void
   onSaved: () => void
 }) {
   const [a, setA] = React.useState<Partial<AIAgent>>({ ...agent })
   const [selectedTools, setSelectedTools] = React.useState<string[]>(parseList(agent.allowed_tools))
+  const [selectedKBs, setSelectedKBs] = React.useState<number[]>(parseNumList(agent.knowledge_base_ids))
   const save = useMutation({
-    mutationFn: () => aiAgentService.update(agent.id, { ...a, allowed_tools: JSON.stringify(selectedTools) }),
+    mutationFn: () => aiAgentService.update(agent.id, {
+      ...a,
+      allowed_tools: JSON.stringify(selectedTools),
+      knowledge_base_ids: JSON.stringify(selectedKBs),
+    }),
     onSuccess: () => { toast.success("已保存"); onSaved() },
     onError: (e: unknown) => toast.error("保存失败", { description: (e as Error).message }),
   })
@@ -177,7 +202,8 @@ function EditAgentSheet({
         <AgentFormFields
           a={a} setA={setA}
           selectedTools={selectedTools} setSelectedTools={setSelectedTools}
-          tools={tools} providers={providers} canBeGlobal={canBeGlobal}
+          selectedKBs={selectedKBs} setSelectedKBs={setSelectedKBs}
+          tools={tools} providers={providers} knowledgeBases={knowledgeBases} canBeGlobal={canBeGlobal}
         />
         <div className="flex justify-end gap-2 mt-4">
           <Button variant="outline" onClick={onClose}>取消</Button>
@@ -189,14 +215,17 @@ function EditAgentSheet({
 }
 
 function AgentFormFields({
-  a, setA, selectedTools, setSelectedTools, tools, providers, canBeGlobal,
+  a, setA, selectedTools, setSelectedTools, selectedKBs, setSelectedKBs, tools, providers, knowledgeBases, canBeGlobal,
 }: {
   a: Partial<AIAgent>
   setA: (a: Partial<AIAgent>) => void
   selectedTools: string[]
   setSelectedTools: (t: string[]) => void
+  selectedKBs: number[]
+  setSelectedKBs: (ids: number[]) => void
   tools: AITool[]
   providers: AIProvider[]
+  knowledgeBases: AIKnowledgeBase[]
   canBeGlobal: boolean
 }) {
   return (
@@ -284,6 +313,10 @@ function AgentFormFields({
           <Switch checked={a.enabled ?? true} onCheckedChange={(v) => setA({ ...a, enabled: v })} />
           <Label>启用</Label>
         </div>
+        <div className="flex items-center gap-2">
+          <Switch checked={!!a.memory_enabled} onCheckedChange={(v) => setA({ ...a, memory_enabled: v })} />
+          <Label>跨会话长期记忆</Label>
+        </div>
       </div>
       {a.is_sub_agent && (
         <div className="space-y-1">
@@ -298,6 +331,11 @@ function AgentFormFields({
       <div className="space-y-1.5">
         <Label>允许的工具</Label>
         <ToolMultiSelect tools={tools} selected={selectedTools} onChange={setSelectedTools} />
+      </div>
+      <div className="space-y-1.5">
+        <Label>知识库（RAG）</Label>
+        <p className="text-xs text-muted-foreground">挂载后，本智能体可用 knowledge_search 在其中语义检索。</p>
+        <KbMultiSelect knowledgeBases={knowledgeBases} selected={selectedKBs} onChange={setSelectedKBs} />
       </div>
     </div>
   )

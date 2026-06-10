@@ -34,9 +34,14 @@ type ToolCtx struct {
 	UserID   uint64
 	Username string
 	ConvID   string
-	Audit    *audit.Writer
-	Asset    *asset.Resolver
-	RBAC     *auth.Resolver
+	// AgentID is the running agent's id; KnowledgeBaseIDs is its attached set of
+	// knowledge bases (parsed from AIAgent.KnowledgeBaseIDs). knowledge_search /
+	// distill_resolution use these to scope retrieval/writes without a DB lookup.
+	AgentID          uint64
+	KnowledgeBaseIDs []uint64
+	Audit            *audit.Writer
+	Asset            *asset.Resolver
+	RBAC             *auth.Resolver
 	// Stream, when non-nil, lets a long-running tool push partial output to the
 	// live UI as it is produced (e.g. ssh_exec streaming command output). The
 	// final returned string is still the authoritative result fed to the model.

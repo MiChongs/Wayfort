@@ -49,6 +49,7 @@ const (
 	PermAIAgentGlobal   = "ai:agent:global"  // create global agents (admin)
 	PermAIProviderUser  = "ai:provider:user" // configure personal providers
 	PermAIProviderGlobal = "ai:provider:global" // configure global providers (admin)
+	PermAIKnowledge     = "ai:knowledge"     // manage knowledge bases + documents (admin)
 
 	// Server-management — gated mutations exposed by workspace v2 panels.
 	// Reads (status / list rules / list containers) require ActionConnect on
@@ -115,6 +116,7 @@ var AllPermissions = []struct {
 	{PermAIAgentGlobal, "ai", "创建/管理全局 AI agent（管理员）"},
 	{PermAIProviderUser, "ai", "配置个人 AI 提供商"},
 	{PermAIProviderGlobal, "ai", "配置全局 AI 提供商（管理员）"},
+	{PermAIKnowledge, "ai", "管理 AI 知识库与文档（管理员）"},
 	{PermFirewallManage, "ops", "修改节点防火墙规则"},
 	{PermDockerManage, "ops", "启停 / 删除节点 Docker 容器"},
 	{PermServiceManage, "ops", "启停 / 启用节点 systemd 服务"},
@@ -183,7 +185,7 @@ var adminTierPerms = []string{
 	PermKernelManage, PermSysUserManage, PermNetworkManage, PermWireGuardManage, PermSecurityManage,
 	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
 	PermApprovalSubscribeManage, PermApprovalAuditRead,
-	PermAIAgentGlobal, PermAIProviderGlobal,
+	PermAIAgentGlobal, PermAIProviderGlobal, PermAIKnowledge,
 }
 
 // TierFor classifies a permission set into one of the three access tiers.

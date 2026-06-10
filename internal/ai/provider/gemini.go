@@ -99,6 +99,51 @@ func (p *GeminiProvider) Ping(ctx context.Context) error {
 	return err
 }
 
+// Embed calls Gemini's EmbedContent in one batch (one Content per input).
+func (p *GeminiProvider) Embed(ctx context.Context, req EmbedRequest) (EmbedResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = p.defaultModel
+	}
+	if model == "" {
+		return EmbedResponse{}, errors.New("gemini: embedding model not specified")
+	}
+	if len(req.Inputs) == 0 {
+		return EmbedResponse{}, errors.New("gemini: no inputs to embed")
+	}
+	contents := make([]*genai.Content, 0, len(req.Inputs))
+	for _, in := range req.Inputs {
+		contents = append(contents, genai.NewContentFromText(in, genai.RoleUser))
+	}
+	var cfg *genai.EmbedContentConfig
+	if req.Dimensions > 0 {
+		d := int32(req.Dimensions)
+		cfg = &genai.EmbedContentConfig{OutputDimensionality: &d}
+	}
+	resp, err := p.client.Models.EmbedContent(ctx, model, contents, cfg)
+	if err != nil {
+		return EmbedResponse{}, err
+	}
+	vectors := make([][]float32, 0, len(resp.Embeddings))
+	for _, e := range resp.Embeddings {
+		if e == nil {
+			vectors = append(vectors, nil)
+			continue
+		}
+		v := make([]float32, len(e.Values))
+		copy(v, e.Values)
+		vectors = append(vectors, v)
+	}
+	dim := 0
+	for _, v := range vectors {
+		if len(v) > 0 {
+			dim = len(v)
+			break
+		}
+	}
+	return EmbedResponse{Vectors: vectors, Model: model, Dimension: dim}, nil
+}
+
 func (p *GeminiProvider) Stream(ctx context.Context, req Request) (<-chan Event, error) {
 	model := req.Model
 	if model == "" {

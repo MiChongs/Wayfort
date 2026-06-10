@@ -86,6 +86,13 @@ func (p *AnthropicProvider) Ping(ctx context.Context) error {
 	return err
 }
 
+// Embed is unsupported: Anthropic has no embeddings API. Callers must designate
+// a different provider (OpenAI / Gemini / an openai_compatible gateway such as
+// Voyage) for embeddings — see provider.EmbeddingResolver.
+func (p *AnthropicProvider) Embed(ctx context.Context, req EmbedRequest) (EmbedResponse, error) {
+	return EmbedResponse{}, ErrUnsupported
+}
+
 func (p *AnthropicProvider) Stream(ctx context.Context, req Request) (<-chan Event, error) {
 	model := req.Model
 	if model == "" {

@@ -43,6 +43,14 @@ type Config struct {
 	// runaway loops, alongside no-progress detection.
 	MaxAgenticIterations int
 	WallClockBudget      time.Duration
+	// MemoryEnabled is the global switch for cross-session long-term memory.
+	// Memory is recalled/written only when this is true AND the agent has
+	// MemoryEnabled set AND a Memory service is wired.
+	MemoryEnabled bool
+	// DistillationEnabled additionally runs a cheap post-turn model call that
+	// extracts durable facts/preferences from the transcript into long-term
+	// memory automatically (the explicit `remember` tool works either way).
+	DistillationEnabled bool
 }
 
 func (c Config) withDefaults() Config {
@@ -96,11 +104,23 @@ type Factory struct {
 	// no enforcement (every call allowed).
 	Limiter *ratelimit.Limiter
 
+	// Memory recalls + writes cross-session long-term memory. Set by ai.New; nil
+	// disables memory regardless of agent/config flags.
+	Memory MemoryRecaller
+
 	mu      sync.Mutex
 	running map[string]*activeRun
 
 	capMu     sync.Mutex
 	modelCaps map[string]provider.ModelCapabilities // "kind:model" → full capability descriptor
+}
+
+// MemoryRecaller is the runner's view of the long-term memory service
+// (implemented by knowledge.MemoryService). Kept as an interface so the runner
+// doesn't import the knowledge package.
+type MemoryRecaller interface {
+	Recall(ctx context.Context, userID, agentID uint64, query string) ([]aimodel.AgentMemory, error)
+	Remember(ctx context.Context, userID, agentID uint64, kind aimodel.MemoryKind, content, convID string) (*aimodel.AgentMemory, error)
 }
 
 type activeRun struct {
@@ -396,7 +416,14 @@ func (f *Factory) execute(ctx context.Context, conv *aimodel.AIConversation, age
 	conv.Status = aimodel.ConvStatusRunning
 	_ = f.Conv.Update(ctx, conv)
 
-	return f.executeLoop(ctx, conv, agent, prov, sink, active, mode, depth)
+	err := f.executeLoop(ctx, conv, agent, prov, sink, active, mode, depth)
+	// Post-turn memory distillation: only for top-level turns that carried real
+	// user input, and detached from the request context (the turn is over).
+	if depth == 0 && strings.TrimSpace(userInput) != "" &&
+		f.Cfg.DistillationEnabled && f.memoryActive(agent) {
+		go f.distillMemories(conv, agent)
+	}
+	return err
 }
 
 // executeLoop runs the model+tool loop over the conversation's current tail. It
@@ -453,10 +480,14 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 		} else {
 			allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
 		}
+		if f.memoryActive(agent) {
+			allowedTools = ensureTool(allowedTools, tools.RememberToolName)
+		}
 	} else {
 		allowedTools = stripTool(allowedTools, tools.AskUserToolName)
 		allowedTools = stripTool(allowedTools, tools.ExitPlanModeToolName)
 		allowedTools = stripTool(allowedTools, tools.UpdatePlanToolName)
+		allowedTools = stripTool(allowedTools, tools.RememberToolName)
 	}
 	// Resolve the model's capabilities once per turn and gate request features.
 	caps := f.Capabilities(ctx, prov, conv.Model)
@@ -474,6 +505,9 @@ func (f *Factory) executeLoop(ctx context.Context, conv *aimodel.AIConversation,
 	systemPrompt := agent.SystemPrompt
 	if depth == 0 {
 		systemPrompt += "\n\n" + interactionGuidance(mode)
+		if recalled := f.recallMemory(ctx, conv, agent, messages); recalled != "" {
+			systemPrompt += "\n\n" + recalled
+		}
 	}
 
 	gate := &tools.PermissionGate{
@@ -871,6 +905,8 @@ func (f *Factory) runOneTool(ctx context.Context, conv *aimodel.AIConversation, 
 		return f.handleExitPlanMode(ctx, conv, tc, sink, active, gate, parentMsgID)
 	case tools.UpdatePlanToolName:
 		return f.handleUpdatePlan(ctx, conv, tc, sink)
+	case tools.RememberToolName:
+		return f.handleRemember(ctx, conv, agent, tc)
 	}
 	tool := f.Tools.Get(tc.Name)
 	if tool == nil {
@@ -1750,10 +1786,203 @@ func buildApprovalSummary(toolName, raw string) string {
 	return fmt.Sprintf("调用工具 %s", toolName)
 }
 
-func makeToolCtx(ctx context.Context, conv *aimodel.AIConversation, _ *aimodel.AIAgent) tools.ToolCtx {
-	return tools.ToolCtx{
+// memoryActive reports whether cross-session memory should run for this agent:
+// globally enabled, a Memory service wired, and the agent opted in.
+func (f *Factory) memoryActive(agent *aimodel.AIAgent) bool {
+	return f.Cfg.MemoryEnabled && f.Memory != nil && agent != nil && agent.MemoryEnabled
+}
+
+// recallMemory pulls the most relevant long-term memories for the running
+// (user, agent) pair and renders them as a system-prompt addendum. Best-effort:
+// any failure or empty result yields "" so the turn proceeds unaffected.
+func (f *Factory) recallMemory(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent, messages []provider.Message) string {
+	if !f.memoryActive(agent) {
+		return ""
+	}
+	query := lastUserText(messages)
+	if query == "" {
+		return ""
+	}
+	mems, err := f.Memory.Recall(ctx, conv.UserID, agent.ID, query)
+	if err != nil || len(mems) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("【长期记忆】以下是关于该用户/项目的既有事实(可能过时,以当前对话为准):")
+	for _, m := range mems {
+		b.WriteString("\n- ")
+		b.WriteString(m.Content)
+	}
+	return b.String()
+}
+
+// handleRemember persists a long-term memory the agent chose to record. Runner-
+// intercepted (like update_plan) so it can reach the Memory service.
+func (f *Factory) handleRemember(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent, tc provider.ToolCall) string {
+	if f.Memory == nil || agent == nil {
+		return "[error] 记忆功能未启用"
+	}
+	var a struct {
+		Content string `json:"content"`
+		Kind    string `json:"kind"`
+	}
+	_ = json.Unmarshal([]byte(tc.Arguments), &a)
+	if strings.TrimSpace(a.Content) == "" {
+		return "[error] content required"
+	}
+	if _, err := f.Memory.Remember(ctx, conv.UserID, agent.ID, aimodel.MemoryKind(a.Kind), a.Content, conv.ID); err != nil {
+		return "[error] " + err.Error()
+	}
+	return "已记入长期记忆:" + a.Content
+}
+
+// distillMemories is the automatic counterpart to the `remember` tool: after a
+// top-level turn ends it asks the model (one cheap call, detached context) for
+// up to 3 durable facts/preferences/resolutions worth keeping, and writes them
+// to long-term memory. Existing memories are shown to the model so it returns
+// [] instead of re-extracting known facts. Best-effort: every failure path
+// returns quietly.
+func (f *Factory) distillMemories(conv *aimodel.AIConversation, agent *aimodel.AIAgent) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	prov, _, err := f.Provider.Resolve(ctx, conv.UserID, ptrOrNil(conv.ProviderID), agent)
+	if err != nil {
+		return
+	}
+	msgs, err := f.Msg.Last(ctx, conv.ID, 10)
+	if err != nil || len(msgs) == 0 {
+		return
+	}
+	var sb strings.Builder
+	for _, m := range msgs {
+		if m.Role != aimodel.RoleUser && m.Role != aimodel.RoleAssistant {
+			continue
+		}
+		t := strings.TrimSpace(extractMessageText(m.Content))
+		if t == "" {
+			continue
+		}
+		if len(t) > 2000 {
+			t = t[:2000] + "…"
+		}
+		sb.WriteString(string(m.Role))
+		sb.WriteString(": ")
+		sb.WriteString(t)
+		sb.WriteString("\n")
+	}
+	transcript := strings.TrimSpace(sb.String())
+	if transcript == "" {
+		return
+	}
+
+	system := "你是长期记忆提取器。从对话片段中提取至多 3 条对【未来会话】长期有用的信息:" +
+		"用户偏好(preference)、环境/项目的稳定事实(fact)、已确认生效的解决方案(resolution)。" +
+		"只提取明确出现且长期稳定的内容;一次性、临时性、与具体本轮操作绑定的信息不要。" +
+		`输出严格的 JSON 数组,每项 {"kind":"fact|preference|resolution","content":"一句话,自含"};` +
+		"没有值得提取的就输出 []。不要输出任何其他文字。"
+	if mems, err := f.Memory.Recall(ctx, conv.UserID, agent.ID, transcript); err == nil && len(mems) > 0 {
+		var ex strings.Builder
+		for _, m := range mems {
+			ex.WriteString("\n- ")
+			ex.WriteString(m.Content)
+		}
+		system += "\n\n已有记忆(语义重复的不要再提取):" + ex.String()
+	}
+
+	stream, err := prov.Stream(ctx, provider.Request{
+		Model:  conv.Model,
+		System: system,
+		Messages: []provider.Message{{
+			Role:    provider.RoleUser,
+			Content: []provider.ContentPart{{Type: "text", Text: transcript}},
+		}},
+		MaxTokens: 500,
+	})
+	if err != nil {
+		return
+	}
+	var out strings.Builder
+	for ev := range stream {
+		switch ev.Type {
+		case provider.EvtTextDelta:
+			out.WriteString(ev.Text)
+		case provider.EvtError:
+			return
+		}
+	}
+	raw := out.String()
+	start, end := strings.IndexByte(raw, '['), strings.LastIndexByte(raw, ']')
+	if start < 0 || end <= start {
+		return
+	}
+	var items []struct {
+		Kind    string `json:"kind"`
+		Content string `json:"content"`
+	}
+	if json.Unmarshal([]byte(raw[start:end+1]), &items) != nil {
+		return
+	}
+	saved := 0
+	for _, it := range items {
+		if saved >= 3 {
+			break
+		}
+		content := strings.TrimSpace(it.Content)
+		if content == "" {
+			continue
+		}
+		if _, err := f.Memory.Remember(ctx, conv.UserID, agent.ID, aimodel.MemoryKind(it.Kind), content, conv.ID); err == nil {
+			saved++
+		}
+	}
+	if saved > 0 && f.Logger != nil {
+		f.Logger.Info("distilled long-term memories",
+			zap.String("conversation_id", conv.ID), zap.Uint64("agent_id", agent.ID), zap.Int("count", saved))
+	}
+}
+
+// lastUserText returns the text of the most recent user message (used as the
+// memory-recall query).
+func lastUserText(messages []provider.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != provider.RoleUser {
+			continue
+		}
+		var b strings.Builder
+		for _, p := range messages[i].Content {
+			if p.Type == "text" || p.Type == "" {
+				b.WriteString(p.Text)
+			}
+		}
+		if s := strings.TrimSpace(b.String()); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func makeToolCtx(ctx context.Context, conv *aimodel.AIConversation, agent *aimodel.AIAgent) tools.ToolCtx {
+	tc := tools.ToolCtx{
 		UserID:   conv.UserID,
 		Username: resolveUsername(ctx, conv.UserID),
 		ConvID:   conv.ID,
 	}
+	if agent != nil {
+		tc.AgentID = agent.ID
+		tc.KnowledgeBaseIDs = parseUint64List(agent.KnowledgeBaseIDs)
+	}
+	return tc
+}
+
+// parseUint64List decodes a JSON "[1,2,3]" array of ids (the encoding used by
+// AIAgent.KnowledgeBaseIDs), tolerating empty / malformed input.
+func parseUint64List(raw string) []uint64 {
+	if raw == "" {
+		return nil
+	}
+	var out []uint64
+	if json.Unmarshal([]byte(raw), &out) != nil {
+		return nil
+	}
+	return out
 }

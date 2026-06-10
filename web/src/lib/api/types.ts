@@ -1822,7 +1822,59 @@ export interface AIAgent {
   is_sub_agent?: boolean
   invocation_hint?: string
   tags?: string
+  // JSON-encoded number[] of attached knowledge-base ids (same encoding as
+  // allowed_tools). Gates the knowledge_search tool.
+  knowledge_base_ids?: string
+  // Cross-session long-term memory recall + the remember tool.
+  memory_enabled?: boolean
   enabled: boolean
+}
+
+// ----- AI knowledge base (RAG) + long-term memory -----
+
+export type KBIngestStatus = "pending" | "chunking" | "embedding" | "ready" | "failed"
+
+export interface AIKnowledgeBase {
+  id: number
+  name: string
+  description?: string
+  scope: AgentScope
+  owner_id?: number | null
+  embedding_model?: string
+  embedding_dim?: number
+  backend?: string // "pgvector" | "fallback"
+  document_count: number
+  chunk_count: number
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface AIDocument {
+  id: number
+  knowledge_base_id: number
+  title: string
+  source?: string
+  mime?: string
+  status: KBIngestStatus
+  error?: string
+  chunk_count: number
+  size: number
+  created_at: string
+  updated_at: string
+}
+
+export interface AIMemory {
+  id: number
+  user_id: number
+  agent_id: number
+  kind: "fact" | "preference" | "resolution"
+  content: string
+  source_conversation_id?: string
+  salience: number
+  last_used_at?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface AIConversation {

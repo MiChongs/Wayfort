@@ -5,11 +5,15 @@ package ai
 
 import (
 	"context"
+	"encoding/json"
 	"time"
+
+	appmodel "github.com/michongs/jumpserver-anonymous/internal/model"
 
 	"github.com/michongs/jumpserver-anonymous/internal/ai/bridge"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/handler"
 	aihealth "github.com/michongs/jumpserver-anonymous/internal/ai/health"
+	"github.com/michongs/jumpserver-anonymous/internal/ai/knowledge"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
 	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
@@ -46,6 +50,19 @@ type Config struct {
 	HealthProbeTimeout    time.Duration
 	HealthProbeModels     bool
 	HealthDegradedMS      int64
+
+	// Knowledge base (RAG) + long-term memory.
+	EmbeddingProviderID uint64
+	EmbeddingModel      string
+	EmbeddingDimensions int
+	ChunkTokens         int
+	ChunkOverlap        int
+	EmbedBatchSize      int
+	RAGTopK             int
+	MemoryEnabled       bool
+	MemoryRecallK       int
+	DistillationEnabled bool
+	FallbackMaxChunks   int
 }
 
 // Deps is everything ai.New needs from the host process.
@@ -72,6 +89,10 @@ type Deps struct {
 	TCPFwd      *tcpfwd.Manager
 
 	DialTimeout time.Duration
+
+	// PgVector reports whether repo.EnsureVectorBackend enabled the pgvector
+	// extension; selects the native vs application-layer cosine knowledge backend.
+	PgVector bool
 }
 
 // Set is what gets handed to the server router.
@@ -85,6 +106,9 @@ type Set struct {
 	Usage        *handler.UsageHandler
 	AIHealth     *handler.AIHealthHandler
 
+	Knowledge    *handler.KnowledgeHandler
+	Memory       *handler.MemoryHandler
+
 	Factory      *runner.Factory
 	ProviderRepo *airepo.ProviderRepo
 	AgentRepo    *airepo.AgentRepo
@@ -96,8 +120,10 @@ type Set struct {
 	// toolReg / nodeRunner are kept so optools.RegisterAll can extend the live
 	// tool catalogue from main.go after construction. The runner holds the same
 	// *tools.Registry pointer, so late registration is picked up per turn.
-	toolReg    *tools.Registry
-	nodeRunner tools.NodeRunner
+	toolReg     *tools.Registry
+	nodeRunner  tools.NodeRunner
+	knowledgeSvc *knowledge.Service
+	embedResolver *provider.EmbeddingResolver
 }
 
 // Registry exposes the live tool registry so host wiring (main.go) can register
@@ -176,14 +202,47 @@ func New(cfg Config, deps Deps) *Set {
 
 	factory := runner.NewFactory(providerReg, toolReg, convRepo, msgRepo, invRepo, taskRepo,
 		agentRepo, deps.AuditWriter, deps.Logger, runner.Config{
-			MaxIterations:    cfg.MaxIterations,
-			MaxSubAgentDepth: cfg.MaxSubAgentDepth,
-			ToolTimeout:      cfg.ToolTimeout,
-			ApprovalTimeout:  cfg.ApprovalTimeout,
+			MaxIterations:       cfg.MaxIterations,
+			MaxSubAgentDepth:    cfg.MaxSubAgentDepth,
+			ToolTimeout:         cfg.ToolTimeout,
+			ApprovalTimeout:     cfg.ApprovalTimeout,
+			MemoryEnabled:       cfg.MemoryEnabled,
+			DistillationEnabled: cfg.DistillationEnabled,
 		})
 	factory.Limiter = limiter
 	tdeps.AgentRunner = factory
 	tools.RegisterSubAgentTool(toolReg, tdeps)
+
+	// Knowledge base (RAG) + long-term memory. The vector backend follows the
+	// pgvector probe done at boot; the embedding designation is seeded from config
+	// and persisted to system_settings so operator changes survive restarts.
+	knowledgeRepo := airepo.NewKnowledgeRepo(deps.DB)
+	var vectorStore knowledge.VectorStore
+	if deps.PgVector {
+		vectorStore = knowledge.NewPgVectorStore(deps.DB)
+	} else {
+		vectorStore = knowledge.NewFallbackStore(deps.DB, cfg.FallbackMaxChunks, deps.Logger)
+	}
+	embedResolver := provider.NewEmbeddingResolver(providerReg, providerRepo,
+		cfg.EmbeddingProviderID, cfg.EmbeddingModel, cfg.EmbeddingDimensions)
+	ssRepo := repo.NewSystemSettingRepo(deps.DB)
+	loadEmbeddingSetting(context.Background(), ssRepo, embedResolver)
+	embedResolver.Persist = func(pid uint64, model string, dims int) {
+		saveEmbeddingSetting(ssRepo, pid, model, dims)
+	}
+	// Chunk token counting uses an embedding-family encoding (cl100k); exact model
+	// accuracy isn't required for sizing.
+	embedCount := func(s string) int { return runner.CountText("text-embedding-3-large", s) }
+	knowledgeSvc := knowledge.NewService(knowledgeRepo, vectorStore, embedResolver, limiter, embedCount,
+		knowledge.Config{
+			ChunkTokens: cfg.ChunkTokens, ChunkOverlap: cfg.ChunkOverlap,
+			EmbedBatchSize: cfg.EmbedBatchSize, TopK: cfg.RAGTopK,
+		}, deps.Logger)
+	memorySvc := knowledge.NewMemoryService(knowledgeRepo, embedResolver, cfg.MemoryRecallK, deps.Logger)
+	factory.Memory = memorySvc
+	if cfg.MemoryEnabled {
+		tools.RegisterRememberTool(toolReg)
+	}
 
 	// Pre-load tiktoken encoders off the request path (best-effort; degrades to
 	// the heuristic if the vocab can't be fetched).
@@ -216,6 +275,8 @@ func New(cfg Config, deps Deps) *Set {
 		Invocation: &handler.InvocationHandler{Conv: convRepo, Inv: invRepo, Factory: factory},
 		Usage:      &handler.UsageHandler{Conv: convRepo},
 		AIHealth:   &handler.AIHealthHandler{Reg: healthReg, Prober: healthProber, Limiter: limiter},
+		Knowledge:  &handler.KnowledgeHandler{Repo: knowledgeRepo, Svc: knowledgeSvc, Embed: embedResolver},
+		Memory:     &handler.MemoryHandler{Repo: knowledgeRepo},
 		Factory:    factory,
 		ProviderRepo: providerRepo,
 		AgentRepo:    agentRepo,
@@ -224,7 +285,44 @@ func New(cfg Config, deps Deps) *Set {
 		healthProber: healthProber,
 		toolReg:      toolReg,
 		nodeRunner:   nodeRunner,
+		knowledgeSvc: knowledgeSvc,
+		embedResolver: embedResolver,
 	}
+}
+
+// KnowledgeService exposes the knowledge service so host wiring (main.go) can
+// pass it to optools.RegisterAll for the knowledge_search / distill_resolution
+// tools.
+func (s *Set) KnowledgeService() *knowledge.Service { return s.knowledgeSvc }
+
+// EmbeddingResolver exposes the embedding designation resolver.
+func (s *Set) EmbeddingResolver() *provider.EmbeddingResolver { return s.embedResolver }
+
+// embeddingSettingKey is the system_settings row holding the embedding designation.
+const embeddingSettingKey = "ai.embedding"
+
+func loadEmbeddingSetting(ctx context.Context, ss *repo.SystemSettingRepo, r *provider.EmbeddingResolver) {
+	all, err := ss.All(ctx)
+	if err != nil {
+		return
+	}
+	row, ok := all[embeddingSettingKey]
+	if !ok || row.Value == "" {
+		return
+	}
+	var v struct {
+		ProviderID uint64 `json:"provider_id"`
+		Model      string `json:"model"`
+		Dimensions int    `json:"dimensions"`
+	}
+	if json.Unmarshal([]byte(row.Value), &v) == nil && (v.ProviderID != 0 || v.Model != "") {
+		r.SetEmbedding(v.ProviderID, v.Model, v.Dimensions)
+	}
+}
+
+func saveEmbeddingSetting(ss *repo.SystemSettingRepo, pid uint64, model string, dims int) {
+	b, _ := json.Marshal(map[string]any{"provider_id": pid, "model": model, "dimensions": dims})
+	_ = ss.Upsert(context.Background(), []appmodel.SystemSetting{{Key: embeddingSettingKey, Value: string(b)}})
 }
 
 // HealthProber returns the background provider-health prober so the host can run

@@ -5,7 +5,9 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import {
   Activity,
+  BookOpen,
   Bot,
+  Brain,
   Building2,
   CheckCircle,
   ChevronLeft,
@@ -83,6 +85,8 @@ const NAV: NavGroup[] = [
       { href: "/admin/oidc-clients", label: "OIDC 客户端", icon: ShieldCheck, minTier: "superadmin" },
       { href: "/admin/ai/providers", label: "AI 提供商", icon: Bot, minTier: "superadmin" },
       { href: "/admin/ai/agents", label: "AI Agent", icon: Bot, minTier: "superadmin" },
+      { href: "/admin/ai/knowledge", label: "AI 知识库", icon: BookOpen, minTier: "superadmin" },
+      { href: "/admin/ai/memory", label: "AI 记忆", icon: Brain, minTier: "superadmin" },
       { href: "/admin/ai/usage", label: "AI 用量", icon: Activity, minTier: "superadmin" },
       { href: "/admin/audit", label: "审计日志", icon: ScrollText, minTier: "superadmin", requiredPerm: "audit:read" },
       { href: "/admin/settings", label: "系统设置", icon: SlidersHorizontal, minTier: "superadmin" },

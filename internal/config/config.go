@@ -338,6 +338,21 @@ type AIConfig struct {
 	HealthProbeTimeout  time.Duration `mapstructure:"health_probe_timeout"`
 	HealthProbeModels   bool          `mapstructure:"health_probe_models"`
 	HealthDegradedMS    int64         `mapstructure:"health_degraded_ms"`
+
+	// Knowledge base (RAG) + long-term memory. Embeddings reuse a designated
+	// provider (Anthropic has no embeddings API, so chat-on-Anthropic deploys
+	// must point these at an OpenAI/Gemini/compatible provider).
+	EmbeddingProviderID uint64 `mapstructure:"embedding_provider_id"` // 0 = auto-pick a global provider
+	EmbeddingModel      string `mapstructure:"embedding_model"`
+	EmbeddingDimensions int    `mapstructure:"embedding_dimensions"` // 0 = model default
+	ChunkTokens         int    `mapstructure:"chunk_tokens"`         // default 512
+	ChunkOverlap        int    `mapstructure:"chunk_overlap"`        // default 64
+	EmbedBatchSize      int    `mapstructure:"embed_batch_size"`     // default 64
+	RAGTopK             int    `mapstructure:"rag_top_k"`            // default 5
+	MemoryEnabled       bool   `mapstructure:"memory_enabled"`       // default true
+	MemoryRecallK       int    `mapstructure:"memory_recall_k"`      // default 8
+	DistillationEnabled bool   `mapstructure:"distillation_enabled"` // default false
+	FallbackMaxChunks   int    `mapstructure:"fallback_max_chunks"`  // cap for in-app cosine; default 5000
 }
 
 // ProtocolsConfig holds knobs for every non-SSH protocol the gateway brokers.
@@ -595,6 +610,15 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.approval_timeout", 2*time.Minute)
 	v.SetDefault("ai.conversation_ttl_days", 90)
 	v.SetDefault("ai.seed_default_agents", true)
+	// Knowledge base (RAG) + long-term memory.
+	v.SetDefault("ai.chunk_tokens", 512)
+	v.SetDefault("ai.chunk_overlap", 64)
+	v.SetDefault("ai.embed_batch_size", 64)
+	v.SetDefault("ai.rag_top_k", 5)
+	v.SetDefault("ai.memory_enabled", true)
+	v.SetDefault("ai.memory_recall_k", 8)
+	v.SetDefault("ai.distillation_enabled", false)
+	v.SetDefault("ai.fallback_max_chunks", 5000)
 	v.SetDefault("storage.sessions_dir", "./var/sessions")
 	// Phase 14 — KMS bootstrap unseal passphrase lives at this path
 	// by default. The file must exist (0600 permissions) and contain

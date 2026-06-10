@@ -21,6 +21,10 @@ import type {
   AITask,
   AITool,
   AIToolInvocation,
+  AIKnowledgeBase,
+  AIDocument,
+  AIMemory,
+  KBIngestStatus,
   AccessExplanation,
   AccessInfo,
   WatermarkRuntime,
@@ -1521,6 +1525,61 @@ export interface AIUsageSummary {
 export const aiUsageService = {
   summary: (days = 30, scope?: "me" | "all") =>
     api<AIUsageSummary>("GET", "/ai/usage", { query: { days, scope } }),
+}
+
+// ----- AI knowledge base (RAG) + long-term memory -----
+//
+// Distinct top-level segments (/ai/knowledge-bases, /ai/knowledge-search,
+// /ai/embedding-setting, /ai/memories) avoid colliding with the /providers|
+// /agents|/conversations :id param nodes on the Gin router.
+export const aiKnowledgeService = {
+  listKBs: () => api<{ knowledge_bases: AIKnowledgeBase[] }>("GET", "/ai/knowledge-bases"),
+  createKB: (body: Partial<AIKnowledgeBase>) =>
+    api<{ id: number; embedding_model: string }>("POST", "/ai/knowledge-bases", { body }),
+  updateKB: (id: number, body: Partial<AIKnowledgeBase>) =>
+    api<{ id: number }>("PATCH", `/ai/knowledge-bases/${id}`, { body }),
+  removeKB: (id: number) => api<void>("DELETE", `/ai/knowledge-bases/${id}`),
+
+  listDocs: (kbId: number) =>
+    api<{ documents: AIDocument[] }>("GET", `/ai/knowledge-bases/${kbId}/documents`),
+  uploadDoc: (
+    kbId: number,
+    file: File | Blob,
+    opts: { name?: string; onProgress?: UploadOptions["onProgress"]; signal?: AbortSignal } = {},
+  ) =>
+    apiUpload<{ id: number; status: KBIngestStatus; duplicate?: boolean }>(
+      `/ai/knowledge-bases/${kbId}/documents`,
+      file,
+      { query: opts.name ? { name: opts.name } : {}, onProgress: opts.onProgress, signal: opts.signal },
+    ),
+  importURL: (kbId: number, url: string, title?: string) =>
+    api<{ id: number; status: KBIngestStatus }>("POST", `/ai/knowledge-bases/${kbId}/import-url`, { body: { url, title } }),
+  reingestDoc: (kbId: number, docId: number) =>
+    api<{ id: number; status: KBIngestStatus }>("POST", `/ai/knowledge-bases/${kbId}/documents/${docId}/reingest`),
+  removeDoc: (kbId: number, docId: number) =>
+    api<void>("DELETE", `/ai/knowledge-bases/${kbId}/documents/${docId}`),
+  // Live ingest-status stream (event: snapshot → { documents: AIDocument[] }).
+  ingestStreamURL: (kbId: number) => buildURLFromAPI(`/ai/knowledge-bases/${kbId}/ingest/stream`),
+
+  search: (kbId: number, query: string, topK?: number) =>
+    api<{ hits: { chunk_id: number; document_id: number; document: string; knowledge_base: string; text: string; score: number; match?: "vector" | "keyword" | "hybrid" }[] }>(
+      "POST",
+      "/ai/knowledge-search",
+      { body: { knowledge_base_id: kbId, query, top_k: topK } },
+    ),
+
+  embeddingSetting: () =>
+    api<{ provider_id: number; model: string; dimensions: number }>("GET", "/ai/embedding-setting"),
+  setEmbeddingSetting: (body: { provider_id: number; model: string; dimensions?: number }) =>
+    api<{ ok: boolean }>("PUT", "/ai/embedding-setting", { body }),
+}
+
+export const aiMemoryService = {
+  list: (opts: { agent_id?: number; user_id?: number; q?: string } = {}) =>
+    api<{ memories: AIMemory[] }>("GET", "/ai/memories", { query: opts }),
+  update: (id: number, content: string) =>
+    api<{ id: number }>("PATCH", `/ai/memories/${id}`, { body: { content } }),
+  remove: (id: number) => api<void>("DELETE", `/ai/memories/${id}`),
 }
 
 // ----- insights (Plan 14) -----

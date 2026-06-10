@@ -105,6 +105,58 @@ func (p *OpenAIProvider) Ping(ctx context.Context) error {
 	return err
 }
 
+// Embed calls the OpenAI-compatible /v1/embeddings endpoint in one batch. Works
+// for OpenAI proper and every compatible gateway (Ollama / Voyage / 硅基流动 /
+// DeepSeek) that exposes the same route.
+func (p *OpenAIProvider) Embed(ctx context.Context, req EmbedRequest) (EmbedResponse, error) {
+	model := req.Model
+	if model == "" {
+		model = p.defaultModel
+	}
+	if model == "" {
+		return EmbedResponse{}, errors.New("openai: embedding model not specified")
+	}
+	if len(req.Inputs) == 0 {
+		return EmbedResponse{}, errors.New("openai: no inputs to embed")
+	}
+	params := openai.EmbeddingNewParams{
+		Model: openai.EmbeddingModel(model),
+		Input: openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: req.Inputs},
+	}
+	if req.Dimensions > 0 {
+		params.Dimensions = param.NewOpt(int64(req.Dimensions))
+	}
+	resp, err := p.client.Embeddings.New(ctx, params)
+	if err != nil {
+		return EmbedResponse{}, err
+	}
+	vectors := make([][]float32, len(resp.Data))
+	for _, d := range resp.Data {
+		idx := int(d.Index)
+		if idx < 0 || idx >= len(vectors) {
+			continue
+		}
+		v := make([]float32, len(d.Embedding))
+		for i, f := range d.Embedding {
+			v[i] = float32(f)
+		}
+		vectors[idx] = v
+	}
+	dim := 0
+	for _, v := range vectors {
+		if len(v) > 0 {
+			dim = len(v)
+			break
+		}
+	}
+	return EmbedResponse{
+		Vectors:     vectors,
+		Model:       model,
+		Dimension:   dim,
+		InputTokens: uint32(resp.Usage.PromptTokens),
+	}, nil
+}
+
 func (p *OpenAIProvider) Stream(ctx context.Context, req Request) (<-chan Event, error) {
 	model := req.Model
 	if model == "" {

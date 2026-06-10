@@ -81,6 +81,24 @@ type Request struct {
 	Metadata       map[string]string
 }
 
+// EmbedRequest is one embedding call. Inputs are embedded in a single batch
+// request; the provider returns one vector per input in the same order.
+type EmbedRequest struct {
+	Model      string
+	Inputs     []string
+	Dimensions int // optional; 0 = model default (only honored by models that support it)
+}
+
+// EmbedResponse carries the embedding vectors plus the resolved dimension so the
+// caller can freeze it on a knowledge base. InputTokens is reported where the
+// provider surfaces usage (used for rate-limit accounting); zero otherwise.
+type EmbedResponse struct {
+	Vectors     [][]float32
+	Model       string
+	Dimension   int
+	InputTokens uint32
+}
+
 // EventType is the discriminator for the stream events Provider emits.
 type EventType string
 
@@ -147,7 +165,11 @@ type ModelInfo struct {
 	Tools         bool          `json:"tools,omitempty"`
 	Reasoning     bool          `json:"reasoning,omitempty"`
 	Caching       bool          `json:"caching,omitempty"`
-	Pricing       *ModelPricing `json:"pricing,omitempty"`
+	// Embedding marks a text-embedding model. These are filtered OUT of the chat
+	// model pickers (they can't chat) but surfaced in the embedding-model picker
+	// for knowledge bases / memory.
+	Embedding bool          `json:"embedding,omitempty"`
+	Pricing   *ModelPricing `json:"pricing,omitempty"`
 }
 
 // Provider is the common surface. Implementations live alongside this file.
@@ -155,6 +177,9 @@ type Provider interface {
 	Name() string
 	Kind() Kind
 	Stream(ctx context.Context, req Request) (<-chan Event, error)
+	// Embed returns one vector per input. Providers without an embeddings API
+	// (e.g. Anthropic) return ErrUnsupported.
+	Embed(ctx context.Context, req EmbedRequest) (EmbedResponse, error)
 	ListModels(ctx context.Context) ([]ModelInfo, error)
 	Ping(ctx context.Context) error
 	// CuratedModels returns the operator-saved model list (capabilities + pricing)

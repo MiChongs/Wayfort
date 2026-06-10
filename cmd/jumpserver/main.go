@@ -110,6 +110,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if err := repo.AutoMigrate(db); err != nil {
 		return fmt.Errorf("automigrate: %w", err)
 	}
+	// Best-effort enable pgvector for native vector search; falls back to an
+	// application-layer cosine path when the extension is unavailable.
+	pgVectorOK := repo.EnsureVectorBackend(db)
 	// Make pre-existing org data consistent with the tree + multi-department
 	// model (self-paths for groups, legacy department_id → user_departments).
 	if err := repo.BackfillOrg(rootCtx, db); err != nil {
@@ -889,6 +892,17 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		HealthProbeTimeout:    cfg.AI.HealthProbeTimeout,
 		HealthProbeModels:     cfg.AI.HealthProbeModels,
 		HealthDegradedMS:      cfg.AI.HealthDegradedMS,
+		EmbeddingProviderID:   cfg.AI.EmbeddingProviderID,
+		EmbeddingModel:        cfg.AI.EmbeddingModel,
+		EmbeddingDimensions:   cfg.AI.EmbeddingDimensions,
+		ChunkTokens:           cfg.AI.ChunkTokens,
+		ChunkOverlap:          cfg.AI.ChunkOverlap,
+		EmbedBatchSize:        cfg.AI.EmbedBatchSize,
+		RAGTopK:               cfg.AI.RAGTopK,
+		MemoryEnabled:         cfg.AI.MemoryEnabled,
+		MemoryRecallK:         cfg.AI.MemoryRecallK,
+		DistillationEnabled:   cfg.AI.DistillationEnabled,
+		FallbackMaxChunks:     cfg.AI.FallbackMaxChunks,
 	}, ai.Deps{
 		DB: db, Sealer: aiVault, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,
@@ -897,6 +911,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		LoginHist: historyRepo, Users: userRepo,
 		SSHResolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
 		SFTPConn: sftpConn, TCPFwd: pfManager, DialTimeout: cfg.SSHPool.DialTimeout,
+		PgVector: pgVectorOK,
 	})
 	routes.AI = aiSet
 
@@ -912,6 +927,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			NetTools: nettoolsMgr, Cron: cronMgr, Pkg: pkgMgr, SysUser: sysuserMgr,
 			SecAudit: secauditMgr, Firewall: firewallMgr,
 			DBQuery: dbSvc, OSS: ossConn,
+			Knowledge:  aiSet.KnowledgeService(),
 			NodeRunner: aiSet.NodeRunner(),
 		})
 	}

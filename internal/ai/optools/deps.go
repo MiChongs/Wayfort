@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/michongs/jumpserver-anonymous/internal/ai/knowledge"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
@@ -75,6 +76,10 @@ type Deps struct {
 	DBQuery *dbquery.Service
 	OSS     *oss.Connector
 
+	// Knowledge backs knowledge_search + distill_resolution. Nil = those tools
+	// are not registered.
+	Knowledge *knowledge.Service
+
 	NodeRunner tools.NodeRunner
 }
 
@@ -97,6 +102,7 @@ func RegisterAll(reg *tools.Registry, deps Deps) {
 	registerK8sTools(reg, deps)
 	registerDBTools(reg, deps)
 	registerOSSTools(reg, deps)
+	registerKnowledgeTools(reg, deps)
 }
 
 // ===== shared helpers =====

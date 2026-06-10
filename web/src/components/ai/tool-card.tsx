@@ -108,6 +108,14 @@ export const ToolCard = React.memo(function ToolCard({
                   高危
                 </Badge>
               )}
+              {name === "knowledge_search" && (
+                <Badge
+                  variant="outline"
+                  className="h-4 shrink-0 px-1.5 text-[10px] text-muted-foreground"
+                >
+                  RAG
+                </Badge>
+              )}
               <span
                 className={cn(
                   "ml-auto shrink-0 text-[11px] tabular-nums",

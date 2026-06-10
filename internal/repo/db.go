@@ -135,6 +135,14 @@ func AutoMigrate(db *gorm.DB) error {
 		&aimodel.AIToolInvocation{},
 		&aimodel.AITask{},
 
+		// AI knowledge base (RAG) + long-term memory. The pgvector `embedding`
+		// columns are added separately by EnsureVectorBackend (raw DDL) so the
+		// absence of the extension never breaks AutoMigrate.
+		&aimodel.KnowledgeBase{},
+		&aimodel.KnowledgeDocument{},
+		&aimodel.KnowledgeChunk{},
+		&aimodel.AgentMemory{},
+
 		// Phase 11 — terminal snippets / history / profile
 		&model.Snippet{},
 		&model.CommandHistory{},
@@ -168,4 +176,27 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.SystemSetting{},
 		&model.SystemSettingAudit{},
 	)
+}
+
+// EnsureVectorBackend best-effort enables the pgvector extension and adds the
+// `embedding` columns used for native vector search. It is called once right
+// after AutoMigrate. It returns true when pgvector is available; on any failure
+// (extension not installed, insufficient privilege) it returns false and the AI
+// knowledge subsystem transparently falls back to storing embeddings as JSON and
+// computing cosine similarity in the application layer. HNSW indexes are NOT
+// created here — the vector dimension isn't known until the first knowledge base
+// is created, so the pgvector store builds the index lazily at first ingest.
+func EnsureVectorBackend(db *gorm.DB) bool {
+	if err := db.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
+		return false
+	}
+	// Unspecified-dimension `vector` columns are allowed; a per-dimension index
+	// is added later. ADD COLUMN IF NOT EXISTS keeps this idempotent across boots.
+	if err := db.Exec("ALTER TABLE ai_knowledge_chunks ADD COLUMN IF NOT EXISTS embedding vector").Error; err != nil {
+		return false
+	}
+	if err := db.Exec("ALTER TABLE ai_agent_memories ADD COLUMN IF NOT EXISTS embedding vector").Error; err != nil {
+		return false
+	}
+	return true
 }

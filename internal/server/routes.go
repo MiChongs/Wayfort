@@ -954,6 +954,29 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		aiGroup.DELETE("/agents/:id", perm(auth.PermAIAgentCreate), rt.AI.Agent.Delete)
 		aiGroup.GET("/tools", perm(auth.PermAIUse), rt.AI.Agent.Catalogue)
 
+		// Knowledge base (RAG) + documents. Distinct top-level segments
+		// (knowledge-bases / knowledge-search / embedding-setting / memories) keep
+		// them off the /providers|/agents|/conversations :id param nodes.
+		aiGroup.GET("/knowledge-bases", perm(auth.PermAIUse), rt.AI.Knowledge.List)
+		aiGroup.POST("/knowledge-bases", perm(auth.PermAIKnowledge), rt.AI.Knowledge.Create)
+		aiGroup.PATCH("/knowledge-bases/:kb_id", perm(auth.PermAIKnowledge), rt.AI.Knowledge.Update)
+		aiGroup.DELETE("/knowledge-bases/:kb_id", perm(auth.PermAIKnowledge), rt.AI.Knowledge.Delete)
+		aiGroup.GET("/knowledge-bases/:kb_id/documents", perm(auth.PermAIUse), rt.AI.Knowledge.ListDocs)
+		aiGroup.POST("/knowledge-bases/:kb_id/documents", perm(auth.PermAIKnowledge), rt.AI.Knowledge.UploadDoc)
+		aiGroup.GET("/knowledge-bases/:kb_id/documents/:doc_id", perm(auth.PermAIUse), rt.AI.Knowledge.DocStatus)
+		aiGroup.DELETE("/knowledge-bases/:kb_id/documents/:doc_id", perm(auth.PermAIKnowledge), rt.AI.Knowledge.DeleteDoc)
+		aiGroup.POST("/knowledge-bases/:kb_id/documents/:doc_id/reingest", perm(auth.PermAIKnowledge), rt.AI.Knowledge.ReingestDoc)
+		aiGroup.POST("/knowledge-bases/:kb_id/import-url", perm(auth.PermAIKnowledge), rt.AI.Knowledge.ImportURL)
+		aiGroup.GET("/knowledge-bases/:kb_id/ingest/stream", perm(auth.PermAIUse), rt.AI.Knowledge.IngestStream)
+		aiGroup.POST("/knowledge-search", perm(auth.PermAIUse), rt.AI.Knowledge.Search)
+		aiGroup.GET("/embedding-setting", perm(auth.PermAIUse), rt.AI.Knowledge.GetEmbeddingSetting)
+		aiGroup.PUT("/embedding-setting", perm(auth.PermAIKnowledge), rt.AI.Knowledge.SetEmbeddingSetting)
+
+		// Long-term memory.
+		aiGroup.GET("/memories", perm(auth.PermAIUse), rt.AI.Memory.List)
+		aiGroup.PATCH("/memories/:mem_id", perm(auth.PermAIUse), rt.AI.Memory.Update)
+		aiGroup.DELETE("/memories/:mem_id", perm(auth.PermAIUse), rt.AI.Memory.Delete)
+
 		aiGroup.GET("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.List)
 		aiGroup.GET("/conversations/search", perm(auth.PermAIUse), rt.AI.Conversation.Search)
 		aiGroup.POST("/conversations", perm(auth.PermAIUse), rt.AI.Conversation.Create)

@@ -72,6 +72,8 @@ export function CommandPalette() {
         { group: "管理", label: "OIDC 客户端", icon: ShieldCheck, onSelect: () => go("/admin/oidc-clients") },
         { group: "管理", label: "AI 提供商", icon: Bot, onSelect: () => go("/admin/ai/providers") },
         { group: "管理", label: "AI Agent", icon: Bot, onSelect: () => go("/admin/ai/agents") },
+        { group: "管理", label: "AI 知识库", icon: Bot, onSelect: () => go("/admin/ai/knowledge") },
+        { group: "管理", label: "AI 记忆", icon: Bot, onSelect: () => go("/admin/ai/memory") },
       ]
     : []
 

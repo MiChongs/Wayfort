@@ -31,11 +31,59 @@ const REGISTRY: Record<string, React.FC<{ data: Data }>> = {
   metrics: MetricsView,
   oss_objects: OssObjectsView,
   oss_buckets: OssBucketsView,
+  knowledge_search: KnowledgeSearchView,
 }
 
 export function pickToolView(view?: string): React.FC<{ data: Data }> | null {
   if (!view) return null
   return REGISTRY[view] ?? AutoView
+}
+
+// ============================================================================
+// knowledge_search — RAG retrieval hits: source doc + similarity + chunk text.
+// ============================================================================
+function KnowledgeSearchView({ data }: { data: Data }) {
+  const d = (data ?? {}) as { query?: string; hits?: Obj[] }
+  const hits = d.hits ?? []
+  return (
+    <ViewShell title={d.query ? `检索：${str(d.query)}` : "知识检索"} count={hits.length}>
+      {hits.length === 0 ? (
+        <div className="px-3 py-4 text-center text-xs text-muted-foreground">无匹配片段</div>
+      ) : (
+        <div className="divide-y divide-border/50">
+          {hits.map((h, i) => {
+            const score = Math.max(0, Math.min(1, num(h.score)))
+            const match = str(h.match)
+            const matchLabel = match === "hybrid" ? "语义+关键词" : match === "keyword" ? "关键词" : match === "vector" ? "语义" : ""
+            return (
+              <div key={i} className="space-y-1 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <MonoCell>{str(h.document) || `#${str(h.document_id)}`}</MonoCell>
+                  {h.knowledge_base ? (
+                    <span className="text-[10px] text-muted-foreground">{str(h.knowledge_base)}</span>
+                  ) : null}
+                  {matchLabel && (
+                    <span className="rounded border border-border/60 px-1 text-[10px] leading-4 text-muted-foreground">
+                      {matchLabel}
+                    </span>
+                  )}
+                  {/* keyword-only hits carry no cosine score — a 0% meter would mislead */}
+                  {score > 0 && (
+                    <span className="ml-auto w-20 shrink-0">
+                      <Meter value={score * 100} warnAt={101} dangerAt={101} label={`${(score * 100).toFixed(0)}%`} />
+                    </span>
+                  )}
+                </div>
+                <p className="line-clamp-6 whitespace-pre-wrap break-words text-xs text-foreground/80">
+                  {str(h.text)}
+                </p>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </ViewShell>
+  )
 }
 
 // ============================================================================

@@ -16,6 +16,7 @@ import (
 const (
 	AskUserToolName      = "ask_user"
 	ExitPlanModeToolName = "exit_plan_mode"
+	RememberToolName     = "remember"
 )
 
 func RegisterAskUserTool(reg *Registry) {
@@ -35,6 +36,25 @@ func RegisterAskUserTool(reg *Registry) {
 			"required":["question"]}`),
 		Run: func(_ context.Context, _ ToolCtx, _ json.RawMessage) (string, error) {
 			return "", errors.New("ask_user is handled by the runner, not executed directly")
+		},
+	})
+}
+
+// RegisterRememberTool registers the runner-intercepted long-term memory write.
+// The runner persists an AgentMemory row for the (user, agent) pair so the fact
+// is recalled in future conversations. Only injected when memory is enabled.
+func RegisterRememberTool(reg *Registry) {
+	reg.Register(&Tool{
+		Name: RememberToolName,
+		Description: "把关于用户或项目的、跨会话长期有用的事实记入长期记忆(例如偏好、环境约定、" +
+			"既定决策)。后续对话会自动召回。不要记录一次性/临时信息。",
+		Danger: DangerLow,
+		Schema: json.RawMessage(`{"type":"object","properties":{
+			"content":{"type":"string","description":"要长期记住的事实(简洁、自含)"},
+			"kind":{"type":"string","enum":["fact","preference","resolution"],"description":"分类;默认 fact"}},
+			"required":["content"]}`),
+		Run: func(_ context.Context, _ ToolCtx, _ json.RawMessage) (string, error) {
+			return "", errors.New("remember is handled by the runner, not executed directly")
 		},
 	})
 }

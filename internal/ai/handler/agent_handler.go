@@ -18,23 +18,90 @@ type AgentHandler struct {
 }
 
 type agentPayload struct {
-	Name              string   `json:"name"`
-	Description       string   `json:"description"`
-	Icon              string   `json:"icon"`
-	Scope             string   `json:"scope"`
-	SystemPrompt      string   `json:"system_prompt"`
-	DefaultProviderID *uint64  `json:"default_provider_id"`
-	DefaultModel      string   `json:"default_model"`
-	AllowedTools      []string `json:"allowed_tools"`
-	PermissionMode    string   `json:"permission_mode"`
-	MaxIterations     int      `json:"max_iterations"`
-	Temperature       float64  `json:"temperature"`
-	TopP              float64  `json:"top_p"`
-	ContextStrategy   string   `json:"context_strategy"`
-	IsSubAgent        bool     `json:"is_sub_agent"`
-	InvocationHint    string   `json:"invocation_hint"`
-	Tags              []string `json:"tags"`
-	Enabled           *bool    `json:"enabled"`
+	Name              string          `json:"name"`
+	Description       string          `json:"description"`
+	Icon              string          `json:"icon"`
+	Scope             string          `json:"scope"`
+	SystemPrompt      string          `json:"system_prompt"`
+	DefaultProviderID *uint64         `json:"default_provider_id"`
+	DefaultModel      string          `json:"default_model"`
+	// AllowedTools / KnowledgeBaseIDs / Tags are accepted as EITHER a JSON array
+	// or a JSON-stringified array (the web client sends the latter via
+	// JSON.stringify). flexStringList / flexUint64List normalise both.
+	AllowedTools     json.RawMessage `json:"allowed_tools"`
+	PermissionMode   string          `json:"permission_mode"`
+	MaxIterations    int             `json:"max_iterations"`
+	Temperature      float64         `json:"temperature"`
+	TopP             float64         `json:"top_p"`
+	ContextStrategy  string          `json:"context_strategy"`
+	IsSubAgent       bool            `json:"is_sub_agent"`
+	InvocationHint   string          `json:"invocation_hint"`
+	Tags             json.RawMessage `json:"tags"`
+	KnowledgeBaseIDs json.RawMessage `json:"knowledge_base_ids"`
+	MemoryEnabled    *bool           `json:"memory_enabled"`
+	Enabled          *bool           `json:"enabled"`
+}
+
+// flexStringList decodes a string list from either a JSON array (["a","b"]) or a
+// JSON-stringified array ("[\"a\",\"b\"]") — the web client sends the latter.
+func flexStringList(raw json.RawMessage) ([]string, bool) {
+	raw = bytesTrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var arr []string
+	if json.Unmarshal(raw, &arr) == nil {
+		return arr, true
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if s == "" {
+			return nil, true
+		}
+		if json.Unmarshal([]byte(s), &arr) == nil {
+			return arr, true
+		}
+	}
+	return nil, false
+}
+
+func flexUint64List(raw json.RawMessage) ([]uint64, bool) {
+	raw = bytesTrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, false
+	}
+	var arr []uint64
+	if json.Unmarshal(raw, &arr) == nil {
+		return arr, true
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if s == "" {
+			return nil, true
+		}
+		if json.Unmarshal([]byte(s), &arr) == nil {
+			return arr, true
+		}
+	}
+	return nil, false
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	for len(b) > 0 && (b[0] == ' ' || b[0] == '\n' || b[0] == '\t' || b[0] == '\r') {
+		b = b[1:]
+	}
+	for len(b) > 0 {
+		c := b[len(b)-1]
+		if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
+			b = b[:len(b)-1]
+			continue
+		}
+		break
+	}
+	if string(b) == "null" {
+		return nil
+	}
+	return b
 }
 
 func (h *AgentHandler) List(c *gin.Context) {
@@ -132,8 +199,8 @@ func (h *AgentHandler) payload(p *agentPayload, base *aimodel.AIAgent, claims *a
 	row.SystemPrompt = p.SystemPrompt
 	row.DefaultProviderID = p.DefaultProviderID
 	row.DefaultModel = p.DefaultModel
-	if len(p.AllowedTools) > 0 {
-		b, _ := json.Marshal(p.AllowedTools)
+	if tools, ok := flexStringList(p.AllowedTools); ok {
+		b, _ := json.Marshal(tools)
 		row.AllowedTools = string(b)
 	}
 	if p.PermissionMode != "" {
@@ -155,9 +222,21 @@ func (h *AgentHandler) payload(p *agentPayload, base *aimodel.AIAgent, claims *a
 	}
 	row.IsSubAgent = p.IsSubAgent
 	row.InvocationHint = p.InvocationHint
-	if len(p.Tags) > 0 {
-		b, _ := json.Marshal(p.Tags)
+	if tags, ok := flexStringList(p.Tags); ok {
+		b, _ := json.Marshal(tags)
 		row.Tags = string(b)
+	}
+	// Knowledge bases are replaced from the payload when present (allow clearing
+	// to [] by sending an empty array).
+	if kbs, ok := flexUint64List(p.KnowledgeBaseIDs); ok {
+		if kbs == nil {
+			kbs = []uint64{}
+		}
+		b, _ := json.Marshal(kbs)
+		row.KnowledgeBaseIDs = string(b)
+	}
+	if p.MemoryEnabled != nil {
+		row.MemoryEnabled = *p.MemoryEnabled
 	}
 	if p.Enabled != nil {
 		row.Enabled = *p.Enabled

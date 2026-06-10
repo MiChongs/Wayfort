@@ -48,7 +48,13 @@ type AIAgent struct {
 	IsSubAgent        bool            `gorm:"default:false" json:"is_sub_agent"`
 	InvocationHint    string          `gorm:"size:512" json:"invocation_hint,omitempty"`
 	Tags              string          `gorm:"size:512" json:"tags,omitempty"`
-	Enabled           bool            `gorm:"default:true" json:"enabled"`
+	// KnowledgeBaseIDs is a JSON array of knowledge-base ids this agent may search
+	// (encoded like AllowedTools). Empty / "[]" = no RAG. Gates knowledge_search.
+	KnowledgeBaseIDs string `gorm:"type:text" json:"knowledge_base_ids,omitempty"`
+	// MemoryEnabled turns on cross-session long-term memory recall + the remember
+	// tool for this agent.
+	MemoryEnabled bool      `gorm:"default:false" json:"memory_enabled"`
+	Enabled       bool      `gorm:"default:true" json:"enabled"`
 	CreatedAt         time.Time       `json:"created_at"`
 	UpdatedAt         time.Time       `json:"updated_at"`
 }

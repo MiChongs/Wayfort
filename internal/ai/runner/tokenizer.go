@@ -91,6 +91,22 @@ func estimateTokensHeuristic(m provider.Message) int {
 	return n/4 + 8
 }
 
+// CountText returns the token count of a plain string for the given model, using
+// the same BPE-or-heuristic path as message counting. Exported so non-runner
+// callers (e.g. the knowledge chunker) can size text without importing tiktoken
+// or duplicating the encoding map.
+func CountText(model, text string) int {
+	if text == "" {
+		return 0
+	}
+	if enc := encodingForModel(model); enc != "" {
+		if e := getEncoder(enc); e != nil {
+			return len(e.Encode(text, nil, nil))
+		}
+	}
+	return len(text)/4 + 1
+}
+
 // WarmTokenizers pre-loads the common encoders off the request path (best-effort;
 // safe to call in a goroutine at startup). If the vocab can't be fetched, the
 // failure is cached and counting silently uses the heuristic.

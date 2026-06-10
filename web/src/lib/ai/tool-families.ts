@@ -1,5 +1,6 @@
 import {
   Activity,
+  BookOpen,
   Boxes,
   CalendarClock,
   CircuitBoard,
@@ -66,8 +67,9 @@ const FAMILIES: FamilyDef[] = [
   { key: "session", label: "会话 / 审计", icon: ScrollText, match: exact("session_list", "session_terminate", "audit_query") },
   { key: "portforward", label: "端口转发", icon: Network, match: pre("portforward_") },
   { key: "identity", label: "身份", icon: UserCheck, match: exact("whoami_audit", "login_history_query", "anomaly_list") },
+  { key: "knowledge", label: "知识库", icon: BookOpen, match: exact("knowledge_search", "distill_resolution") },
   { key: "subagent", label: "编排", icon: Users, match: exact("call_subagent") },
-  { key: "interactive", label: "交互", icon: MessageCircleQuestion, match: exact("ask_user", "exit_plan_mode", "update_plan") },
+  { key: "interactive", label: "交互", icon: MessageCircleQuestion, match: exact("ask_user", "exit_plan_mode", "update_plan", "remember") },
 ]
 
 const OTHER: ToolFamily = { key: "other", label: "其它", icon: Wrench }
