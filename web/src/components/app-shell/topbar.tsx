@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Sidebar } from "@/components/app-shell/sidebar"
 import { NotificationBell } from "@/components/notifications/notification-bell"
 import { useCurrentUser } from "@/lib/hooks/use-current-user"
@@ -99,6 +99,7 @@ export function TopBar({
       </div>
       <Sheet open={mobileOpen} onOpenChange={(o) => !o && onMobileClose?.()}>
         <SheetContent side="left" className="p-0 w-72 md:hidden">
+          <SheetTitle className="sr-only">导航菜单</SheetTitle>
           <Sidebar mobile />
         </SheetContent>
       </Sheet>

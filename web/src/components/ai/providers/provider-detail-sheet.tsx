@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { MaybeVirtualList } from "@/lib/ai/maybe-virtual"
@@ -42,7 +42,7 @@ export function ProviderDetailSheet({
         <div className="flex items-center gap-3 border-b px-5 py-4">
           <AppIcon icon={presetIconFor(provider)} size={30} fallback="lucide:sparkles" />
           <div className="min-w-0 flex-1">
-            <div className="truncate text-base font-semibold">{provider.display_name || provider.name}</div>
+            <SheetTitle className="truncate text-base font-semibold">{provider.display_name || provider.name}</SheetTitle>
             <div className="mt-0.5 flex items-center gap-2">
               <HealthDot health={health} status={status} />
               {provider.is_global ? <Badge variant="success" className="text-[10px]">全局</Badge> : <Badge variant="outline" className="text-[10px]">个人</Badge>}
@@ -134,6 +134,21 @@ function ModelsPanel({ provider }: { provider: AIProvider }) {
   const qc = useQueryClient()
   const [models, setModels] = React.useState<AIModel[]>(() => provider.models ?? [])
   const [def, setDef] = React.useState(provider.default_model ?? "")
+  const [manualId, setManualId] = React.useState("")
+
+  // Manual add — the path for relay gateways that 403 on GET /v1/models so
+  // "从实时刷新" returns nothing. Comma/space/newline separated ids accepted.
+  const addManualModels = () => {
+    const ids = manualId.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    if (ids.length === 0) return
+    setModels((prev) => {
+      const have = new Set(prev.map((m) => m.id))
+      const add = ids.filter((id) => !have.has(id)).map((id) => ({ id, tools: true } as AIModel))
+      return add.length ? [...prev, ...add] : prev
+    })
+    if (!def && ids[0]) setDef(ids[0])
+    setManualId("")
+  }
 
   const refresh = useMutation({
     mutationFn: () => aiProviderService.models(provider.id, true),
@@ -176,9 +191,22 @@ function ModelsPanel({ provider }: { provider: AIProvider }) {
           </Button>
         </div>
       </div>
+      {/* Manual add — works even when the gateway forbids GET /v1/models (403). */}
+      <div className="flex items-center gap-1.5">
+        <Input
+          value={manualId}
+          onChange={(e) => setManualId(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManualModels() } }}
+          placeholder="手动添加模型 ID，如 gpt-4o（可逗号/空格分隔多个）"
+          className="h-8 font-mono text-xs"
+        />
+        <Button size="sm" variant="outline" className="h-8 shrink-0 text-xs" onClick={addManualModels} disabled={!manualId.trim()}>
+          <Plus className="size-3.5" /> 添加
+        </Button>
+      </div>
       {models.length === 0 ? (
         <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-          暂无模型，点「从实时刷新」拉取
+          暂无模型。中转站若不支持自动发现（403），可在上方手动添加模型 ID 后保存。
         </div>
       ) : (
         <MaybeVirtualList

@@ -6,7 +6,7 @@
 
 import * as React from "react"
 import { useHotkeys } from "react-hotkeys-hook"
-import { Dialog, DialogContent } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import {
   Command,
   CommandEmpty,
@@ -43,6 +43,7 @@ export function AssetCommandPalette({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="overflow-hidden p-0 sm:max-w-lg">
+        <DialogTitle className="sr-only">资产快速切换</DialogTitle>
         <Command
           filter={(value, search) =>
             value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0
