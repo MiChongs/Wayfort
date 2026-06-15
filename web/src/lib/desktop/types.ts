@@ -66,6 +66,22 @@ export interface StartSessionRequest {
 export type DesktopBackend = "freerdp" | "dummy" | "ironrdp"
 
 /**
+ * DesktopStats mirrors the backend's BootstrapStatus (GET /desktop/stats).
+ * Used to pick the RDP backend the browser should default to: the freerdp
+ * worker may be unavailable on a host while the Devolutions Gateway (ironrdp)
+ * is healthy, or vice-versa. Defaulting to a backend the server can't serve
+ * is the classic "永远无法连通/没有会话" failure.
+ */
+export interface DesktopStats {
+  enabled: boolean
+  default_backend: DesktopBackend
+  worker_ready: boolean
+  bootstrap_in_flight?: boolean
+  last_bootstrap_error?: string
+  devolutions_gateway?: { enabled: boolean; ready: boolean }
+}
+
+/**
  * StartSessionResponse covers both legacy (freerdp/dummy) and Plan 29
  * (ironrdp) paths. `backend` echoes the resolved backend so the React
  * layer can pick the right renderer; the ironrdp-specific fields are

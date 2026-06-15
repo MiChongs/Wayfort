@@ -42,9 +42,11 @@ typedef struct {
 
 // wAV1New creates a realtime AV1 encoder for a w x h surface at the given target
 // bitrate (kbps) and frame rate, tuned for screen content (palette / IBC coding
-// that keeps desktop text + UI crisp at a fraction of the bitrate). Returns NULL
-// on failure.
-static wAV1Enc* wAV1New(int w, int h, int bitrateKbps, int fps) {
+// that keeps desktop text + UI crisp at a fraction of the bitrate). threads and
+// tileColsLog2 are sized by the Go caller from the host core count and surface
+// width. Returns NULL on failure.
+static wAV1Enc* wAV1New(int w, int h, int bitrateKbps, int fps,
+                        int threads, int tileColsLog2) {
     if (w <= 0 || h <= 0 || (w & 1) || (h & 1)) {
         // AV1 I420 needs even dimensions.
         return NULL;
@@ -85,21 +87,49 @@ static wAV1Enc* wAV1New(int w, int h, int bitrateKbps, int fps) {
     cfg->rc_buf_sz = 1000;
     cfg->rc_buf_initial_sz = 500;
     cfg->rc_buf_optimal_sz = 600;
-    cfg->g_threads = 4;
+    cfg->g_threads = (unsigned int)(threads > 0 ? threads : 4);
 
     if (aom_codec_enc_init(&e->codec, iface, cfg, 0) != AOM_CODEC_OK) {
         free(e);
         return NULL;
     }
 
-    // cpu-used 0..11 for AV1 (higher = faster). 9 keeps the software encode
-    // realtime on a server CPU. Screen-content tune is the big quality win for
-    // desktops; row-mt + tile-columns parallelise the realtime encode.
-    aom_codec_control(&e->codec, AOME_SET_CPUUSED, 9);
+    // cpu-used (higher = faster): scale with surface area. Small surfaces get 8
+    // (visibly better text for CPU we can spare), 1080p-class stays at 9, and
+    // anything larger first sets 9 then attempts 10 — newer libaom allows
+    // realtime 10..12, older builds reject the control, which leaves the safe 9
+    // applied. Screen-content tune is the big quality win for desktops; row-mt
+    // + tile-columns (sized by the caller from surface width) parallelise the
+    // realtime encode.
+    long area = (long)w * (long)h;
+    int cpuUsed = (area <= 1366L * 768L) ? 8 : 9;
+    aom_codec_control(&e->codec, AOME_SET_CPUUSED, cpuUsed);
+    if (area > 1920L * 1200L) {
+        aom_codec_control(&e->codec, AOME_SET_CPUUSED, 10);
+    }
     aom_codec_control(&e->codec, AV1E_SET_TUNE_CONTENT, AOM_CONTENT_SCREEN);
     aom_codec_control(&e->codec, AV1E_SET_ROW_MT, 1);
-    aom_codec_control(&e->codec, AV1E_SET_TILE_COLUMNS, 1);
+    aom_codec_control(&e->codec, AV1E_SET_TILE_COLUMNS, tileColsLog2);
     aom_codec_control(&e->codec, AV1E_SET_ENABLE_PALETTE, 1);
+    // Cyclic-refresh adaptive quantization — libaom's RTC rate-control mode.
+    // Spreads intra refresh across frames so post-motion quality recovers
+    // without keyframe-sized bitrate spikes.
+    aom_codec_control(&e->codec, AV1E_SET_AQ_MODE, 3);
+    // 1-pass realtime never uses the temporal dependency model; keep it off
+    // explicitly (it is compiled out of CONFIG_REALTIME_ONLY builds anyway).
+    aom_codec_control(&e->codec, AV1E_SET_ENABLE_TPL_MODEL, 0);
+    // Cap keyframe size at 4.5x the average frame budget (percent units) so a
+    // PLI-forced IDR can not blow the 1 s rate-control buffer and stall the
+    // session on a starved link. Same control the libaom svc_encoder_rtc
+    // example sets. NOTE: AOME_ prefix — AV1E_SET_MAX_INTRA_BITRATE_PCT does
+    // not exist.
+    aom_codec_control(&e->codec, AOME_SET_MAX_INTRA_BITRATE_PCT, 450);
+    // Refresh entropy-coding cost tables per tile instead of per superblock —
+    // a few percent of encode CPU back at speeds >= 9, matching the RTC
+    // example encoder (0=SB, 1=SB row, 2=tile, 3=off).
+    aom_codec_control(&e->codec, AV1E_SET_COEFF_COST_UPD_FREQ, 2);
+    aom_codec_control(&e->codec, AV1E_SET_MODE_COST_UPD_FREQ, 2);
+    aom_codec_control(&e->codec, AV1E_SET_MV_COST_UPD_FREQ, 2);
 
     if (!aom_img_alloc(&e->img, AOM_IMG_FMT_I420, (unsigned int)w, (unsigned int)h, 1)) {
         aom_codec_destroy(&e->codec);
@@ -189,7 +219,8 @@ type av1Encoder struct {
 }
 
 func newAV1Encoder(width, height, bitrateKbps, fps int) (*av1Encoder, error) {
-	enc := C.wAV1New(C.int(width), C.int(height), C.int(bitrateKbps), C.int(fps))
+	enc := C.wAV1New(C.int(width), C.int(height), C.int(bitrateKbps), C.int(fps),
+		C.int(encoderThreads(width, height)), C.int(tileColumnsLog2(width)))
 	if enc == nil {
 		return nil, errors.New("av1: encoder init failed")
 	}

@@ -126,13 +126,26 @@ export function supportsWebRTCAV1(): boolean {
  * presence checks.
  */
 /**
- * Probe whether the bundled zstd-wasm decoder actually loads and round-trips on
- * this device. We compress+decompress a tiny vector through the WASM so a broken
- * wasm fetch / instantiation reports `false` and the server stays on zlib_bgra,
- * rather than the server emitting zstd_bgra the worker can't inflate (which would
- * break every lossless frame). Cached by the caller, like probeH264Avc420.
+ * Probe whether this device can inflate zstd_bgra frames. Two paths satisfy
+ * it, in the same preference order the decode worker uses:
+ *   1. Browser-native DecompressionStream("zstd") (Compression Streams spec;
+ *      Chromium-family). Constructor throws on unsupported formats, so the
+ *      probe is cheap and honest.
+ *   2. The bundled zstd-wasm decoder, verified by an actual compress+
+ *      decompress round-trip so a broken wasm fetch reports `false`.
+ * If neither works the server stays on zlib_bgra rather than emitting frames
+ * the worker can't inflate (which would break every lossless frame). Cached by
+ * the caller, like probeH264Avc420.
  */
 export async function probeZstd(): Promise<boolean> {
+  try {
+    if (typeof DecompressionStream !== "undefined") {
+      new DecompressionStream("zstd" as CompressionFormat)
+      return true
+    }
+  } catch {
+    // format not supported — fall through to the wasm probe
+  }
   try {
     const { init, compress, decompress } = await import("@bokuweb/zstd-wasm")
     await init()

@@ -14,7 +14,6 @@ package desktop
 // receiving Video messages and the WS handler forwards the legacy frames again.
 
 import (
-	"encoding/base64"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -377,8 +376,11 @@ func (b *webrtcBridge) WriteVideo(v *VideoData) {
 		}
 		b.needKeyframe.Store(false)
 	}
-	data, err := base64.StdEncoding.DecodeString(v.Data)
-	if err != nil || len(data) == 0 {
+	// Data is raw encoded bytes: the worker emits video as a BinaryFrameVideo
+	// stdout frame (and any JSON fallback hop already yields []byte) — the old
+	// per-frame base64 decode is gone.
+	data := v.Data
+	if len(data) == 0 {
 		return
 	}
 	// RTP timestamps advance by the real elapsed time between samples — the

@@ -222,15 +222,18 @@ type WebRTCSignal struct {
 	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
 }
 
-// VideoData is one encoded video access unit for the WebRTC track. Data is
-// base64 (worker→gateway hop only); the gateway decodes it once and feeds raw
-// bytes to Pion. Codec is "vp8" today.
+// VideoData is one encoded video access unit for the WebRTC track
+// (worker→gateway hop only); the gateway feeds Data straight to Pion. Codec is
+// "vp8", "vp9" or "av1". On the wire the worker emits it as a BinaryFrameVideo
+// frame so the multi-megabit encoded stream never pays JSON/base64; if a JSON
+// hop ever carries it, encoding/json marshals []byte as base64 — byte-for-byte
+// the old wire format.
 type VideoData struct {
 	Codec    string `json:"codec"`
 	Keyframe bool   `json:"keyframe"`
 	Width    uint32 `json:"width"`
 	Height   uint32 `json:"height"`
-	Data     string `json:"data"`
+	Data     []byte `json:"data"`
 }
 
 // AudioData is one chunk of redirected audio. PCM is base64 raw little-endian

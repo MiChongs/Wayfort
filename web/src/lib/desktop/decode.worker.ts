@@ -343,13 +343,65 @@ function ensureInflateScratch(byteLength: number): Uint8Array {
   return inflateScratch
 }
 
-// zstd-wasm is initialised lazily on the first zstd_bgra frame and reused for the
-// worker's lifetime. The module's init() loads its .wasm via
-// `new URL('./zstd.wasm', import.meta.url)`, which the bundler emits as an asset.
-// decompress() returns a freshly allocated Uint8Array of the inflated bytes.
+// zstd decode prefers the browser-native DecompressionStream("zstd") (in the
+// Compression Streams spec and shipping in Chromium-family browsers): the
+// inflate runs in the browser's optimized native zstd, with no WASM heap to
+// copy through. The @bokuweb/zstd-wasm module stays as the fallback for
+// browsers that don't accept the "zstd" format yet, initialised lazily on the
+// first frame that needs it and reused for the worker's lifetime.
+let nativeZstdSupported: boolean | null = null
+
+function supportsNativeZstd(): boolean {
+  if (nativeZstdSupported === null) {
+    try {
+      // The constructor throws TypeError on unsupported formats — cheap probe.
+      new DecompressionStream("zstd" as CompressionFormat)
+      nativeZstdSupported = true
+    } catch {
+      nativeZstdSupported = false
+    }
+  }
+  return nativeZstdSupported
+}
+
+// decompressViaStream pipes one complete compressed payload through a native
+// DecompressionStream and gathers exactly `expected` bytes into a fresh
+// (transferable) buffer. Inflated bytes beyond `expected` are drained and
+// discarded — same tolerance the wasm path's subarray gives. Short output
+// throws so a truncated surface never paints garbage.
+async function decompressViaStream(
+  format: string,
+  payload: Uint8Array,
+  expected: number,
+): Promise<Uint8Array> {
+  const ds = new DecompressionStream(format as CompressionFormat)
+  const writer = ds.writable.getWriter()
+  // Fire-and-forget: write resolves only as the reader drains; awaiting it
+  // before reading would deadlock on payloads larger than the internal queue.
+  void writer.write(payload as BufferSource).catch(() => {})
+  void writer.close().catch(() => {})
+  const reader = ds.readable.getReader()
+  const out = new Uint8Array(expected)
+  let off = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    const take = Math.min(value.length, expected - off)
+    if (take > 0) {
+      out.set(take === value.length ? value : value.subarray(0, take), off)
+      off += take
+    }
+  }
+  if (off < expected) {
+    throw new Error(`${format} BGRA payload too small after inflate: got ${off}, need ${expected}`)
+  }
+  return out
+}
+
 let zstdReady: Promise<typeof import("@bokuweb/zstd-wasm")> | null = null
 
-async function zstdDecompress(payload: Uint8Array, expected: number): Promise<Uint8Array> {
+async function zstdDecompressWasm(payload: Uint8Array, expected: number): Promise<Uint8Array> {
   if (!zstdReady) {
     zstdReady = import("@bokuweb/zstd-wasm").then(async (m) => {
       await m.init()
@@ -362,6 +414,19 @@ async function zstdDecompress(payload: Uint8Array, expected: number): Promise<Ui
     throw new Error(`zstd BGRA payload too small after inflate: got ${out.length}, need ${expected}`)
   }
   return out
+}
+
+async function zstdDecompress(payload: Uint8Array, expected: number): Promise<Uint8Array> {
+  if (supportsNativeZstd()) {
+    try {
+      return await decompressViaStream("zstd", payload, expected)
+    } catch {
+      // A browser that advertises the format but fails on real input drops to
+      // the wasm decoder permanently — one failure mode, probed once.
+      nativeZstdSupported = false
+    }
+  }
+  return zstdDecompressWasm(payload, expected)
 }
 
 // decodeBgraFrame turns a raw/zlib BGRA surface into an ImageBitmap (GPU-backed,
@@ -424,12 +489,46 @@ async function decodeBgraFrame(
     }
     bytes = payload
   }
-  // BGRA → RGBA in place: swap B/R, force opaque alpha.
-  for (let i = 0; i < expected; i += 4) {
-    const b = bytes[i]
-    bytes[i] = bytes[i + 2]
-    bytes[i + 2] = b
-    bytes[i + 3] = 255
+  // Fast path: wrap the BGRA bytes in a WebCodecs VideoFrame (format "BGRX" —
+  // padding byte ignored, always opaque) and let createImageBitmap do the
+  // channel mapping in native code/GPU. No JS per-pixel work at all.
+  if (supportsVideoFrameBGRX()) {
+    try {
+      const vf = new VideoFrame(bytes as BufferSource, {
+        format: "BGRX",
+        codedWidth: width,
+        codedHeight: height,
+        timestamp: 0,
+      })
+      try {
+        const bitmap = await createImageBitmap(vf)
+        return { frame, bitmap, decoderPath: "imagebitmap" }
+      } finally {
+        vf.close()
+      }
+    } catch {
+      // Constructor or bitmap conversion failed on real input — drop to the
+      // JS swizzle permanently rather than paying an exception per frame.
+      videoFrameBGRXSupported = false
+    }
+  }
+  // Fallback: BGRA → RGBA swizzle in place, word-at-a-time where the view is
+  // 4-byte aligned (little-endian: BGRA bytes = 0xAARRGGBB word; RGBA bytes =
+  // 0xAABBGGRR word — keep G, swap B/R, force alpha 255). ~3x faster than the
+  // old per-byte loop; the byte loop remains for unaligned views.
+  if ((bytes.byteOffset & 3) === 0) {
+    const words = new Uint32Array(bytes.buffer, bytes.byteOffset, expected >>> 2)
+    for (let i = 0; i < words.length; i++) {
+      const v = words[i]
+      words[i] = 0xff000000 | ((v & 0xff) << 16) | (v & 0x0000ff00) | ((v >>> 16) & 0xff)
+    }
+  } else {
+    for (let i = 0; i < expected; i += 4) {
+      const b = bytes[i]
+      bytes[i] = bytes[i + 2]
+      bytes[i + 2] = b
+      bytes[i + 3] = 255
+    }
   }
   // ImageData requires a Uint8ClampedArray backed by a plain ArrayBuffer. WS
   // payloads always are (never SharedArrayBuffer); narrow the type so the view
@@ -437,6 +536,33 @@ async function decodeBgraFrame(
   const rgba = new Uint8ClampedArray(bytes.buffer as ArrayBuffer, bytes.byteOffset, expected)
   const bitmap = await createImageBitmap(new ImageData(rgba, width, height))
   return { frame, bitmap, decoderPath: "imagebitmap" }
+}
+
+// VideoFrame-from-buffer with an RGB pixel format needs WebCodecs (Chromium
+// 94+, Firefox 130+, Safari 26+). Probed once with a real 1x1 construct so a
+// partial implementation (API present, BGRX rejected) lands on the JS path.
+let videoFrameBGRXSupported: boolean | null = null
+
+function supportsVideoFrameBGRX(): boolean {
+  if (videoFrameBGRXSupported === null) {
+    try {
+      if (typeof VideoFrame === "undefined") {
+        videoFrameBGRXSupported = false
+      } else {
+        const probe = new VideoFrame(new Uint8Array(4) as BufferSource, {
+          format: "BGRX",
+          codedWidth: 1,
+          codedHeight: 1,
+          timestamp: 0,
+        })
+        probe.close()
+        videoFrameBGRXSupported = true
+      }
+    } catch {
+      videoFrameBGRXSupported = false
+    }
+  }
+  return videoFrameBGRXSupported
 }
 
 // JS fallback decode — reached only when BOTH ImageDecoder and

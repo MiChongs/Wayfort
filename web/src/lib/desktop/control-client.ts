@@ -3,11 +3,13 @@
 // the same path namespace.
 
 import { api } from "@/lib/api/client"
-import type { StartSessionRequest, StartSessionResponse } from "./types"
+import type { DesktopStats, StartSessionRequest, StartSessionResponse } from "./types"
 
 export const desktopControl = {
   startSession: (req: StartSessionRequest) =>
     api<StartSessionResponse>("POST", "/desktop/sessions", { body: req }),
   endSession: (sessionId: string) =>
     api<{ ok: boolean }>("DELETE", `/desktop/sessions/${sessionId}`),
+  // Backend/worker/gateway readiness — drives the default RDP backend choice.
+  stats: () => api<DesktopStats>("GET", "/desktop/stats"),
 }

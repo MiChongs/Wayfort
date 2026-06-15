@@ -379,16 +379,18 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 		return nil, fmt.Errorf("pick worker: %w", err)
 	}
 
-	// Route the worker's TCP connection through the node's JumpServer proxy
-	// chain (SSH bastion / SOCKS5 hops) when one is configured — mirrors how
+	// Route the worker's TCP connection through the node's resolved connectivity
+	// (network domain or legacy ProxyChain) when it has any hops — mirrors how
 	// guacamole and tcpfwd reach the same targets. A per-session SOCKS5
 	// listener on 127.0.0.1 tunnels libfreerdp's connect through the resolved
 	// chain; libfreerdp still connects to node.Host:node.Port, just via the
-	// proxy. No chain configured (or no DialChain wired) = direct dial.
+	// proxy. dialChain returns a nil dialer for zero-hop (direct) nodes, so the
+	// listener is set up only when there's an actual chain. No DialChain wired =
+	// direct dial.
 	var socksHost string
 	var socksPort int
 	var socksClose func()
-	if m.dialChain != nil && strings.TrimSpace(node.ProxyChain) != "" {
+	if m.dialChain != nil {
 		dlr, release, derr := m.dialChain(ctx, node)
 		if derr != nil {
 			return nil, fmt.Errorf("build proxy chain for node %d: %w", req.NodeID, derr)

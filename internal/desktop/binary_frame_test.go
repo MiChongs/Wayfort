@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
@@ -140,6 +141,77 @@ func TestServerMessageBinaryFrameBatchRoundTrip(t *testing.T) {
 		if !bytes.Equal(gotFrame.Payload, wantFrame.Payload) {
 			t.Fatalf("decoded frame %d payload = %v, want %v", i, gotFrame.Payload, wantFrame.Payload)
 		}
+	}
+}
+
+func TestServerMessageBinaryVideoRoundTrip(t *testing.T) {
+	for _, codec := range []string{"vp8", "vp9", "av1"} {
+		payload := []byte{0x10, 0x20, 0x30, 0x40, 0x50}
+		want := ServerMessage{Video: &VideoData{
+			Codec:    codec,
+			Keyframe: true,
+			Width:    1920,
+			Height:   1080,
+			Data:     payload,
+		}}
+		body, err := EncodeServerMessageBinaryPayload(want)
+		if err != nil {
+			t.Fatalf("EncodeServerMessageBinaryPayload(%s) error = %v", codec, err)
+		}
+		header, err := DecodeBinaryFrameHeader(body[:BinaryFrameHeaderSize])
+		if err != nil {
+			t.Fatalf("DecodeBinaryFrameHeader(%s) error = %v", codec, err)
+		}
+		if header.Kind != BinaryFrameVideo {
+			t.Fatalf("binary kind = %d, want %d", header.Kind, BinaryFrameVideo)
+		}
+		if header.Flags&BinaryFrameFlagKeyframe == 0 {
+			t.Fatalf("keyframe flag not set for %s", codec)
+		}
+		got, ok, err := DecodeServerMessageBinaryPayload(body)
+		if err != nil {
+			t.Fatalf("DecodeServerMessageBinaryPayload(%s) error = %v", codec, err)
+		}
+		if !ok || got.Video == nil {
+			t.Fatalf("DecodeServerMessageBinaryPayload(%s) ok=%v video=%#v", codec, ok, got.Video)
+		}
+		if got.Video.Codec != codec || !got.Video.Keyframe || got.Video.Width != 1920 || got.Video.Height != 1080 {
+			t.Fatalf("decoded video metadata = %#v, want %#v", got.Video, want.Video)
+		}
+		if !bytes.Equal(got.Video.Data, payload) {
+			t.Fatalf("decoded video payload = %v, want %v", got.Video.Data, payload)
+		}
+	}
+}
+
+func TestServerMessageBinaryVideoRejectsUnknownCodec(t *testing.T) {
+	_, err := EncodeServerMessageBinaryPayload(ServerMessage{Video: &VideoData{
+		Codec: "h266",
+		Data:  []byte{1},
+	}})
+	if err == nil {
+		t.Fatal("EncodeServerMessageBinaryPayload() error = nil, want unsupported codec error")
+	}
+}
+
+func TestVideoDataJSONStaysBase64Compatible(t *testing.T) {
+	// The worker→gateway hop is binary now, but any JSON fallback (or a
+	// recorded session) must keep the historical wire shape: encoding/json
+	// represents []byte as a base64 string, exactly what the old `Data string`
+	// carried.
+	out, err := json.Marshal(VideoData{Codec: "vp9", Data: []byte{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("json.Marshal(VideoData) error = %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"data":"AQID"`)) {
+		t.Fatalf("VideoData JSON = %s, want base64 data field", out)
+	}
+	var back VideoData
+	if err := json.Unmarshal(out, &back); err != nil {
+		t.Fatalf("json.Unmarshal(VideoData) error = %v", err)
+	}
+	if !bytes.Equal(back.Data, []byte{1, 2, 3}) {
+		t.Fatalf("VideoData JSON round-trip data = %v", back.Data)
 	}
 }
 

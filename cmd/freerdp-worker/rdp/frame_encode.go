@@ -43,7 +43,11 @@ func (c *Client) initFrameEncoder() error {
 	c.frameEmitNext = 0
 	c.frameSeq.Store(0)
 	c.framePoolClosed.Store(false)
-	c.logger.Info("desktop frame encoder pool initialized", zap.Int("workers", workers))
+	c.logger.Info("desktop frame encoder pool initialized",
+		zap.Int("workers", workers),
+		// turbo=true → libjpeg-turbo SIMD path (BGRA direct, 4:4:4 capable);
+		// false → pure-Go image/jpeg fallback (slower, 4:2:0 only).
+		zap.Bool("jpeg_turbo", jpegTurboAvailable()))
 	return nil
 }
 
@@ -96,12 +100,10 @@ func (c *Client) capFramePayload(enc desktop.Encoding, payload, rawBGRA []byte, 
 	if len(payload)+slack <= desktop.MaxFrameBytes {
 		return enc, payload
 	}
-	if rgba, ok := bgraToRGBA(rawBGRA, width, height); ok {
-		var out bytes.Buffer
-		if err := jpeg.Encode(&out, rgba, &jpeg.Options{Quality: 70}); err == nil &&
-			out.Len() > 0 && out.Len()+slack <= desktop.MaxFrameBytes {
-			return desktop.EncodingJPEG, out.Bytes()
-		}
+	// Emergency shrink: smallest renderable form, so 4:2:0 regardless of tier.
+	if out, ok := c.encodeJPEGBGRA(rawBGRA, width, height, 70, false); ok &&
+		len(out)+slack <= desktop.MaxFrameBytes {
+		return desktop.EncodingJPEG, out
 	}
 	// Could not shrink under the cap; return as-is. The worker's writeFrame
 	// skips it (logged) rather than desync the protocol — a dropped frame
@@ -135,21 +137,41 @@ func (c *Client) chooseFrameEncoding(rawBGRA []byte, width, height uint32) (desk
 	if !c.shouldJPEGEncode(rawBGRA, width, height) {
 		return losslessOrRaw()
 	}
-	rgba, ok := bgraToRGBA(rawBGRA, width, height)
-	if !ok {
+	jpegPayload, ok := c.encodeJPEGBGRA(rawBGRA, width, height, c.jpegQuality(), c.jpegChroma444())
+	if !ok || len(jpegPayload) >= len(rawBGRA) {
 		return losslessOrRaw()
 	}
-	var out bytes.Buffer
-	if err := jpeg.Encode(&out, rgba, &jpeg.Options{Quality: c.jpegQuality()}); err != nil {
-		return losslessOrRaw()
-	}
-	if out.Len() == 0 || out.Len() >= len(rawBGRA) {
-		return losslessOrRaw()
-	}
-	if lossOK && len(lossPayload) < out.Len() && c.preferLosslessOverJPEG(len(rawBGRA), len(lossPayload), out.Len()) {
+	if lossOK && len(lossPayload) < len(jpegPayload) && c.preferLosslessOverJPEG(len(rawBGRA), len(lossPayload), len(jpegPayload)) {
 		return lossEnc, lossPayload
 	}
-	return desktop.EncodingJPEG, out.Bytes()
+	return desktop.EncodingJPEG, jpegPayload
+}
+
+// encodeJPEGBGRA compresses a packed BGRA rect to JPEG, preferring the
+// libjpeg-turbo SIMD path (direct BGRA input, optional 4:4:4 chroma); the pure
+// Go image/jpeg encoder remains as the always-works fallback (note it is
+// hardwired to 4:2:0, so chroma444 only takes effect on the turbo path).
+func (c *Client) encodeJPEGBGRA(rawBGRA []byte, width, height uint32, quality int, chroma444 bool) ([]byte, bool) {
+	if payload, ok := encodeJPEGTurboBGRA(rawBGRA, width, height, quality, chroma444); ok {
+		return payload, true
+	}
+	rgba, ok := bgraToRGBA(rawBGRA, width, height)
+	if !ok {
+		return nil, false
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, rgba, &jpeg.Options{Quality: quality}); err != nil || out.Len() == 0 {
+		return nil, false
+	}
+	return out.Bytes(), true
+}
+
+// jpegChroma444 reports whether the session quality tier warrants full-
+// resolution chroma. 4:2:0 halves chroma both ways — cheap for photos, but it
+// visibly fringes colored text and 1-px UI accents, which is most of what a
+// desktop is. Low keeps 4:2:0 for minimum bytes.
+func (c *Client) jpegChroma444() bool {
+	return c.params.Quality != desktop.QualityLow
 }
 
 func (c *Client) finishFrame(seq uint64, x, y, width, height uint32, enc desktop.Encoding, payload []byte, rawBytes int) {

@@ -51,8 +51,10 @@ typedef struct {
 // w x h surface at the given target bitrate (kbps) and frame rate. VP9 is tuned
 // for screen content — palette / intra-block-copy coding that keeps desktop
 // text and UI crisp at a fraction of VP8's bitrate, which is exactly what a
-// remote desktop needs. Returns NULL on failure.
-static wVPXEnc* wVPXNew(int codecId, int w, int h, int bitrateKbps, int fps) {
+// remote desktop needs. threads and tileColsLog2 are sized by the Go caller
+// from the host core count and surface width. Returns NULL on failure.
+static wVPXEnc* wVPXNew(int codecId, int w, int h, int bitrateKbps, int fps,
+                        int threads, int tileColsLog2) {
     if (w <= 0 || h <= 0 || (w & 1) || (h & 1)) {
         // VP8/VP9 I420 needs even dimensions.
         return NULL;
@@ -95,7 +97,7 @@ static wVPXEnc* wVPXNew(int codecId, int w, int h, int bitrateKbps, int fps) {
     cfg->rc_buf_sz = 1000;
     cfg->rc_buf_initial_sz = 500;
     cfg->rc_buf_optimal_sz = 600;
-    cfg->g_threads = 4;
+    cfg->g_threads = (unsigned int)(threads > 0 ? threads : 4);
 
     if (vpx_codec_enc_init(&e->codec, iface, cfg, 0) != VPX_CODEC_OK) {
         free(e);
@@ -103,20 +105,39 @@ static wVPXEnc* wVPXNew(int codecId, int w, int h, int bitrateKbps, int fps) {
     }
 
     // Speed: cpu-used 0..16 (VP8) / 0..9 (VP9), higher = faster. 8 keeps the
-    // software encode realtime on a server CPU for both. VP8E_SET_CPUUSED is
-    // the shared control id for VP8 and VP9.
-    vpx_codec_control(&e->codec, VP8E_SET_CPUUSED, 8);
+    // software encode realtime on a server CPU for both; small surfaces
+    // (<= 720p-ish) can afford 7 on VP9 for visibly better text at the same
+    // realtime budget. VP8E_SET_CPUUSED is the shared control id for VP8/VP9.
+    int cpuUsed = 8;
+    if (codecId == 1 && (long)w * (long)h <= 1280L * 720L) cpuUsed = 7;
+    vpx_codec_control(&e->codec, VP8E_SET_CPUUSED, cpuUsed);
     vpx_codec_control(&e->codec, VP8E_SET_STATIC_THRESHOLD, 1);
+    // Cap keyframe size relative to the average frame budget (percent units;
+    // 450 = 4.5 frames' worth). Keyframes here are PLI/connect-driven; without
+    // a cap a full-desktop IDR on a starved link blows the 1 s rate-control
+    // buffer and freezes the stream for seconds. Mirrors the libvpx/libaom RTC
+    // example encoders.
+    vpx_codec_control(&e->codec, VP8E_SET_MAX_INTRA_BITRATE_PCT, 450);
     if (e->isVP9) {
         // VP9 screen-content coding + threading. tune-content=screen is the big
-        // quality win for desktops; tile-columns + row-mt parallelise the
-        // realtime encode; aq-mode 0 keeps flat UI regions clean; frame-parallel
-        // decoding eases the browser's GPU decoder.
+        // quality win for desktops; tile-columns (sized by the caller from the
+        // surface width) + row-mt parallelise the realtime encode; aq-mode 3
+        // (cyclic refresh) is the libvpx RTC rate-control mode — it spreads
+        // intra refresh across frames so quality recovers quickly after motion
+        // without keyframe-sized spikes; frame-parallel decoding eases the
+        // browser's GPU decoder.
         vpx_codec_control(&e->codec, VP9E_SET_TUNE_CONTENT, VP9E_CONTENT_SCREEN);
-        vpx_codec_control(&e->codec, VP9E_SET_TILE_COLUMNS, 2);
+        vpx_codec_control(&e->codec, VP9E_SET_TILE_COLUMNS, tileColsLog2);
         vpx_codec_control(&e->codec, VP9E_SET_ROW_MT, 1);
-        vpx_codec_control(&e->codec, VP9E_SET_AQ_MODE, 0);
+        vpx_codec_control(&e->codec, VP9E_SET_AQ_MODE, 3);
         vpx_codec_control(&e->codec, VP9E_SET_FRAME_PARALLEL_DECODING, 1);
+        // 1-pass realtime never benefits from the temporal dependency model;
+        // disable explicitly so no per-frame stats work sneaks in.
+        vpx_codec_control(&e->codec, VP9E_SET_TPL, 0);
+    } else {
+        // VP8 screen-content mode: dedicated desktop/UI coding tools for the
+        // universal-fallback codec (1 = on; 2 adds aggressive rate control).
+        vpx_codec_control(&e->codec, VP8E_SET_SCREEN_CONTENT_MODE, 1);
     }
 
     if (!vpx_img_alloc(&e->img, VPX_IMG_FMT_I420, (unsigned int)w, (unsigned int)h, 1)) {
@@ -191,8 +212,8 @@ static void wVPXFree(wVPXEnc* e) {
 import "C"
 
 import (
-	"encoding/base64"
 	"errors"
+	"runtime"
 	"sync"
 	"time"
 	"unsafe"
@@ -200,6 +221,39 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"go.uber.org/zap"
 )
+
+// encoderThreads picks the worker-thread count for a realtime video encoder:
+// scale with the host (the old hardcoded 4 starved 16-core servers and
+// oversubscribed 2-core ones) while leaving headroom for the FreeRDP run loop
+// and the rect-encode pool.
+func encoderThreads(width, height int) int {
+	n := runtime.NumCPU() - 2
+	if n < 2 {
+		n = 2
+	}
+	if n > 8 {
+		n = 8
+	}
+	// Small surfaces can not use many threads (row-mt/tiles run out of rows).
+	if width*height <= 1280*720 && n > 4 {
+		n = 4
+	}
+	return n
+}
+
+// tileColumnsLog2 sizes encoder tile columns (log2 units) by surface width so
+// multi-threading scales on wide desktops: 1 tile below 1280 px, 2 tiles to
+// 2560 px, 4 beyond (ultrawide/multi-monitor).
+func tileColumnsLog2(width int) int {
+	switch {
+	case width >= 2560:
+		return 2
+	case width >= 1280:
+		return 1
+	default:
+		return 0
+	}
+}
 
 // markVideoDirty flags the framebuffer as changed so the next run-loop tick
 // re-encodes it for the WebRTC track. Called from the paint / rdpgfx callbacks.
@@ -324,12 +378,15 @@ func (c *Client) maybeEncodeVideo(rctx *C.rdpContext) {
 	}
 	c.videoDirty.Store(false)
 	c.lastVideoAt = now
+	// frame is a fresh caller-owned copy; hand it off as raw bytes. main.go's
+	// stdout pump emits it as a BinaryFrameVideo frame, so the encoded stream
+	// crosses the worker→gateway pipe without JSON/base64 overhead.
 	c.emit(desktop.ServerMessage{Video: &desktop.VideoData{
 		Codec:    codec,
 		Keyframe: keyframe,
 		Width:    uint32(ew),
 		Height:   uint32(eh),
-		Data:     base64.StdEncoding.EncodeToString(frame),
+		Data:     frame,
 	}})
 }
 
@@ -412,7 +469,8 @@ func newVPXEncoder(codec string, width, height, bitrateKbps, fps int) (*vpxEncod
 	if codec == "vp9" {
 		codecID = 1
 	}
-	enc := C.wVPXNew(codecID, C.int(width), C.int(height), C.int(bitrateKbps), C.int(fps))
+	enc := C.wVPXNew(codecID, C.int(width), C.int(height), C.int(bitrateKbps), C.int(fps),
+		C.int(encoderThreads(width, height)), C.int(tileColumnsLog2(width)))
 	if enc == nil {
 		return nil, errors.New(codec + ": encoder init failed")
 	}

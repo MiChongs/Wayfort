@@ -16,6 +16,13 @@ const (
 	BinaryFrameRect   BinaryFrameKind = 2
 	BinaryFrameCursor BinaryFrameKind = 3
 	BinaryFrameBatch  BinaryFrameKind = 4
+	// BinaryFrameVideo carries one encoded WebRTC video access unit
+	// (worker→gateway hop only). Header use: Encoding = codec
+	// (BinaryEncodingVP8/VP9/AV1), Flags bit 0 = keyframe, Width/Height =
+	// coded size, X/Y unused. Replaces the old JSON+base64 VideoData emit,
+	// which at 8 Mbps cost ~1.3 MB/s of base64 churn on both sides of the
+	// stdout pipe.
+	BinaryFrameVideo BinaryFrameKind = 5
 )
 
 type BinaryFrameEncoding uint8
@@ -38,6 +45,10 @@ const (
 	// zstd-compressed BGRA surface (browser decodes via zstd-wasm). Additive:
 	// only emitted when ClientCaps.Zstd is set.
 	BinaryEncodingZstdBGRA BinaryFrameEncoding = 7
+	// VP8/VP9/AV1 codec tags for BinaryFrameVideo frames (worker→gateway).
+	BinaryEncodingVP8 BinaryFrameEncoding = 8
+	BinaryEncodingVP9 BinaryFrameEncoding = 9
+	BinaryEncodingAV1 BinaryFrameEncoding = 10
 )
 
 // BinaryFrameFlags is the bit-packed flag byte at offset 2 of the
@@ -131,6 +142,24 @@ func EncodeServerMessageBinaryPayload(msg ServerMessage) ([]byte, error) {
 			PayloadN: uint32(len(msg.Frame.Payload)),
 		}, msg.Frame.Payload)
 	}
+	if msg.Video != nil && len(msg.Video.Data) > 0 {
+		enc, ok := binaryEncodingFromVideoCodec(msg.Video.Codec)
+		if !ok {
+			return nil, fmt.Errorf("unsupported video codec %q", msg.Video.Codec)
+		}
+		var flags BinaryFrameFlags
+		if msg.Video.Keyframe {
+			flags |= BinaryFrameFlagKeyframe
+		}
+		return encodeBinaryPayload(BinaryFrameHeader{
+			Kind:     BinaryFrameVideo,
+			Encoding: enc,
+			Flags:    flags,
+			Width:    msg.Video.Width,
+			Height:   msg.Video.Height,
+			PayloadN: uint32(len(msg.Video.Data)),
+		}, msg.Video.Data)
+	}
 	if msg.Cursor != nil && len(msg.Cursor.Payload) > 0 {
 		enc, ok := binaryEncodingFromCursor(msg.Cursor.Encoding)
 		if !ok {
@@ -210,6 +239,18 @@ func DecodeServerMessageBinaryPayload(body []byte) (ServerMessage, bool, error) 
 			return ServerMessage{}, true, err
 		}
 		return ServerMessage{FrameBatch: &FrameBatch{Frames: frames}}, true, nil
+	case BinaryFrameVideo:
+		codec, ok := videoCodecFromBinary(header.Encoding)
+		if !ok {
+			return ServerMessage{}, true, fmt.Errorf("unsupported binary video codec %d", header.Encoding)
+		}
+		return ServerMessage{Video: &VideoData{
+			Codec:    codec,
+			Keyframe: header.Flags&BinaryFrameFlagKeyframe != 0,
+			Width:    header.Width,
+			Height:   header.Height,
+			Data:     payload,
+		}}, true, nil
 	default:
 		return ServerMessage{}, true, fmt.Errorf("unsupported binary frame kind %d", header.Kind)
 	}
@@ -309,10 +350,36 @@ func encodeBinaryPayload(h BinaryFrameHeader, payload []byte) ([]byte, error) {
 
 func looksLikeBinaryServerPayload(kind byte) bool {
 	switch BinaryFrameKind(kind) {
-	case BinaryFrameJSON, BinaryFrameRect, BinaryFrameCursor, BinaryFrameBatch:
+	case BinaryFrameJSON, BinaryFrameRect, BinaryFrameCursor, BinaryFrameBatch, BinaryFrameVideo:
 		return true
 	default:
 		return false
+	}
+}
+
+func binaryEncodingFromVideoCodec(codec string) (BinaryFrameEncoding, bool) {
+	switch codec {
+	case "vp8":
+		return BinaryEncodingVP8, true
+	case "vp9":
+		return BinaryEncodingVP9, true
+	case "av1":
+		return BinaryEncodingAV1, true
+	default:
+		return BinaryEncodingNone, false
+	}
+}
+
+func videoCodecFromBinary(enc BinaryFrameEncoding) (string, bool) {
+	switch enc {
+	case BinaryEncodingVP8:
+		return "vp8", true
+	case BinaryEncodingVP9:
+		return "vp9", true
+	case BinaryEncodingAV1:
+		return "av1", true
+	default:
+		return "", false
 	}
 }
 
