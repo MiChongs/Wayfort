@@ -24,12 +24,14 @@ export type DisconnectCategory =
   | "authFailed"
   | "serverClosed"
   | "timeout"
+  | "agentUnavailable"
   | "unknown"
 
 export type DisconnectSuggestion =
   | "checkNode"
   | "checkCredentials"
   | "retry"
+  | "checkAgent"
   | "contactAdmin"
 
 export interface DisconnectInfo {
@@ -51,6 +53,10 @@ interface Rule {
 }
 
 const RULES: ReadonlyArray<Rule> = [
+  // Agent-domain asset with no reverse-connect agent online — backend emits the
+  // machine-readable token `agent_unavailable` as the close reason (gateway.go
+  // closeForError). Most specific; keep at the top.
+  { pattern: /agent_unavailable/i, category: "agentUnavailable", suggestion: "checkAgent", href: "/admin/domains" },
   // Windows winsock — most specific, must come before generic timeout.
   { pattern: /connectex:\s*no connection/i, category: "networkUnreachable", suggestion: "checkNode", href: "/admin/nodes" },
   { pattern: /ECONNREFUSED|connection refused/i, category: "networkUnreachable", suggestion: "checkNode", href: "/admin/nodes" },

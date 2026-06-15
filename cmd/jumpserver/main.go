@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"crypto/tls"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
 	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/optools"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
@@ -22,6 +26,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
+	"github.com/michongs/jumpserver-anonymous/internal/audit/export"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/backup"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
@@ -32,8 +37,10 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
 	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/files"
 	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/guard"
 	"github.com/michongs/jumpserver-anonymous/internal/hardware"
 	"github.com/michongs/jumpserver-anonymous/internal/health"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
@@ -50,6 +57,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/passkey"
 	"github.com/michongs/jumpserver-anonymous/internal/perf"
 	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
+	"github.com/michongs/jumpserver-anonymous/internal/pki"
 	"github.com/michongs/jumpserver-anonymous/internal/process"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
@@ -117,6 +125,13 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// model (self-paths for groups, legacy department_id → user_departments).
 	if err := repo.BackfillOrg(rootCtx, db); err != nil {
 		return fmt.Errorf("backfill org: %w", err)
+	}
+	// Network domains (security-architecture.md §3, M1) — seed the built-in
+	// "default" direct domain and backfill every pre-existing node into it so
+	// connectivity behaviour is unchanged. Idempotent; runs on every boot.
+	domainRepo := repo.NewDomainRepo(db)
+	if _, err := domainRepo.EnsureDefault(rootCtx); err != nil {
+		return fmt.Errorf("ensure default domain: %w", err)
 	}
 
 	// Phase 14 — bootstrap the envelope-encryption layer. This:
@@ -332,6 +347,23 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}, logger)
 
 	auditWriter := audit.NewWriter(cfg.Audit, auditRepo, logger)
+	// Tamper-evidence audit hash chain (security-architecture.md §5.2). Each
+	// instance owns its own chain keyed by a per-process id; the tip is seeded
+	// from the DB so a restart with a pinned id continues its chain. A random id
+	// per run starts a fresh chain (genesis), which is fine — chains are verified
+	// and checkpointed per id.
+	auditChainID := cfg.Audit.InstanceID
+	if auditChainID == "" {
+		auditChainID = uuid.NewString()
+	}
+	auditSeed, _ := auditRepo.LastEntryHash(rootCtx, auditChainID)
+	auditWriter.SetChainer(audit.NewChainer(auditChainID, auditSeed))
+	// External-audit fan-out (security-architecture.md §10): CEF/syslog + signed
+	// webhook sinks, fed after each successful insert. Disabled by default.
+	auditExporter := buildAuditExporter(cfg.Audit.Export, logger)
+	auditWriter.SetExporter(auditExporter)
+	// The signed-checkpoint wiring (genesis anchor + daily seals) lives after
+	// signerLookup is constructed below, reusing the same KMS signer.
 	// Lifecycle v3 — connection-quality sample queue (RTT / loss / bandwidth /
 	// reconnects). Batched to the DB through its own single worker like the
 	// audit writer; sessions feed it via per-session MetricSinks.
@@ -372,13 +404,89 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		launcherIface,
 	)
 	wsGateway.SetMetrics(metricWriter)
+	// Network-domain connectivity resolver (security-architecture.md §3). Wiring
+	// it here activates domain-driven routing across every protocol that dials
+	// through the gateway facade (ssh / telnet / guacamole / dbquery / tcpfwd /
+	// desktop). Nodes in the default direct domain or carrying a legacy
+	// ProxyChain dial exactly as before.
+	domainResolver := domain.NewResolver(proxyRepo, domainRepo)
+	wsGateway.SetDomainResolver(domainResolver)
+	// Reverse-connect Gateway Agent control plane (security-architecture.md §4,
+	// M2). The registry holds the live agent tunnels owned by THIS instance;
+	// agent-domain dials route through it. The agent-facing enroll/tunnel
+	// endpoints authenticate by one-time token / bearer secret (not JWT).
+	agentRegistry := agentgw.NewRegistry()
+	gatewayAgentRepo := repo.NewGatewayAgentRepo(db)
+	agentEnrollTokenRepo := repo.NewAgentEnrollTokenRepo(db)
+	// Let the SSH/RDP/DB/TCP dial seam route agent-domain nodes through a
+	// connected reverse agent (DialerForNode's agent branch).
+	wsGateway.SetAgentRegistry(agentRegistry)
+	// Overload-protection guard (security-architecture.md §11): concurrency
+	// ceilings, per-user connection rate, and a per-domain circuit breaker.
+	// In-memory + per-instance (the fail-open degrade path); defaults applied here.
+	gLimits := guard.Limits{
+		GlobalMax:  orDefault(cfg.Guard.GlobalMaxSessions, 2000),
+		PerUserMax: orDefault(cfg.Guard.PerUserMaxSessions, 20),
+	}
+	guardLimiter := guard.NewLimiter(gLimits)
+	guardBreaker := guard.NewBreaker(guard.BreakerConfig{
+		MinSamples: orDefault(cfg.Guard.BreakerMinSamples, 10),
+		OpenFor:    time.Duration(orDefault(cfg.Guard.BreakerOpenSeconds, 30)) * time.Second,
+	})
+	guardRate := guard.NewRateLimiter(orDefault(cfg.Guard.ConnectsPerMinute, 10), time.Minute)
+	guardCounters := &guard.Counters{}
+	guardLimiter.SetCounters(guardCounters)
+	guardBreaker.SetCounters(guardCounters)
+	guardRate.SetCounters(guardCounters)
+	wsGateway.SetGuard(guardLimiter, guardBreaker, guardRate)
+	// Per-user write-API rate limit (state-changing requests). Separate bucket
+	// from the connection-rate gate above.
+	writeRateLimiter := guard.NewRateLimiter(60, time.Minute)
+	writeRateLimiter.SetCounters(guardCounters)
+	// Internal PKI (security-architecture.md §6, M3) — load or first-boot mint
+	// the embedded issuing CA, its private key sealed via the same KMS envelope
+	// stack as credentials. The CA signs the short-lived client certificates
+	// agents will authenticate the tunnel with (replacing the M2 bearer secret
+	// as the issuance/renewal/mTLS paths land). Bootstrapping here makes the CA
+	// ready and surfaces a clear startup error if the KMS can't unseal it.
+	pkiRepo := repo.NewPKIRepo(db)
+	pkiVault := secretsBoot.NewVaultFor(model.OwnerPKICAKey)
+	pkiService, err := pki.Bootstrap(rootCtx, pkiRepo, pkiVault, "JumpServer Agent CA")
+	if err != nil {
+		return fmt.Errorf("pki bootstrap: %w", err)
+	}
+	logger.Info("internal PKI ready", zap.Int("ca_bundle_bytes", len(pkiService.Bundle())))
+	// The agent control-plane handler (enroll / renew / tunnel) is served on its
+	// own mTLS listener (cfg.Agent.Addr) — wired into the errgroup below.
+	agentGatewayHandler := &api.AgentGatewayHandler{
+		Agents: gatewayAgentRepo, Tokens: agentEnrollTokenRepo, Domains: domainRepo,
+		Registry: agentRegistry, Logger: logger, GatewayID: cfg.Server.Addr,
+		PKI: pkiService,
+	}
+	// Resolved agent面 settings, shared by the download endpoint, the admin info
+	// endpoint, and the mTLS listener below so they never diverge.
+	agentAddr := cfg.Agent.Addr
+	if agentAddr == "" {
+		agentAddr = ":8443"
+	}
+	agentDistDir := cfg.Agent.DistDir
+	if agentDistDir == "" {
+		agentDistDir = "dist/agent"
+	}
+	// Serves the prebuilt gateway-agent binary + install script so the network-
+	// domain page's copy-paste command actually resolves (security-architecture.md
+	// §14). Public by design — see AgentDownloadHandler.
+	agentDownloadHandler := &api.AgentDownloadHandler{
+		DistDir: agentDistDir, PublicHost: cfg.Agent.PublicHost,
+		AgentAddr: agentAddr, Logger: logger,
+	}
 	// Lifecycle v3 — read-only live-watch hub, shared by the terminal gateway
 	// and the desktop manager so admins can monitor in-progress sessions.
 	liveHub := livewatch.NewHub()
 	wsGateway.SetLiveHub(liveHub)
 
 	sftpConn := &sftp.Connector{
-		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Domains: domainResolver,
 		Resolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
 	}
 	officeSvc := office.New(office.Config{
@@ -404,7 +512,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// Object-storage bastion (OSS): reaches Aliyun OSS / Tencent COS / S3
 	// through the same credential pool + proxy chain as every other protocol.
 	ossConn := &oss.Connector{
-		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Domains: domainResolver,
 		Chain: chain, Vault: sealer,
 	}
 	ossHandler := &oss.Handler{Conn: ossConn, Asset: assetResolver, Audit: auditWriter, Logger: logger, Office: officeSvc, Sessions: ossSessions}
@@ -430,11 +538,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	var pfEvents *tcpfwd.WSEvents
 	if cfg.Protocols.TCPFwd.Enabled {
 		factory := func(ctx context.Context, node *model.Node) (string, proxy.ContextDialer, func(), error) {
-			hops, err := wsGateway.ResolveHops(ctx, node.ProxyChain)
-			if err != nil {
-				return "", nil, nil, err
-			}
-			dlr, rel, err := wsGateway.BuildChain(ctx, hops)
+			dlr, _, rel, err := wsGateway.DialerForNode(ctx, node, fmt.Sprintf("tcpfwd-node-%d", node.ID))
 			if err != nil {
 				return "", nil, nil, err
 			}
@@ -469,28 +573,39 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			AnonEna:  anonService != nil,
 			AnonSpec: cfg.Anonymous,
 		},
-		Node:          &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, AccessItems: accessItemRepo, Access: assetResolver},
-		Proxy:         &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
-		ChainTemplate: &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
-		ProxyGroup:    &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},
-		ProxyHealth:   &api.HealthHandler{Reg: healthReg, Prober: proxyProber},
-		ProxyMetrics:  &api.MetricsHandler{Reg: metricsReg},
-		Cred:          &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault, Resolver: resolver, Nodes: nodeRepo},
-		Dashboard:     &api.DashboardHandler{DB: db, RBAC: rbacResolver, Asset: assetResolver},
-		Session:       &api.SessionHandler{Repo: sessionRepo, Audit: auditRepo, Writer: auditWriter, Terminators: []api.SessionTerminator{wsGateway}},
-		Audit:         &api.AuditHandler{Repo: auditRepo, Nodes: nodeRepo},
-		SFTP:          sftpHandler,
-		OSS:           ossHandler,
-		WS:            wsGateway,
-		Guacamole:     guacHandler,
-		DBCLI:         dbcliHandler,
-		DB:            api.NewDBHandler(dbSvc, nil, auditWriter),
-		TCPFwd:        pfHandler,
-		TCPRelay:      pfRelay,
-		TCPEvents:     pfEvents,
-		Issuer:        issuer,
-		Blocklist:     blocklist,
-		Resolver:      rbacResolver,
+		Node:   &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, AccessItems: accessItemRepo, Access: assetResolver},
+		Proxy:  &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
+		Domain: api.NewDomainHandler(domainRepo),
+		Agent: &api.AgentHandler{
+			Agents: gatewayAgentRepo, Tokens: agentEnrollTokenRepo, Domains: domainRepo,
+			Registry: agentRegistry, PKI: pkiService, Logger: logger, Audit: auditWriter,
+			ListenerEnabled: cfg.Agent.Enabled, PublicHost: cfg.Agent.PublicHost,
+			AgentAddr: agentAddr, DistDir: agentDistDir,
+		},
+		AgentDownload:    agentDownloadHandler,
+		PKI:              &api.PKIHandler{Repo: pkiRepo, PKI: pkiService},
+		WriteRateLimiter: writeRateLimiter,
+		Prometheus:       metricsHandler(cfg.Metrics, guardLimiter, guardCounters, auditWriter, agentRegistry),
+		ChainTemplate:    &api.ChainTemplateHandler{Repo: chainTemplateRepo, Proxies: proxyRepo},
+		ProxyGroup:       &api.ProxyGroupHandler{Groups: proxyGroupRepo, Proxies: proxyRepo},
+		ProxyHealth:      &api.HealthHandler{Reg: healthReg, Prober: proxyProber},
+		ProxyMetrics:     &api.MetricsHandler{Reg: metricsReg},
+		Cred:             &api.CredentialHandler{Repo: credRepo, Sealer: credentialVault, Resolver: resolver, Nodes: nodeRepo},
+		Dashboard:        &api.DashboardHandler{DB: db, RBAC: rbacResolver, Asset: assetResolver},
+		Session:          &api.SessionHandler{Repo: sessionRepo, Audit: auditRepo, Writer: auditWriter, Terminators: []api.SessionTerminator{wsGateway}},
+		Audit:            &api.AuditHandler{Repo: auditRepo, Nodes: nodeRepo},
+		SFTP:             sftpHandler,
+		OSS:              ossHandler,
+		WS:               wsGateway,
+		Guacamole:        guacHandler,
+		DBCLI:            dbcliHandler,
+		DB:               api.NewDBHandler(dbSvc, nil, auditWriter),
+		TCPFwd:           pfHandler,
+		TCPRelay:         pfRelay,
+		TCPEvents:        pfEvents,
+		Issuer:           issuer,
+		Blocklist:        blocklist,
+		Resolver:         rbacResolver,
 		User: &api.UserHandler{
 			Repo: userRepo, Roles: roleRepo, Depts: deptRepo, Lockout: lockout,
 			Blocklist: blocklist, Resolver: rbacResolver,
@@ -549,7 +664,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		BulkRun: &api.BulkRunHandler{
 			Repo: bulkRunRepo, Nodes: nodeRepo, Creds: credRepo,
 			Proxies: proxyRepo, Chain: chain, Resolver: resolver,
-			HostKey: hostKeyChecker.Callback(),
+			HostKey: hostKeyChecker.Callback(), Domains: domainResolver,
 		},
 	}
 
@@ -591,6 +706,22 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			rowID = row.ID
 		}
 		return signer, rowID, nil
+	}
+
+	// M4 — signed audit checkpoints. Reuse signerLookup to seal the chain's tail
+	// + dropped-count: a genesis anchor now, then daily in the errgroup. Unsigned
+	// when no KMS provider can Sign (hash chain + WORM remain the evidence).
+	auditCheckpointSign := func(ctx context.Context, digest []byte) ([]byte, uint64, error) {
+		signer, providerID, err := signerLookup(ctx)
+		if err != nil || signer == nil {
+			return nil, 0, err
+		}
+		sig, serr := signer.Sign(ctx, digest)
+		return sig, providerID, serr
+	}
+	auditCheckpointer := audit.NewCheckpointer(auditChainID, auditRepo, auditCheckpointSign, auditWriter.DroppedTotal)
+	if cerr := auditCheckpointer.WriteGenesis(rootCtx); cerr != nil {
+		logger.Warn("audit genesis checkpoint failed", zap.Error(cerr))
 	}
 
 	// Phase 16c — optional WORM/S3 Object Lock archive. Disabled by
@@ -705,7 +836,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		ProcessLimit: cfg.Insights.ProcessLimit,
 	}, insights.Deps{
 		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
-		Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(),
+		Domains: domainResolver,
+		Chain:   chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(),
 		Asset: assetResolver,
 	})
 	routes.Insights = insights.NewHandler(insightsMgr)
@@ -746,15 +878,21 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Sessions: sessionRepo,
 			Metrics:  metricWriter,
 			LiveHub:  liveHub,
-			// Route the freerdp worker through the node's proxy chain (SSH
-			// bastion / SOCKS5 hops) — same ResolveHops + BuildChain path
-			// guacamole and tcpfwd use — so WebRDP reaches bastion-only nodes.
+			// Route the freerdp worker through the node's connectivity (direct /
+			// proxy chain / reverse agent) — the same DialerForNode seam guacamole
+			// and tcpfwd use — so WebRDP reaches bastion-only and domain-routed
+			// (including agent-domain) nodes. Returns a nil dialer for direct nodes
+			// so the manager skips the per-session SOCKS listener for them.
 			DialChain: func(ctx context.Context, node *model.Node) (proxy.ContextDialer, func(), error) {
-				hops, err := wsGateway.ResolveHops(ctx, node.ProxyChain)
+				dlr, usesHop, rel, err := wsGateway.DialerForNode(ctx, node, fmt.Sprintf("rdp-node-%d", node.ID))
 				if err != nil {
 					return nil, nil, err
 				}
-				return wsGateway.BuildChain(ctx, hops)
+				if !usesHop {
+					rel()
+					return nil, func() {}, nil
+				}
+				return dlr, rel, nil
 			},
 		})
 		desktopMgr.SetApproval(approvalSvc)
@@ -792,6 +930,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// to the workspace's right-side dock.
 	sshDeps := sshrun.Deps{
 		Chain: chain, Resolver: resolver, HostKey: hostKeyChecker.Callback(), Proxies: proxyRepo,
+		Domains: domainResolver,
 	}
 	firewallMgr := firewall.NewManager(firewall.Config{Enabled: true}, firewall.Deps{
 		Logger: logger, Nodes: nodeRepo, Creds: credRepo, Asset: assetResolver,
@@ -906,7 +1045,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}, ai.Deps{
 		DB: db, Sealer: aiVault, Logger: logger, AuditWriter: auditWriter,
 		Asset: assetResolver, RBAC: rbacResolver,
-		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo,
+		Nodes: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Domains: domainResolver,
 		Sessions: sessionRepo, AuditRepo: auditRepo,
 		LoginHist: historyRepo, Users: userRepo,
 		SSHResolver: resolver, Chain: chain, HostKey: hostKeyChecker.Callback(),
@@ -936,11 +1075,64 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	routes.Mount(engine)
 
 	g, gctx := errgroup.WithContext(rootCtx)
+	// Reverse-connect agent control plane on its own mTLS listener
+	// (security-architecture.md §4/§6). Terminates TLS itself so it can verify
+	// agent client certificates; enroll is reachable with only an OTT, while
+	// renew/tunnel require a CA-issued client cert.
+	if cfg.Agent.Enabled {
+		addr := agentAddr
+		hosts := []string{"127.0.0.1", "localhost"}
+		if cfg.Agent.PublicHost != "" {
+			hosts = append([]string{cfg.Agent.PublicHost}, hosts...)
+		}
+		tlsCfg, terr := pkiService.ServerTLSConfig(hosts)
+		if terr != nil {
+			return fmt.Errorf("agent mTLS config: %w", terr)
+		}
+		agentEngine := server.NewEngine(cfg.Server, logger)
+		agentGatewayHandler.AgentRoutes(agentEngine)
+		agentSrv := &http.Server{Addr: addr, Handler: agentEngine, TLSConfig: tlsCfg}
+		g.Go(func() error {
+			ln, lerr := tls.Listen("tcp", addr, tlsCfg)
+			if lerr != nil {
+				return fmt.Errorf("agent listener: %w", lerr)
+			}
+			logger.Info("agent mTLS listener up", zap.String("addr", addr))
+			go func() { <-gctx.Done(); _ = agentSrv.Close() }()
+			if serr := agentSrv.Serve(ln); serr != nil && serr != http.ErrServerClosed {
+				return serr
+			}
+			return nil
+		})
+	} else {
+		logger.Info("reverse-connect agents disabled (set agent.enabled=true to expose the mTLS listener)")
+	}
 	g.Go(func() error { return auditWriter.Run(gctx) })
+	g.Go(func() error { return auditExporter.Run(gctx) })
 	g.Go(func() error { return metricWriter.Run(gctx) })
 	g.Go(func() error { return sftpSessions.Run(gctx) })
 	g.Go(func() error { return ossSessions.Run(gctx) })
 	g.Go(func() error { return pool.Run(gctx) })
+	// Reverse-connect agent stale reaper: flip agents whose heartbeat has gone
+	// silent (a crashed gateway instance that couldn't mark them offline) back
+	// to offline so the roster reflects reality (security-architecture.md §16).
+	g.Go(func() error { return runAgentReaper(gctx, gatewayAgentRepo, logger) })
+	// M4 — seal a signed audit checkpoint hourly (idempotent per UTC day, so the
+	// day's seal stays current as events accumulate).
+	g.Go(func() error {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-gctx.Done():
+				return nil
+			case <-t.C:
+				if err := auditCheckpointer.WriteDaily(gctx); err != nil {
+					logger.Warn("audit checkpoint failed", zap.Error(err))
+				}
+			}
+		}
+	})
 	if cfg.Health.Enabled {
 		g.Go(func() error { return proxyProber.Run(gctx) })
 	}
@@ -1003,6 +1195,70 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// orDefault returns v when positive, else def — for applying config defaults.
+func orDefault(v, def int) int {
+	if v > 0 {
+		return v
+	}
+	return def
+}
+
+// buildAuditExporter assembles the configured external-audit sinks (§10), or
+// returns nil when none are enabled.
+func buildAuditExporter(cfg config.AuditExportConfig, logger *zap.Logger) *export.Exporter {
+	var sinks []export.Sink
+	if cfg.Syslog.Enabled && cfg.Syslog.Addr != "" {
+		var tlsCfg *tls.Config
+		if cfg.Syslog.TLS {
+			tlsCfg = &tls.Config{InsecureSkipVerify: cfg.Syslog.InsecureTLS} //nolint:gosec // operator opt-in for a lab collector
+		}
+		sinks = append(sinks, export.NewSyslogSink(cfg.Syslog.Addr, tlsCfg))
+		logger.Info("audit export: syslog/CEF sink enabled", zap.String("addr", cfg.Syslog.Addr))
+	}
+	if cfg.Webhook.Enabled && cfg.Webhook.URL != "" {
+		sinks = append(sinks, export.NewWebhookSink(cfg.Webhook.URL, cfg.Webhook.Secret))
+		logger.Info("audit export: webhook sink enabled")
+	}
+	return export.NewExporter(sinks, cfg.QueueSize, logger)
+}
+
+// metricsHandler builds the Prometheus exporter, or nil when metrics are
+// disabled (so the /metrics route is not registered).
+func metricsHandler(cfg config.MetricsConfig, lim *guard.Limiter, ctr *guard.Counters, aw *audit.Writer, reg *agentgw.Registry) *api.PrometheusHandler {
+	if !cfg.Enabled {
+		return nil
+	}
+	return &api.PrometheusHandler{
+		Limiter:         lim,
+		Counters:        ctr,
+		AuditDropped:    aw.DroppedTotal,
+		AgentsConnected: reg.Count,
+		Token:           cfg.Token,
+	}
+}
+
+// runAgentReaper periodically marks reverse-connect agents whose heartbeat has
+// gone stale (older than 90s) back to offline. The tunnel handler refreshes
+// last_seen every 30s while connected, so a healthy agent never trips this; it
+// only catches agents orphaned by a gateway crash. Runs until ctx is cancelled.
+func runAgentReaper(ctx context.Context, agents *repo.GatewayAgentRepo, logger *zap.Logger) error {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			n, err := agents.MarkOfflineStale(ctx, time.Now().Add(-90*time.Second))
+			if err != nil {
+				logger.Warn("agent reaper failed", zap.Error(err))
+			} else if n > 0 {
+				logger.Info("reaped stale agents", zap.Int64("count", n))
+			}
+		}
+	}
 }
 
 // bootstrapResult is non-nil only when this run actually created the admin

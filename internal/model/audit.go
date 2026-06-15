@@ -72,6 +72,16 @@ const (
 	AuditApprovalDecide  AuditEventKind = "approval.decide"
 	AuditApprovalRevoke  AuditEventKind = "approval.revoke"
 	AuditConfigChange    AuditEventKind = "config.change"
+
+	// Reverse-connect agent + internal PKI lifecycle (security-architecture.md
+	// §4/§6/§9). High-sensitivity: emitted via the audit writer's blocking
+	// critical path so a command flood can't suppress them.
+	AuditAgentEnroll      AuditEventKind = "agent.enroll"
+	AuditAgentActivate    AuditEventKind = "agent.activate"
+	AuditAgentRevoke      AuditEventKind = "agent.revoke"
+	AuditAgentDelete      AuditEventKind = "agent.delete"
+	AuditAgentEnrollToken AuditEventKind = "agent.enroll_token"
+	AuditPKICertRevoke    AuditEventKind = "pki.cert_revoke"
 )
 
 type AuditLog struct {
@@ -84,9 +94,45 @@ type AuditLog struct {
 	ClientIP  string         `gorm:"size:64" json:"client_ip"`
 	Payload   string         `gorm:"type:text" json:"payload,omitempty"`
 	CreatedAt time.Time      `gorm:"index" json:"created_at"`
+
+	// Tamper-evidence chain (security-architecture.md §5.2). Per-gateway-instance
+	// hash chain: ChainID = the writing instance's id; EntryHash =
+	// SHA256(PrevHash ‖ canonical(entry)); PrevHash links to the previous row in
+	// the same chain. Computed at insert time. Empty on pre-M4 rows (outside the
+	// protected range — the integrity report flags such gaps via the genesis
+	// checkpoint rather than treating them as tampering).
+	ChainID   string `gorm:"size:64;index:idx_audit_chain,priority:1" json:"chain_id,omitempty"`
+	PrevHash  string `gorm:"size:64" json:"prev_hash,omitempty"`
+	EntryHash string `gorm:"size:64;index:idx_audit_chain,priority:2" json:"entry_hash,omitempty"`
 }
 
 func (AuditLog) TableName() string { return "audit_logs" }
+
+// AuditCheckpoint is a signed seal over a chain's state at a point in time
+// (security-architecture.md §5.2). One per (ChainID, Day): it records the
+// chain's tail hash, the rows-so-far count, and the dropped-event count, then
+// KMS-signs that tuple. A genesis checkpoint (IsGenesis) is written when an
+// instance first starts chaining, declaring that rows before it (the pre-M4
+// NULL-hash history) are outside the protected range. Signature strength
+// depends on the active KMS provider — empty when none can Sign (hash-chain +
+// WORM remain the tamper evidence).
+type AuditCheckpoint struct {
+	ID      uint64 `gorm:"primaryKey" json:"id"`
+	ChainID string `gorm:"size:64;not null;uniqueIndex:idx_ckpt_chain_day,priority:1" json:"chain_id"`
+	// Day is the UTC date "2006-01-02", or "genesis" for the anchor row.
+	Day          string `gorm:"size:16;not null;uniqueIndex:idx_ckpt_chain_day,priority:2" json:"day"`
+	TailHash     string `gorm:"size:64" json:"tail_hash"`
+	EntryCount   int64  `json:"entry_count"`
+	DroppedCount int64  `json:"dropped_count"`
+	IsGenesis    bool   `gorm:"default:false" json:"is_genesis"`
+
+	SignerProviderID uint64    `json:"signer_provider_id,omitempty"`
+	Signature        []byte    `gorm:"type:bytea" json:"-"`
+	Signed           bool      `gorm:"-" json:"signed"` // transient: len(Signature) > 0
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+func (AuditCheckpoint) TableName() string { return "audit_checkpoints" }
 
 // ----- Taxonomy: categories, abnormal detection -----
 //
@@ -138,6 +184,8 @@ var auditCategoryKinds = map[string][]string{
 		string(AuditNetworkAction), string(AuditSecurityAction),
 		string(AuditApprovalRequest), string(AuditApprovalDecide), string(AuditApprovalRevoke),
 		string(AuditConfigChange),
+		string(AuditAgentEnroll), string(AuditAgentActivate), string(AuditAgentRevoke),
+		string(AuditAgentDelete), string(AuditAgentEnrollToken), string(AuditPKICertRevoke),
 	},
 	AuditCatOSS: {
 		string(AuditOSSList), string(AuditOSSDownload), string(AuditOSSUpload),

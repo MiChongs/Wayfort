@@ -45,8 +45,15 @@ if (-not (Test-Path $pacBin)) {
 
 if (-not $SkipDeps) {
     Write-Host "[build-worker-windows] installing deps into $Subenv subenv via pacman"
+    # libvpx/aom back the WebRTC video encoders (vp8.go / av1.go) and
+    # libjpeg-turbo the SIMD JPEG rect encoder (jpeg_turbo.go). freerdp pulls
+    # vpx/aom in transitively via ffmpeg today, but list them explicitly so a
+    # leaner future freerdp package can't silently break the build.
     & $pacBin -S --noconfirm --needed `
         "${pkgPrefix}freerdp" `
+        "${pkgPrefix}libvpx"  `
+        "${pkgPrefix}aom"     `
+        "${pkgPrefix}libjpeg-turbo" `
         "${pkgPrefix}pkgconf" `
         "${pkgPrefix}gcc"     `
         "${pkgPrefix}go"

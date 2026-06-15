@@ -15,12 +15,14 @@
         "authFailed": "Authentication failed — check node credentials (username / password / domain)",
         "serverClosed": "The server closed the session",
         "timeout": "Connection timed out — firewall, network jitter, or overloaded target",
+        "agentUnavailable": "This asset connects through a reverse-connect agent, but no agent is online for its network domain — activate or check the agent",
         "unknown": "Unknown reason — see diagnostics below or contact your administrator"
       },
       "suggestion": {
         "checkNode": "Check node",
         "checkCredentials": "Edit credentials",
         "retry": "Reconnect",
+        "checkAgent": "Open network domains",
         "contactAdmin": "Contact admin"
       }
     },

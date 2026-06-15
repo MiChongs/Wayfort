@@ -85,11 +85,22 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.Proxy{},
 		&model.ProxyChainTemplate{},
 		&model.ProxyGroupMember{},
+		// Network domains — single source of truth for connectivity. Migrated
+		// before Node so the domain_id FK column has its target table; the
+		// default domain + node backfill run via DomainRepo.EnsureDefault.
+		&model.Domain{},
+		// Reverse-connect Gateway Agents + one-time enrollment tokens (M2).
+		&model.GatewayAgent{},
+		&model.AgentEnrollToken{},
+		// Internal PKI — embedded CA + issued-cert ledger (M3).
+		&model.PKICA{},
+		&model.PKICertificate{},
 		&model.Node{},
 		&model.Session{},
 		&model.SessionPhase{},        // lifecycle v3 — per-stage timeline
 		&model.SessionMetricSample{}, // lifecycle v3 — connection-quality samples
 		&model.AuditLog{},
+		&model.AuditCheckpoint{}, // M4 — signed tamper-evidence checkpoints
 		&model.PortForward{},
 
 		// User / org / RBAC

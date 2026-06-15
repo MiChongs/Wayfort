@@ -142,7 +142,7 @@ func (m *Manager) Follow(ctx context.Context, userID, nodeID uint64, source, ref
 	fctx, cancel := context.WithTimeout(ctx, m.cfg.FollowMax)
 	defer cancel()
 
-	hops, err := sshrun.ResolveHops(fctx, m.deps.Proxies, loaded.node.ProxyChain)
+	hops, err := m.deps.HopsFor(fctx, loaded.node)
 	if err != nil {
 		return fmt.Errorf("resolve hops: %w", err)
 	}

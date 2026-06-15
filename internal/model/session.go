@@ -54,6 +54,10 @@ type Session struct {
 	// is retained for backward compatibility with the v1 schema.
 	RecordingPath string        `gorm:"column:cast_path;size:512" json:"recording_path,omitempty"`
 	RecordingType RecordingType `gorm:"size:16" json:"recording_type,omitempty"`
+	// RecordingSHA256 is the hex SHA-256 of the recording file, computed when the
+	// session ends (security-architecture.md §5.2). Replay verifies against it so
+	// a tampered tape is flagged. Empty when there is no recording.
+	RecordingSHA256 string `gorm:"size:64" json:"recording_sha256,omitempty"`
 	BytesIn       uint64        `json:"bytes_in"`
 	BytesOut      uint64        `json:"bytes_out"`
 	Reason        string        `gorm:"size:255" json:"reason,omitempty"`

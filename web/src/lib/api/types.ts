@@ -188,6 +188,11 @@ export interface Node {
   username: string
   credential_id: number
   proxy_chain: string
+  // Network domain — the source of truth for HOW the gateway reaches this node
+  // (direct / proxy chain / reverse-connect agent). Omitted = the default direct
+  // domain; a non-empty proxy_chain above is a deprecated per-node override that
+  // still wins during the compatibility window.
+  domain_id?: number
   // Per-protocol tuning, stored as a JSON string. RDP-specific fields go
   // under the `rdp` sub-object; see RdpProtoOptions below. Older Guacamole
   // nodes may have flat-form `{"security":..., "domain":...}` — the
@@ -449,6 +454,90 @@ export interface ProxyFailoverGroup {
   strategy: FailoverStrategy
   retry: number
   backoff_ms: number
+}
+
+// Network domain — the single source of truth for a node's connectivity
+// (how the gateway reaches it). Authorisation stays orthogonal. See the backend
+// internal/domain package and docs/security-architecture.md §3.
+export type DomainKind = "direct" | "proxy" | "agent"
+
+export interface Domain {
+  id: number
+  name: string
+  kind: DomainKind
+  description?: string
+  // proxy domains only: ordered comma-separated proxy-id chain (same format as
+  // Node.proxy_chain), may terminate in a failover group.
+  proxy_chain?: string
+  // comma-separated NodeProtocol whitelist; empty = all allowed.
+  allowed_protocols?: string
+  max_concurrent_sessions?: number
+  // the built-in default direct domain — pinned to direct, undeletable.
+  is_default?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+// Reverse-connect Gateway Agent (security-architecture.md §4). Lives inside an
+// agent domain's isolated network and dials targets on the gateway's behalf.
+export type AgentStatus = "pending" | "online" | "offline" | "revoked"
+
+export interface GatewayAgent {
+  id: number
+  domain_id: number
+  name: string
+  status: AgentStatus
+  version?: string
+  fingerprint?: string
+  enroll_ip?: string
+  cert_expires_at?: string
+  last_seen_at?: string
+  last_gateway?: string
+  stats?: string
+  // live registry status: is the agent connected to this gateway right now.
+  connected?: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+// The one-time enrollment token response — the plaintext token is shown exactly
+// once for the admin to paste into the agent's enroll command.
+export interface AgentEnrollToken {
+  token: string
+  expires_at: string
+  domain_id: number
+}
+
+// Reverse-connect agent面 status — drives the install command and the
+// "listener disabled" warning (security-architecture.md §4/§14).
+export interface AgentGatewayInfo {
+  enabled: boolean // is the mTLS listener actually up?
+  server: string // wss://host:port the agent dials
+  script_path: string // origin-relative installer path (e.g. /dl/gateway-agent.sh)
+  binary_ready: boolean // is a binary staged for download?
+}
+
+// Internal PKI (security-architecture.md §6) — the embedded CA's metadata and
+// the issued-certificate ledger.
+export interface PKICAInfo {
+  subject: string
+  not_before: string
+  not_after: string
+  bundle: string
+  mode: string // "embedded" | "step-ca"
+}
+
+export type PKICertStatus = "active" | "expired" | "revoked"
+
+export interface PKICertificate {
+  serial: string
+  subject_kind: string // "agent" | "service"
+  subject_id: number
+  fingerprint: string
+  not_before: string
+  not_after: string
+  status: PKICertStatus
+  revoke_reason?: string
 }
 
 export interface Proxy {
@@ -725,6 +814,30 @@ export interface AuditStats {
   top_nodes: AuditKeyCount[]
   top_ips: AuditKeyCount[]
   heatmap: number[][] // [7 weekdays][24 hours]
+}
+
+// M4 — audit tamper-evidence integrity report (security-architecture.md §5.2).
+export interface AuditCheckpointView {
+  day: string
+  tail_hash: string
+  entry_count: number
+  dropped_count: number
+  is_genesis: boolean
+  signed: boolean
+  created_at: string
+}
+export interface AuditChainReport {
+  chain_id: string
+  entry_count: number
+  intact: boolean
+  broken_at: number // -1 when intact
+  truncated: boolean
+  checkpoints: AuditCheckpointView[]
+}
+export interface AuditIntegrityReport {
+  chains: AuditChainReport[]
+  unprotected_rows: number
+  unprotected_note: string
 }
 
 // AuditQuery is the filter set shared by the list, the live stream, and the

@@ -37,3 +37,13 @@ bin/
 # Per-developer dev URLs (BACKEND_HTTP_URL / NEXT_PUBLIC_BACKEND_WS_URL).
 # `.env.example` covers the documentation case; `.env` is local-only.
 /web/.env
+
+# baoyu-design HTML artifacts
+designs/
+
+# Compiled binaries — never commit build artifacts.
+/gateway-agent.exe
+*.exe
+# scripts/build-agent.sh output (prebuilt gateway-agent binaries staged for the
+# /dl/gateway-agent download endpoint). Operators stage these at deploy time.
+/dist/

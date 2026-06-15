@@ -7,7 +7,7 @@
 // user out of the workspace context.
 
 import * as React from "react"
-import { Folder, Globe, Layers, type LucideIcon } from "lucide-react"
+import { Folder, Globe, Layers, PanelTop, SquareTerminal, type LucideIcon } from "lucide-react"
 import { motion } from "motion/react"
 import {
   Sheet,
@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils"
 import {
   useWorkspaceStore,
   type GroupingMode,
+  type TabStyle,
 } from "./useWorkspaceStore"
 
 interface Props {
@@ -37,6 +38,28 @@ interface ModeOption {
   description: string
   icon: LucideIcon
 }
+
+interface StyleOption {
+  value: TabStyle
+  title: string
+  description: string
+  icon: LucideIcon
+}
+
+const STYLE_OPTIONS: StyleOption[] = [
+  {
+    value: "vscode",
+    title: "VS Code 风",
+    description: "满高矩形页签,激活页用左侧主题色竖条标记。",
+    icon: PanelTop,
+  },
+  {
+    value: "warp",
+    title: "Warp 风",
+    description: "圆角段式页签,激活页填充并带底部主题色下划线。",
+    icon: SquareTerminal,
+  },
+]
 
 const MODE_OPTIONS: ModeOption[] = [
   {
@@ -81,6 +104,40 @@ export function WorkspaceSettingsSheet({ open, onOpenChange }: Props) {
         </SheetHeader>
 
         <div className="p-4 space-y-6">
+          <section className="space-y-2">
+            <h3 className="text-sm font-medium">页签风格</h3>
+            <RadioGroup
+              value={prefs.tabStyle}
+              onValueChange={(v) => setPrefs({ tabStyle: v as TabStyle })}
+              className="grid grid-cols-2 gap-2"
+            >
+              {STYLE_OPTIONS.map((opt) => {
+                const Icon = opt.icon
+                const checked = prefs.tabStyle === opt.value
+                return (
+                  <motion.label
+                    key={opt.value}
+                    htmlFor={`style-${opt.value}`}
+                    layout
+                    className={cn(
+                      "flex flex-col gap-1.5 rounded-md border p-3 cursor-pointer transition-colors",
+                      checked ? "border-primary bg-primary/5" : "border-border hover:bg-accent/40",
+                    )}
+                  >
+                    <div className="flex items-center justify-between">
+                      <Icon className="h-4 w-4" />
+                      <RadioGroupItem id={`style-${opt.value}`} value={opt.value} />
+                    </div>
+                    <div className="text-sm font-medium">{opt.title}</div>
+                    <div className="text-xs text-muted-foreground leading-relaxed">{opt.description}</div>
+                  </motion.label>
+                )
+              })}
+            </RadioGroup>
+          </section>
+
+          <Separator />
+
           <section className="space-y-2">
             <h3 className="text-sm font-medium">分组方式</h3>
             <RadioGroup

@@ -15,7 +15,7 @@
 //   by-protocol  → grouped by tab.protocol
 
 import * as React from "react"
-import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "motion/react"
+import { AnimatePresence, LayoutGroup, useReducedMotion } from "motion/react"
 import {
   ArrowLeftRight,
   Columns2,
@@ -99,6 +99,8 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
   const tabs = useWorkspaceStore((s) => s.tabs)
   const groups = useWorkspaceStore((s) => s.groups)
   const groupingMode = useWorkspaceStore((s) => s.prefs.groupingMode)
+  const tabStyle = useWorkspaceStore((s) => s.prefs.tabStyle)
+  const isWarp = tabStyle === "warp"
   const activeId = useWorkspaceStore((s) => s.activeId)
   const setActive = useWorkspaceStore((s) => s.setActive)
   const close = useWorkspaceStore((s) => s.close)
@@ -288,11 +290,12 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
 
   return (
     <>
-      <div className="relative flex items-stretch bg-muted/30 h-9">
+      <div className={cn("relative flex items-stretch h-9", isWarp ? "bg-background" : "bg-muted/30")}>
         {/* Scroll viewport — native scrollbar hidden (no-scrollbar); the wheel
             handler + a side-aware CSS mask keep overflowing tabs reachable and
-            cleanly faded without a system scrollbar on screen. Tabs bottom-align
-            so the active card lifts as a Chrome-style floating card. */}
+            cleanly faded without a system scrollbar on screen.
+              vscode → 满高矩形页贴合条底,无间距(分隔线由页右边框给出);
+              warp   → 圆角段居中,留 4px 段间距。 */}
         <div className="relative flex-1 min-w-0">
           <div
             ref={scrollRef}
@@ -300,7 +303,10 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
             aria-label="工作台 Tabs"
             onScroll={updateEdges}
             style={maskStyle}
-            className="flex items-end h-full gap-0.5 px-1 overflow-x-auto overflow-y-hidden no-scrollbar"
+            className={cn(
+              "flex h-full overflow-x-auto overflow-y-hidden no-scrollbar",
+              isWarp ? "items-center gap-1 px-1.5" : "items-stretch gap-0 px-0",
+            )}
           >
             <LayoutGroup id="workspace-tabs">
           <AnimatePresence initial={false} mode="popLayout">
@@ -466,12 +472,9 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
         {/* Pinned action area — stays put when tabs overflow (previously it
             scrolled off with the strip). A divider sets it apart from tabs. */}
         <div className="shrink-0 flex items-center gap-0.5 px-1.5 border-l border-border/40">
-          <motion.button
+          <button
             type="button"
             onClick={onNewTab}
-            whileHover={reduced ? undefined : { scale: 1.08 }}
-            whileTap={reduced ? undefined : { scale: 0.92 }}
-            transition={{ duration: 0.15, ease: "easeOut" }}
             title="新建 Tab (Ctrl+T)"
             aria-label="新建 Tab"
             className={cn(
@@ -480,7 +483,7 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
             )}
           >
             <Plus className="w-4 h-4" />
-          </motion.button>
+          </button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -529,11 +532,9 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <motion.button
+          <button
             type="button"
             onClick={() => setSettingsOpen(true)}
-            whileHover={reduced ? undefined : { scale: 1.08 }}
-            whileTap={reduced ? undefined : { scale: 0.92 }}
             title="工作台设置"
             aria-label="工作台设置"
             className={cn(
@@ -542,7 +543,7 @@ export function WorkspaceTabBar({ onNewTab }: Props) {
             )}
           >
             <Settings2 className="w-4 h-4" />
-          </motion.button>
+          </button>
         </div>
       </div>
       <WorkspaceSettingsSheet open={settingsOpen} onOpenChange={setSettingsOpen} />

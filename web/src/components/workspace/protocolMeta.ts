@@ -183,8 +183,16 @@ export function protocolsForNode(protocol: string): Protocol[] {
   }
 }
 
-export function protocolChoicesForNode(protocol: string): ProtocolChoice[] {
+export function protocolChoicesForNode(protocol: string, preferredRdp?: DesktopBackend): ProtocolChoice[] {
   const choices: ProtocolChoice[] = []
+  // Order RDP backends so the one the server can actually serve right now
+  // (preferredRdp, resolved from /desktop/stats) is first → it becomes the
+  // default double-click / drag-open choice. Without a preference we keep the
+  // historical order (freerdp first). This prevents defaulting to a backend the
+  // host can't serve (e.g. freerdp with no worker built) while the other path
+  // (Devolutions Gateway / ironrdp) is healthy — the "no session" symptom.
+  const rdpBackends: DesktopBackend[] =
+    preferredRdp === "ironrdp" ? ["ironrdp", "freerdp"] : ["freerdp", "ironrdp"]
   for (const p of protocolsForNode(protocol)) {
     const meta = metaOf(p)
     if (p !== "rdp_next") {
@@ -192,7 +200,7 @@ export function protocolChoicesForNode(protocol: string): ProtocolChoice[] {
       continue
     }
 
-    for (const rdpBackend of ["freerdp", "ironrdp"] as const) {
+    for (const rdpBackend of rdpBackends) {
       choices.push({
         protocol: p,
         rdpBackend,

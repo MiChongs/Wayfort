@@ -53,6 +53,15 @@ type Node struct {
 	Port         int          `gorm:"default:22" json:"port"`
 	Username     string       `gorm:"size:128" json:"username"`
 	CredentialID uint64       `json:"credential_id"`
+	// DomainID binds the node to a network domain, the single source of truth
+	// for connectivity (see internal/domain). Nullable for backward-compat;
+	// migration backfills every existing node into the built-in "default" direct
+	// domain so behaviour is unchanged. When ProxyChain below is non-empty it
+	// acts as a deprecated per-node override of the domain's chain.
+	DomainID *uint64 `gorm:"index" json:"domain_id,omitempty"`
+	// ProxyChain is the legacy, ordered comma-separated list of Proxy IDs applied
+	// left-to-right (outermost first), e.g. "3,1". DEPRECATED in favour of
+	// DomainID; kept as a per-node override during the compatibility window.
 	ProxyChain   string       `gorm:"size:255" json:"proxy_chain"`
 	// ProtoOptions is a JSON blob with protocol-specific knobs (database name,
 	// VNC color depth, RDP security mode, etc.). Empty == use protocol defaults.

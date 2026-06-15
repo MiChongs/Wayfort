@@ -49,13 +49,16 @@ if [ -z "${SKIP_DEPS:-}" ]; then
         debian)
             sudo apt-get update
             sudo apt-get install -y --no-install-recommends \
-                freerdp3-dev libwinpr3-dev pkg-config build-essential golang
+                freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
+                pkg-config build-essential golang
             ;;
         fedora)
-            sudo dnf install -y freerdp-devel pkg-config gcc golang
+            sudo dnf install -y freerdp-devel libvpx-devel libaom-devel turbojpeg-devel \
+                pkg-config gcc golang
             ;;
         alpine)
-            sudo apk add --no-cache freerdp-dev pkgconfig build-base go
+            sudo apk add --no-cache freerdp-dev libvpx-dev aom-dev libjpeg-turbo-dev \
+                pkgconfig build-base go
             ;;
     esac
 fi
@@ -64,6 +67,9 @@ echo "[build-worker-linux] verifying toolchain"
 command -v go        >/dev/null || { echo "go not on PATH after install" >&2; exit 1; }
 command -v pkg-config >/dev/null || { echo "pkg-config not on PATH after install" >&2; exit 1; }
 pkg-config --exists freerdp3 || { echo "pkg-config can't find freerdp3 — package install failed silently" >&2; exit 1; }
+pkg-config --exists vpx || { echo "pkg-config can't find vpx (libvpx-dev) — needed by the WebRTC VP8/VP9 encoder" >&2; exit 1; }
+pkg-config --exists aom || { echo "pkg-config can't find aom (libaom-dev) — needed by the WebRTC AV1 encoder" >&2; exit 1; }
+pkg-config --exists libturbojpeg || { echo "pkg-config can't find libturbojpeg (libturbojpeg0-dev) — needed by the SIMD JPEG rect encoder" >&2; exit 1; }
 
 echo "[build-worker-linux] compiling (this typically takes 10-30s)"
 cd "$ROOT"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -19,10 +20,24 @@ type Connector struct {
 	Nodes    *repo.NodeRepo
 	Creds    *repo.CredentialRepo
 	Proxies  *repo.ProxyRepo
+	Domains  *domain.Resolver
 	Resolver *pkgssh.Resolver
 	Chain    *dialer.ChainBuilder
 	HostKey  xssh.HostKeyCallback
 	DialTO   func() (timeoutSeconds int)
+}
+
+// hopsFor resolves the proxy hops to reach node, preferring the network-domain
+// resolver when wired and falling back to the legacy per-node ProxyChain.
+func (c *Connector) hopsFor(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	if c.Domains != nil {
+		plan, err := c.Domains.Resolve(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		return plan.Hops, nil
+	}
+	return resolveHops(ctx, c.Proxies, node.ProxyChain)
 }
 
 func (c *Connector) Open(ctx context.Context, nodeID uint64) (*pkgsftp.Client, func(), error) {
@@ -30,7 +45,7 @@ func (c *Connector) Open(ctx context.Context, nodeID uint64) (*pkgsftp.Client, f
 	if err != nil || node == nil {
 		return nil, nil, fmt.Errorf("node %d not found", nodeID)
 	}
-	hops, err := resolveHops(ctx, c.Proxies, node.ProxyChain)
+	hops, err := c.hopsFor(ctx, node)
 	if err != nil {
 		return nil, nil, err
 	}

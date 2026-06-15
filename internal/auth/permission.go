@@ -14,9 +14,12 @@ const (
 	PermNodeUpdate = "node:update"
 	PermNodeDelete = "node:delete"
 
-	// proxies / credentials
+	// proxies / credentials / network domains
 	PermProxyManage      = "proxy:manage"
 	PermCredentialManage = "credential:manage"
+	PermDomainManage     = "domain:manage"
+	PermAgentManage      = "agent:manage"
+	PermPKIManage        = "pki:manage"
 
 	// asset groups and grants
 	PermAssetGroupManage = "asset_group:manage"
@@ -97,6 +100,9 @@ var AllPermissions = []struct {
 	{PermNodeDelete, "node", "删除节点"},
 	{PermProxyManage, "asset", "管理代理"},
 	{PermCredentialManage, "asset", "管理凭据"},
+	{PermDomainManage, "asset", "管理网域"},
+	{PermAgentManage, "asset", "管理网关 Agent"},
+	{PermPKIManage, "asset", "管理内部 PKI / 证书"},
 	{PermAssetGroupManage, "asset", "管理资产组"},
 	{PermTagManage, "asset", "管理标签"},
 	{PermGrantManage, "asset", "管理资产授权"},
@@ -176,7 +182,7 @@ const (
 // read-only operator stays a "user" unless they can actually manage something.
 var adminTierPerms = []string{
 	PermNodeCreate, PermNodeUpdate, PermNodeDelete,
-	PermProxyManage, PermCredentialManage,
+	PermProxyManage, PermCredentialManage, PermDomainManage, PermAgentManage, PermPKIManage,
 	PermAssetGroupManage, PermTagManage, PermGrantManage,
 	PermSessionTerminate, PermSessionObserve, PermAuditRead,
 	PermUserManage, PermRoleManage, PermGroupManage, PermDeptManage, PermOIDCManage,

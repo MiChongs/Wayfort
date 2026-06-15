@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
@@ -20,6 +21,7 @@ type Connector struct {
 	Nodes   *repo.NodeRepo
 	Creds   *repo.CredentialRepo
 	Proxies *repo.ProxyRepo
+	Domains *domain.Resolver
 	Chain   *dialer.ChainBuilder
 	Vault   pkgcrypto.Vault
 }
@@ -40,7 +42,13 @@ func (c *Connector) Open(ctx context.Context, nodeID uint64) (ObjectStore, Optio
 	if opts.Endpoint == "" {
 		opts.Endpoint = node.Host
 	}
-	store, release, err := c.openWith(ctx, opts, node.CredentialID, node.ProxyChain)
+	// Node-based path: resolve connectivity through the node's network domain
+	// (falling back to its legacy ProxyChain when no resolver is wired).
+	hops, err := c.hopsForNode(ctx, node)
+	if err != nil {
+		return nil, Options{}, nil, err
+	}
+	store, release, err := c.openWithHops(ctx, opts, node.CredentialID, hops)
 	if err != nil {
 		return nil, Options{}, nil, err
 	}
@@ -49,15 +57,30 @@ func (c *Connector) Open(ctx context.Context, nodeID uint64) (ObjectStore, Optio
 
 // OpenDiscover builds a store from raw options + a credential id (+ optional
 // proxy chain) WITHOUT a persisted node — for the admin "test & discover" flow.
+// There is no node here, so the explicit chain string is used verbatim (domains
+// are a node-level concept).
 func (c *Connector) OpenDiscover(ctx context.Context, opts Options, credentialID uint64, proxyChain string) (ObjectStore, func(), error) {
-	return c.openWith(ctx, opts, credentialID, proxyChain)
-}
-
-func (c *Connector) openWith(ctx context.Context, opts Options, credID uint64, proxyChain string) (ObjectStore, func(), error) {
 	hops, err := resolveHops(ctx, c.Proxies, proxyChain)
 	if err != nil {
 		return nil, nil, err
 	}
+	return c.openWithHops(ctx, opts, credentialID, hops)
+}
+
+// hopsForNode resolves the proxy hops to reach an OSS node, preferring the
+// network-domain resolver and falling back to the legacy per-node ProxyChain.
+func (c *Connector) hopsForNode(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	if c.Domains != nil {
+		plan, err := c.Domains.Resolve(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		return plan.Hops, nil
+	}
+	return resolveHops(ctx, c.Proxies, node.ProxyChain)
+}
+
+func (c *Connector) openWithHops(ctx context.Context, opts Options, credID uint64, hops []*model.Proxy) (ObjectStore, func(), error) {
 	finalDialer, releaseHops, err := c.Chain.Build(ctx, hops, nil)
 	if err != nil {
 		return nil, nil, err

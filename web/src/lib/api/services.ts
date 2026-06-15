@@ -8,6 +8,12 @@ import type {
   SettingsSchema,
   IntegrationStatus,
   SettingsAudit,
+  Domain,
+  GatewayAgent,
+  AgentEnrollToken,
+  AgentGatewayInfo,
+  PKICAInfo,
+  PKICertificate,
 } from "./types"
 import type {
   AIAgent,
@@ -139,6 +145,7 @@ import type {
   AuditLogRow,
   AuditStats,
   AuditQuery,
+  AuditIntegrityReport,
   DriveInfo,
   DriveEntry,
   AnonymousSession,
@@ -275,6 +282,39 @@ export const proxyService = {
   members: (id: number) => api<{ members: Proxy[] }>("GET", `/proxies/${id}/members`),
   setMembers: (id: number, body: ProxyFailoverGroup) =>
     api<{ ok: boolean }>("PUT", `/proxies/${id}/members`, { body }),
+}
+
+// Network domains — connectivity source of truth (security-architecture.md §3).
+export const domainService = {
+  list: () =>
+    api<{ domains: Domain[]; summary?: { total: number; kinds: string[] } }>("GET", "/domains"),
+  create: (body: Partial<Domain>) => api<Domain>("POST", "/domains", { body }),
+  update: (id: number, body: Partial<Domain>) => api<Domain>("PATCH", `/domains/${id}`, { body }),
+  remove: (id: number) => api<void>("DELETE", `/domains/${id}`),
+}
+
+// Reverse-connect Gateway Agents — admin lifecycle (security-architecture.md §4).
+export const agentService = {
+  list: (domainId: number) =>
+    api<{ agents: GatewayAgent[] }>("GET", `/domains/${domainId}/agents`),
+  // agent面 status: listener enabled? install-script path? binary staged?
+  info: () => api<AgentGatewayInfo>("GET", "/agent-gateway/info"),
+  generateToken: (domainId: number, body?: { allowed_cidr?: string; ttl_minutes?: number }) =>
+    api<AgentEnrollToken>("POST", `/domains/${domainId}/agents/enroll-token`, { body: body ?? {} }),
+  activate: (agentId: number) => api<{ ok: boolean }>("POST", `/agents/${agentId}/activate`),
+  revoke: (agentId: number) => api<{ ok: boolean }>("POST", `/agents/${agentId}/revoke`),
+  remove: (agentId: number) => api<void>("DELETE", `/agents/${agentId}`),
+}
+
+// Internal PKI — CA metadata + issued-certificate ledger (security-architecture.md §6).
+export const pkiService = {
+  ca: () => api<PKICAInfo>("GET", "/pki/ca"),
+  certificates: (subjectKind?: string) =>
+    api<{ certificates: PKICertificate[] }>("GET", "/pki/certificates", {
+      query: subjectKind ? { subject_kind: subjectKind } : undefined,
+    }),
+  revoke: (serial: string) =>
+    api<{ ok: boolean }>("POST", `/pki/certificates/${encodeURIComponent(serial)}/revoke`),
 }
 
 // Phase 10 — reusable proxy chain presets.
@@ -447,6 +487,8 @@ export const auditService = {
   stats: (days = 14) => api<AuditStats>("GET", "/audit-logs/stats", { query: { days } }),
   streamURL: (q: AuditQuery = {}) => buildURLFromAPI("/audit-logs/stream", auditParams(q)),
   exportURL: (q: AuditQuery = {}) => withTokenQuery(buildURLFromAPI("/audit-logs/export", auditParams(q))),
+  // M4 — tamper-evidence integrity report (hash-chain verify + signed checkpoints).
+  integrity: () => api<AuditIntegrityReport>("GET", "/audit-logs/integrity"),
 }
 
 // ----- desktop per-user file drive (redirected into RDP sessions) -----
@@ -1384,7 +1426,7 @@ export const aiProviderService = {
     api_key: string
     proxy_url?: string
     extra?: Record<string, unknown>
-  }) => api<{ models: AIModel[] }>("POST", "/ai/provider-discover-models", { body }),
+  }) => api<{ models: AIModel[]; discovery_supported?: boolean; error?: string }>("POST", "/ai/provider-discover-models", { body }),
   // Live models. merge=1 unions live discovery + preset catalog + curated list.
   models: (id: number, merge = false) =>
     api<{ models: AIModel[] }>("GET", `/ai/providers/${id}/models`, merge ? { query: { merge: 1 } } : {}),

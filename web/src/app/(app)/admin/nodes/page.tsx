@@ -52,13 +52,13 @@ import {
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { EmptyState } from "@/components/common/empty-state"
-import { assetGroupService, nodeService, proxyService, tagService } from "@/lib/api/services"
+import { assetGroupService, domainService, nodeService, proxyService, tagService } from "@/lib/api/services"
 import { TagPicker } from "@/components/tags/tag-picker"
 import { AppIcon } from "@/components/icons/app-icon"
 import { IconPicker } from "@/components/icons/icon-picker"
 import { nodeIcon, protocolIconToken } from "@/lib/icons/protocol"
 import { CredentialPicker } from "@/components/admin/credential-picker"
-import type { AssetGroup, Node, NodeListParams, NodeProtocol, Proxy } from "@/lib/api/types"
+import type { AssetGroup, Domain, Node, NodeListParams, NodeProtocol, Proxy } from "@/lib/api/types"
 import { RdpOptionsForm } from "@/components/admin/nodes/rdp-options-form"
 import { OssOptionsForm } from "@/components/admin/nodes/oss-options-form"
 import { cn } from "@/lib/utils"
@@ -593,6 +593,15 @@ function NodeFormSheet({
     })
   }
 
+  // Domains decide HOW the gateway reaches the asset (direct / proxy / agent).
+  const domainsQ = useQuery({
+    queryKey: ["admin", "domains", "all"],
+    queryFn: () => domainService.list(),
+    enabled: open,
+  })
+  const domains: Domain[] = domainsQ.data?.domains ?? []
+  const selectedDomain = draft.domain_id != null ? domains.find((dm) => dm.id === draft.domain_id) : undefined
+
   const chainIDs = parseChain(draft.proxy_chain)
   const setChain = (next: number[]) => setDraft((d) => ({ ...d, proxy_chain: next.join(",") }))
 
@@ -685,6 +694,40 @@ function NodeFormSheet({
           </section>
 
           <Separator />
+
+          {/* Network domain — the source of truth for HOW the gateway reaches
+              this asset. Agent domains tunnel in via a reverse-connect agent. */}
+          <section className="space-y-2">
+            <Field
+              label="网域"
+              hint="决定如何到达该资产：Agent 域经内网反连 Agent 接入；留空 = 默认直连域。"
+            >
+              <Select
+                value={draft.domain_id != null ? String(draft.domain_id) : "0"}
+                onValueChange={(v) => setDraft((d) => ({ ...d, domain_id: Number(v) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="默认（直连域）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">默认（直连域）</SelectItem>
+                  {domains
+                    .filter((dm) => !dm.is_default)
+                    .map((dm) => (
+                      <SelectItem key={dm.id} value={String(dm.id)}>
+                        {dm.name}
+                        {dm.kind === "agent" ? "（Agent 反连）" : dm.kind === "proxy" ? "（代理）" : "（直连）"}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            {selectedDomain?.kind === "agent" && draft.proxy_chain ? (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                注意：下方「代理链」非空会作为遗留覆盖优先生效，使资产绕过所选 Agent 域。要走 Agent 请先清空代理链。
+              </p>
+            ) : null}
+          </section>
 
           <CollapsibleSection
             title="代理链"

@@ -373,13 +373,9 @@ func (s *Service) build(ctx context.Context, nodeID, userID uint64, database str
 		return nil, fmt.Errorf("dbquery: decrypt credential: %w", err)
 	}
 
-	hops, err := s.gw.ResolveHops(ctx, node.ProxyChain)
+	chain, _, release, err := s.gw.DialerForNode(ctx, node, fmt.Sprintf("db-node-%d", node.ID))
 	if err != nil {
-		return nil, fmt.Errorf("dbquery: resolve hops: %w", err)
-	}
-	chain, release, err := s.gw.BuildChain(ctx, hops)
-	if err != nil {
-		return nil, fmt.Errorf("dbquery: build chain: %w", err)
+		return nil, fmt.Errorf("dbquery: resolve dialer: %w", err)
 	}
 
 	user := cred.Username

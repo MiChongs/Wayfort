@@ -54,7 +54,9 @@ export function AuthMethodsSheet({
   })
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-md">
+      {/* 登录页强制深色;Sheet 经 portal 挂到 body,这里同样加 dark 作用域,
+          避免系统浅色主题下 Sheet 与登录页明暗不一致。 */}
+      <SheetContent side="right" className="dark flex w-full flex-col gap-0 bg-background p-0 text-foreground sm:max-w-md">
         <SheetHeader className="border-b px-6 pt-6 pb-4">
           <SheetTitle className="flex items-center gap-2 text-base">
             <ShieldCheck className="h-4 w-4" /> 选择登录方式

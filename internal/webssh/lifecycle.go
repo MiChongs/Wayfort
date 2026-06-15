@@ -2,6 +2,10 @@ package webssh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -75,4 +79,26 @@ func (g *Gateway) finalizeLifecycle(row *model.Session) {
 	}
 	row.CurrentPhase = model.PhaseClosed
 	_ = g.sessions.ClosePhaseAny(ctx, row.ID, model.PhaseSucceeded, time.Now())
+	// Tamper-evidence: hash the finished recording so replay can verify it
+	// (security-architecture.md §5.2). Best-effort — a missing/locked file just
+	// leaves the hash empty. Callers fold row.RecordingSHA256 into their Finish.
+	if row.RecordingPath != "" {
+		if h := hashFileSHA256(row.RecordingPath); h != "" {
+			row.RecordingSHA256 = h
+		}
+	}
+}
+
+// hashFileSHA256 returns the hex SHA-256 of a file, or "" on any error.
+func hashFileSHA256(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }

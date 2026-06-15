@@ -69,6 +69,7 @@ const (
 	OwnerOIDCClientSecret      SecretEnvelopeOwnerType = "oidc_client.secret"
 	OwnerUserMFASecret         SecretEnvelopeOwnerType = "user_mfa.secret"
 	OwnerAIProviderAPIKey      SecretEnvelopeOwnerType = "ai_provider.api_key"
+	OwnerPKICAKey              SecretEnvelopeOwnerType = "pki.ca_key"
 	OwnerGeneric               SecretEnvelopeOwnerType = "generic"
 )
 

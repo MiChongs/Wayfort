@@ -20,6 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
@@ -268,6 +269,7 @@ type BulkRunHandler struct {
 	Chain    *dialer.ChainBuilder
 	Resolver *pkgssh.Resolver
 	HostKey  xssh.HostKeyCallback
+	Domains  *domain.Resolver
 }
 
 type bulkRunRequest struct {
@@ -338,7 +340,7 @@ func (h *BulkRunHandler) Run(c *gin.Context) {
 
 	deps := sshrun.Deps{
 		Chain: h.Chain, Resolver: h.Resolver,
-		HostKey: h.HostKey, Proxies: h.Proxies,
+		HostKey: h.HostKey, Proxies: h.Proxies, Domains: h.Domains,
 	}
 
 	for _, id := range req.NodeIDs {

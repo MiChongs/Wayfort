@@ -20,6 +20,90 @@ func (r *AuditRepo) BatchInsert(ctx context.Context, logs []model.AuditLog) erro
 	return r.db.WithContext(ctx).CreateInBatches(logs, 256).Error
 }
 
+// LastEntryHash returns the most recent entry hash for a chain, for seeding the
+// in-memory chain tip on startup so a restarted instance continues its chain
+// rather than forking. Empty when the chain has no rows yet (genesis).
+func (r *AuditRepo) LastEntryHash(ctx context.Context, chainID string) (string, error) {
+	var row model.AuditLog
+	err := r.db.WithContext(ctx).
+		Where("chain_id = ?", chainID).
+		Order("id DESC").Limit(1).
+		First(&row).Error
+	if err == gorm.ErrRecordNotFound {
+		return "", nil
+	}
+	return row.EntryHash, err
+}
+
+// ChainRows returns all rows of one chain ordered by id ascending, for the
+// integrity verifier. Bounded by limit (0 = no limit) to keep the verify
+// endpoint from loading an unbounded result set.
+func (r *AuditRepo) ChainRows(ctx context.Context, chainID string, limit int) ([]model.AuditLog, error) {
+	q := r.db.WithContext(ctx).Where("chain_id = ?", chainID).Order("id ASC")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	var out []model.AuditLog
+	err := q.Find(&out).Error
+	return out, err
+}
+
+// ChainTailAndCount returns the latest entry hash and row count for a chain —
+// the state a checkpoint seals.
+func (r *AuditRepo) ChainTailAndCount(ctx context.Context, chainID string) (tail string, count int64, err error) {
+	if err = r.db.WithContext(ctx).Model(&model.AuditLog{}).
+		Where("chain_id = ?", chainID).Count(&count).Error; err != nil {
+		return "", 0, err
+	}
+	tail, err = r.LastEntryHash(ctx, chainID)
+	return tail, count, err
+}
+
+// UpsertCheckpoint writes (or replaces) the checkpoint for a (chain_id, day).
+// A re-run on the same day refreshes the seal with the latest tail/count.
+func (r *AuditRepo) UpsertCheckpoint(ctx context.Context, cp *model.AuditCheckpoint) error {
+	var existing model.AuditCheckpoint
+	err := r.db.WithContext(ctx).
+		Where("chain_id = ? AND day = ?", cp.ChainID, cp.Day).
+		First(&existing).Error
+	if err == nil {
+		cp.ID = existing.ID
+		return r.db.WithContext(ctx).Save(cp).Error
+	}
+	if err == gorm.ErrRecordNotFound {
+		return r.db.WithContext(ctx).Create(cp).Error
+	}
+	return err
+}
+
+// ListCheckpoints returns a chain's checkpoints, newest day first.
+func (r *AuditRepo) ListCheckpoints(ctx context.Context, chainID string) ([]model.AuditCheckpoint, error) {
+	var out []model.AuditCheckpoint
+	err := r.db.WithContext(ctx).
+		Where("chain_id = ?", chainID).
+		Order("is_genesis DESC, day DESC").Find(&out).Error
+	return out, err
+}
+
+// DistinctChains lists every chain id present in the audit log — for the
+// integrity report's chain selector.
+func (r *AuditRepo) DistinctChains(ctx context.Context) ([]string, error) {
+	var out []string
+	err := r.db.WithContext(ctx).Model(&model.AuditLog{}).
+		Where("chain_id <> ''").
+		Distinct().Pluck("chain_id", &out).Error
+	return out, err
+}
+
+// CountUnchained reports how many rows carry no chain id (pre-M4 history,
+// outside the protected range).
+func (r *AuditRepo) CountUnchained(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.db.WithContext(ctx).Model(&model.AuditLog{}).
+		Where("chain_id = '' OR chain_id IS NULL").Count(&n).Error
+	return n, err
+}
+
 // List retrieves the audit events recorded against one session, newest-first.
 // Kept for the per-session timeline; the global audit center uses Query.
 func (r *AuditRepo) List(ctx context.Context, sessionID string, limit int) ([]model.AuditLog, error) {

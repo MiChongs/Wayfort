@@ -121,6 +121,14 @@ func (h *Handler) handle(c *gin.Context, guacProto string, expected model.NodePr
 	enableClipboard := queryBool(c.Query("clipboard"), true)
 	keyboardLayout := c.Query("keyboard")
 
+	// Overload guard — reserve a session slot before the WS upgrade.
+	gRelease, gErr := h.GW.Admit(c.Request.Context(), claims.UserID, node)
+	if gErr != nil {
+		webssh.WriteGuardReject(c, gErr)
+		return
+	}
+	defer gRelease()
+
 	wsConn, err := webssh.AcceptWS(c, "guacamole")
 	if err != nil {
 		h.GW.Logger().Warn("ws upgrade failed", zap.Error(err))
@@ -176,14 +184,11 @@ type runOpts struct {
 }
 
 func (h *Handler) run(ctx context.Context, ws *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, o runOpts) error {
-	// Build proxy chain → ContextDialer used by per-session SOCKS5 listener.
-	hops, err := h.GW.ResolveHops(ctx, node.ProxyChain)
+	// Resolve the node's connectivity (direct / proxy chain / reverse agent) into
+	// a dialer the per-session SOCKS5 listener tunnels guacd's connect through.
+	finalDialer, _, release, err := h.GW.DialerForNode(ctx, node, sessionID)
 	if err != nil {
-		return fmt.Errorf("resolve hops: %w", err)
-	}
-	finalDialer, release, err := h.GW.BuildChain(ctx, hops)
-	if err != nil {
-		return fmt.Errorf("build chain: %w", err)
+		return fmt.Errorf("resolve dialer: %w", err)
 	}
 	defer release()
 

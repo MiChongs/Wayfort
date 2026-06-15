@@ -21,7 +21,7 @@ PREFIX="${1:-$BREW_PREFIX/bin}"
 
 if [ -z "${SKIP_DEPS:-}" ]; then
     echo "[build-worker-darwin] installing build deps via Homebrew"
-    brew install freerdp pkg-config go || true
+    brew install freerdp libvpx aom jpeg-turbo pkg-config go || true
 fi
 
 export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig:$BREW_PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -31,6 +31,9 @@ echo "[build-worker-darwin] verifying toolchain"
 command -v go        >/dev/null || { echo "go not on PATH after install" >&2; exit 1; }
 command -v pkg-config >/dev/null || { echo "pkg-config not on PATH" >&2; exit 1; }
 pkg-config --exists freerdp3 || { echo "pkg-config can't find freerdp3 — brew install likely failed" >&2; exit 1; }
+pkg-config --exists vpx || { echo "pkg-config can't find vpx (brew libvpx) — needed by the WebRTC VP8/VP9 encoder" >&2; exit 1; }
+pkg-config --exists aom || { echo "pkg-config can't find aom (brew aom) — needed by the WebRTC AV1 encoder" >&2; exit 1; }
+pkg-config --exists libturbojpeg || { echo "pkg-config can't find libturbojpeg (brew jpeg-turbo) — needed by the SIMD JPEG rect encoder" >&2; exit 1; }
 
 echo "[build-worker-darwin] compiling (this typically takes 10-30s)"
 cd "$ROOT"

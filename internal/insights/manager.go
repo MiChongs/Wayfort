@@ -10,6 +10,7 @@ import (
 
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -41,6 +42,7 @@ type Manager struct {
 	nodes   *repo.NodeRepo
 	creds   *repo.CredentialRepo
 	proxies *repo.ProxyRepo
+	domains *domain.Resolver
 	chain   *dialer.ChainBuilder
 	resolver *pkgssh.Resolver
 	hostKey xssh.HostKeyCallback
@@ -83,6 +85,7 @@ type Deps struct {
 	Nodes    *repo.NodeRepo
 	Creds    *repo.CredentialRepo
 	Proxies  *repo.ProxyRepo
+	Domains  *domain.Resolver
 	Chain    *dialer.ChainBuilder
 	Resolver *pkgssh.Resolver
 	HostKey  xssh.HostKeyCallback
@@ -108,6 +111,7 @@ func NewManager(cfg Config, deps Deps) *Manager {
 		nodes:    deps.Nodes,
 		creds:    deps.Creds,
 		proxies:  deps.Proxies,
+		domains:  deps.Domains,
 		chain:    deps.Chain,
 		resolver: deps.Resolver,
 		hostKey:  deps.HostKey,
@@ -202,7 +206,7 @@ func (m *Manager) cachedSystem(nodeID uint64) *SystemSnapshot {
 func (m *Manager) collectSystem(ctx context.Context, nodeID uint64, l *nodeAndCred) (*SystemSnapshot, error) {
 	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, systemScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, m.domains, l.node, l.cred, systemScript)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +261,7 @@ func (m *Manager) cachedProcs(nodeID uint64, sortBy string) *ProcessList {
 func (m *Manager) collectProcs(ctx context.Context, nodeID uint64, l *nodeAndCred, sortBy string) (*ProcessList, error) {
 	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, processesScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, m.domains, l.node, l.cred, processesScript)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +315,7 @@ func (m *Manager) cachedNet(nodeID uint64) *NetworkSnapshot {
 func (m *Manager) collectNet(ctx context.Context, nodeID uint64, l *nodeAndCred) (*NetworkSnapshot, error) {
 	cctx, cancel := context.WithTimeout(ctx, m.conf().SSHTimeout)
 	defer cancel()
-	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, l.node, l.cred, networkScript)
+	out, err := sshExec(cctx, m.chain, m.resolver, m.hostKey, m.conf().SSHTimeout, m.proxies, m.domains, l.node, l.cred, networkScript)
 	if err != nil {
 		return nil, err
 	}

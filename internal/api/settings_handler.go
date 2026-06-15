@@ -3,9 +3,13 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/settings"
 )
 
@@ -20,6 +24,9 @@ import (
 type SettingsHandler struct {
 	Center *settings.Center
 	Prober *settings.Prober
+	// Writer mirrors config saves into the global audit trail's 运维/治理 lane.
+	// May be nil.
+	Writer *audit.Writer
 }
 
 // Schema is the single payload the settings UI renders from: nav groups, every
@@ -118,6 +125,17 @@ func (h *SettingsHandler) Update(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"ok": false, "error": err.Error()})
 		return
+	}
+	if h.Writer != nil {
+		keys := make([]string, 0, len(req.Changes))
+		for k := range req.Changes {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		h.Writer.Log(model.AuditLog{
+			Kind: model.AuditConfigChange, UserID: uid, Username: uname,
+			ClientIP: c.ClientIP(), Payload: "keys=" + strings.Join(keys, ","),
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "restart_keys": restart})
 }

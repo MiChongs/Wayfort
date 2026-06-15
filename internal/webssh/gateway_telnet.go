@@ -66,6 +66,16 @@ func (g *Gateway) HandleNodeTelnet(c *gin.Context) {
 	cols := atoiDefault(c.Query("cols"), 120)
 	rows := atoiDefault(c.Query("rows"), 32)
 
+	// Overload guard — reserve a slot before opening the socket (note: telnet is
+	// plaintext, so an agent domain's whitelist may refuse it here).
+	release, gerr := g.Admit(c.Request.Context(), claims.UserID, node)
+	if gerr != nil {
+		status, code, msg := guardRejectHTTP(gerr)
+		c.AbortWithStatusJSON(status, gin.H{"error": msg, "code": code})
+		return
+	}
+	defer release()
+
 	conn, err := AcceptWS(c, "webssh.v1")
 	if err != nil {
 		g.logger.Warn("ws upgrade failed", zap.Error(err))
@@ -78,20 +88,17 @@ func (g *Gateway) HandleNodeTelnet(c *gin.Context) {
 	clientIP := c.ClientIP()
 	if err := g.runTelnetSession(ctx, conn, sessionID, claims, clientIP, node, cols, rows); err != nil {
 		g.logger.Info("telnet session ended", zap.String("session", sessionID), zap.Error(err))
-		_ = conn.Close(websocket.StatusInternalError, truncate(err.Error(), 100))
+		code, reason := closeForError(err)
+		_ = conn.Close(code, reason)
 		return
 	}
 	_ = conn.Close(websocket.StatusNormalClosure, "bye")
 }
 
 func (g *Gateway) runTelnetSession(ctx context.Context, conn *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, cols, rows int) error {
-	hops, err := g.resolveHops(ctx, node.ProxyChain)
+	finalDialer, _, release, err := g.DialerForNode(ctx, node, sessionID)
 	if err != nil {
-		return fmt.Errorf("resolve hops: %w", err)
-	}
-	finalDialer, release, err := g.chain.Build(ctx, hops, nil)
-	if err != nil {
-		return fmt.Errorf("build chain: %w", err)
+		return fmt.Errorf("resolve dialer: %w", err)
 	}
 	defer release()
 	port := node.Port

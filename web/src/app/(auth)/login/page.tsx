@@ -1,17 +1,12 @@
 "use client"
 
-// Phase 13 — Login page redesign.
+// 登录页 —— Anthropic 风格的极简登录入口。
+// 平铺在暖色深底画布上(无 Card),只保留登录必需的元素:
+//   用户名 + 密码(显隐 / Caps Lock 提示)+ 记住我 + 登录按钮
+//   + Passkey / 单点登录 / 其他登录方式 Sheet。
+// 不写营销描述、不堆砌说明 —— 它只是一个登录页。
 //
-// Layout:
-//   - Card 容器,大字号问候 + 表单
-//   - 用户名 + 密码 + "记住我"(7d refresh)+ 显示密码切换 + Caps Lock 提示
-//   - 主按钮 + Passkey 二级按钮 + "其他登录方式" Sheet 触发
-//   - OIDC providers 在 Sheet 内分组,主表单只显示 ≤1 个高亮入口
-//
-// 设计纪律:
-//   - 不出现 AI / 助手 / 智能 措辞
-//   - 全 shadcn primitives,0 raw button / 0 native confirm
-//   - 大布局表单 / 选择 → Sheet,不用 Dialog
+// 标题用 Geist 非衬线(项目铁律)。功能逻辑与旧版保持一致。
 
 import * as React from "react"
 import { useRouter } from "next/navigation"
@@ -25,35 +20,24 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react"
 import {
   AlertTriangle,
   ArrowRight,
-  Box,
   Eye,
   EyeOff,
   Fingerprint,
   Globe,
   Loader2,
-  LogIn,
-  ShieldCheck,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { AuthMethodsSheet } from "@/components/auth/auth-methods-sheet"
 import { authService } from "@/lib/api/services"
 import { setTokens } from "@/lib/auth/tokens"
-import { cn } from "@/lib/utils"
 
 const schema = z.object({
   username: z.string().min(1, "请输入用户名"),
   password: z.string().min(1, "请输入密码"),
-  // 必填 + 由 useForm.defaultValues 提供初值。原写法
-  //   z.boolean().optional().default(true)
-  // 让 zod 的 input/output 类型分裂（input 可空，output 必填），
-  // 新版 @hookform/resolvers 严格校验后导致 Resolver / SubmitHandler
-  // 类型推断失配。改成必填即可对齐两端。
   remember: z.boolean(),
 })
 
@@ -77,14 +61,11 @@ export default function LoginPage() {
     queryFn: authService.providers,
   })
 
-  // The featured SSO entry rendered next to the password form. Keeps the
-  // main column scannable when many providers exist; the full list lives
-  // in the AuthMethods Sheet.
+  // 主表单旁只高亮 1 个 SSO 入口,其余收进 Sheet,保持列可扫读。
   const featuredProvider = providers.data?.providers?.[0]
   const extraProviderCount = Math.max(0, (providers.data?.providers?.length ?? 0) - 1)
 
   React.useEffect(() => {
-    // Hydrate remember-me from last session
     const v = localStorage.getItem("auth:remember")
     if (v != null) form.setValue("remember", v === "1")
     const u = localStorage.getItem("auth:lastUsername")
@@ -134,8 +115,7 @@ export default function LoginPage() {
     }
   }
 
-  // Caps Lock indicator on the password field — pure cosmetic, helps the
-  // user when they're getting "wrong password" with seemingly correct input.
+  // Caps Lock 提示 —— 纯辅助,密码看似正确却报错时帮用户定位。
   const onPwdKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
     setCapsLock(e.getModifierState?.("CapsLock") ?? false)
   }
@@ -145,166 +125,133 @@ export default function LoginPage() {
       initial={reducedMotion ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 360, damping: 30 }}
-      className="space-y-6"
+      className="space-y-8"
     >
-      <header className="space-y-2">
-        <Badge variant="outline" className="font-normal text-[10px] uppercase tracking-wider">
-          <ShieldCheck className="mr-1 h-3 w-3" /> Secure Sign In
-        </Badge>
-        <h2 className="text-2xl font-semibold tracking-tight">登录控制台</h2>
-        <p className="text-sm text-muted-foreground">
-          使用账号 + 密码登录;如启用了 MFA,系统会在密码之后引导二次验证。
-        </p>
-      </header>
+      <h1 className="text-3xl font-semibold tracking-tight">登录</h1>
 
-      <Card className="border-border/60 shadow-sm">
-        <CardContent className="space-y-4 p-6">
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4" noValidate>
-            <div className="space-y-1.5">
-              <Label htmlFor="username">用户名</Label>
-              <Input
-                id="username"
-                autoComplete="username"
-                autoFocus
-                placeholder="admin"
-                {...form.register("username")}
-              />
-              {form.formState.errors.username && (
-                <p className="text-[11px] text-destructive">{form.formState.errors.username.message}</p>
-              )}
-            </div>
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="password">密码</Label>
-                <button
-                  type="button"
-                  onClick={() => setMethodsOpen(true)}
-                  className="text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                >
-                  忘记密码?
-                </button>
-              </div>
-              <div className="relative">
-                <Input
-                  id="password"
-                  type={showPwd ? "text" : "password"}
-                  autoComplete="current-password"
-                  className="pr-10"
-                  onKeyUp={onPwdKey}
-                  onKeyDown={onPwdKey}
-                  {...form.register("password")}
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="ghost"
-                  className="absolute right-0.5 top-0.5 h-8 w-8 text-muted-foreground"
-                  aria-label={showPwd ? "隐藏密码" : "显示密码"}
-                  onClick={() => setShowPwd((v) => !v)}
-                  tabIndex={-1}
-                >
-                  {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                </Button>
-              </div>
-              <AnimatePresence>
-                {capsLock && (
-                  <motion.p
-                    initial={reducedMotion ? false : { opacity: 0, y: -2 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={reducedMotion ? undefined : { opacity: 0, y: -2 }}
-                    className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400"
-                  >
-                    <AlertTriangle className="h-3 w-3" />
-                    Caps Lock 已开启
-                  </motion.p>
-                )}
-              </AnimatePresence>
-              {form.formState.errors.password && (
-                <p className="text-[11px] text-destructive">{form.formState.errors.password.message}</p>
-              )}
-            </div>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5" noValidate>
+        <div className="space-y-1.5">
+          <Label htmlFor="username">用户名</Label>
+          <Input
+            id="username"
+            autoComplete="username"
+            autoFocus
+            placeholder="admin"
+            {...form.register("username")}
+          />
+          {form.formState.errors.username && (
+            <p className="text-[11px] text-destructive">{form.formState.errors.username.message}</p>
+          )}
+        </div>
 
-            <div className="flex items-center justify-between rounded-md border bg-muted/30 px-3 py-2">
-              <Label htmlFor="remember" className="cursor-pointer text-sm">
-                7 天内保持登录
-              </Label>
-              <Switch
-                id="remember"
-                checked={form.watch("remember")}
-                onCheckedChange={(v) => form.setValue("remember", v)}
-              />
-            </div>
-
-            <Button type="submit" className="w-full" disabled={busy}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <LogIn className="h-4 w-4" />}
-              登录
-            </Button>
-          </form>
-
-          <DividerWithText>或</DividerWithText>
-
-          <div className="grid gap-2">
-            <Button variant="outline" className="w-full" onClick={tryPasskey} disabled={busy}>
-              <Fingerprint className="h-4 w-4" /> 使用 Passkey
-            </Button>
-            {featuredProvider && (
-              <Button
-                variant="outline"
-                className="w-full"
-                asChild
-              >
-                <a href={`/api/proxy/api/v1/auth/oidc/${featuredProvider.name}/login`}>
-                  <Globe className="h-4 w-4" />
-                  {featuredProvider.display_name || featuredProvider.name}
-                </a>
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              className="w-full text-muted-foreground"
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="password">密码</Label>
+            <button
+              type="button"
               onClick={() => setMethodsOpen(true)}
+              className="text-[11px] text-muted-foreground underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:text-foreground"
             >
-              其他登录方式
-              {extraProviderCount > 0 && (
-                <Badge variant="secondary" className="ml-1 font-normal">
-                  +{extraProviderCount}
-                </Badge>
-              )}
-              <ArrowRight className="h-3.5 w-3.5" />
+              忘记密码?
+            </button>
+          </div>
+          <div className="relative">
+            <Input
+              id="password"
+              type={showPwd ? "text" : "password"}
+              autoComplete="current-password"
+              className="pr-10"
+              onKeyUp={onPwdKey}
+              onKeyDown={onPwdKey}
+              {...form.register("password")}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="absolute right-0.5 top-0.5 h-8 w-8 text-muted-foreground"
+              aria-label={showPwd ? "隐藏密码" : "显示密码"}
+              onClick={() => setShowPwd((v) => !v)}
+              tabIndex={-1}
+            >
+              {showPwd ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
             </Button>
           </div>
-        </CardContent>
-      </Card>
+          <AnimatePresence>
+            {capsLock && (
+              <motion.p
+                initial={reducedMotion ? false : { opacity: 0, y: -2 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={reducedMotion ? undefined : { opacity: 0, y: -2 }}
+                className="flex items-center gap-1.5 text-[11px] text-warning"
+              >
+                <AlertTriangle className="h-3 w-3" />
+                Caps Lock 已开启
+              </motion.p>
+            )}
+          </AnimatePresence>
+          {form.formState.errors.password && (
+            <p className="text-[11px] text-destructive">{form.formState.errors.password.message}</p>
+          )}
+        </div>
 
-      <p className="text-center text-[11px] text-muted-foreground">
-        通过登录即表示您同意所属组织的远程访问与审计策略。
-      </p>
+        <div className="flex items-center justify-between">
+          <Label htmlFor="remember" className="cursor-pointer text-sm font-normal text-muted-foreground">
+            7 天内保持登录
+          </Label>
+          <Switch
+            id="remember"
+            checked={form.watch("remember")}
+            onCheckedChange={(v) => form.setValue("remember", v)}
+          />
+        </div>
 
-      <div className="flex items-center justify-center">
-        <Button variant="ghost" size="sm" className="text-muted-foreground" asChild>
-          <a href="/sandbox">
-            <Box className="h-3.5 w-3.5" />
-            无需注册 · 体验匿名沙箱
-            <ArrowRight className="h-3.5 w-3.5" />
-          </a>
+        <Button type="submit" className="w-full" disabled={busy}>
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+          登录
+        </Button>
+      </form>
+
+      <DividerWithText>或</DividerWithText>
+
+      <div className="grid gap-2.5">
+        <Button variant="outline" className="w-full" onClick={tryPasskey} disabled={busy}>
+          <Fingerprint className="h-4 w-4" /> 使用 Passkey
+        </Button>
+        {featuredProvider && (
+          <Button variant="outline" className="w-full" asChild>
+            <a href={`/api/proxy/api/v1/auth/oidc/${featuredProvider.name}/login`}>
+              <Globe className="h-4 w-4" />
+              {featuredProvider.display_name || featuredProvider.name}
+            </a>
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          className="w-full text-muted-foreground"
+          onClick={() => setMethodsOpen(true)}
+        >
+          其他登录方式
+          {extraProviderCount > 0 && (
+            <Badge variant="secondary" className="ml-1 font-normal">
+              +{extraProviderCount}
+            </Badge>
+          )}
+          <ArrowRight className="h-3.5 w-3.5" />
         </Button>
       </div>
 
-      <AuthMethodsSheet
-        open={methodsOpen}
-        onOpenChange={setMethodsOpen}
-        onPasskey={tryPasskey}
-      />
+      <AuthMethodsSheet open={methodsOpen} onOpenChange={setMethodsOpen} onPasskey={tryPasskey} />
     </motion.div>
   )
 }
 
 function DividerWithText({ children }: { children: React.ReactNode }) {
   return (
-    <div className={cn("relative")}>
-      <Separator />
+    <div className="relative">
+      <div className="border-t border-border" />
       <span className="absolute inset-0 -top-2.5 flex items-center justify-center">
-        <span className="bg-card px-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+        <span className="bg-background px-2 text-[10px] uppercase tracking-wider text-muted-foreground">
           {children}
         </span>
       </span>

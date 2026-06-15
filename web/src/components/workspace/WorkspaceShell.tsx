@@ -15,6 +15,7 @@ import {
 } from "@dnd-kit/core"
 import type { Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
+import { useRdpBackendPreference } from "@/lib/desktop/use-rdp-backend"
 import { cn } from "@/lib/utils"
 import { ActivityBar } from "./ActivityBar"
 import { SidePanel } from "./SidePanel"
@@ -41,6 +42,7 @@ export function WorkspaceShell() {
   const open = useWorkspaceStore((s) => s.open)
   const sidebarOpen = useWorkspaceStore((s) => s.sidebarOpen)
   const protocolMemory = useWorkspaceStore((s) => s.protocolMemory)
+  const preferredRdp = useRdpBackendPreference()
   const [launcherOpen, setLauncherOpen] = React.useState(false)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
   const [dragNode, setDragNode] = React.useState<Node | null>(null)
@@ -74,14 +76,14 @@ export function WorkspaceShell() {
       const node = e.active.data.current?.node as Node | undefined
       if (!node || e.over?.id !== "workspace-canvas") return
       // Default protocol: the node's remembered choice, else its first option.
-      const choices = protocolChoicesForNode(node.protocol)
+      const choices = protocolChoicesForNode(node.protocol, preferredRdp)
       const mem = protocolMemory[node.id]
       const choice =
         (mem && choices.find((c) => c.protocol === mem.protocol && c.rdpBackend === mem.rdpBackend)) ??
         choices[0]
       if (choice) openTabFromTree(node, choice.protocol, choice.rdpBackend)
     },
-    [openTabFromTree, protocolMemory],
+    [openTabFromTree, protocolMemory, preferredRdp],
   )
 
   if (popoutTabId) {

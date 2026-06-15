@@ -29,6 +29,53 @@ type Config struct {
 	Office    OfficeConfig    `mapstructure:"office"`
 	Health    HealthConfig    `mapstructure:"health"`
 	Watermark WatermarkConfig `mapstructure:"watermark"`
+	Agent     AgentConfig     `mapstructure:"agent"`
+	Guard     GuardConfig     `mapstructure:"guard"`
+	Metrics   MetricsConfig   `mapstructure:"metrics"`
+}
+
+// MetricsConfig controls the Prometheus /metrics endpoint (security-architecture
+// §16). Disabled by default. When enabled, set Token to require a bearer token
+// on scrapes (recommended — /metrics otherwise leaks operational data).
+type MetricsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Token   string `mapstructure:"token"`
+}
+
+// GuardConfig configures the overload-protection layer (security-architecture.md
+// §11): concurrency ceilings, the connection-rate limit, and the per-domain
+// circuit breaker. Zero ceilings mean "unlimited"; the defaults are applied in
+// main.go so an empty config is safe.
+type GuardConfig struct {
+	GlobalMaxSessions  int `mapstructure:"global_max_sessions"`   // default 2000
+	PerUserMaxSessions int `mapstructure:"per_user_max_sessions"` // default 20
+	ConnectsPerMinute  int `mapstructure:"connects_per_minute"`   // per-user new-session rate; default 10
+	BreakerMinSamples  int `mapstructure:"breaker_min_samples"`   // default 10
+	BreakerOpenSeconds int `mapstructure:"breaker_open_seconds"`  // default 30
+}
+
+// AgentConfig drives the reverse-connect Gateway Agent control plane's mTLS
+// listener (security-architecture.md §4/§6). When enabled the gateway stands up
+// a dedicated TLS listener for /agent/v1/{enroll,renew,tunnel}, terminating TLS
+// itself so it can verify agent client certificates — which a fronting reverse
+// proxy can't do for it.
+type AgentConfig struct {
+	// Enabled turns on the dedicated mTLS listener. Default false; when off the
+	// agent endpoints are not exposed (reverse agents unavailable).
+	Enabled bool `mapstructure:"enabled"`
+	// Addr is the listener bind address (default ":8443"). Keep it separate from
+	// the user-facing API port so it can be firewalled to the agent egress range.
+	Addr string `mapstructure:"addr"`
+	// PublicHost is the agent-facing hostname/IP agents dial. It becomes the
+	// server certificate SAN and the host shown in the install command. Empty =
+	// derive from the request at install time (server cert then uses a wildcard
+	// localhost SAN only — fine for testing, set it for production).
+	PublicHost string `mapstructure:"public_host"`
+	// DistDir is the directory the gateway serves prebuilt gateway-agent
+	// binaries from (GET /dl/gateway-agent). Stage it with scripts/build-agent.sh
+	// output. Default "dist/agent" (relative to the gateway's working dir); empty
+	// disables the download endpoint and the copy-paste install command.
+	DistDir string `mapstructure:"dist_dir"`
 }
 
 // WatermarkConfig drives the browser-side anti-leak watermark: a diagonally
@@ -113,8 +160,8 @@ type ApprovalArchiveConfig struct {
 	SecretAccessKey string `mapstructure:"secret_access_key"`
 	// RetentionMode is "GOVERNANCE" (admin can bypass) or "COMPLIANCE"
 	// (no one can shorten retention). Default GOVERNANCE.
-	RetentionMode string `mapstructure:"retention_mode"`
-	RetentionDays int    `mapstructure:"retention_days"`
+	RetentionMode string        `mapstructure:"retention_mode"`
+	RetentionDays int           `mapstructure:"retention_days"`
 	FlushInterval time.Duration `mapstructure:"flush_interval"`
 	BatchSize     int           `mapstructure:"batch_size"`
 }
@@ -413,15 +460,15 @@ type RedisConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret         string         `mapstructure:"jwt_secret"`
-	AccessTTL         time.Duration  `mapstructure:"access_ttl"`
-	RefreshTTL        time.Duration  `mapstructure:"refresh_ttl"`
-	BootstrapAdmin    string         `mapstructure:"bootstrap_admin"`
-	BootstrapPassword string         `mapstructure:"bootstrap_password"`
-	Lockout           LockoutConfig  `mapstructure:"lockout"`
-	MFA               MFAConfig      `mapstructure:"mfa"`
-	Passkey           PasskeyConfig  `mapstructure:"passkey"`
-	Anomaly           AnomalyConfig  `mapstructure:"anomaly"`
+	JWTSecret         string        `mapstructure:"jwt_secret"`
+	AccessTTL         time.Duration `mapstructure:"access_ttl"`
+	RefreshTTL        time.Duration `mapstructure:"refresh_ttl"`
+	BootstrapAdmin    string        `mapstructure:"bootstrap_admin"`
+	BootstrapPassword string        `mapstructure:"bootstrap_password"`
+	Lockout           LockoutConfig `mapstructure:"lockout"`
+	MFA               MFAConfig     `mapstructure:"mfa"`
+	Passkey           PasskeyConfig `mapstructure:"passkey"`
+	Anomaly           AnomalyConfig `mapstructure:"anomaly"`
 }
 
 type LockoutConfig struct {
@@ -440,11 +487,11 @@ type MFAConfig struct {
 }
 
 type PasskeyConfig struct {
-	Enabled            bool     `mapstructure:"enabled"`
-	RPID               string   `mapstructure:"rp_id"`
-	RPDisplay          string   `mapstructure:"rp_display"`
-	Origins            []string `mapstructure:"rp_origins"`
-	DiscoverableLogin  bool     `mapstructure:"discoverable_login"`
+	Enabled           bool     `mapstructure:"enabled"`
+	RPID              string   `mapstructure:"rp_id"`
+	RPDisplay         string   `mapstructure:"rp_display"`
+	Origins           []string `mapstructure:"rp_origins"`
+	DiscoverableLogin bool     `mapstructure:"discoverable_login"`
 }
 
 type AnomalyConfig struct {
@@ -453,8 +500,8 @@ type AnomalyConfig struct {
 }
 
 type NotifyConfig struct {
-	SMTP   SMTPConfig          `mapstructure:"smtp"`
-	Worker NotifyWorkerConfig  `mapstructure:"worker"`
+	SMTP   SMTPConfig         `mapstructure:"smtp"`
+	Worker NotifyWorkerConfig `mapstructure:"worker"`
 }
 
 type SMTPConfig struct {
@@ -536,6 +583,30 @@ type AuditConfig struct {
 	// dev Postgres (container still warming up its connection pool) doesn't
 	// trip "context deadline exceeded" on the first few flushes.
 	BatchTimeout time.Duration `mapstructure:"batch_timeout"`
+	// InstanceID pins this gateway's tamper-evidence audit chain id
+	// (security-architecture.md §5.2). Empty → a random id per process (a fresh
+	// chain each run). Set a stable per-instance value in an HA deployment so a
+	// restart continues the same chain.
+	InstanceID string `mapstructure:"instance_id"`
+	// Export ships audit events to external SIEM/alerting sinks (§10).
+	Export AuditExportConfig `mapstructure:"export"`
+}
+
+// AuditExportConfig configures the external-audit fan-out (§10): CEF over
+// syslog and/or a signed webhook. Both disabled by default.
+type AuditExportConfig struct {
+	QueueSize int `mapstructure:"queue_size"` // per-sink backlog; default 1024
+	Syslog    struct {
+		Enabled     bool   `mapstructure:"enabled"`
+		Addr        string `mapstructure:"addr"` // host:port
+		TLS         bool   `mapstructure:"tls"`
+		InsecureTLS bool   `mapstructure:"insecure_tls"`
+	} `mapstructure:"syslog"`
+	Webhook struct {
+		Enabled bool   `mapstructure:"enabled"`
+		URL     string `mapstructure:"url"`
+		Secret  string `mapstructure:"secret"` // HMAC-SHA256 key
+	} `mapstructure:"webhook"`
 }
 
 type WebSSHConfig struct {

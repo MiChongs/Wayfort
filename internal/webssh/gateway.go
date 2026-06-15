@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,18 +14,22 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
 	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
+	"github.com/michongs/jumpserver-anonymous/internal/guard"
 	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
 	"go.uber.org/zap"
 	xssh "golang.org/x/crypto/ssh"
+	"golang.org/x/net/proxy"
 )
 
 // AnonymousLauncher abstracts the docker sandbox to keep the gateway
@@ -67,6 +72,22 @@ type Gateway struct {
 	// when unwired, MetricSink returns a no-op sink and sampling is skipped.
 	metrics *audit.MetricWriter
 
+	// domains resolves a node's connectivity (direct / proxy chain / agent)
+	// from its network domain. Nil-safe: when unwired the gateway falls back to
+	// the legacy per-node ProxyChain path, so behaviour is identical until wired.
+	domains *domain.Resolver
+
+	// agents routes agent-domain dials through reverse-connect tunnels. Nil
+	// until SetAgentRegistry; an agent-domain node fails closed (ErrAgentDomain)
+	// rather than silently dialing direct when this is unwired.
+	agents *agentgw.Registry
+
+	// guard / breaker / rate are the overload-protection gates. Nil-safe: when
+	// unwired, Admit is a no-op so behaviour is unchanged (security-architecture.md §11).
+	guard   *guard.Limiter
+	breaker *guard.Breaker
+	rate    *guard.RateLimiter
+
 	// liveHub fans an in-progress terminal session's output to read-only
 	// observers (over-the-shoulder monitoring). Nil until SetLiveHub; all Hub
 	// methods are nil-safe so the tee costs nothing when unwired.
@@ -81,6 +102,190 @@ type Gateway struct {
 // SetMetrics wires the connection-quality sample queue after construction so the
 // NewGateway signature stays stable. Pass nil to disable sampling.
 func (g *Gateway) SetMetrics(m *audit.MetricWriter) { g.metrics = m }
+
+// SetDomainResolver wires the network-domain connectivity resolver after
+// construction (same post-construction pattern as SetMetrics). When set, the
+// dial path routes through the node's domain; when nil, it uses the legacy
+// per-node ProxyChain. Pass nil to keep pre-domains behaviour.
+func (g *Gateway) SetDomainResolver(r *domain.Resolver) { g.domains = r }
+
+// SetAgentRegistry wires the reverse-connect agent tunnel registry after
+// construction (same post-construction pattern as SetMetrics). When set,
+// agent-domain nodes dial through a connected agent; when nil, an agent-domain
+// node fails closed instead of silently dialing direct.
+func (g *Gateway) SetAgentRegistry(r *agentgw.Registry) { g.agents = r }
+
+// SetGuard wires the overload-protection gates (concurrency limiter, per-domain
+// circuit breaker, connection-rate limiter) after construction. Pass nils to
+// disable — Admit then becomes a no-op.
+func (g *Gateway) SetGuard(l *guard.Limiter, b *guard.Breaker, r *guard.RateLimiter) {
+	g.guard, g.breaker, g.rate = l, b, r
+}
+
+// Admit reserves an overload-protection slot for a new session to node by user
+// userID: the connection-rate gate, then the global/per-user/per-domain
+// concurrency gates and the per-domain protocol whitelist. It returns a release
+// func (call when the session ends) or a *guard.RejectError naming the gate that
+// refused. Nil-safe: a no-op release and nil error when no guard is wired.
+// Sibling protocol packages call this through the exposed facade.
+func (g *Gateway) Admit(ctx context.Context, userID uint64, node *model.Node) (release func(), err error) {
+	noop := func() {}
+	if g.guard == nil && g.rate == nil {
+		return noop, nil
+	}
+	// Resolve the domain policy (max concurrency + protocol whitelist) once.
+	var domainID uint64
+	var domainMax int
+	var allowed string
+	if g.domains != nil && node != nil {
+		if plan, perr := g.domains.Resolve(ctx, node); perr == nil && plan != nil {
+			if plan.DomainID != nil {
+				domainID = *plan.DomainID
+			}
+			domainMax = plan.MaxConcurrent
+			allowed = plan.AllowedProtocols
+		}
+	}
+	// Per-domain protocol whitelist (empty = all). A plaintext protocol disabled
+	// on an agent domain is refused here.
+	if node != nil && !protocolAllowed(allowed, node.EffectiveProtocol()) {
+		return noop, &guard.RejectError{
+			Reason:  guard.RejectDomainConcurrency,
+			Message: "该网域不允许此协议",
+		}
+	}
+	// Connection-establishment rate (per user).
+	if g.rate != nil {
+		if rerr := g.rate.Allow(rateKey(userID)); rerr != nil {
+			return noop, rerr
+		}
+	}
+	// Concurrency gates.
+	if g.guard != nil {
+		return g.guard.Acquire(userID, domainID, domainMax)
+	}
+	return noop, nil
+}
+
+func rateKey(userID uint64) string { return "u:" + strconv.FormatUint(userID, 10) }
+
+// breakerKey groups dial outcomes by domain (or the node itself when it has no
+// domain) so one failing target trips the circuit for its blast radius, not the
+// whole gateway.
+func breakerKey(node *model.Node) string {
+	if node == nil {
+		return "node:0"
+	}
+	if node.DomainID != nil {
+		return "domain:" + strconv.FormatUint(*node.DomainID, 10)
+	}
+	return "node:" + strconv.FormatUint(node.ID, 10)
+}
+
+// guardRejectHTTP maps a guard rejection to an HTTP status + machine code + msg.
+// Concurrency/rate gates → 429; an open circuit → 503; anything else → 429.
+func guardRejectHTTP(err error) (status int, code string, msg string) {
+	var re *guard.RejectError
+	if errors.As(err, &re) {
+		if re.Reason == guard.RejectCircuitOpen {
+			return http.StatusServiceUnavailable, string(re.Reason), re.Message
+		}
+		return http.StatusTooManyRequests, string(re.Reason), re.Message
+	}
+	return http.StatusTooManyRequests, "rejected", err.Error()
+}
+
+// protocolAllowed mirrors model.Domain.ProtocolAllowed for a raw whitelist string.
+func protocolAllowed(whitelist string, proto model.NodeProtocol) bool {
+	whitelist = strings.TrimSpace(whitelist)
+	if whitelist == "" {
+		return true
+	}
+	for _, p := range strings.Split(whitelist, ",") {
+		if model.NodeProtocol(strings.TrimSpace(p)) == proto {
+			return true
+		}
+	}
+	return false
+}
+
+// hopsFor resolves the proxy chain to reach node. It prefers the domain
+// resolver when wired (domain-driven connectivity), and otherwise falls back to
+// the legacy node.ProxyChain parsing so an unwired gateway behaves as before.
+// Note: this returns only proxy-chain hops; agent-domain connectivity has no
+// hops and must go through DialerForNode. Retained for the chain-test/template
+// endpoints that genuinely want the hop list.
+func (g *Gateway) hopsFor(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	if g.domains != nil {
+		plan, err := g.domains.Resolve(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		return plan.Hops, nil
+	}
+	return g.resolveHops(ctx, node.ProxyChain)
+}
+
+// DialerForNode resolves a node's connectivity into a terminal dialer, unifying
+// the three connectivity kinds behind one seam:
+//   - direct:      a plain Direct dialer (usesHop=false)
+//   - proxy chain: the built chain dialer (usesHop=true)
+//   - agent domain: a dialer that tunnels through a connected reverse agent
+//     (usesHop=true)
+//
+// The returned dialer is always non-nil on success and is what every protocol
+// (ssh / telnet / rdp / db / tcpfwd / desktop) should dial the target through.
+// usesHop lets a caller that can dial the target itself (desktop's per-session
+// SOCKS listener) skip the intermediary for direct nodes. release MUST be
+// called when the dialer is done. requestID ties agent streams to a session.
+//
+// Agent domains fail closed: if the agent subsystem is unwired, or no agent is
+// currently connected for the domain, this returns an error rather than falling
+// back to a direct dial that would bypass the domain's isolation.
+func (g *Gateway) DialerForNode(ctx context.Context, node *model.Node, requestID string) (proxy.ContextDialer, bool, func(), error) {
+	noop := func() {}
+
+	// Legacy path: no resolver wired → behave exactly as before (chain from the
+	// node's own ProxyChain; empty chain = direct).
+	if g.domains == nil {
+		hops, err := g.resolveHops(ctx, node.ProxyChain)
+		if err != nil {
+			return nil, false, noop, err
+		}
+		d, rel, err := g.chain.Build(ctx, hops, nil)
+		if err != nil {
+			return nil, false, noop, err
+		}
+		return d, len(hops) > 0, rel, nil
+	}
+
+	plan, err := g.domains.Resolve(ctx, node)
+	if err != nil {
+		return nil, false, noop, err
+	}
+	if plan.Kind == model.DomainAgent {
+		if g.agents == nil {
+			return nil, false, noop, domain.ErrAgentDomain
+		}
+		var domID uint64
+		if plan.AgentDomainID != nil {
+			domID = *plan.AgentDomainID
+		}
+		if domID == 0 || len(g.agents.AgentsInDomain(domID)) == 0 {
+			// Typed (wraps agentgw.ErrNoAgent) so the WS layer's closeForError can
+			// surface a clean "agent_unavailable" the frontend turns into an
+			// actionable "activate/check the agent" message.
+			return nil, false, noop, fmt.Errorf("domain %d: %w", domID, agentgw.ErrNoAgent)
+		}
+		return g.agents.DialerFor(domID, requestID), true, noop, nil
+	}
+
+	d, rel, err := g.chain.Build(ctx, plan.Hops, nil)
+	if err != nil {
+		return nil, false, noop, err
+	}
+	return d, len(plan.Hops) > 0, rel, nil
+}
 
 // SetLiveHub wires the read-only live-watch hub. Pass nil to disable monitoring.
 func (g *Gateway) SetLiveHub(h *livewatch.Hub) { g.liveHub = h }
@@ -241,6 +446,17 @@ func (g *Gateway) HandleNodeSSH(c *gin.Context) {
 		}
 	}
 
+	// Overload guard — reserve a session slot (rate + concurrency + protocol
+	// whitelist) before opening the socket, so a rejected request never costs a
+	// WebSocket upgrade. Released when runNodeSession returns below.
+	release, gerr := g.Admit(c.Request.Context(), claims.UserID, node)
+	if gerr != nil {
+		status, code, msg := guardRejectHTTP(gerr)
+		c.AbortWithStatusJSON(status, gin.H{"error": msg, "code": code})
+		return
+	}
+	defer release()
+
 	conn, err := acceptWS(c)
 	if err != nil {
 		g.logger.Warn("ws upgrade failed", zap.Error(err))
@@ -265,7 +481,8 @@ func (g *Gateway) HandleNodeSSH(c *gin.Context) {
 
 	if err := g.runNodeSession(ctx, conn, sessionID, claims, clientIP, node, cols, rows); err != nil {
 		g.logger.Info("ssh session ended", zap.String("session", sessionID), zap.Error(err))
-		_ = conn.Close(websocket.StatusInternalError, truncate(err.Error(), 100))
+		code, reason := closeForError(err)
+		_ = conn.Close(code, reason)
 		return
 	}
 	_ = conn.Close(websocket.StatusNormalClosure, "bye")
@@ -300,6 +517,20 @@ func (g *Gateway) HandleAnonymousSSH(c *gin.Context) {
 	_ = conn.Close(websocket.StatusNormalClosure, "bye")
 }
 
+// closeForError maps a session error to a websocket close code and a SHORT,
+// machine-readable reason. The frontend's inferDisconnect turns that token into
+// a localized, actionable message — user-facing wording lives in the client
+// because close-frame reasons are byte-capped (~123B) and can't carry long
+// UTF-8 text. Unknown errors fall back to the truncated raw string.
+func closeForError(err error) (websocket.StatusCode, string) {
+	switch {
+	case errors.Is(err, domain.ErrAgentDomain), errors.Is(err, agentgw.ErrNoAgent):
+		// Agent-domain asset, but no reverse-connect agent is online for it.
+		return websocket.StatusInternalError, "agent_unavailable"
+	}
+	return websocket.StatusInternalError, truncate(err.Error(), 100)
+}
+
 func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sessionID string, claims *auth.Claims, clientIP string, node *model.Node, cols, rows int) (rerr error) {
 	nodeID := node.ID
 
@@ -315,20 +546,23 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 	dctx, dcancel := context.WithTimeout(ctx, g.dialTO+5*time.Second)
 	defer dcancel()
 
-	// ---- dial: resolve the proxy chain and build the dialer ----
+	// ---- dial: resolve the node's connectivity (direct / chain / agent) ----
 	doneDial := g.OpenPhase(sessionID, model.PhaseDial, claims, clientIP, &nodeID)
-	hops, err := g.resolveHops(dctx, node.ProxyChain)
-	if err != nil {
-		doneDial(model.PhaseFailed, err.Error())
-		return fmt.Errorf("resolve hops: %w", err)
+	// Circuit breaker: refuse fast if this node's domain is failing in a storm.
+	bkey := breakerKey(node)
+	if g.breaker != nil {
+		if berr := g.breaker.Allow(bkey); berr != nil {
+			doneDial(model.PhaseFailed, berr.Error())
+			return berr
+		}
 	}
-	finalDialer, release, err := g.chain.Build(dctx, hops, nil)
+	finalDialer, usesHop, release, err := g.DialerForNode(dctx, node, sessionID)
 	if err != nil {
 		doneDial(model.PhaseFailed, err.Error())
-		return fmt.Errorf("build chain: %w", err)
+		return fmt.Errorf("resolve dialer: %w", err)
 	}
 	defer release()
-	doneDial(model.PhaseSucceeded, fmt.Sprintf("hops=%d", len(hops)))
+	doneDial(model.PhaseSucceeded, fmt.Sprintf("via_hop=%t", usesHop))
 
 	// ---- auth: connect TCP to the target and authenticate SSH ----
 	doneAuth := g.OpenPhase(sessionID, model.PhaseAuth, claims, clientIP, &nodeID)
@@ -349,6 +583,10 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 		HostKey: g.hostKey,
 		Timeout: g.dialTO,
 	})
+	// Feed the reachability outcome to the breaker so a failing target trips it.
+	if g.breaker != nil {
+		g.breaker.Record(bkey, err == nil)
+	}
 	if err != nil {
 		doneAuth(model.PhaseFailed, truncate(err.Error(), 200))
 		return err
@@ -586,6 +824,7 @@ func (g *Gateway) recordEnd(row *model.Session, sess *Session, claims *auth.Clai
 		"peak_rtt_ms":     row.PeakRTTMs,
 		"avg_rtt_ms":      row.AvgRTTMs,
 		"reconnect_count": row.ReconnectCount,
+		"recording_sha256": row.RecordingSHA256,
 	}); err != nil {
 		g.logger.Warn("session row finish failed", zap.Error(err))
 	}

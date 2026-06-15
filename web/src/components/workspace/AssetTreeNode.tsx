@@ -6,6 +6,7 @@ import { useDraggable } from "@dnd-kit/core"
 import { toast } from "@/components/ui/sonner"
 import type { Node } from "@/lib/api/types"
 import type { DesktopBackend } from "@/lib/desktop/types"
+import { useRdpBackendPreference } from "@/lib/desktop/use-rdp-backend"
 import {
   ContextMenu,
   ContextMenuContent,
@@ -64,7 +65,8 @@ export function LeafContent({
   onToggleFavorite?: (node: Node) => void
   onOpenDetail?: (node: Node) => void
 }) {
-  const choices = protocolChoicesForNode(leaf.node.protocol)
+  const preferredRdp = useRdpBackendPreference()
+  const choices = protocolChoicesForNode(leaf.node.protocol, preferredRdp)
   const defaultChoice = choices[0]
   const defaultProto = defaultChoice?.protocol ?? "tcp_forward"
   const meta = metaOf(defaultProto)

@@ -50,13 +50,16 @@ func New(cfg config.SSHPoolConfig, creds CredentialProvider, hostKey xssh.HostKe
 // Acquire returns a BastionDialer rooted at the requested proxy. The returned
 // release MUST be called once the dialer is no longer used; it decrements the
 // refcount and lets the janitor reclaim idle clients.
-func (p *Pool) Acquire(ctx context.Context, hop *model.Proxy, outer proxy.ContextDialer) (*dialer.BastionDialer, func(), error) {
+func (p *Pool) Acquire(ctx context.Context, hop *model.Proxy, outer proxy.ContextDialer, outerKey string) (*dialer.BastionDialer, func(), error) {
 	user, methods, fp, err := p.creds.ForProxy(ctx, hop)
 	if err != nil {
 		return nil, nil, err
 	}
 	addr := pkgssh.AddrOf(hop.Host, hop.Port)
-	key := poolKey(addr, user, fp)
+	// Fold outerKey (the upstream-chain identity) into the pool key so a client
+	// established over one front chain is never reused for a request resolved to
+	// a different one, even with identical bastion endpoint + credentials.
+	key := poolKey(addr, user, fp, outerKey)
 
 	p.mu.Lock()
 	e, ok := p.entries[key]
@@ -181,12 +184,14 @@ func (p *Pool) shutdown() {
 	}
 }
 
-func poolKey(addr, user string, fingerprint []byte) string {
+func poolKey(addr, user string, fingerprint []byte, outerKey string) string {
 	h := sha256.New()
 	h.Write([]byte(addr))
 	h.Write([]byte{'|'})
 	h.Write([]byte(user))
 	h.Write([]byte{'|'})
 	h.Write(fingerprint)
+	h.Write([]byte{'|'})
+	h.Write([]byte(outerKey))
 	return hex.EncodeToString(h.Sum(nil))
 }

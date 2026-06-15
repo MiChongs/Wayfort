@@ -15,12 +15,14 @@
         "authFailed": "认证失败 —— 检查节点凭据用户名 / 密码 / 域是否正确",
         "serverClosed": "服务端主动关闭了会话",
         "timeout": "连接超时 —— 防火墙、网络抖动或目标过载",
+        "agentUnavailable": "该资产经反连 Agent 接入，但其网域当前没有在线的 Agent —— 请激活或检查 Agent",
         "unknown": "未知原因 —— 查看下方诊断详情或联系管理员"
       },
       "suggestion": {
         "checkNode": "去检查节点",
         "checkCredentials": "去编辑凭据",
         "retry": "重新连接",
+        "checkAgent": "去网域管理",
         "contactAdmin": "联系管理员"
       }
     },

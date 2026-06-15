@@ -28,6 +28,7 @@ import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "./protocolMeta"
+import { useRdpBackendPreference } from "@/lib/desktop/use-rdp-backend"
 import { parseConnectCommand, matchProtocol } from "./lib/cmdParse"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 
@@ -59,6 +60,7 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
   const recents = useQuery({ queryKey: ["me", "recents"], queryFn: () => meService.recentNodes(20) })
   const favorites = useQuery({ queryKey: ["me", "favorites"], queryFn: meService.favorites })
 
+  const preferredRdp = useRdpBackendPreference()
   const [pickedNode, setPickedNode] = React.useState<Node | null>(null)
   const [q, setQ] = React.useState("")
 
@@ -88,7 +90,7 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
     const k = parsed.host.toLowerCase()
     for (const n of enabled) {
       if (!n.name.toLowerCase().includes(k) && !(n.host ?? "").toLowerCase().includes(k)) continue
-      const choices = protocolChoicesForNode(n.protocol)
+      const choices = protocolChoicesForNode(n.protocol, preferredRdp)
       const proto = matchProtocol(
         parsed.prefix,
         choices.map((c) => c.protocol),
@@ -255,7 +257,7 @@ export function NewTabLauncher({ open, onOpenChange }: Props) {
   )
 
   function pickNode(n: Node) {
-    const choices = protocolChoicesForNode(n.protocol)
+    const choices = protocolChoicesForNode(n.protocol, preferredRdp)
     if (choices.length === 1) {
       completeOpen(n, choices[0])
       return
@@ -345,7 +347,8 @@ function ProtocolPicker({
   onPick: (choice: ProtocolChoice) => void
   onBack: () => void
 }) {
-  const choices = protocolChoicesForNode(node.protocol)
+  const preferredRdp = useRdpBackendPreference()
+  const choices = protocolChoicesForNode(node.protocol, preferredRdp)
   const remembered = useWorkspaceStore((s) => s.protocolMemory[node.id])
   const ordered = React.useMemo(() => {
     if (!remembered) return choices

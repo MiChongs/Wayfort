@@ -10,6 +10,7 @@ import { meService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
 import { cn } from "@/lib/utils"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "./protocolMeta"
+import { useRdpBackendPreference } from "@/lib/desktop/use-rdp-backend"
 import { useWorkspaceStore } from "./useWorkspaceStore"
 
 type Props = {
@@ -192,7 +193,8 @@ function Section({
 }
 
 function NodeQuickCard({ node, onOpen }: { node: Node; onOpen: (n: Node, choice: ProtocolChoice) => void }) {
-  const choices = protocolChoicesForNode(node.protocol)
+  const preferredRdp = useRdpBackendPreference()
+  const choices = protocolChoicesForNode(node.protocol, preferredRdp)
   const primary = choices[0]
   const meta = metaOf(primary?.protocol ?? "tcp_forward")
   const Icon = meta.icon

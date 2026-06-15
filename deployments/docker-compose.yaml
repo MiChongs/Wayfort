@@ -39,15 +39,47 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    # Without a restart policy a host reboot leaves Postgres down while
+    # restart:unless-stopped services (guacd/onlyoffice) come back — bring it
+    # back automatically like the rest of the stateful tier.
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
+    # The gateway cache holds operational state the janitor relies on: active
+    # session tracking plus anonymous-sandbox / port-forward TTL keys
+    # (internal/cache/redis.go). Losing those on restart would orphan sandbox
+    # containers, so:
+    #   - persist with AOF (durable, fsync every second) + an RDB safety net,
+    #   - cap memory but use noeviction — never silently drop a TTL key that
+    #     drives cleanup; the working set is tiny so the cap only guards the host,
+    #   - data lives in the named `redis` volume below (the bare image otherwise
+    #     parks /data in an anonymous volume that recreate/`down -v` can orphan).
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60 100"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "noeviction"
     ports: ["6379:6379"]
+    volumes:
+      - redis:/data
     healthcheck:
+      # redis-cli ping reports PONG only after the AOF/RDB load completes, so the
+      # start_period grace stops a slow first load from flapping the healthcheck.
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 10s
+    # Give Redis time to flush its final RDB/AOF on shutdown instead of the 10s
+    # default SIGKILL window.
+    stop_grace_period: 30s
+    restart: unless-stopped
 
   # Test SSH target. testuser / testpass.
   sshd-target:
@@ -108,6 +140,7 @@ services:
 
 volumes:
   postgres: {}
+  redis: {}
   sessions: {}
   onlyoffice_data: {}
   onlyoffice_log: {}

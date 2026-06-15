@@ -14,8 +14,15 @@ import (
 // BastionConnector opens (or fetches from a pool) an SSH client to the given
 // bastion using outer as the underlying transport. Implementations live in
 // internal/sshpool so this package stays decoupled from the SSH stack.
+//
+// outerKey is an opaque fingerprint of the chain that precedes this bastion
+// (the hops to the left of it). The pool MUST fold it into its connection key
+// so a client established over one front chain is never reused for a request
+// that resolved to a different front chain — even when the bastion endpoint and
+// credentials are identical. Two domains with an identical proxy chain produce
+// the same key (the path is literally the same), which is the intended reuse.
 type BastionConnector interface {
-	Acquire(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer) (*BastionDialer, func(), error)
+	Acquire(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer, outerKey string) (*BastionDialer, func(), error)
 }
 
 // CredentialResolver knows how to fetch SOCKS5 credentials by ID. It is only
@@ -241,14 +248,18 @@ func (b *ChainBuilder) Build(ctx context.Context, hops []*model.Proxy, base prox
 		}
 	}
 	current := base
+	// outerKey accumulates the identity of the hops to the left of the current
+	// one, so a bastion's pooled client is keyed by its full upstream path.
+	outerKey := ""
 	for _, hop := range hops {
-		next, rel, err := b.wrap(ctx, hop, current)
+		next, rel, err := b.wrap(ctx, hop, current, outerKey)
 		if err != nil {
 			release()
 			return nil, func() {}, fmt.Errorf("chain hop %s: %w", hop.Name, err)
 		}
 		releases = append(releases, rel)
 		current = next
+		outerKey = appendHopKey(outerKey, hop)
 	}
 	// Outermost byte/active-conn metering, attributed to the egress (terminal)
 	// hop so session traffic is counted exactly once.
@@ -361,7 +372,17 @@ func endpointOf(p *model.Proxy) string {
 	return fmt.Sprintf("%s:%d", p.Host, p.Port)
 }
 
-func (b *ChainBuilder) wrap(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer) (proxy.ContextDialer, func(), error) {
+// appendHopKey extends the cumulative outer-chain identity with one hop. Uses
+// the proxy id (stable, unique per catalog row) plus endpoint so two distinct
+// hops can never collide. Format is opaque to callers — only equality matters.
+func appendHopKey(prev string, p *model.Proxy) string {
+	if p == nil {
+		return prev + "nil>"
+	}
+	return prev + fmt.Sprintf("%d@%s:%d>", p.ID, p.Host, p.Port)
+}
+
+func (b *ChainBuilder) wrap(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer, outerKey string) (proxy.ContextDialer, func(), error) {
 	to := b.hopTimeout(p)
 	addr := fmt.Sprintf("%s:%d", p.Host, p.Port)
 	switch p.Kind {
@@ -393,13 +414,13 @@ func (b *ChainBuilder) wrap(ctx context.Context, p *model.Proxy, outer proxy.Con
 		if b.Bastion == nil {
 			return nil, nil, fmt.Errorf("bastion connector not configured")
 		}
-		bd, rel, err := b.Bastion.Acquire(ctx, p, b.meter(outer, p.ID))
+		bd, rel, err := b.Bastion.Acquire(ctx, p, b.meter(outer, p.ID), outerKey)
 		if err != nil {
 			return nil, nil, err
 		}
 		return bd, rel, nil
 	case model.ProxyFailover:
-		return b.wrapGroup(ctx, p, outer)
+		return b.wrapGroup(ctx, p, outer, outerKey)
 	default:
 		return nil, nil, fmt.Errorf("unsupported proxy kind %q", p.Kind)
 	}
@@ -410,7 +431,7 @@ func (b *ChainBuilder) wrap(ctx context.Context, p *model.Proxy, outer proxy.Con
 // failover semantic: any member is an alternative path forward). Broken members
 // are skipped; the group fails only when none are usable. Nested groups are
 // rejected to bound recursion.
-func (b *ChainBuilder) wrapGroup(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer) (proxy.ContextDialer, func(), error) {
+func (b *ChainBuilder) wrapGroup(ctx context.Context, p *model.Proxy, outer proxy.ContextDialer, outerKey string) (proxy.ContextDialer, func(), error) {
 	if b.Groups == nil {
 		return nil, nil, fmt.Errorf("failover group reader not configured")
 	}
@@ -424,7 +445,9 @@ func (b *ChainBuilder) wrapGroup(ctx context.Context, p *model.Proxy, outer prox
 		if s.Proxy == nil || s.Proxy.Disabled || s.Proxy.Kind == model.ProxyFailover {
 			continue
 		}
-		d, rel, werr := b.wrap(ctx, s.Proxy, outer)
+		// All members share the group's upstream, so they get the same outerKey;
+		// each member's own endpoint still distinguishes its pooled client.
+		d, rel, werr := b.wrap(ctx, s.Proxy, outer, outerKey)
 		if werr != nil {
 			continue // skip a broken member rather than sinking the group
 		}

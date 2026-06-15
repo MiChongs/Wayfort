@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -51,6 +52,13 @@ func (r *WSRelay) Handle(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "node disabled"})
 		return
 	}
+	// Overload guard — reserve a slot before the WS upgrade.
+	gRelease, gErr := r.GW.Admit(c.Request.Context(), claims.UserID, node)
+	if gErr != nil {
+		webssh.WriteGuardReject(c, gErr)
+		return
+	}
+	defer gRelease()
 	ws, err := webssh.AcceptWS(c, "tcp.v1")
 	if err != nil {
 		return
@@ -65,11 +73,7 @@ func (r *WSRelay) Handle(c *gin.Context) {
 }
 
 func (r *WSRelay) run(ctx context.Context, ws *websocket.Conn, node *model.Node) error {
-	hops, err := r.GW.ResolveHops(ctx, node.ProxyChain)
-	if err != nil {
-		return err
-	}
-	dialer, release, err := r.GW.BuildChain(ctx, hops)
+	dialer, _, release, err := r.GW.DialerForNode(ctx, node, fmt.Sprintf("tcpfwd-node-%d", node.ID))
 	if err != nil {
 		return err
 	}

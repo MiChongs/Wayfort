@@ -1,113 +1,66 @@
-// Phase 13 — 重新设计的 auth shell。两栏布局:
-//   - 左侧 brand 侧栏(仅大屏显示),严肃专业 — 不再提 AI、不再用炫目渐变
-//   - 右侧滚动容器,内嵌的 page 自己提供 Card / Sheet
+// Auth shell — Anthropic-style dark minimal surface.
 //
-// 文案聚焦堡垒机 / 远程访问 / 审计 — 与产品本质对齐。
+// 设计取自 Claude 官网:近黑暖色画布、克制留白、贯穿的发丝分隔线、珊瑚色品牌
+// 标记。刻意去掉旧版左侧的营销 brand 面板(4 张特性卡 + 大段文案)—— 登录页
+// 只需要一个登录入口,不堆砌描述。
+//
+// 强制 .dark:不论系统主题,登录始终是图里的暖色深底。其余 app 仍跟随 next-themes。
+// 纪律:标题用 Geist(非衬线,见项目铁律),不用 .display-title。
 
-import { Shield, KeyRound, Globe, ServerCog } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { ArrowUpRight } from "lucide-react"
+import { Button } from "@/components/ui/button"
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="relative h-full overflow-y-auto bg-background text-foreground">
-      {/* Subtle background grid — pure CSS, no SVG dependency */}
-      <div
-        aria-hidden
-        className={cn(
-          "pointer-events-none absolute inset-0 -z-10",
-          "[background-image:linear-gradient(to_right,rgba(120,120,120,0.06)_1px,transparent_1px),linear-gradient(to_bottom,rgba(120,120,120,0.06)_1px,transparent_1px)]",
-          "[background-size:48px_48px]",
-          "[mask-image:radial-gradient(ellipse_at_center,black_25%,transparent_70%)]",
-        )}
-      />
-      <div className="grid min-h-screen lg:grid-cols-[44%_minmax(0,1fr)]">
-        <BrandPanel />
-        <main className="flex items-center justify-center px-4 py-10 sm:px-8">
-          <div className="w-full max-w-md">{children}</div>
+    <div className="dark h-full overflow-y-auto bg-background text-foreground">
+      <div className="flex min-h-full flex-col">
+        {/* Top bar — 品牌标记 + 沙箱入口(对应图里的 "Try Claude" 胶囊) */}
+        <header className="flex items-center justify-between gap-4 px-5 py-4 sm:px-8">
+          <a href="/login" className="flex items-center gap-2.5 outline-none">
+            <BurstMark className="h-6 w-6 shrink-0 text-primary" />
+            <span className="text-[15px] font-semibold tracking-tight">JumpServer</span>
+          </a>
+          <Button variant="outline" size="sm" asChild className="rounded-full">
+            <a href="/sandbox">
+              体验沙箱
+              <ArrowUpRight className="h-3.5 w-3.5" />
+            </a>
+          </Button>
+        </header>
+
+        <div className="border-t border-border" />
+
+        {/* 登录内容 — 居中、留白充足 */}
+        <main className="flex flex-1 items-center justify-center px-5 py-12 sm:px-8">
+          <div className="w-full max-w-sm">{children}</div>
         </main>
+
+        <div className="border-t border-border" />
+
+        <footer className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-4 text-[11px] text-muted-foreground sm:px-8">
+          <span>© JumpServer · Open Source</span>
+          <span className="tracking-wide">Bastion · 远程访问网关</span>
+        </footer>
       </div>
     </div>
   )
 }
 
-function BrandPanel() {
+// 珊瑚色放射标记 —— 呼应图里的星芒,但用均匀的 12 道胶囊光线,与原 logo 区分。
+function BurstMark({ className }: { className?: string }) {
   return (
-    <aside className="relative hidden flex-col justify-between border-r bg-card/40 p-12 lg:flex">
-      {/* Brand mark */}
-      <div className="flex items-center gap-3">
-        <span className="inline-flex h-9 w-9 items-center justify-center rounded-md border bg-background shadow-sm">
-          <ServerCog className="h-5 w-5" />
-        </span>
-        <div className="space-y-0.5">
-          <p className="text-base font-semibold tracking-tight">JumpServer</p>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-            Bastion · 远程访问网关
-          </p>
-        </div>
-      </div>
-
-      {/* Headline + feature list — neutral, professional */}
-      <div className="space-y-8">
-        <div className="max-w-md space-y-3">
-          <h1 className="text-3xl font-semibold leading-tight tracking-tight">
-            统一的远程登录入口
-          </h1>
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            集中管理服务器、数据库、Windows 桌面,会话全程审计可回放。
-            通过浏览器即可访问,无需在本机维护密钥。
-          </p>
-        </div>
-        <ul className="grid gap-3 text-sm">
-          <Feature
-            icon={Shield}
-            title="集中身份"
-            desc="MFA / Passkey / OIDC / SAML 单点登录"
-          />
-          <Feature
-            icon={KeyRound}
-            title="加密凭据"
-            desc="AES-256-GCM 封存,登录密钥永不下发到浏览器"
-          />
-          <Feature
-            icon={Globe}
-            title="多协议接入"
-            desc="SSH · Telnet · RDP · VNC · MySQL · PostgreSQL · TCP"
-          />
-          <Feature
-            icon={ServerCog}
-            title="会话审计"
-            desc="终端 asciicast、桌面录屏、命令历史可检索"
-          />
-        </ul>
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-        <span>© JumpServer · Open Source</span>
-        <span>v2 · MIT License</span>
-      </div>
-    </aside>
-  )
-}
-
-function Feature({
-  icon: Icon,
-  title,
-  desc,
-}: {
-  icon: React.ComponentType<{ className?: string }>
-  title: string
-  desc: string
-}) {
-  return (
-    <li className="flex items-start gap-3 rounded-md border border-border/50 bg-background/40 p-3 backdrop-blur-sm">
-      <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground">
-        <Icon className="h-3.5 w-3.5" />
-      </span>
-      <div className="min-w-0 space-y-0.5">
-        <p className="text-sm font-medium leading-tight">{title}</p>
-        <p className="text-xs leading-relaxed text-muted-foreground">{desc}</p>
-      </div>
-    </li>
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden className={className}>
+      {Array.from({ length: 12 }).map((_, i) => (
+        <rect
+          key={i}
+          x="11.1"
+          y="2.4"
+          width="1.8"
+          height="7"
+          rx="0.9"
+          transform={`rotate(${i * 30} 12 12)`}
+        />
+      ))}
+    </svg>
   )
 }

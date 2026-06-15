@@ -16,6 +16,14 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+// WriteGuardReject writes a guard rejection to the gin context with the right
+// HTTP status (429 for rate/concurrency, 503 for an open circuit) and a machine
+// code. Sibling protocol handlers call this when Gateway.Admit returns an error.
+func WriteGuardReject(c *gin.Context, err error) {
+	status, code, msg := guardRejectHTTP(err)
+	c.AbortWithStatusJSON(status, gin.H{"error": msg, "code": code})
+}
+
 // AcceptWS upgrades a gin request to a WebSocket with the gateway's standard options.
 func AcceptWS(c *gin.Context, subprotocols ...string) (*websocket.Conn, error) {
 	if len(subprotocols) == 0 {
@@ -44,8 +52,20 @@ func (g *Gateway) ProxyRepo() *repo.ProxyRepo            { return g.proxies }
 func (g *Gateway) Chain() *dialer.ChainBuilder           { return g.chain }
 
 // ResolveHops parses Node.ProxyChain ("1,3,7") into ordered Proxy rows.
+//
+// Deprecated: prefer HopsForNode, which routes through the node's network
+// domain (direct / proxy chain / agent) instead of only its legacy ProxyChain.
+// Kept for callers that genuinely have just a chain string.
 func (g *Gateway) ResolveHops(ctx context.Context, chain string) ([]*model.Proxy, error) {
 	return g.resolveHops(ctx, chain)
+}
+
+// HopsForNode resolves the proxy hops to reach node via its network domain,
+// falling back to the legacy per-node ProxyChain when no domain resolver is
+// wired. This is the connectivity choke point sibling protocols (tcpfwd,
+// desktop, dbquery, …) should use so domain routing applies uniformly.
+func (g *Gateway) HopsForNode(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	return g.hopsFor(ctx, node)
 }
 
 // BuildChain composes a ContextDialer that walks the supplied hops.
@@ -162,6 +182,7 @@ func (g *Gateway) EndSession(ctx context.Context, row *model.Session, claims *au
 		"peak_rtt_ms":     row.PeakRTTMs,
 		"avg_rtt_ms":      row.AvgRTTMs,
 		"reconnect_count": row.ReconnectCount,
+		"recording_sha256": row.RecordingSHA256,
 	}); err != nil {
 		g.logger.Warn("session row finish failed", zap.Error(err))
 	}

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { meService, nodeService } from "@/lib/api/services"
 import type { Node } from "@/lib/api/types"
 import { metaOf, protocolChoicesForNode, type ProtocolChoice } from "../protocolMeta"
+import { useRdpBackendPreference } from "@/lib/desktop/use-rdp-backend"
 import { useWorkspaceStore } from "../useWorkspaceStore"
 import { LiveKpiStrip } from "./_live"
 
@@ -26,6 +27,7 @@ export function NodeInfoTab({ nodeId }: Props) {
   })
   const favorites = useQuery({ queryKey: ["me", "favorites"], queryFn: meService.favorites })
   const open = useWorkspaceStore((s) => s.open)
+  const preferredRdp = useRdpBackendPreference()
 
   const isFav = (favorites.data?.node_ids ?? []).includes(nodeId)
 
@@ -56,7 +58,7 @@ export function NodeInfoTab({ nodeId }: Props) {
   }
 
   const n = node.data
-  const choices = protocolChoicesForNode(n.protocol)
+  const choices = protocolChoicesForNode(n.protocol, preferredRdp)
   const tags = (n.tags || "").split(",").map((s) => s.trim()).filter(Boolean)
   const hostPort = `${n.host}:${n.port}`
 

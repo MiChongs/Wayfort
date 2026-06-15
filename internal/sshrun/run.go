@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -29,6 +30,25 @@ type Deps struct {
 	Resolver *pkgssh.Resolver
 	HostKey  xssh.HostKeyCallback
 	Proxies  *repo.ProxyRepo
+	// Domains resolves a node's connectivity from its network domain. Nil-safe:
+	// when unset, dialing falls back to the legacy node.ProxyChain so behaviour
+	// is unchanged until wired (security-architecture.md §3).
+	Domains *domain.Resolver
+}
+
+// HopsFor resolves the proxy hops to reach node, preferring the network-domain
+// resolver when wired and falling back to the legacy per-node ProxyChain.
+// Exported so callers that already hold a Deps (logs, ops modules) route through
+// the same domain-aware seam instead of calling ResolveHops on node.ProxyChain.
+func (d Deps) HopsFor(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	if d.Domains != nil {
+		plan, err := d.Domains.Resolve(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		return plan.Hops, nil
+	}
+	return ResolveHops(ctx, d.Proxies, node.ProxyChain)
 }
 
 // Result holds the captured stdout/stderr and exit status (non-zero exits
@@ -56,7 +76,7 @@ func Run(
 	if cred == nil {
 		return Result{}, errors.New("sshrun: credential is nil")
 	}
-	hops, err := ResolveHops(ctx, d.Proxies, node.ProxyChain)
+	hops, err := d.HopsFor(ctx, node)
 	if err != nil {
 		return Result{}, fmt.Errorf("resolve hops: %w", err)
 	}
@@ -133,7 +153,7 @@ func RunStream(
 	if cred == nil {
 		return errors.New("sshrun: credential is nil")
 	}
-	hops, err := ResolveHops(ctx, d.Proxies, node.ProxyChain)
+	hops, err := d.HopsFor(ctx, node)
 	if err != nil {
 		return fmt.Errorf("resolve hops: %w", err)
 	}

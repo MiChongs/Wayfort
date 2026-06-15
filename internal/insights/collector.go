@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -29,13 +30,24 @@ func sshExec(
 	hostKey xssh.HostKeyCallback,
 	dialTimeout time.Duration,
 	proxies *repo.ProxyRepo,
+	domains *domain.Resolver,
 	node *model.Node,
 	cred *model.Credential,
 	command string,
 ) (string, error) {
-	hops, err := resolveHops(ctx, proxies, node.ProxyChain)
-	if err != nil {
-		return "", fmt.Errorf("resolve hops: %w", err)
+	var hops []*model.Proxy
+	var err error
+	if domains != nil {
+		plan, perr := domains.Resolve(ctx, node)
+		if perr != nil {
+			return "", fmt.Errorf("resolve hops: %w", perr)
+		}
+		hops = plan.Hops
+	} else {
+		hops, err = resolveHops(ctx, proxies, node.ProxyChain)
+		if err != nil {
+			return "", fmt.Errorf("resolve hops: %w", err)
+		}
 	}
 	finalDialer, release, err := chain.Build(ctx, hops, nil)
 	if err != nil {

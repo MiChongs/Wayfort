@@ -32,7 +32,7 @@ type fakeBastion struct {
 	dialer   *fakeDialer
 }
 
-func (f *fakeBastion) Acquire(_ context.Context, p *model.Proxy, outer proxy.ContextDialer) (*BastionDialer, func(), error) {
+func (f *fakeBastion) Acquire(_ context.Context, p *model.Proxy, outer proxy.ContextDialer, _ string) (*BastionDialer, func(), error) {
 	// Wrap the upstream so we can verify it was threaded through.
 	f.dialer = &fakeDialer{name: p.Name, upstream: outer}
 	// BastionDialer wraps *ssh.Client; we cheat for the test by stubbing DialContext via the inner field type.

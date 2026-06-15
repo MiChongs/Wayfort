@@ -54,6 +54,7 @@ const CATEGORY_TITLE: Record<DisconnectCategory, string> = {
   authFailed: "登录被远端拒绝",
   serverClosed: "远端关闭了会话",
   timeout: "连接主机超时",
+  agentUnavailable: "网域无在线 Agent",
   unknown: "连接已断开",
 }
 
@@ -63,6 +64,7 @@ const CATEGORY_DETAIL: Record<DisconnectCategory, string> = {
   authFailed: "凭据被远端拒绝。核对账号资料里的用户名 / 密码 / 密钥后重试。",
   serverClosed: "远端主动结束了会话（可能是超时或注销）。",
   timeout: "等待远端响应超时。可能是主机繁忙或网络拥塞。",
+  agentUnavailable: "该资产经反连 Agent 接入，但其网域当前没有在线的 Agent。请在网域页激活或检查 Agent 后重试。",
   unknown: "连接在中途断开。重试通常可恢复。",
 }
 
@@ -70,6 +72,7 @@ export const SUGGESTION_LABEL: Record<DisconnectSuggestion, string> = {
   checkNode: "检查节点",
   checkCredentials: "检查凭据",
   retry: "重试",
+  checkAgent: "去网域管理",
   contactAdmin: "联系管理员",
 }
 

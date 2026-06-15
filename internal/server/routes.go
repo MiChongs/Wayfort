@@ -6,6 +6,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/api"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/jumpserver-anonymous/internal/guard"
 	"github.com/michongs/jumpserver-anonymous/internal/insights"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
@@ -171,6 +172,15 @@ type Routes struct {
 	Auth          *api.AuthHandler
 	Node          *api.NodeHandler
 	Proxy         *api.ProxyHandler
+	Domain        *api.DomainHandler
+	Agent         *api.AgentHandler
+	AgentDownload *api.AgentDownloadHandler
+	PKI           *api.PKIHandler
+	// WriteRateLimiter throttles per-user state-changing requests (overload
+	// guard §11). Nil disables the middleware.
+	WriteRateLimiter *guard.RateLimiter
+	// Prometheus exposes /metrics (§16). Nil disables the endpoint.
+	Prometheus    *api.PrometheusHandler
 	ChainTemplate *api.ChainTemplateHandler
 	ProxyGroup    *api.ProxyGroupHandler
 	ProxyHealth   *api.HealthHandler
@@ -232,20 +242,20 @@ type Routes struct {
 
 	// Workspace v2 — server-management panels (firewall, docker, systemd)
 	// that run SSH commands on the managed node.
-	Firewall *api.FirewallHandler
-	Docker   *api.DockerHandler
-	Systemd  *api.SystemdHandler
-	Process  *api.ProcessHandler
-	Perf     *api.PerfHandler
-	Logs     *api.LogsHandler
-	Hardware *api.HardwareHandler
-	Kernel   *api.KernelHandler
-	Storage  *api.StorageHandler
-	NetTools *api.NetToolsHandler
-	Cron     *api.CronHandler
-	Pkg      *api.PkgHandler
-	SysUser   *api.SysUserHandler
-	SecAudit  *api.SecAuditHandler
+	Firewall     *api.FirewallHandler
+	Docker       *api.DockerHandler
+	Systemd      *api.SystemdHandler
+	Process      *api.ProcessHandler
+	Perf         *api.PerfHandler
+	Logs         *api.LogsHandler
+	Hardware     *api.HardwareHandler
+	Kernel       *api.KernelHandler
+	Storage      *api.StorageHandler
+	NetTools     *api.NetToolsHandler
+	Cron         *api.CronHandler
+	Pkg          *api.PkgHandler
+	SysUser      *api.SysUserHandler
+	SecAudit     *api.SecAuditHandler
 	WireGuard    *api.WireGuardHandler
 	Files        *api.FilesHandler
 	LogAnalytics *api.LogAnalyticsHandler
@@ -277,6 +287,26 @@ type Routes struct {
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
+	// NOTE: the reverse-connect agent control plane (/agent/v1/{enroll,renew,
+	// tunnel}) is NOT mounted here. It runs on a dedicated mTLS listener stood up
+	// in main.go (cfg.Agent.Addr) so the gateway can terminate TLS itself and
+	// verify agent client certificates — see AgentGatewayHandler.MountAgentTLS.
+
+	// Prometheus scrape endpoint at the root (no JWT — guarded by its own bearer
+	// token when configured). §16.
+	if rt.Prometheus != nil {
+		r.GET("/metrics", rt.Prometheus.Metrics)
+	}
+
+	// Reverse-connect agent binary + install script (security-architecture.md
+	// §14). Unauthenticated by design — the binary is not a secret; enrollment is
+	// gated by the one-time token and the pending→activate human check. Returns
+	// 503 until binaries are staged (scripts/build-agent.sh → agent.dist_dir).
+	if rt.AgentDownload != nil {
+		r.GET("/dl/gateway-agent", rt.AgentDownload.Binary)
+		r.GET("/dl/gateway-agent.sh", rt.AgentDownload.Script)
+	}
+
 	v1 := r.Group("/api/v1")
 	{
 		ag := v1.Group("/auth")
@@ -313,6 +343,8 @@ func (rt *Routes) Mount(r *gin.Engine) {
 
 	authed := v1.Group("")
 	authed.Use(mw)
+	// Overload guard — per-user write-rate limit on state-changing requests.
+	authed.Use(writeRateLimit(rt.WriteRateLimiter))
 	{
 		// Logout — any authenticated session.
 		authed.POST("/auth/logout", rt.Auth.Logout)
@@ -441,6 +473,29 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		admin.POST("/proxies", perm(auth.PermProxyManage), rt.Proxy.Create)
 		admin.PATCH("/proxies/:id", perm(auth.PermProxyManage), rt.Proxy.Update)
 		admin.DELETE("/proxies/:id", perm(auth.PermProxyManage), rt.Proxy.Delete)
+		// Network domains — connectivity source of truth (security-architecture.md §3).
+		if rt.Domain != nil {
+			admin.GET("/domains", perm(auth.PermDomainManage), rt.Domain.List)
+			admin.POST("/domains", perm(auth.PermDomainManage), rt.Domain.Create)
+			admin.PATCH("/domains/:id", perm(auth.PermDomainManage), rt.Domain.Update)
+			admin.DELETE("/domains/:id", perm(auth.PermDomainManage), rt.Domain.Delete)
+		}
+		// Reverse-connect Gateway Agents — admin lifecycle (security-architecture.md §4).
+		if rt.Agent != nil {
+			admin.GET("/domains/:id/agents", perm(auth.PermAgentManage), rt.Agent.List)
+			admin.POST("/domains/:id/agents/enroll-token", perm(auth.PermAgentManage), rt.Agent.GenerateEnrollToken)
+			admin.POST("/agents/:agentId/activate", perm(auth.PermAgentManage), rt.Agent.Activate)
+			admin.POST("/agents/:agentId/revoke", perm(auth.PermAgentManage), rt.Agent.Revoke)
+			admin.DELETE("/agents/:agentId", perm(auth.PermAgentManage), rt.Agent.Delete)
+			// Agent面 status + install-command composition for the console.
+			admin.GET("/agent-gateway/info", perm(auth.PermAgentManage), rt.Agent.Info)
+		}
+		// Internal PKI — CA metadata + issued-cert ledger (security-architecture.md §6).
+		if rt.PKI != nil {
+			admin.GET("/pki/ca", perm(auth.PermPKIManage), rt.PKI.CA)
+			admin.GET("/pki/certificates", perm(auth.PermPKIManage), rt.PKI.Certificates)
+			admin.POST("/pki/certificates/:serial/revoke", perm(auth.PermPKIManage), rt.PKI.Revoke)
+		}
 		// Phase 10 — proxy chain validate / test / templates.
 		admin.POST("/proxies/chains/validate", perm(auth.PermProxyManage), rt.Proxy.ValidateChain)
 		admin.POST("/proxies/chains/test", perm(auth.PermProxyManage), rt.Proxy.TestChain)
@@ -564,6 +619,8 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.GET("/audit-logs/stats", perm(auth.PermAuditRead), rt.Audit.Stats)
 			ops.GET("/audit-logs/stream", perm(auth.PermAuditRead), rt.Audit.Stream)
 			ops.GET("/audit-logs/export", perm(auth.PermAuditRead), rt.Audit.Export)
+			// M4 — tamper-evidence integrity report (hash-chain verify + checkpoints).
+			ops.GET("/audit-logs/integrity", perm(auth.PermAuditRead), rt.Audit.Integrity)
 		}
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
 		ops.GET("/nodes/:id/sftp/stat", rt.SFTP.Stat)

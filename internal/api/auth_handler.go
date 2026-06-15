@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
+	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
@@ -35,6 +36,9 @@ type AuthHandler struct {
 	OIDC      *auth.OIDCManager
 	Anomaly   *anomaly.Detector
 	Mailer    *notify.Mailer
+	// Writer mirrors login outcomes into the global audit trail so the audit
+	// center's 认证 lane is populated. May be nil (events are then skipped).
+	Writer    *audit.Writer
 	AnonEna   bool
 	// AnonSpec carries the sandbox resource caps so the public sandbox page can
 	// render an honest spec (TTL countdown, limits) without a second endpoint.
@@ -512,6 +516,19 @@ func (h *AuthHandler) finalizeLogin(c *gin.Context, user *model.User, am model.A
 		Anomaly:   anomalous,
 		CreatedAt: time.Now(),
 	})
+	if h.Writer != nil {
+		payload := "method=" + string(am)
+		if mm != model.MFAMethodNone {
+			payload += " mfa=" + string(mm)
+		}
+		if anomalous {
+			payload += " anomaly=1"
+		}
+		h.Writer.Log(model.AuditLog{
+			Kind: model.AuditLogin, UserID: user.ID, Username: user.Username,
+			ClientIP: c.ClientIP(), Payload: payload,
+		})
+	}
 	return pair
 }
 
@@ -529,6 +546,17 @@ func (h *AuthHandler) recordHistory(c *gin.Context, userID *uint64, username str
 		Reason:    reason,
 		CreatedAt: time.Now(),
 	})
+	// Mirror failed / locked attempts into the audit trail's 认证 lane.
+	if h.Writer != nil && (result == model.LoginFailed || result == model.LoginLocked) {
+		var uid uint64
+		if userID != nil {
+			uid = *userID
+		}
+		h.Writer.Log(model.AuditLog{
+			Kind: model.AuditLoginFailed, UserID: uid, Username: username,
+			ClientIP: c.ClientIP(), Payload: "result=" + string(result) + " reason=" + reason,
+		})
+	}
 }
 
 func claimsJTI(token string, issuer *auth.Issuer) string {

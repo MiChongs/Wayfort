@@ -264,6 +264,32 @@ desktop:
     # Pass-through to the gateway's `Verbosity` config (warn/info/debug).
     verbosity: info
 
+# ----- Reverse-connect Gateway Agent (network-domain "agent" mode) -----
+# A Gateway Agent is a single static binary you run on ONE host inside an
+# isolated network. It dials OUT to this gateway over TLS (never listens); the
+# gateway then routes sessions to that network's assets through the reverse
+# tunnel — so the isolated side only needs one outbound hop, no inbound rules.
+#
+# DISABLED by default — turn it on only when you actually use agent domains.
+# While off, the mTLS listener is not started and agents cannot connect (you'll
+# see "reverse-connect agents disabled" in the startup log). See
+# docs/security-architecture.md §4.
+agent:
+  # Master switch: true => stand up the dedicated mTLS listener for
+  # /agent/v1/{enroll,renew,tunnel}.
+  enabled: false
+  # Bind address for the agent-facing mTLS listener. Separate from the user API
+  # (:8080) so it can be firewalled to just the agent egress range.
+  addr: ":8443"
+  # Hostname/IP agents dial — becomes the server-cert SAN and the host baked
+  # into the install command. Empty = derive from the request (TESTING ONLY);
+  # SET THIS for production, e.g. "bastion.example.com".
+  public_host: ""
+  # Directory the gateway serves prebuilt agent binaries from
+  # (GET /dl/gateway-agent). Stage it with: scripts/build-agent.sh
+  # Default "dist/agent" (relative to the working dir); empty disables download.
+  dist_dir: "dist/agent"
+
 protocols:
   guacamole:
     enabled: false
