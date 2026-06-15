@@ -22,21 +22,21 @@ type Hub struct {
 // (not the tamper-evident ledger row) so the browser can render without an
 // extra round-trip. The notification center consumes the same shape.
 type Event struct {
-	RequestID    string    `json:"request_id"`
-	RequesterID  uint64    `json:"requester_id"`
-	Audience     []uint64  `json:"-"` // recipients for the per-user stream (requester + current approvers)
-	Kind         string    `json:"kind"`
-	Status       string    `json:"status"`
-	Title        string    `json:"title"`
-	BusinessType string    `json:"business_type"`
-	ResourceType string    `json:"resource_type"`
-	ResourceID   string    `json:"resource_id"`
-	RiskLevel    string    `json:"risk_level"`
-	CurrentStage int       `json:"current_stage"`
-	TotalStages  int       `json:"total_stages"`
-	GrantID      string    `json:"grant_id,omitempty"`
-	ExpiresAt    time.Time `json:"expires_at,omitempty"`
-	At           time.Time `json:"at"`
+	RequestID    string     `json:"request_id"`
+	RequesterID  uint64     `json:"requester_id"`
+	Audience     []uint64   `json:"-"` // recipients for the per-user stream (requester + current approvers)
+	Kind         string     `json:"kind"`
+	Status       string     `json:"status"`
+	Title        string     `json:"title"`
+	BusinessType string     `json:"business_type"`
+	ResourceType string     `json:"resource_type"`
+	ResourceID   string     `json:"resource_id"`
+	RiskLevel    string     `json:"risk_level"`
+	CurrentStage int        `json:"current_stage"`
+	TotalStages  int        `json:"total_stages"`
+	GrantID      string     `json:"grant_id,omitempty"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	At           time.Time  `json:"at"`
 }
 
 type subscriber struct {

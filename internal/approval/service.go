@@ -727,7 +727,12 @@ func (s *Service) publishHub(ctx context.Context, req *model.ApprovalRequest,
 	}
 	if grant != nil {
 		ev.GrantID = grant.ID
-		ev.ExpiresAt = grant.NotAfter
+		// nil = permanent grant; never serialise a zero time.Time as
+		// "0001-01-01" (the omitempty-on-struct trap, see PreflightResult).
+		if !grant.NotAfter.IsZero() {
+			exp := grant.NotAfter
+			ev.ExpiresAt = &exp
+		}
 	}
 	s.hub.Publish(ev)
 }
@@ -735,12 +740,12 @@ func (s *Service) publishHub(ctx context.Context, req *model.ApprovalRequest,
 // PreflightResult tells the workspace whether a connection may proceed, and if
 // not, whether the user already has a pending request to resume.
 type PreflightResult struct {
-	Required         bool      `json:"required"`
-	Allowed          bool      `json:"allowed"`
-	GrantID          string    `json:"grant_id,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at,omitempty"`
-	PendingRequestID string    `json:"pending_request_id,omitempty"`
-	Reason           string    `json:"reason,omitempty"`
+	Required         bool       `json:"required"`
+	Allowed          bool       `json:"allowed"`
+	GrantID          string     `json:"grant_id,omitempty"`
+	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
+	PendingRequestID string     `json:"pending_request_id,omitempty"`
+	Reason           string     `json:"reason,omitempty"`
 }
 
 // Preflight is the workspace gate: it runs the same enforcement check the
@@ -758,11 +763,18 @@ func (s *Service) Preflight(ctx context.Context, userID uint64, biz model.Approv
 		return PreflightResult{}, err
 	}
 	out := PreflightResult{
-		Required:  res.Required,
-		Allowed:   res.Allowed,
-		GrantID:   res.GrantID,
-		ExpiresAt: res.ExpiresAt,
-		Reason:    res.Reason,
+		Required: res.Required,
+		Allowed:  res.Allowed,
+		GrantID:  res.GrantID,
+		Reason:   res.Reason,
+	}
+	// Only a real, time-bound grant carries an expiry. A no-approval resource (or
+	// a permanent grant) leaves ExpiresAt nil so JSON omits it and the workspace
+	// shows no countdown. time.Time + omitempty does NOT achieve this — a struct
+	// zero value still serialises to "0001-01-01...", which is the "00:00 后到期" bug.
+	if !res.ExpiresAt.IsZero() {
+		exp := res.ExpiresAt
+		out.ExpiresAt = &exp
 	}
 	if res.Required && !res.Allowed {
 		if req, err := s.repo.FindPendingRequestForResource(ctx, userID, resType, resID, biz); err == nil && req != nil {

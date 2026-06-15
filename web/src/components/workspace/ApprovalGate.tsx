@@ -85,13 +85,19 @@ export function ApprovalGate({
   }
 
   // Time-bound grant: wrap the live connection in the expiry guard (countdown +
-  // auto teardown on expiry). The server enforces the same deadline.
-  if (countdown && q.data.expires_at) {
+  // auto teardown on expiry). The server enforces the same deadline. Guard on a
+  // VALID FUTURE deadline only — a resource that needs no approval (or a
+  // permanent grant) has no expiry, and a blank / past / zero value (e.g. Go's
+  // "0001-01-01" zero time) must NOT render a bogus "00:00 后到期" countdown.
+  const exp = q.data.expires_at
+  const expiresMs = exp ? Date.parse(exp) : NaN
+  // `exp &&` narrows to string; `> now` rejects NaN (blank/zero time) and past values.
+  if (countdown && exp && expiresMs > Date.now()) {
     const refresh = () => qc.invalidateQueries({ queryKey: ["approval-preflight", nodeId] })
     return (
       <ExpiryGuard
         tabId={tabId}
-        deadline={q.data.expires_at}
+        deadline={exp}
         resourceId={String(nodeId)}
         title={nodeName}
         subtitle={nodeSubtitle}
