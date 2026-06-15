@@ -3,7 +3,7 @@
 // IP forwarding stay coherent. WebSocket connections do not use this; see
 // lib/ws/* for those.
 
-import { getAccessToken, clearTokens } from "@/lib/auth/tokens"
+import { getAccessToken, getRefreshToken, setTokens, clearTokens, isAuthenticated } from "@/lib/auth/tokens"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "/api/proxy/api/v1"
 
@@ -30,7 +30,61 @@ type Options = {
   raw?: boolean
 }
 
-export async function api<T>(method: string, path: string, opts: Options = {}): Promise<T> {
+// ----- access-token refresh ------------------------------------------------
+// The access token is short-lived (default 1h) while the refresh token lasts
+// days. Nothing used to spend the refresh token, so a logged-in user was
+// bounced to /login the instant the access token lapsed — the "login expires
+// too soon" symptom. We now transparently mint a fresh access token from the
+// refresh token: reactively (retry once on a 401) and proactively (the auth
+// session hook calls these on mount + a keep-alive timer).
+//
+// Single-flight: a burst of parallel requests that all 401 at once share one
+// /auth/refresh round-trip instead of stampeding it.
+let refreshInFlight: Promise<boolean> | null = null
+
+export function refreshAccessToken(): Promise<boolean> {
+  if (refreshInFlight) return refreshInFlight
+  const refresh = getRefreshToken()
+  if (!refresh) return Promise.resolve(false)
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(buildURL("/auth/refresh"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+        credentials: "include",
+      })
+      if (!res.ok) return false
+      const pair = (await res.json()) as { access_token?: string; refresh_token?: string }
+      if (!pair?.access_token) return false
+      setTokens(pair.access_token, pair.refresh_token)
+      return true
+    } catch {
+      return false
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
+}
+
+// Returns true when a usable access token is in hand — either the current one
+// is still valid, or it was just refreshed. Returns false only when there's no
+// path back to an authenticated state (no / expired / revoked refresh token);
+// the caller should then redirect to /login.
+export async function ensureValidAccessToken(): Promise<boolean> {
+  if (isAuthenticated()) return true
+  return refreshAccessToken()
+}
+
+function redirectToLogin() {
+  clearTokens()
+  if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+    window.location.href = "/login"
+  }
+}
+
+export async function api<T>(method: string, path: string, opts: Options = {}, _retried = false): Promise<T> {
   const headers: Record<string, string> = { ...(opts.headers || {}) }
   const tok = getAccessToken()
   if (tok) headers.Authorization = `Bearer ${tok}`
@@ -50,10 +104,13 @@ export async function api<T>(method: string, path: string, opts: Options = {}): 
     credentials: "include",
   })
   if (res.status === 401) {
-    clearTokens()
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login"
+    // Recover a lapsed session once before giving up: refresh the access token
+    // and replay the request. Never recurse on the refresh endpoint itself, and
+    // only ever retry a single time.
+    if (!_retried && !path.startsWith("/auth/refresh") && (await refreshAccessToken())) {
+      return api<T>(method, path, opts, true)
     }
+    redirectToLogin()
   }
   if (!res.ok) {
     let detail: unknown = undefined
@@ -110,7 +167,7 @@ export type UploadOptions = {
   signal?: AbortSignal
 }
 
-export function apiUpload<T>(path: string, file: File | Blob, opts: UploadOptions = {}): Promise<T> {
+export function apiUpload<T>(path: string, file: File | Blob, opts: UploadOptions = {}, _retried = false): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const url = buildURL(path, opts.query)
     const xhr = new XMLHttpRequest()
@@ -148,10 +205,19 @@ export function apiUpload<T>(path: string, file: File | Blob, opts: UploadOption
       const status = xhr.status
       const text = xhr.responseText
       if (status === 401) {
-        clearTokens()
-        if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-          window.location.href = "/login"
+        // Mirror api(): try one refresh + replay before bouncing to /login.
+        if (!_retried) {
+          refreshAccessToken().then((ok) => {
+            if (ok) {
+              resolve(apiUpload<T>(path, file, opts, true))
+            } else {
+              redirectToLogin()
+              reject({ status, message: "unauthorized" } as ApiError)
+            }
+          })
+          return
         }
+        redirectToLogin()
       }
       if (status >= 200 && status < 300) {
         if (!text) {

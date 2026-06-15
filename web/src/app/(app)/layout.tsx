@@ -1,26 +1,16 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
-import { isAuthenticated } from "@/lib/auth/tokens"
 import { Sidebar } from "@/components/app-shell/sidebar"
 import { TopBar } from "@/components/app-shell/topbar"
 import { CommandPalette } from "@/components/common/command-palette"
 import { NotificationProvider } from "@/components/notifications/notification-provider"
 import { WatermarkProvider } from "@/components/watermark/watermark-context"
+import { useAuthSession } from "@/lib/auth/use-auth-session"
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const [ready, setReady] = React.useState(false)
+  const ready = useAuthSession()
   const [mobileOpen, setMobileOpen] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!isAuthenticated()) {
-      router.replace("/login")
-      return
-    }
-    setReady(true)
-  }, [router])
 
   if (!ready) return null
   return (

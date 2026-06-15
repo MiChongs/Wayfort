@@ -254,6 +254,15 @@ export function WebSSHTerminal({
     () => resolveTerminalTheme(settings.themeName, sysIsDark),
     [settings.themeName, sysIsDark],
   )
+  // The init effect only reads sysIsDark once (for the *initial* palette at
+  // xterm creation); the live theme is applied by the effect above. Reading it
+  // through a ref keeps it out of the init deps so a light/dark flip never tears
+  // down and rebuilds the terminal — which would drop the SSH session and kick
+  // off a reconnect.
+  const sysIsDarkRef = React.useRef(sysIsDark)
+  React.useEffect(() => {
+    sysIsDarkRef.current = sysIsDark
+  }, [sysIsDark])
 
   const scheduleFit = React.useCallback(() => {
     if (typeof window === "undefined") return
@@ -384,7 +393,7 @@ export function WebSSHTerminal({
       if (disposed) return
 
       const initial = settingsRef.current
-      const themeNow = resolveTerminalTheme(initial.themeName, sysIsDark)
+      const themeNow = resolveTerminalTheme(initial.themeName, sysIsDarkRef.current)
       const term = new Terminal({
         fontFamily: initial.fontFamily,
         fontSize: initial.fontSize,
@@ -576,6 +585,12 @@ export function WebSSHTerminal({
           if (!disposed) tc.markOpen()
         },
         onReady: () => {
+          // A socket torn down by this effect's cleanup (theme/prop change,
+          // StrictMode remount, or the bumpKey reconnect itself) still flushes
+          // its queued events asynchronously. Without this guard a stale READY
+          // from the dead socket would write a second banner and reset the
+          // reconnect counter on a session that's already being replaced.
+          if (disposed) return
           tc.markReady()
           reconnectAttemptRef.current = 0
           openedAtRef.current = Date.now()
@@ -591,9 +606,24 @@ export function WebSSHTerminal({
             }),
           )
         },
-        onOutput: (bytes) => term.write(bytes),
-        onError: (m) => toast.error(t("terminal.error.sessionError"), { description: m }),
+        onOutput: (bytes) => {
+          if (disposed) return
+          term.write(bytes)
+        },
+        onError: (m) => {
+          if (disposed) return
+          toast.error(t("terminal.error.sessionError"), { description: m })
+        },
         onClose: (m) => {
+          // CRITICAL: ignore the close of a socket this effect already tore
+          // down. The cleanup closes the socket *without* flagging it as a
+          // user disconnect, so a missing guard here mis-reads every teardown
+          // (theme flip, prop change, StrictMode remount, or the bumpKey
+          // reconnect's own re-run) as a network drop and schedules yet another
+          // reconnect — which bumps the key, re-runs the effect, closes again…
+          // a self-perpetuating reconnect loop. Only a drop on the *live*
+          // socket (disposed === false) is a real disconnect.
+          if (disposed) return
           if (userClosedRef.current) {
             // Friendly farewell — we know exactly what happened, so skip
             // diagnostics and surface a session summary instead.
@@ -618,10 +648,12 @@ export function WebSSHTerminal({
           writeDiagnosticBanner(m)
         },
         onStats: (s) => {
+          if (disposed) return
           statsRef.current = s
           setStats(s)
         },
         onLatency: (ms) => {
+          if (disposed) return
           setLatencyMs(ms)
           tc.pushLatency(ms)
         },
@@ -730,7 +762,7 @@ export function WebSSHTerminal({
       serializeRef.current = null
       handleRef.current = null
     }
-  }, [protocol, nodeId, wsPath, wsToken, bumpKey, scheduleFit, sysIsDark]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [protocol, nodeId, wsPath, wsToken, bumpKey, scheduleFit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-run incremental search whenever query/options change so the result
   // counter updates without requiring Enter.

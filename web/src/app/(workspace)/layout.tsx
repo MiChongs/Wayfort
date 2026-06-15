@@ -1,9 +1,8 @@
 "use client"
 
 import * as React from "react"
-import { useRouter } from "next/navigation"
-import { isAuthenticated } from "@/lib/auth/tokens"
 import { WatermarkProvider } from "@/components/watermark/watermark-context"
+import { useAuthSession } from "@/lib/auth/use-auth-session"
 
 // Workspace owns the entire viewport — no Sidebar / TopBar chrome from the
 // (app) group. Theme / react-query / sonner come from the root providers, so
@@ -11,16 +10,7 @@ import { WatermarkProvider } from "@/components/watermark/watermark-context"
 // (the (app) group has its own provider): this route group is the primary
 // multi-session webssh/desktop surface and must be watermarked like the rest.
 export default function WorkspaceLayout({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const [ready, setReady] = React.useState(false)
-
-  React.useEffect(() => {
-    if (!isAuthenticated()) {
-      router.replace("/login")
-      return
-    }
-    setReady(true)
-  }, [router])
+  const ready = useAuthSession()
 
   if (!ready) return null
   // Fill the viewport-locked body (h-full, not h-screen/100vh — follows the real
