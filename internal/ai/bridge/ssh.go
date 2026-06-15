@@ -16,6 +16,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -29,11 +30,25 @@ type NodeRunner struct {
 	Nodes    *repo.NodeRepo
 	Creds    *repo.CredentialRepo
 	Proxies  *repo.ProxyRepo
+	Domains  *domain.Resolver
 	Resolver *pkgssh.Resolver
 	Chain    *dialer.ChainBuilder
 	HostKey  xssh.HostKeyCallback
 	Asset    *asset.Resolver
 	DialTimeout time.Duration
+}
+
+// hopsFor resolves the proxy hops to reach node, preferring the network-domain
+// resolver when wired and falling back to the legacy per-node ProxyChain.
+func (r *NodeRunner) hopsFor(ctx context.Context, node *model.Node) ([]*model.Proxy, error) {
+	if r.Domains != nil {
+		plan, err := r.Domains.Resolve(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		return plan.Hops, nil
+	}
+	return resolveHops(ctx, r.Proxies, node.ProxyChain)
 }
 
 // chunkWriter tees writes into a buffer while forwarding each fragment to an
@@ -72,7 +87,7 @@ func (r *NodeRunner) ExecStream(ctx context.Context, userID uint64, nodeID uint6
 	if err != nil || node == nil {
 		return "", "", -1, fmt.Errorf("node %d not found", nodeID)
 	}
-	hops, err := resolveHops(ctx, r.Proxies, node.ProxyChain)
+	hops, err := r.hopsFor(ctx, node)
 	if err != nil {
 		return "", "", -1, err
 	}

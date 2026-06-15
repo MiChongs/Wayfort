@@ -23,6 +23,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/dialer"
+	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/repo"
 	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
@@ -77,6 +78,7 @@ type Deps struct {
 	Nodes     *repo.NodeRepo
 	Creds     *repo.CredentialRepo
 	Proxies   *repo.ProxyRepo
+	Domains   *domain.Resolver
 	Sessions  *repo.SessionRepo
 	AuditRepo *repo.AuditRepo
 	LoginHist *repo.LoginHistoryRepo
@@ -162,7 +164,7 @@ func New(cfg Config, deps Deps) *Set {
 	toolReg := tools.NewRegistry()
 
 	nodeRunner := &bridge.NodeRunner{
-		Nodes: deps.Nodes, Creds: deps.Creds, Proxies: deps.Proxies,
+		Nodes: deps.Nodes, Creds: deps.Creds, Proxies: deps.Proxies, Domains: deps.Domains,
 		Resolver: deps.SSHResolver, Chain: deps.Chain, HostKey: deps.HostKey,
 		Asset: deps.Asset, DialTimeout: deps.DialTimeout,
 	}

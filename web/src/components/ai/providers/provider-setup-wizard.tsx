@@ -17,7 +17,7 @@ import {
 import {
   Collapsible, CollapsibleContent, CollapsibleTrigger,
 } from "@/components/ui/collapsible"
-import { Sheet, SheetContent } from "@/components/ui/sheet"
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet"
 import { MaybeVirtualList } from "@/lib/ai/maybe-virtual"
 import { AppIcon } from "@/components/icons/app-icon"
 import { CapabilityBadges } from "./capability-badges"
@@ -96,6 +96,7 @@ export function ProviderSetupWizard({
   const [showKey, setShowKey] = React.useState(false)
   const [candidates, setCandidates] = React.useState<AIModel[]>([])
   const [selected, setSelected] = React.useState<Set<string>>(new Set())
+  const [manualId, setManualId] = React.useState("")
 
   // Reset whenever the sheet (re)opens with a (possibly new) preset.
   React.useEffect(() => {
@@ -187,6 +188,29 @@ export function ProviderSetupWizard({
       return n
     })
 
+  // Manual model entry — the fallback path for relay gateways that 403 on
+  // GET /v1/models. Always available (you may also want a model the list omits).
+  // Comma / whitespace / newline separated ids are accepted in one go.
+  const addManualModels = () => {
+    const ids = manualId.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+    if (ids.length === 0) return
+    setCandidates((prev) => {
+      const have = new Set(prev.map((m) => m.id))
+      const add = ids.filter((id) => !have.has(id)).map((id) => ({ id, tools: true } as AIModel))
+      return add.length ? [...prev, ...add] : prev
+    })
+    setSelected((prev) => {
+      const n = new Set(prev)
+      for (const id of ids) n.add(id)
+      return n
+    })
+    if (!draft.default_model && ids[0]) patch({ default_model: ids[0] })
+    setManualId("")
+  }
+  // Discovery is "unsupported" when the backend flagged it (403/unimplemented) or
+  // the call errored outright.
+  const discoveryUnsupported = discover.data?.discovery_supported === false || discover.isError
+
   return (
     <Sheet open={open} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:max-w-xl">
@@ -194,7 +218,7 @@ export function ProviderSetupWizard({
         <div className="border-b px-5 py-4">
           <div className="flex items-center gap-2">
             <AppIcon icon={preset?.icon} size={22} fallback="lucide:sparkles" />
-            <h2 className="text-base font-semibold">{preset ? `接入 ${preset.name}` : "新增自定义提供商"}</h2>
+            <SheetTitle className="text-base font-semibold">{preset ? `接入 ${preset.name}` : "新增自定义提供商"}</SheetTitle>
           </div>
           <div className="mt-3 flex items-center gap-1.5">
             {STEPS.map((label, i) => (
@@ -349,9 +373,27 @@ export function ProviderSetupWizard({
                   <Loader2 className="size-3.5 animate-spin" /> 正在发现可用模型…
                 </div>
               )}
+              {!discover.isPending && discoveryUnsupported && (
+                <div className="rounded-lg border border-warning/30 bg-warning/5 p-2.5 text-xs text-muted-foreground">
+                  该中转站不支持自动发现模型（GET /v1/models 返回 403 或未实现）。请在下方手动输入模型 ID 添加，照样可用。
+                </div>
+              )}
+              {/* Manual add — always available; the only path when discovery 403s. */}
+              <div className="flex items-center gap-1.5">
+                <Input
+                  value={manualId}
+                  onChange={(e) => setManualId(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addManualModels() } }}
+                  placeholder="手动输入模型 ID，如 gpt-4o（可逗号/空格分隔多个）"
+                  className="h-8 font-mono text-xs"
+                />
+                <Button size="sm" variant="outline" className="h-8 shrink-0 text-xs" onClick={addManualModels} disabled={!manualId.trim()}>
+                  添加
+                </Button>
+              </div>
               {candidates.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-                  未发现模型，可先创建后在详情里手动添加
+                  还没有模型，在上方输入框手动添加，或返回上一步检查凭据后重试发现
                 </div>
               ) : (
                 <MaybeVirtualList

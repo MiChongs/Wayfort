@@ -373,10 +373,19 @@ func (h *ProviderHandler) DiscoverModels(c *gin.Context) {
 	}
 	models, err := prov.ListModels(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "models": []provider.ModelInfo{}})
+		// Many relay gateways ("中转站") forbid GET /v1/models (403 Forbidden) or
+		// don't implement it at all. That's not a fatal error — the operator can
+		// still use the provider by entering model ids by hand. Return 200 with a
+		// discovery_supported=false flag so the wizard falls back to manual entry
+		// instead of dead-ending on a 502.
+		c.JSON(http.StatusOK, gin.H{
+			"models":              []provider.ModelInfo{},
+			"discovery_supported": false,
+			"error":               err.Error(),
+		})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"models": models})
+	c.JSON(http.StatusOK, gin.H{"models": models, "discovery_supported": true})
 }
 
 // Presets serves the static provider catalog that drives the "add provider"
