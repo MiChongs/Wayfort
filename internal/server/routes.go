@@ -214,6 +214,13 @@ type Routes struct {
 	Dashboard  *api.DashboardHandler
 	OIDCClient *api.OIDCClientHandler
 
+	// In-app notification center (security alerts + system notices). Nil disables
+	// the /me/notifications routes.
+	Notifications *api.NotificationHandler
+	// Security center — anomalous-login list/stats + GeoIP DB status/refresh.
+	// Nil disables the /admin/security routes.
+	Security *api.SecurityHandler
+
 	AI *ai.Set
 
 	// Phase 11 — terminal personalization (snippets, command history,
@@ -371,6 +378,15 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.DELETE("/favorites/:node_id", rt.Me.RemoveFavorite)
 		me.GET("/recent-nodes", rt.Me.RecentNodes)
 		me.GET("/login-history", rt.Me.LoginHistory)
+		// In-app notification center (security alerts + system notices).
+		if rt.Notifications != nil {
+			me.GET("/notifications", rt.Notifications.List)
+			me.GET("/notifications/unread-count", rt.Notifications.UnreadCount)
+			me.GET("/notifications/stream", rt.Notifications.Stream)
+			me.POST("/notifications/read-all", rt.Notifications.MarkAllRead)
+			me.POST("/notifications/:id/read", rt.Notifications.MarkRead)
+			me.DELETE("/notifications/:id", rt.Notifications.Delete)
+		}
 		me.GET("/nodes", rt.Me.VisibleNodes)
 		me.GET("/directory", rt.AccessTree.MyDirectory)
 		me.GET("/access", rt.Dashboard.Access)
@@ -621,6 +637,16 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.GET("/audit-logs/export", perm(auth.PermAuditRead), rt.Audit.Export)
 			// M4 — tamper-evidence integrity report (hash-chain verify + checkpoints).
 			ops.GET("/audit-logs/integrity", perm(auth.PermAuditRead), rt.Audit.Integrity)
+		}
+
+		// Security center — anomalous-login list/stats + GeoIP database status and
+		// manual refresh. Reads gate on audit:read; the GeoIP refresh (outbound
+		// download) gates on system:admin.
+		if rt.Security != nil {
+			ops.GET("/admin/security/anomalies", perm(auth.PermAuditRead), rt.Security.ListAnomalies)
+			ops.GET("/admin/security/anomalies/stats", perm(auth.PermAuditRead), rt.Security.AnomalyStats)
+			ops.GET("/admin/security/geoip/status", perm(auth.PermAuditRead), rt.Security.GeoIPStatus)
+			ops.POST("/admin/security/geoip/refresh", perm(auth.PermSystemAdmin), rt.Security.GeoIPRefresh)
 		}
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
 		ops.GET("/nodes/:id/sftp/stat", rt.SFTP.Stat)

@@ -33,6 +33,7 @@ require (
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mileusna/useragent v1.3.5
 	github.com/openai/openai-go v1.12.0
+	github.com/oschwald/geoip2-golang v1.13.0
 	github.com/panjf2000/ants/v2 v2.12.0
 	github.com/pgvector/pgvector-go v0.4.0
 	github.com/pion/interceptor v0.1.45
@@ -159,6 +160,7 @@ require (
 	github.com/mozillazg/go-httpheader v0.2.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect

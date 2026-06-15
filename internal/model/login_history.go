@@ -41,14 +41,26 @@ type LoginHistory struct {
 	IP           string      `gorm:"size:64;index" json:"ip"`
 	UserAgent    string      `gorm:"size:255" json:"user_agent"`
 	GeoCountry   string      `gorm:"size:64" json:"geo_country,omitempty"`
+	GeoCountryISO string     `gorm:"size:8;index" json:"geo_country_iso,omitempty"`
+	GeoRegion    string      `gorm:"size:128" json:"geo_region,omitempty"`
 	GeoCity      string      `gorm:"size:128" json:"geo_city,omitempty"`
+	GeoLat       float64     `gorm:"" json:"geo_lat,omitempty"`
+	GeoLon       float64     `gorm:"" json:"geo_lon,omitempty"`
+	ASN          uint        `gorm:"" json:"asn,omitempty"`
+	ASNOrg       string      `gorm:"size:128" json:"asn_org,omitempty"`
 	Result       LoginResult `gorm:"size:24;index" json:"result"`
 	AuthMethod   AuthMethod  `gorm:"size:24" json:"auth_method"`
 	MFAMethod    MFAMethod   `gorm:"size:24" json:"mfa_method"`
 	OIDCProvider string      `gorm:"size:64" json:"oidc_provider,omitempty"`
 	Anomaly      bool        `gorm:"index" json:"anomaly"`
-	Reason       string      `gorm:"size:255" json:"reason,omitempty"`
-	CreatedAt    time.Time   `gorm:"index" json:"created_at"`
+	// RiskScore is the 0–100 anomaly score assigned by the detector (0 on normal
+	// or unscored rows). AnomalyReasons is a comma-separated list of machine
+	// reason codes (new_ip, new_country, new_asn, new_device, impossible_travel,
+	// brute_force) explaining why the login was flagged.
+	RiskScore      int    `gorm:"index" json:"risk_score,omitempty"`
+	AnomalyReasons string `gorm:"size:255" json:"anomaly_reasons,omitempty"`
+	Reason         string `gorm:"size:255" json:"reason,omitempty"`
+	CreatedAt      time.Time `gorm:"index" json:"created_at"`
 }
 
 func (LoginHistory) TableName() string { return "login_histories" }

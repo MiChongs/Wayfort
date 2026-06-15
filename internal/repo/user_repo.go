@@ -13,6 +13,27 @@ type UserRepo struct{ db *gorm.DB }
 
 func NewUserRepo(db *gorm.DB) *UserRepo { return &UserRepo{db: db} }
 
+// ListByPermissionCodes returns the active (non-disabled) users who can receive
+// security alerts: the legacy is_admin bootstrap accounts plus anyone whose
+// roles grant any of the given permission codes. Used to resolve "the security
+// team" as notification recipients (e.g. security:manage / audit:read /
+// system:admin holders). Results are de-duplicated by the SQL DISTINCT on id.
+func (r *UserRepo) ListByPermissionCodes(ctx context.Context, codes []string) ([]model.User, error) {
+	q := r.db.WithContext(ctx).Model(&model.User{}).Where("disabled = ?", false)
+	if len(codes) == 0 {
+		q = q.Where("is_admin = ?", true)
+	} else {
+		sub := r.db.Model(&model.UserRole{}).
+			Select("user_roles.user_id").
+			Joins("JOIN role_permissions ON role_permissions.role_id = user_roles.role_id").
+			Where("role_permissions.permission_code IN ?", codes)
+		q = q.Where("is_admin = ? OR id IN (?)", true, sub)
+	}
+	var out []model.User
+	err := q.Order("id").Find(&out).Error
+	return out, err
+}
+
 func (r *UserRepo) FindByUsername(ctx context.Context, username string) (*model.User, error) {
 	var u model.User
 	err := r.db.WithContext(ctx).Where("username = ?", username).First(&u).Error

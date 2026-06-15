@@ -23,6 +23,12 @@ const (
 	AuditFileWrite        AuditEventKind = "file.write"
 	AuditLogin            AuditEventKind = "auth.login"
 	AuditLoginFailed      AuditEventKind = "auth.login_failed"
+	// AuditAnomalyLogin is a successful login the anomaly detector flagged
+	// (new country / device / impossible travel …). AuditBruteForce marks a
+	// detected burst of failed attempts against an account or from one IP. Both
+	// fold into the 认证 lane and are treated as abnormal.
+	AuditAnomalyLogin AuditEventKind = "auth.anomaly"
+	AuditBruteForce   AuditEventKind = "auth.bruteforce"
 	AuditAnonymousLaunch  AuditEventKind = "anonymous.launch"
 	AuditAnonymousReap    AuditEventKind = "anonymous.reap"
 	AuditPortForwardOpen  AuditEventKind = "portforward.open"
@@ -176,7 +182,7 @@ var auditCategoryKinds = map[string][]string{
 		string(AuditFileUpload), string(AuditFileDownload), string(AuditFileDelete),
 		string(AuditFileRename), string(AuditFileChmod), string(AuditFileMkdir), string(AuditFileWrite),
 	},
-	AuditCatAuth: {string(AuditLogin), string(AuditLoginFailed)},
+	AuditCatAuth: {string(AuditLogin), string(AuditLoginFailed), string(AuditAnomalyLogin), string(AuditBruteForce)},
 	AuditCatOps: {
 		string(AuditFirewallChange), string(AuditDockerAction), string(AuditServiceAction),
 		string(AuditProcessAction), string(AuditCronChange), string(AuditPackageAction),
@@ -219,7 +225,8 @@ func AuditCategoryOf(kind string) string {
 // errors, destructive deletes, and admin force-offs. The list backs both the
 // per-row severity tag and the SQL predicate behind the "仅异常" filter.
 var AuditAbnormalKinds = []string{
-	string(AuditLoginFailed), string(AuditGraphicalError), string(AuditSessionTerminate),
+	string(AuditLoginFailed), string(AuditAnomalyLogin), string(AuditBruteForce),
+	string(AuditGraphicalError), string(AuditSessionTerminate),
 	string(AuditFileDelete), string(AuditOSSDelete),
 }
 

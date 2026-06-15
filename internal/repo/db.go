@@ -136,6 +136,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.UserRecoveryCode{},
 		&model.WebauthnCredential{},
 		&model.LoginHistory{},
+		&model.Notification{}, // in-app notification center (security events + alerts)
 		&model.OIDCClient{},
 
 		// AI assistant

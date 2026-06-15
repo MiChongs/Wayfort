@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -12,6 +13,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/geoip"
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
@@ -68,10 +70,16 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	user, err := p.Login(c.Request.Context(), payload)
 	if err != nil {
 		count, locked, _ := h.Lockout.RecordFailure(c.Request.Context(), payload.Username)
-		if locked && user == nil {
-			// Try to find user to email them.
-			if u, _ := h.Users.FindByUsername(c.Request.Context(), payload.Username); u != nil && u.Email != "" && h.Mailer != nil {
-				h.Mailer.Send(notify.AccountLockedMessage(u.Email, u.Username, int(h.Lockout.Duration.Minutes())))
+		if locked {
+			// Notify the locked-out account: the dispatcher delivers both an in-app
+			// notification and an email; without it, fall back to a plain email.
+			if u, _ := h.Users.FindByUsername(c.Request.Context(), payload.Username); u != nil {
+				mins := int(h.Lockout.Duration.Minutes())
+				if h.Anomaly != nil {
+					go h.Anomaly.NotifyLocked(u, mins)
+				} else if u.Email != "" && h.Mailer != nil {
+					h.Mailer.Send(notify.AccountLockedMessage(u.Email, u.Username, mins))
+				}
 			}
 		}
 		_ = count
@@ -501,61 +509,114 @@ func (h *AuthHandler) finalizeLogin(c *gin.Context, user *model.User, am model.A
 	if h.Blocklist != nil {
 		_ = h.Blocklist.Track(c.Request.Context(), user.ID, claimsJTI(pair.AccessToken, h.Issuer), h.Issuer.AccessTTL())
 	}
-	_ = h.Users.RecordLoginSuccess(c.Request.Context(), user.ID, c.ClientIP(), c.GetHeader("User-Agent"))
-	anomalous := false
+	ip := c.ClientIP()
+	ua := c.GetHeader("User-Agent")
+	_ = h.Users.RecordLoginSuccess(c.Request.Context(), user.ID, ip, ua)
+
+	// Score the login: resolves geo (always) + flags anomalies + fans security
+	// notifications. Returns a zero Signal when the detector is unwired.
+	var sig anomaly.Signal
 	if h.Anomaly != nil {
-		anomalous = h.Anomaly.Inspect(c.Request.Context(), user, c.ClientIP(), c.GetHeader("User-Agent"))
+		sig = h.Anomaly.Inspect(c.Request.Context(), user, ip, ua)
 	}
-	_ = h.History.Insert(c.Request.Context(), &model.LoginHistory{
+	row := &model.LoginHistory{
 		UserID:    &user.ID,
 		Username:  user.Username,
-		IP:        c.ClientIP(),
-		UserAgent: c.GetHeader("User-Agent"),
+		IP:        ip,
+		UserAgent: ua,
 		Result:    model.LoginSuccess,
 		AuthMethod: am, MFAMethod: mm,
-		Anomaly:   anomalous,
-		CreatedAt: time.Now(),
-	})
+		Anomaly:        sig.Anomalous,
+		RiskScore:      sig.Score,
+		AnomalyReasons: sig.ReasonsCSV(),
+		CreatedAt:      time.Now(),
+	}
+	applyGeo(row, sig.Location)
+	_ = h.History.Insert(c.Request.Context(), row)
+
 	if h.Writer != nil {
 		payload := "method=" + string(am)
 		if mm != model.MFAMethodNone {
 			payload += " mfa=" + string(mm)
 		}
-		if anomalous {
-			payload += " anomaly=1"
+		if sig.Location.Country != "" {
+			payload += " country=" + sig.Location.Country
+		}
+		if sig.Anomalous {
+			payload += " anomaly=1 score=" + strconv.Itoa(sig.Score)
 		}
 		h.Writer.Log(model.AuditLog{
 			Kind: model.AuditLogin, UserID: user.ID, Username: user.Username,
-			ClientIP: c.ClientIP(), Payload: payload,
+			ClientIP: ip, Payload: payload,
 		})
+		// A distinct, abnormal event for the audit center's 安全 surface so an
+		// anomalous login is more than a sub-flag of a routine login row.
+		if sig.Anomalous {
+			h.Writer.Log(model.AuditLog{
+				Kind: model.AuditAnomalyLogin, UserID: user.ID, Username: user.Username,
+				ClientIP: ip,
+				Payload:  "score=" + strconv.Itoa(sig.Score) + " reasons=" + sig.ReasonsCSV() + " loc=" + anomaly.FormatLocation(sig.Location),
+			})
+		}
 	}
 	return pair
+}
+
+// applyGeo copies a resolved geo location onto a login-history row.
+func applyGeo(row *model.LoginHistory, loc geoip.Location) {
+	row.GeoCountry = loc.Country
+	row.GeoCountryISO = loc.CountryISO
+	row.GeoRegion = loc.Region
+	row.GeoCity = loc.City
+	row.GeoLat = loc.Latitude
+	row.GeoLon = loc.Longitude
+	row.ASN = loc.ASN
+	row.ASNOrg = loc.ASNOrg
 }
 
 func (h *AuthHandler) recordHistory(c *gin.Context, userID *uint64, username string, result model.LoginResult, am model.AuthMethod, mm model.MFAMethod, reason string) {
 	if h.History == nil {
 		return
 	}
-	_ = h.History.Insert(c.Request.Context(), &model.LoginHistory{
+	ip := c.ClientIP()
+	row := &model.LoginHistory{
 		UserID:    userID,
 		Username:  username,
-		IP:        c.ClientIP(),
+		IP:        ip,
 		UserAgent: c.GetHeader("User-Agent"),
 		Result:    result,
 		AuthMethod: am, MFAMethod: mm,
 		Reason:    reason,
 		CreatedAt: time.Now(),
-	})
+	}
+	if h.Anomaly != nil {
+		applyGeo(row, h.Anomaly.Geo(ip))
+	}
+	_ = h.History.Insert(c.Request.Context(), row)
 	// Mirror failed / locked attempts into the audit trail's 认证 lane.
-	if h.Writer != nil && (result == model.LoginFailed || result == model.LoginLocked) {
+	if h.Writer != nil && (result == model.LoginFailed || result == model.LoginLocked || result == model.LoginMFAFailed) {
 		var uid uint64
 		if userID != nil {
 			uid = *userID
 		}
 		h.Writer.Log(model.AuditLog{
 			Kind: model.AuditLoginFailed, UserID: uid, Username: username,
-			ClientIP: c.ClientIP(), Payload: "result=" + string(result) + " reason=" + reason,
+			ClientIP: ip, Payload: "result=" + string(result) + " reason=" + reason,
 		})
+	}
+	// Brute-force / credential-stuffing watch on failed attempts. InspectFailure
+	// alerts (and emits) at most once per window; it fans notifications itself.
+	if h.Anomaly != nil && (result == model.LoginFailed || result == model.LoginMFAFailed) {
+		if alert, count := h.Anomaly.InspectFailure(c.Request.Context(), username, ip); alert && h.Writer != nil {
+			var uid uint64
+			if userID != nil {
+				uid = *userID
+			}
+			_ = h.Writer.LogCritical(c.Request.Context(), model.AuditLog{
+				Kind: model.AuditBruteForce, UserID: uid, Username: username,
+				ClientIP: ip, Payload: "count=" + strconv.Itoa(count) + " window",
+			})
+		}
 	}
 }
 

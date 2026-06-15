@@ -32,6 +32,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/capture"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/jumpserver-anonymous/internal/geoip"
 	"github.com/michongs/jumpserver-anonymous/internal/cron"
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
@@ -52,6 +53,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/mfa"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/nettools"
+	"github.com/michongs/jumpserver-anonymous/internal/notifications"
 	"github.com/michongs/jumpserver-anonymous/internal/notify"
 	"github.com/michongs/jumpserver-anonymous/internal/office"
 	"github.com/michongs/jumpserver-anonymous/internal/passkey"
@@ -254,6 +256,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	accessTemplateRepo := repo.NewAccessTemplateRepo(db)
 	favoriteRepo := repo.NewFavoriteRepo(db)
 	recentRepo := repo.NewRecentRepo(db)
+	notifRepo := repo.NewNotificationRepo(db)
 
 	bootstrap, err := bootstrapAdmin(rootCtx, userRepo, cfg.Auth)
 	if err != nil {
@@ -312,9 +315,23 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			passkeySvc = ps
 		}
 	}
+	// GeoIP — IP→location for login history + the anomaly detector's geo rules.
+	// Opens any staged .mmdb at startup; the errgroup worker keeps it fresh when
+	// auto-update is enabled. Lookups degrade to "no geo" when no database loads.
+	geoSvc := geoip.New(geoipConfig(cfg.GeoIP), logger)
+	// NOTE: geoSvc.Close() is deferred until AFTER g.Wait() returns (see end of
+	// run) — closing the readers eagerly here would race in-flight Lookup() calls
+	// on the auth path and the background updater during shutdown.
+
+	// Notification center: realtime hub (SSE) + dispatcher (persist in-app rows,
+	// resolve recipients, send email). Backs security alerts to the affected user
+	// and the security team.
+	notifHub := notifications.NewHub()
+	notifDispatcher := notifications.NewDispatcher(notifRepo, userRepo, mailer, notifHub, logger)
+
 	var anomalyDetector *anomaly.Detector
 	if cfg.Auth.Anomaly.Enabled {
-		anomalyDetector = anomaly.New(historyRepo, mailer, logger, cfg.Auth.Anomaly.NotifyEmail)
+		anomalyDetector = anomaly.New(rootCtx, historyRepo, notifDispatcher, geoSvc, logger, cfg.Auth.Anomaly)
 	}
 	assetResolver := asset.NewResolver(grantRepo, groupRepo, deptRepo, roleRepo, userRepo, assetGroupRepo, tagRepo, nodeRepo, accessFolderRepo, accessItemRepo, rc.Client())
 
@@ -628,6 +645,8 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Favorites: favoriteRepo, Recent: recentRepo,
 			History: historyRepo, Nodes: nodeRepo, Tags: tagRepo, Resolver: assetResolver,
 		},
+		Notifications: &api.NotificationHandler{Repo: notifRepo, Hub: notifHub},
+		Security:      &api.SecurityHandler{History: historyRepo, Geo: geoSvc},
 		// Phase 14 switched OIDC client storage to the per-owner
 		// envelope adapter (oidcVault) so its secrets get rewrapped on
 		// rotation alongside credentials. Pre-Phase-14 code path used
@@ -848,6 +867,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			SSHTimeout:   c.Insights.SSHTimeout,
 			ProcessLimit: c.Insights.ProcessLimit,
 		})
+	})
+	// Live-reload the GeoIP service + anomaly detector tuning from the settings
+	// center so an operator can flip geoip.auto_update / anomaly thresholds
+	// without a restart.
+	settingsCenter.OnReload(func(c *config.Config) {
+		geoSvc.ApplyConfig(geoipConfig(c.GeoIP))
+		if anomalyDetector != nil {
+			anomalyDetector.ApplyConfig(c.Auth.Anomaly)
+		}
 	})
 
 	// Plan 17 — wire the new desktop subsystem (FreeRDP worker abstraction
@@ -1145,6 +1173,9 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if mailer != nil {
 		g.Go(func() error { return mailer.Run(gctx) })
 	}
+	// GeoIP database auto-updater. Idles harmlessly when disabled / auto-update
+	// off; re-checks staleness on a daily-bounded cadence otherwise.
+	g.Go(func() error { return geoSvc.Run(gctx) })
 	if aiSet != nil && aiSet.Enabled {
 		g.Go(func() error { return aiSet.Janitor(gctx) })
 		if cfg.AI.HealthProbeEnabled {
@@ -1191,8 +1222,12 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 
 	logger.Info("jumpserver started", zap.String("addr", cfg.Server.Addr))
 	printBootstrapBanner(bootstrap, cfg.Server.Addr)
-	if err := g.Wait(); err != nil && err != context.Canceled {
-		return err
+	waitErr := g.Wait()
+	// Every background worker (the geoip updater included) and the HTTP server
+	// have now exited, so no Lookup()/Run() can race the reader close.
+	geoSvc.Close()
+	if waitErr != nil && waitErr != context.Canceled {
+		return waitErr
 	}
 	return nil
 }
@@ -1381,6 +1416,23 @@ func normaliseAddr(addr string) string {
 
 // seedRBAC inserts the permission catalogue and built-in roles, then attaches
 // the admin role to the bootstrap user. Safe to run repeatedly.
+// geoipConfig maps the boot/runtime config shape onto the geoip package's own
+// config type (kept separate so internal/geoip has no dependency on config).
+func geoipConfig(c config.GeoIPConfig) geoip.Config {
+	return geoip.Config{
+		Enabled:         c.Enabled,
+		DBPath:          c.DBPath,
+		ASNDBPath:       c.ASNDBPath,
+		AutoUpdate:      c.AutoUpdate,
+		UpdateURL:       c.UpdateURL,
+		ASNUpdateURL:    c.ASNUpdateURL,
+		UpdateInterval:  c.UpdateInterval,
+		DownloadTimeout: c.DownloadTimeout,
+		Language:        c.Language,
+		AllowPrivateURL: c.AllowPrivateURL,
+	}
+}
+
 func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, bootstrapAdmin string) error {
 	perms := make([]model.Permission, 0, len(auth.AllPermissions))
 	for _, p := range auth.AllPermissions {

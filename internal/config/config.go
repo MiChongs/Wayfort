@@ -32,6 +32,32 @@ type Config struct {
 	Agent     AgentConfig     `mapstructure:"agent"`
 	Guard     GuardConfig     `mapstructure:"guard"`
 	Metrics   MetricsConfig   `mapstructure:"metrics"`
+	GeoIP     GeoIPConfig     `mapstructure:"geoip"`
+}
+
+// GeoIPConfig drives IP→location resolution (login history "where from" + the
+// anomaly detector's new-country / impossible-travel rules). Lookups are served
+// from a MaxMind-format .mmdb held in memory; the file can be staged manually or
+// kept current by the built-in auto-updater.
+//
+// AutoUpdate defaults OFF so a fresh deploy makes no surprise outbound request
+// (bastions are often air-gapped) — the source URLs are pre-filled with the
+// keyless monthly db-ip "lite" databases, so enabling it (or hitting the admin
+// "update now" endpoint) is a single switch. The {year}/{month} tokens in the
+// URL are substituted with the current UTC date at download time.
+type GeoIPConfig struct {
+	Enabled         bool          `mapstructure:"enabled"`
+	DBPath          string        `mapstructure:"db_path"`          // city/country .mmdb
+	ASNDBPath       string        `mapstructure:"asn_db_path"`      // optional ASN .mmdb
+	AutoUpdate      bool          `mapstructure:"auto_update"`      // download + refresh on a schedule
+	UpdateURL       string        `mapstructure:"update_url"`       // city db source (.mmdb / .gz / .tar.gz)
+	ASNUpdateURL    string        `mapstructure:"asn_update_url"`   // ASN db source
+	UpdateInterval  time.Duration `mapstructure:"update_interval"`  // staleness threshold + check cadence
+	DownloadTimeout time.Duration `mapstructure:"download_timeout"` // per-download HTTP timeout
+	Language        string        `mapstructure:"language"`         // preferred place-name language
+	// AllowPrivateURL relaxes the download SSRF guard to permit a private /
+	// loopback address — set true ONLY for a legitimate internal GeoIP mirror.
+	AllowPrivateURL bool `mapstructure:"allow_private_url"`
 }
 
 // MetricsConfig controls the Prometheus /metrics endpoint (security-architecture
@@ -494,9 +520,34 @@ type PasskeyConfig struct {
 	DiscoverableLogin bool     `mapstructure:"discoverable_login"`
 }
 
+// AnomalyConfig tunes the login anomaly detector. The detector compares each
+// successful login against the user's recent history across several signals (new
+// IP / country / ASN / device + impossible travel), assigns a 0–100 risk score,
+// and flags the login when the score crosses ScoreThreshold (or on an
+// always-critical signal like impossible travel). Failed-login bursts are scored
+// separately for brute-force / credential-stuffing alerting.
 type AnomalyConfig struct {
 	Enabled     bool `mapstructure:"enabled"`
-	NotifyEmail bool `mapstructure:"notify_email"`
+	NotifyEmail bool `mapstructure:"notify_email"` // email the affected user on an anomalous login
+	// NotifyAdmins also routes anomaly + brute-force alerts to the security team
+	// (holders of security:manage / audit:read / system:admin) via in-app
+	// notifications and, when an email channel exists, email.
+	NotifyAdmins bool `mapstructure:"notify_admins"`
+	// ScoreThreshold is the minimum risk score (0–100) that flags a login as
+	// anomalous. Default 50.
+	ScoreThreshold int `mapstructure:"score_threshold"`
+	// HistoryWindow is how many recent successful logins to compare against.
+	// Default 30.
+	HistoryWindow int `mapstructure:"history_window"`
+	// ImpossibleTravelKmh is the ground speed above which the gap between two
+	// consecutive logins is physically implausible (always flagged). Default 900
+	// (roughly a jet airliner); 0 disables the rule.
+	ImpossibleTravelKmh float64 `mapstructure:"impossible_travel_kmh"`
+	// BruteForceThreshold is the number of failed attempts (per username or IP)
+	// within BruteForceWindow that raises a brute-force alert. Default 8.
+	BruteForceThreshold int `mapstructure:"brute_force_threshold"`
+	// BruteForceWindow bounds the failed-attempt count. Default 10m.
+	BruteForceWindow time.Duration `mapstructure:"brute_force_window"`
 }
 
 type NotifyConfig struct {
@@ -669,6 +720,28 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.passkey.discoverable_login", true)
 	v.SetDefault("auth.anomaly.enabled", true)
 	v.SetDefault("auth.anomaly.notify_email", false)
+	v.SetDefault("auth.anomaly.notify_admins", true)
+	v.SetDefault("auth.anomaly.score_threshold", 50)
+	v.SetDefault("auth.anomaly.history_window", 30)
+	v.SetDefault("auth.anomaly.impossible_travel_kmh", 900.0)
+	v.SetDefault("auth.anomaly.brute_force_threshold", 8)
+	v.SetDefault("auth.anomaly.brute_force_window", 10*time.Minute)
+
+	// GeoIP — IP→location for login history + anomaly geo rules. Lookups on by
+	// default (served from a local .mmdb if present; degrades to no-geo if not).
+	// Auto-update OFF by default (no surprise egress on a fresh/air-gapped boot);
+	// the keyless monthly db-ip "lite" sources are pre-filled so flipping
+	// auto_update on — or calling the admin "update now" endpoint — just works.
+	v.SetDefault("geoip.enabled", true)
+	v.SetDefault("geoip.db_path", "./var/geoip/city.mmdb")
+	v.SetDefault("geoip.asn_db_path", "./var/geoip/asn.mmdb")
+	v.SetDefault("geoip.auto_update", false)
+	v.SetDefault("geoip.update_url", "https://download.db-ip.com/free/dbip-city-lite-{year}-{month}.mmdb.gz")
+	v.SetDefault("geoip.asn_update_url", "https://download.db-ip.com/free/dbip-asn-lite-{year}-{month}.mmdb.gz")
+	v.SetDefault("geoip.update_interval", 168*time.Hour)
+	v.SetDefault("geoip.download_timeout", 2*time.Minute)
+	v.SetDefault("geoip.language", "zh-CN")
+	v.SetDefault("geoip.allow_private_url", false)
 	v.SetDefault("notify.worker.chan_size", 256)
 	v.SetDefault("notify.worker.max_retries", 3)
 	v.SetDefault("notify.smtp.tls", "starttls")
