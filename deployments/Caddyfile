@@ -1,0 +1,42 @@
+# Wayfort 单一入口反向代理(docker-compose.prod.yaml 的 caddy 服务挂载本文件)。
+#
+# 所有流量从这里进出,浏览器只需访问一个源(同源),因此:
+#   · WebSocket(全部在 /api/v1/* 下)与后端同源,绕开跨源 WS 校验;
+#   · 浏览器经构建期注入的 NEXT_PUBLIC_BACKEND_WS_URL 指向本入口(见 .env 的
+#     WS_SCHEME/PUBLIC_HOST/WEB_PORT),Caddy 把 /api/v1/* 透传给后端并自动升级 Upgrade。
+#
+# 路由:
+#   /api/v1/*  → 后端(wayfort:8080):所有 WebSocket(/api/v1/ws/*)。
+#   其余        → 前端(web:3000,Next.js):页面 + 它自身经 /api/proxy/* 服务端转发 REST/SSE。
+#
+# 启用 HTTPS(可选):把下面的站点地址 `:80` 改成你的域名(如 bastion.example.com),
+# Caddy 会自动签发并续期 Let's Encrypt 证书;同时在 compose 暴露 443 端口,
+# 并把 .env 的 WS_SCHEME 改为 wss、WEB_PORT 改为 443、PUBLIC_HOST 改为该域名后重新部署。
+
+{
+	# 关闭管理端点(容器内无需远程管理 API),减小受攻击面。
+	admin off
+}
+
+:80 {
+	# 后端直连:所有 WebSocket 与直达后端的 /api/v1/* 请求。Caddy 自动透传 WS Upgrade。
+	@backend path /api/v1/*
+	handle @backend {
+		reverse_proxy wayfort:8080
+	}
+
+	# ironrdp:Devolutions Gateway 子进程(在 wayfort 容器内监听 7171)的 /jet/* 流量
+	# (含 WebSocket)。浏览器经构建/运行期注入的 advertised_url 命中这里。
+	@jet path /jet/*
+	handle @jet {
+		reverse_proxy wayfort:7171
+	}
+
+	# 其余全部交给 Next.js 前端(它再经 /api/proxy/* 把 REST/SSE 转发到后端)。
+	handle {
+		reverse_proxy web:3000
+	}
+
+	encode zstd gzip
+	# 不设 request_body 限制 → Caddy 默认不限请求体大小,SFTP/OSS 大文件上传不受限。
+}

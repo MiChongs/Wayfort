@@ -1,0 +1,150 @@
+# Wayfort 一键部署 —— 生产编排(完整栈)。
+#
+# 用根目录的 deploy.sh(Linux/macOS)或 deploy.ps1(Windows)拉起;它们会:
+#   1) 检查 Docker 与 Docker Compose v2;
+#   2) 首次运行生成 deployments/.env(随机密钥 + 管理员密码,已 gitignore);
+#   3) docker compose -f deployments/docker-compose.prod.yaml --env-file deployments/.env -p wayfort up -d --build
+#
+# 直接用 compose 也可(先备好 deployments/.env,参照 deployments/.env.example)。
+#
+# 拓扑(单一入口):caddy 是唯一对宿主暴露端口的服务;postgres/redis/guacd/wayfort/web
+# 仅在内部网络,互相用服务名解析。浏览器只访问 http://${PUBLIC_HOST}:${WEB_PORT}。
+#
+# 可选叠加(override 文件,deploy 脚本的 --office / --sandbox 自动追加 -f):
+#   docker-compose.office.yaml    → 启用 onlyoffice(在线 Office 编辑,镜像大、首启慢)
+#   docker-compose.sandbox.yaml   → 给后端挂载 docker.sock(匿名沙箱 / DB CLI 容器;有安全权衡)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wayfort
+      POSTGRES_USER: wayfort
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deployments/.env (run deploy.sh/deploy.ps1)}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wayfort -d wayfort"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --save
+      - "60 100"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "noeviction"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Apache Guacamole 协议守护进程 —— 为旧版 /rdp(RDP/VNC)桥接提供能力。
+  guacd:
+    image: guacamole/guacd:1.5.5
+    restart: unless-stopped
+
+  # ───────────────────────── 后端网关 ─────────────────────────
+  wayfort:
+    build:
+      context: ..
+      # 完整 WebRDP 镜像:编译 freerdp-worker(libfreerdp3 + libvpx/libaom/turbojpeg)
+      # 并内置 Devolutions Gateway(ironrdp)。见 deployments/Dockerfile.webrdp。
+      dockerfile: deployments/Dockerfile.webrdp
+      args:
+        # Devolutions Gateway 版本,默认 2026.2.2(直连 release CDN,跳过易失败的「查最新」API)。
+        # 改 deployments/.env 的 DGW_VERSION 可覆盖;留空才会回退到查 GitHub 最新。
+        DGW_VERSION: "${DGW_VERSION:-2026.2.2}"
+    image: wayfort/gateway:webrdp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 密钥/接线经 WAYFORT_* 覆盖挂载的 config.docker.yaml(viper 前缀 WAYFORT_、. → _)。
+      WAYFORT_DB_DSN: "host=postgres user=wayfort password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deployments/.env} dbname=wayfort port=5432 sslmode=disable"
+      WAYFORT_REDIS_ADDR: "redis:6379"
+      WAYFORT_AUTH_JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in deployments/.env}
+      WAYFORT_AUTH_BOOTSTRAP_PASSWORD: ${ADMIN_PASSWORD:-}
+      WAYFORT_OFFICE_JWT_SECRET: ${OFFICE_JWT_SECRET:-}
+      # ironrdp(Devolutions Gateway)浏览器侧地址:经 caddy 单一入口的 /jet/* 到达。
+      # 运行期注入(非构建期),改 PUBLIC_HOST 后无需重建镜像,重跑 deploy 即生效。
+      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_ADVERTISED_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}/jet/rdp"
+      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_EXTERNAL_URL: "${PUBLIC_SCHEME:-http}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}"
+    expose:
+      - "8080"   # 网关 / WebSocket
+      - "7171"   # Devolutions Gateway 子进程(供 caddy 内网访问)
+    volumes:
+      # 部署接线配置(只读)+ 持久卷(解封口令 keystore.unseal + 会话录制 + Devolutions 配置)。
+      - ./config/config.docker.yaml:/app/configs/config.yaml:ro
+      - wayfort_var:/app/var
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  # ───────────────────────── 前端(Next.js Node 服务)─────────────────────────
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile
+      args:
+        # 浏览器直连后端 WebSocket 的地址(构建期注入);指向 caddy 单一入口(同源)。
+        # 改 PUBLIC_HOST/WEB_PORT/WS_SCHEME 后必须重建本镜像(deploy 的 up/update 自带 --build)。
+        NEXT_PUBLIC_BACKEND_WS_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}"
+        NEXT_PUBLIC_APP_VERSION: "${APP_VERSION:-docker}"
+    image: wayfort/web:local
+    depends_on:
+      # 等后端「健康」(/healthz 通过 = 迁移+引导完成)再起前端,避免早期请求打空。
+      wayfort:
+        condition: service_healthy
+    environment:
+      # 服务端 REST/SSE 反代目标(容器内网,非浏览器可见)。
+      BACKEND_HTTP_URL: "http://wayfort:8080"
+      NODE_ENV: "production"
+    restart: unless-stopped
+
+  # ───────────────────────── 单一入口反向代理 ─────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      wayfort:
+        condition: service_started
+      web:
+        condition: service_started
+    ports:
+      # 唯一对宿主暴露的端口。浏览器访问 http://${PUBLIC_HOST}:${WEB_PORT}
+      - "${WEB_PORT:-18080}:80"
+      # 启用 HTTPS 时取消注释(并按 Caddyfile 注释把站点地址改为你的域名):
+      # - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+volumes:
+  pg_data: {}
+  redis_data: {}
+  wayfort_var: {}
+  caddy_data: {}
+  caddy_config: {}

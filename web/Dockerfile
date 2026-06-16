@@ -14,9 +14,17 @@ COPY scripts ./scripts
 RUN pnpm install --frozen-lockfile
 
 FROM base AS build
+# Client-visible env is baked at BUILD time (NEXT_PUBLIC_*). The browser dials
+# WebSockets directly at NEXT_PUBLIC_BACKEND_WS_URL; the prod stack points it at
+# the Caddy single-origin entrypoint. Changing the public host/port requires a
+# rebuild — `deploy.sh/deploy.ps1 up|update` pass --build for exactly this reason.
+ARG NEXT_PUBLIC_BACKEND_WS_URL
+ARG NEXT_PUBLIC_APP_VERSION=docker
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_BACKEND_WS_URL=$NEXT_PUBLIC_BACKEND_WS_URL
+ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 RUN pnpm run build
 
 FROM base AS runtime
@@ -28,4 +36,10 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/next.config.mjs ./next.config.mjs
 EXPOSE 3000
-CMD ["pnpm", "start"]
+# Start Next directly (NOT `pnpm start`): pnpm 11's verify-deps-before-run would
+# re-check the copied node_modules, auto-run `pnpm install`, and fire the
+# `postinstall` (node scripts/copy-guacamole.mjs) — which fails because the
+# runtime layer intentionally omits scripts/. `next start` is exactly what
+# `pnpm start` runs, minus pnpm's pre-run dep check. -H 0.0.0.0 so Caddy (a
+# separate container) can reach web:3000.
+CMD ["node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]

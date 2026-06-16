@@ -13,6 +13,7 @@ import { ThemeProvider as NextThemesProvider } from "next-themes"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { ConfirmDialogHost } from "@/components/common/confirm-dialog"
+import { SplashScreen } from "@/components/splash/splash-screen"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = React.useState(
@@ -43,6 +44,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
           */}
           <Toaster />
           <ConfirmDialogHost />
+          {/* 全局启动动画 —— 挂在 next-themes 之内,故 bg-background 等 token 随主题解析;
+              fixed inset-0 z-[9999] 覆盖所有路由组,每个浏览器会话仅展示一次。 */}
+          <SplashScreen />
         </TooltipProvider>
         <ReactQueryDevtools initialIsOpen={false} />
       </QueryClientProvider>

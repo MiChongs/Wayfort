@@ -29,7 +29,7 @@ const cormorant = Cormorant_Garamond({
 })
 
 export const metadata: Metadata = {
-  title: "JumpServer Anonymous",
+  title: "Wayfort",
   description: "现代化网页跳板机 + 多协议网关 + AI 运维助手",
   // Point the icon at the bundled SVG so browsers use it instead of probing the
   // non-existent /favicon.ico (which 404s on every page load).
@@ -49,6 +49,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           (app: main; workspace: internal; auth: overflow-y-auto). Fixed-position
           elements escape this overflow, so toasts/dialogs still render. */}
       <body className="font-sans antialiased h-full overflow-hidden bg-background text-foreground">
+        {/* 启动动画抗闪烁:预水合内联脚本——若本会话尚未展示过启动动画,在 React 接管前
+            就给 <html> 打上 data-splash-pending,由 globals.css 的 ::before 立刻铺满
+            bg-background,杜绝冷启动时底层应用闪现。SplashScreen 挂载后下一帧移除该属性;
+            脚本另设 5s 兜底移除,确保任何异常下都不会永久遮挡。see splash-screen.tsx */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html:
+              "(function(){try{var k='wayfort:splash:v1';if(!sessionStorage.getItem(k)){var e=document.documentElement;e.setAttribute('data-splash-pending','');setTimeout(function(){e.removeAttribute('data-splash-pending')},5000);}}catch(e){}})();",
+          }}
+        />
         <Providers>{children}</Providers>
       </body>
     </html>

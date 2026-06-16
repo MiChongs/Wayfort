@@ -1,0 +1,17 @@
+# 叠加:匿名沙箱 + DB CLI 容器。用 deploy.sh/deploy.ps1 的 --sandbox 启用。
+#
+# ⚠️ 安全权衡:这两项特性靠后端调用 Docker 来即时拉起/销毁一次性容器,因此必须把宿主
+#    的 docker.sock 挂进后端容器。挂载 docker.sock ≈ 授予后端容器宿主 root 等价权限。
+#    为让非 root 后端用户访问该 socket,这里把后端以 root 运行(user: "0:0")。
+#    仅在你明确需要「无需注册的一次性沙箱 / 容器化 DB 客户端」且信任部署环境时启用。
+#
+# 等价于:docker compose -f docker-compose.prod.yaml -f docker-compose.sandbox.yaml ... up -d
+
+services:
+  wayfort:
+    user: "0:0"
+    environment:
+      WAYFORT_ANONYMOUS_ENABLED: "true"
+      WAYFORT_PROTOCOLS_DBCLI_ENABLED: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
