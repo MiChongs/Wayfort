@@ -14,9 +14,17 @@ COPY scripts ./scripts
 RUN pnpm install --frozen-lockfile
 
 FROM base AS build
+# Client-visible env is baked at BUILD time (NEXT_PUBLIC_*). The browser dials
+# WebSockets directly at NEXT_PUBLIC_BACKEND_WS_URL; the prod stack points it at
+# the Caddy single-origin entrypoint. Changing the public host/port requires a
+# rebuild — `deploy.sh/deploy.ps1 up|update` pass --build for exactly this reason.
+ARG NEXT_PUBLIC_BACKEND_WS_URL
+ARG NEXT_PUBLIC_APP_VERSION=docker
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV NEXT_PUBLIC_BACKEND_WS_URL=$NEXT_PUBLIC_BACKEND_WS_URL
+ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 RUN pnpm run build
 
 FROM base AS runtime

@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1
+#
+# 完整 WebRDP 后端镜像 —— 与精简版 deployments/Dockerfile(alpine,仅网关)不同,
+# 这里**完整编译并内置**新版桌面所需的全部原生组件:
+#   · freerdp-worker:CGO + libfreerdp3 + libfreerdp-client3 + winpr3 + libvpx(VP8/VP9)
+#     + libaom(AV1)+ libturbojpeg(SIMD JPEG)—— 与 scripts/build-worker-linux.sh 同一套依赖。
+#   · Devolutions Gateway(ironrdp 后端):从上游 Release 下载的 glibc Rust 二进制并内置。
+# 因 Devolutions 二进制是 glibc ELF,基础镜像必须是 Debian(glibc),不能用 alpine(musl)。
+# 需要 freerdp **3.x** 的 apt 包,故用 Debian trixie(13);bookworm/12 只有 freerdp2。
+#
+# 构建参数:
+#   DGW_VERSION  固定 Devolutions Gateway 版本(留空=取 GitHub 最新;CI 限流时建议固定)。
+
+# ───────────── build:Go 网关 + CGO freerdp-worker + 下载 Devolutions Gateway ─────────────
+FROM golang:1.26-trixie AS build
+
+# FreeRDP 3.x + WebRTC 编解码器 + SIMD JPEG —— freerdp-worker 经 pkg-config 链接的全部模块。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
+        pkg-config build-essential ca-certificates curl file bash \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+# 网关:纯 Go(关 CGO → 静态、体积小)。
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/wayfort ./cmd/wayfort
+
+# freerdp-worker:开 CGO + -tags freerdp。先用 pkg-config 自检,缺包即列出已装模块再退出。
+RUN pkg-config --exists freerdp3 freerdp-client3 winpr3 vpx aom libturbojpeg \
+      || { echo "ERROR: freerdp-worker 缺少 pkg-config 模块;已安装:"; pkg-config --list-all | sort; exit 1; }; \
+    CGO_ENABLED=1 go build -tags freerdp -trimpath -o /out/freerdp-worker ./cmd/freerdp-worker
+
+# Devolutions Gateway(ironrdp):上游 Release 是直接的 ELF 二进制,脚本仅 curl 下载 + chmod。
+ARG DGW_VERSION=
+RUN INSTALL_PREFIX=/out/devolutions-gateway DGW_VERSION="${DGW_VERSION}" \
+        bash scripts/install-devolutions-gateway-linux.sh
+
+# ───────────── runtime:glibc + freerdp3 运行时库 + 三个二进制 ─────────────
+FROM debian:trixie-slim AS runtime
+
+# 安装运行时共享库。这里直接装与 build 同一套 *-dev 包:它们依赖**精确版本**的运行时
+# .so(libfreerdp3-3 / libvpx9 / libaom3 …),从而免去猜测各发行版版本后缀的脆弱性 ——
+# 以「确保可运行」为先(体积稍大可接受;进阶可换成对应的运行时库精简包)。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
+        ca-certificates tzdata openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -u 10001 -m -s /usr/sbin/nologin wayfort \
+    # 预建运行时状态目录(keystore/会话/Devolutions 配置)并归属非 root 用户:
+    # compose 的 wayfort_var 命名卷挂到 /app/var,空卷首启继承此属主。
+    && mkdir -p /app/configs /app/var/sessions /app/var/devolutions-gateway /opt/wayfort/devolutions-gateway \
+    && chown -R wayfort:wayfort /app/var
+
+WORKDIR /app
+COPY --from=build /out/wayfort           /usr/local/bin/wayfort
+# bootstrap_paths.go 默认搜 /usr/local/bin/freerdp-worker → 放这里零配置即被发现。
+COPY --from=build /out/freerdp-worker    /usr/local/bin/freerdp-worker
+COPY --from=build /out/devolutions-gateway/devolutions-gateway /opt/wayfort/devolutions-gateway/devolutions-gateway
+COPY configs/config.example.yaml         /app/configs/config.yaml
+# 可执行位 + 把 Devolutions 安装目录整体归属非 root 用户,防它若往 install_prefix
+# 写运行时状态/日志时因 root 属主被拒(配置/密钥本就走可写的 /app/var)。
+RUN chmod 0755 /usr/local/bin/freerdp-worker /opt/wayfort/devolutions-gateway/devolutions-gateway \
+    && chown -R wayfort:wayfort /opt/wayfort/devolutions-gateway
+
+USER wayfort
+# 8080 = 网关/WS;7171 = Devolutions Gateway 子进程(供 caddy 容器内网访问,不对宿主发布)。
+EXPOSE 8080 7171
+ENTRYPOINT ["/usr/local/bin/wayfort"]
+CMD ["--config", "/app/configs/config.yaml"]

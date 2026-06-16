@@ -1,0 +1,40 @@
+# 叠加:在线 Office(OnlyOffice)。用 deploy.sh/deploy.ps1 的 --office 启用,
+# 等价于:docker compose -f docker-compose.prod.yaml -f docker-compose.office.yaml ... up -d
+#
+# 浏览器从 document_server_url 加载编辑器,故 onlyoffice 需对宿主暴露(OFFICE_PORT);
+# 容器再经 callback_base_url(内网服务名 wayfort:8080)回拉/回存文件。两侧 JWT 必须一致。
+# 镜像约 2GB、首启 ~60s,按需启用。
+
+services:
+  wayfort:
+    environment:
+      WAYFORT_OFFICE_ENABLED: "true"
+      WAYFORT_OFFICE_DOCUMENT_SERVER_URL: "http://${PUBLIC_HOST:-localhost}:${OFFICE_PORT:-18082}/"
+      WAYFORT_OFFICE_CALLBACK_BASE_URL: "http://wayfort:8080"
+
+  onlyoffice:
+    image: onlyoffice/documentserver:8.2
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: ${OFFICE_JWT_SECRET:?set OFFICE_JWT_SECRET in deployments/.env}
+      JWT_HEADER: "Authorization"
+      JWT_IN_BODY: "true"
+    ports: ["${OFFICE_PORT:-18082}:80"]
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_log:/var/log/onlyoffice
+      - onlyoffice_cache:/var/lib/onlyoffice/documentserver/App_Data/cache/files
+      - onlyoffice_db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost/healthcheck || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  onlyoffice_data: {}
+  onlyoffice_log: {}
+  onlyoffice_cache: {}
+  onlyoffice_db: {}

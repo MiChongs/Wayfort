@@ -1,0 +1,37 @@
+# Build context for the BACKEND image (deployments/Dockerfile, context = repo root).
+# The Go build needs only go.mod/go.sum + the Go source tree + configs/. Everything
+# else is excluded — for speed, image size, and to NEVER leak secrets into the image.
+# (The web frontend builds from its own context web/ with web/.dockerignore.)
+
+.git
+.gitignore
+.gitattributes
+.worktrees/
+
+# The web app is NOT embedded in the Go binary — exclude it entirely (1GB+ of
+# node_modules / .next would otherwise be sent as build context).
+web/
+
+# Dependencies / build outputs anywhere.
+**/node_modules
+dist/
+bin/
+*.exe
+
+# Secrets & runtime state — must never enter an image layer.
+**/.env
+deployments/.env
+var/
+deployments/var/
+*.unseal
+
+# Docs / planning / editor / design artifacts the build doesn't need.
+.planning/
+docs/
+designs/
+.claude/
+.vscode/
+.idea/
+*.log
+*.png
+*.md

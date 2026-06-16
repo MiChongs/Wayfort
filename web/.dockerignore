@@ -1,0 +1,19 @@
+# Build context for the WEB image (web/Dockerfile, context = web/).
+# node_modules MUST be excluded so the build stage's `COPY . .` does not clobber
+# the freshly `pnpm install`-ed deps with the host's (platform-specific, huge).
+
+node_modules
+.next
+.turbo
+
+# Local env / secrets — never bake into the image (NEXT_PUBLIC_* come via build args).
+.env
+.env.local
+.env*.local
+
+# Dev / CI artifacts not needed for a production build.
+.playwright-mcp/
+*.log
+*.png
+Dockerfile
+.dockerignore

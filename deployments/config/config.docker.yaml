@@ -1,0 +1,219 @@
+# Wayfort —— 容器编排部署配置(docker-compose.prod.yaml 挂载到 /app/configs/config.yaml)。
+#
+# 这是「部署接线」配置:服务主机名指向 compose 内的服务名(postgres / redis / guacd),
+# 路径指向后端容器的持久卷 /app/var。**绝不在此文件写入任何密钥**——密钥由部署脚本
+# 生成进 deployments/.env(已 gitignore),compose 以 WAYFORT_* 环境变量覆盖本文件:
+#   WAYFORT_DB_DSN / WAYFORT_AUTH_JWT_SECRET / WAYFORT_AUTH_BOOTSTRAP_PASSWORD /
+#   WAYFORT_OFFICE_JWT_SECRET  (viper 前缀 WAYFORT_、键名 . → _)。
+#
+# 与单机 configs/config.example.yaml 的差异仅在「容器化必需项」,业务默认值保持一致。
+
+server:
+  addr: ":8080"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+db:
+  # password 由 WAYFORT_DB_DSN 覆盖(含 deployments/.env 的 POSTGRES_PASSWORD)。
+  dsn: "host=postgres user=wayfort password=wayfort dbname=wayfort port=5432 sslmode=disable"
+  max_open: 50
+  max_idle: 10
+  conn_max_lifetime: 1h
+
+redis:
+  addr: "redis:6379"
+  password: ""
+  db: 0
+
+auth:
+  # jwt_secret 由 WAYFORT_AUTH_JWT_SECRET 覆盖;此处占位值绝不用于真实部署。
+  jwt_secret: "OVERRIDDEN-BY-WAYFORT_AUTH_JWT_SECRET-ENV"
+  access_ttl: 1h
+  refresh_ttl: 168h
+  bootstrap_admin: "admin"
+  # bootstrap_password 由 WAYFORT_AUTH_BOOTSTRAP_PASSWORD 覆盖(部署脚本生成并打印一次)。
+  bootstrap_password: ""
+  lockout:
+    enabled: true
+    threshold: 5
+    window: 15m
+    duration: 15m
+  mfa:
+    enforce_for_admin: false
+    totp_issuer: "Wayfort"
+    email_otp_ttl: 5m
+    email_otp_cooldown: 60s
+    recovery_codes_count: 10
+  passkey:
+    enabled: false
+    rp_id: "localhost"
+    rp_display: "Wayfort"
+    rp_origins: ["http://localhost:8088"]
+    discoverable_login: true
+  anomaly:
+    enabled: true
+    notify_email: false
+
+ai:
+  enabled: true
+  default_permission_mode: normal
+  max_iterations: 20
+  max_subagent_depth: 2
+  tool_timeout: 60s
+  approval_timeout: 2m
+  conversation_ttl_days: 90
+  seed_default_agents: true
+  ssh_exec_readonly_allow: []
+  ssh_exec_readonly_allow_extra: []
+
+notify:
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    password: ""
+    from: "Wayfort <noreply@example.com>"
+    tls: "starttls"
+  worker:
+    chan_size: 256
+    max_retries: 3
+
+crypto:
+  # 持久卷内的解封口令文件(首启自动生成 0600);卷 = wayfort_var。务必离线备份。
+  unseal_passphrase_file: "/app/var/keystore.unseal"
+  master_key_hex: ""
+
+storage:
+  sessions_dir: "/app/var/sessions"
+
+sshpool:
+  max_sessions_per_client: 8
+  idle_eviction: 10m
+  dial_timeout: 15s
+  keepalive: 30s
+
+# 匿名沙箱需把宿主 docker.sock 挂进后端容器(有安全权衡)。默认关闭;
+# 用部署脚本的 `--sandbox` 启用(叠加 docker-compose.sandbox.yaml,挂载 socket 并打开此开关)。
+anonymous:
+  enabled: false
+  image: "alpine:latest"
+  ttl: 10m
+  cpu: 0.5
+  memory_mb: 128
+  pids_limit: 64
+  network: "none"
+  shell: ["/bin/sh"]
+
+recorder:
+  chan_size: 1024
+  flush_interval: 250ms
+
+audit:
+  chan_size: 4096
+  batch_size: 64
+  batch_interval: 200ms
+
+webssh:
+  read_buffer: 8192
+  write_timeout: 10s
+  ping_interval: 30s
+
+insights:
+  enabled: true
+  cache_ttl: 3s
+  ssh_timeout: 10s
+  process_limit: 200
+
+# 新版 WebRDP —— freerdp 原生 worker 与 ironrdp/Devolutions Gateway **均已完整编入镜像**
+# (见 deployments/Dockerfile.webrdp:编译 freerdp-worker = libfreerdp3 + libvpx/libaom/turbojpeg,
+# 并内置 Devolutions Gateway 二进制)。docker-compose.prod.yaml 默认用该镜像构建后端。
+desktop:
+  enabled: true
+  # 容器化反代默认走 freerdp:其视频/位图流复用 Caddy 已路由的 /api/v1/ws,链路最短最稳;
+  # ironrdp 也已完整编入并接好 /jet,可在桌面会话设置里按需切换。
+  default_backend: freerdp
+  max_concurrent_sessions: 64
+  recording:
+    enabled: true
+    dir: "" # 空 => <storage.sessions_dir>/desktop-recordings
+    include_input: true
+  drive:
+    enabled: true
+    dir: "" # 空 => <storage.sessions_dir>/desktop-drives
+    name: "Wayfort"
+    allow_upload: true
+    allow_download: true
+    max_file_mb: 1024
+    max_total_mb: 4096
+  # WebRTC(VP9/AV1 视频轨)需浏览器与后端直连 UDP 做 ICE,单端口反代无法穿透 UDP,
+  # 故容器基线**关闭**(freerdp 自动回落到经 Caddy WS 的位图/视频路径;编解码器已全部编入)。
+  # 要启用:发布 UDP 端口段 + 设 public_ip,见 deployments/README.md。
+  webrtc:
+    enabled: false
+    codec: vp9
+    bitrate_kbps: 8000
+    fps: 30
+  # ironrdp(Plan 29)经内置 Devolutions Gateway 子进程提供:镜像已预装二进制(auto_install 关),
+  # wayfort 监管子进程(auto_start 开)。监听 0.0.0.0 让 caddy 容器可达 wayfort:7171;
+  # advertised_url / external_url 由 compose 按 .env 注入,浏览器经 caddy 的 /jet/* 到达。
+  devolutions_gateway:
+    enabled: true
+    auto_install: false
+    auto_start: true
+    install_prefix: "/opt/wayfort/devolutions-gateway"
+    binary_path: "/opt/wayfort/devolutions-gateway/devolutions-gateway"
+    config_path: "/app/var/devolutions-gateway/gateway.json"
+    id_file: "/app/var/devolutions-gateway/gateway-id"
+    jwt_private_key_file: "/app/var/devolutions-gateway/jwt.key"
+    listen_addr: "http://0.0.0.0:7171"
+    advertised_url: "" # compose 注入 ${WS_SCHEME}://${PUBLIC_HOST}:${WEB_PORT}/jet/rdp
+    external_url: "" # compose 注入 ${PUBLIC_SCHEME}://${PUBLIC_HOST}:${WEB_PORT}
+    token_ttl: 90s
+    health_timeout: 15s
+    verbosity: info
+
+# 反连网关 Agent:默认关闭(只在使用 agent 网域时开启)。
+agent:
+  enabled: false
+  addr: ":8443"
+  public_host: ""
+  dist_dir: "dist/agent"
+
+protocols:
+  # RDP/VNC 经 guacd 容器(同 compose 网络,服务名 guacd:4822)。recording 默认关闭——
+  # guacd 以 root 写录像、后端以非 root(uid 10001)读取,跨用户权限易冲突;需要录像时
+  # 请共享 sessions 卷并对齐 uid 后再打开。
+  guacamole:
+    enabled: true
+    guacd_addr: "guacd:4822"
+    recording: false
+    # 代理链 RDP 时后端在容器内开 SOCKS 供 guacd 拨号,故监听 0.0.0.0(直连 RDP 不需要)。
+    socks_listen_host: "0.0.0.0"
+    recording_path_in_guacd: ""
+  # DB CLI 容器化客户端需 docker.sock(同沙箱)。默认关闭;可视化 DB Studio 不依赖它。
+  dbcli:
+    enabled: false
+    images:
+      mysql:    "mysql:8.0"
+      postgres: "postgres:16-alpine"
+      redis:    "redis:7-alpine"
+      mongo:    "mongo:7"
+    ttl: 30m
+  tcpfwd:
+    enabled: true
+    listen_host: "127.0.0.1"
+    port_range: [40000, 49999]
+    default_ttl: 1h
+    max_per_user: 8
+  telnet:
+    enabled: true
+    timeout: 15s
+
+# 在线 Office:默认关闭。用部署脚本 `--office` 启用(叠加 docker-compose.office.yaml,
+# 拉起 onlyoffice 服务),并由 compose 注入 document_server_url / callback_base_url / 两侧 JWT。
+office:
+  enabled: false
+  document_server_url: "http://localhost:18082/"
+  jwt_secret: "OVERRIDDEN-BY-WAYFORT_OFFICE_JWT_SECRET-ENV"
+  callback_base_url: "http://wayfort:8080"
