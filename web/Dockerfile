@@ -36,4 +36,10 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/next.config.mjs ./next.config.mjs
 EXPOSE 3000
-CMD ["pnpm", "start"]
+# Start Next directly (NOT `pnpm start`): pnpm 11's verify-deps-before-run would
+# re-check the copied node_modules, auto-run `pnpm install`, and fire the
+# `postinstall` (node scripts/copy-guacamole.mjs) — which fails because the
+# runtime layer intentionally omits scripts/. `next start` is exactly what
+# `pnpm start` runs, minus pnpm's pre-run dep check. -H 0.0.0.0 so Caddy (a
+# separate container) can reach web:3000.
+CMD ["node_modules/.bin/next", "start", "-H", "0.0.0.0", "-p", "3000"]

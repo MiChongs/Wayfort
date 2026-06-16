@@ -30,13 +30,13 @@
 2. 构建后端与前端镜像,拉起全部服务。
 3. 等待后端就绪(自动建库 + 数据迁移 + 引导),随后打印访问地址与初始管理员密码。
 
-完成后打开 **http://localhost:8088**,用 `admin` + 打印出来的密码登录(登录后请尽快改密)。
+完成后打开 **http://localhost:18080**,用 `admin` + 打印出来的密码登录(登录后请尽快改密)。
 
 ## 拓扑(单一入口)
 
 ```
                        ┌─────────────────────── Docker 内部网络 ───────────────────────┐
-浏览器 ──▶ Caddy :8088 ─┤  /api/v1/*  ──▶ wayfort:8080 (后端 / 全部 WebSocket、freerdp)  │
+浏览器 ──▶ Caddy :18080 ─┤  /api/v1/*  ──▶ wayfort:8080 (后端 / 全部 WebSocket、freerdp)  │
         (唯一对外端口)  │  /jet/*     ──▶ wayfort:7171 (ironrdp Devolutions Gateway)     │
                        │  其余        ──▶ web:3000 (Next.js;经 /api/proxy/* 转发 REST)  │
                        │  wayfort ──▶ postgres:5432 / redis:6379 / guacd:4822          │
@@ -69,7 +69,7 @@ Windows 把 `./deploy.sh` 换成 `./deploy.ps1`,用法一致。
 
 ```ini
 PUBLIC_HOST=你的服务器IP或域名      # 例:10.0.0.12 或 bastion.example.com
-WEB_PORT=8088
+WEB_PORT=18080
 ```
 
 然后 `./deploy.sh up`(会自动重建 web 镜像以烤入新地址)。确保 `WEB_PORT` 在防火墙放通。
@@ -82,7 +82,7 @@ Caddy 内置自动 HTTPS(Let's Encrypt),配好域名后零额外证书运维:
 2. 编辑 `deployments/Caddyfile`:把站点地址 `:80` 改为你的域名(如 `bastion.example.com`)。
    Caddy 会自动签发/续期证书,在容器内监听 443(HTTPS)并把 80 重定向到 443。
 3. 编辑 `deployments/docker-compose.prod.yaml` 的 caddy 服务 `ports`,把单行
-   `- "${WEB_PORT:-8088}:80"` **替换**为下面两行(让宿主 80/443 直通 Caddy,避免端口冲突):
+   `- "${WEB_PORT:-18080}:80"` **替换**为下面两行(让宿主 80/443 直通 Caddy,避免端口冲突):
 
    ```yaml
    ports:

@@ -139,7 +139,7 @@ wait_health() {
 print_access() {
   local host port admin scheme
   host="$(read_env PUBLIC_HOST)"; host="${host:-localhost}"
-  port="$(read_env WEB_PORT)";    port="${port:-8088}"
+  port="$(read_env WEB_PORT)";    port="${port:-18080}"
   admin="$(read_env ADMIN_PASSWORD)"
   scheme="http"; [ "$(read_env WS_SCHEME)" = "wss" ] && scheme="https"
   echo

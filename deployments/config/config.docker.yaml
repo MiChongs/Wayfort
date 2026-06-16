@@ -49,7 +49,7 @@ auth:
     enabled: false
     rp_id: "localhost"
     rp_display: "Wayfort"
-    rp_origins: ["http://localhost:8088"]
+    rp_origins: ["http://localhost:18080"]
     discoverable_login: true
   anomaly:
     enabled: true

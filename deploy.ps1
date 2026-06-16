@@ -132,7 +132,7 @@ function Wait-Health {
 
 function Print-Access {
   $host_ = Get-EnvValue 'PUBLIC_HOST'; if (-not $host_) { $host_ = 'localhost' }
-  $port  = Get-EnvValue 'WEB_PORT';    if (-not $port)  { $port  = '8088' }
+  $port  = Get-EnvValue 'WEB_PORT';    if (-not $port)  { $port  = '18080' }
   $admin = Get-EnvValue 'ADMIN_PASSWORD'
   $scheme = if ((Get-EnvValue 'WS_SCHEME') -eq 'wss') { 'https' } else { 'http' }
   Write-Host ''

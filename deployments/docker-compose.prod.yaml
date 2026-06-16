@@ -85,8 +85,8 @@ services:
       WAYFORT_OFFICE_JWT_SECRET: ${OFFICE_JWT_SECRET:-}
       # ironrdp(Devolutions Gateway)浏览器侧地址:经 caddy 单一入口的 /jet/* 到达。
       # 运行期注入(非构建期),改 PUBLIC_HOST 后无需重建镜像,重跑 deploy 即生效。
-      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_ADVERTISED_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-8088}/jet/rdp"
-      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_EXTERNAL_URL: "${PUBLIC_SCHEME:-http}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-8088}"
+      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_ADVERTISED_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}/jet/rdp"
+      WAYFORT_DESKTOP_DEVOLUTIONS_GATEWAY_EXTERNAL_URL: "${PUBLIC_SCHEME:-http}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}"
     expose:
       - "8080"   # 网关 / WebSocket
       - "7171"   # Devolutions Gateway 子进程(供 caddy 内网访问)
@@ -110,7 +110,7 @@ services:
       args:
         # 浏览器直连后端 WebSocket 的地址(构建期注入);指向 caddy 单一入口(同源)。
         # 改 PUBLIC_HOST/WEB_PORT/WS_SCHEME 后必须重建本镜像(deploy 的 up/update 自带 --build)。
-        NEXT_PUBLIC_BACKEND_WS_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-8088}"
+        NEXT_PUBLIC_BACKEND_WS_URL: "${WS_SCHEME:-ws}://${PUBLIC_HOST:-localhost}:${WEB_PORT:-18080}"
         NEXT_PUBLIC_APP_VERSION: "${APP_VERSION:-docker}"
     image: wayfort/web:local
     depends_on:
@@ -133,7 +133,7 @@ services:
         condition: service_started
     ports:
       # 唯一对宿主暴露的端口。浏览器访问 http://${PUBLIC_HOST}:${WEB_PORT}
-      - "${WEB_PORT:-8088}:80"
+      - "${WEB_PORT:-18080}:80"
       # 启用 HTTPS 时取消注释(并按 Caddyfile 注释把站点地址改为你的域名):
       # - "443:443"
     volumes:

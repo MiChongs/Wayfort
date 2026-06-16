@@ -23,7 +23,7 @@ FROM golang:1.26-trixie AS build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
         libcjson-dev zlib1g-dev libkrb5-dev libsystemd-dev \
-        pkg-config build-essential ca-certificates curl file bash \
+        pkg-config build-essential ca-certificates curl file bash xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -54,7 +54,7 @@ FROM debian:trixie-slim AS runtime
 # 以「确保可运行」为先(体积稍大可接受;进阶可换成对应的运行时库精简包)。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
-        ca-certificates tzdata openssh-client \
+        ca-certificates tzdata openssh-client wget \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -u 10001 -m -s /usr/sbin/nologin wayfort \
     # 预建运行时状态目录(keystore/会话/Devolutions 配置)并归属非 root 用户:
