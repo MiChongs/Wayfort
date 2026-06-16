@@ -590,7 +590,7 @@ cd web && pnpm typecheck              # 前端类型检查（tsc）
 
 ## 🤝 贡献指南
 
-欢迎 Issue 与 PR！提交前请：
+欢迎 Issue 与 PR！提交前请
 
 ```bash
 go fmt ./... && go vet ./... && go test ./... -count 1
