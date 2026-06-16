@@ -67,8 +67,9 @@ services:
       # 并内置 Devolutions Gateway(ironrdp)。见 deployments/Dockerfile.webrdp。
       dockerfile: deployments/Dockerfile.webrdp
       args:
-        # 固定 Devolutions Gateway 版本(留空=取上游最新;GitHub 限流时填 x.y.z)。
-        DGW_VERSION: "${DGW_VERSION:-}"
+        # Devolutions Gateway 版本,默认 2026.2.2(直连 release CDN,跳过易失败的「查最新」API)。
+        # 改 deployments/.env 的 DGW_VERSION 可覆盖;留空才会回退到查 GitHub 最新。
+        DGW_VERSION: "${DGW_VERSION:-2026.2.2}"
     image: wayfort/gateway:webrdp
     depends_on:
       postgres:

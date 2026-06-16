@@ -126,7 +126,9 @@ RDP·VNC(经 guacd)等均**默认可用**,无需任何额外开关。
 
 > 镜像基于 **Debian trixie**(freerdp **3.x** 所需;Devolutions 二进制是 glibc,故不用 alpine)。
 > 首次构建较重(编译 freerdp worker + 下载 Devolutions Gateway,约数分钟、镜像 1–2GB);后续构建走缓存。
-> Devolutions 下载走 GitHub:若被限流,在 `deployments/.env` 设 `DGW_VERSION=x.y.z` 固定版本。
+> Devolutions Gateway 默认固定版本 **2026.2.2**(`DGW_VERSION`),直接从 release CDN 下载,
+> 跳过易被限流/在受限沙箱里失败的 GitHub「查最新」API。需换版本:改 `deployments/.env` 的 `DGW_VERSION`
+> (留空才回退到查 GitHub 最新)。
 
 ### WebRTC 高清视频(可选)
 

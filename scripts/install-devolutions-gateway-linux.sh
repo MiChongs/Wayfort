@@ -40,15 +40,21 @@ done
 # Resolve the version: explicit override or latest-from-GitHub-API.
 if [ -z "${DGW_VERSION:-}" ]; then
   log "querying GitHub for latest release tag"
-  # Capture the whole API response FIRST. Piping curl straight into `grep -m1`
-  # makes grep close the pipe after the first match → curl gets SIGPIPE writing
-  # the rest of the JSON → under `set -o pipefail` the script dies with curl
-  # exit 23 ("Failure writing output to destination"). Reading it into a var,
-  # then parsing with a non-early-closing `sed -n …/p` (and trimming to the
-  # first line via shell expansion), avoids any SIGPIPE.
-  api_body=$(curl -fsSL --retry 3 --retry-delay 2 "$DGW_API")
-  tag=$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' <<<"$api_body")
+  # Write the API response to a FILE (curl -o), NOT a pipe / command-substitution.
+  # Two failure modes have bitten here: (1) `curl | grep -m1` makes grep close the
+  # pipe early → curl SIGPIPE; (2) even `$(curl …)` command-substitution can fail
+  # mid-stream with "(23) Failure writing output to destination" in constrained
+  # build sandboxes. Writing to a regular file is the same reliable path the binary
+  # download below uses (and that apt / go build use); then parse with a
+  # non-early-closing `sed -n …/p` and keep the first line via shell expansion.
+  api_file="$(mktemp)"
+  if ! curl -fsSL --retry 3 --retry-delay 2 -o "$api_file" "$DGW_API"; then
+    rm -f "$api_file"
+    die "could not reach $DGW_API (rate-limited / blocked? set DGW_VERSION=<x.y.z> to skip the lookup, or DGW_MIRROR=<internal mirror>)"
+  fi
+  tag=$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' "$api_file")
   tag=${tag%%$'\n'*}
+  rm -f "$api_file"
   if [ -z "$tag" ]; then
     die "could not parse tag_name from $DGW_API (rate-limited? set DGW_VERSION=<x.y.z> to skip)"
   fi

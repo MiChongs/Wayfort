@@ -9,7 +9,9 @@
 # 需要 freerdp **3.x** 的 apt 包,故用 Debian trixie(13);bookworm/12 只有 freerdp2。
 #
 # 构建参数:
-#   DGW_VERSION  固定 Devolutions Gateway 版本(留空=取 GitHub 最新;CI 限流时建议固定)。
+#   DGW_VERSION  Devolutions Gateway 版本。默认固定 2026.2.2 —— 直接从 release CDN 下载,
+#                跳过易被 GitHub API 限流/沙箱写入失败的「查最新」调用。需换版本时改 .env 的
+#                DGW_VERSION 或本 ARG 默认值。
 
 # ───────────── build:Go 网关 + CGO freerdp-worker + 下载 Devolutions Gateway ─────────────
 FROM golang:1.26-trixie AS build
@@ -39,7 +41,8 @@ RUN pkg-config --print-errors --cflags --libs freerdp3 freerdp-client3 winpr3 vp
     CGO_ENABLED=1 go build -tags freerdp -trimpath -o /out/freerdp-worker ./cmd/freerdp-worker
 
 # Devolutions Gateway(ironrdp):上游 Release 是直接的 ELF 二进制,脚本仅 curl 下载 + chmod。
-ARG DGW_VERSION=
+# 默认固定版本 → 跳过 GitHub API「查最新」(该调用在受限沙箱里反复以 curl(23) 失败)。
+ARG DGW_VERSION=2026.2.2
 RUN INSTALL_PREFIX=/out/devolutions-gateway DGW_VERSION="${DGW_VERSION}" \
         bash scripts/install-devolutions-gateway-linux.sh
 
