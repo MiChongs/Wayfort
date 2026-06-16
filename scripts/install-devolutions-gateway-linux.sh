@@ -9,7 +9,7 @@
 #
 # Environment overrides:
 #   DGW_VERSION   pinned release version (default: latest from GitHub API)
-#   INSTALL_PREFIX  where the binary lands (default: /opt/jumpserver/
+#   INSTALL_PREFIX  where the binary lands (default: /opt/wayfort/
 #                   devolutions-gateway)
 #   DGW_MIRROR    alternative base URL when the github.com release CDN
 #                 is slow from the deploy host (e.g. an internal mirror).
@@ -18,7 +18,7 @@
 # Exit codes: 0 OK, 1 toolchain/env problem, 2 download problem.
 set -euo pipefail
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/jumpserver/devolutions-gateway}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-/opt/wayfort/devolutions-gateway}"
 DGW_MIRROR="${DGW_MIRROR:-https://github.com/Devolutions/devolutions-gateway/releases/download}"
 DGW_API="${DGW_API:-https://api.github.com/repos/Devolutions/devolutions-gateway/releases/latest}"
 
@@ -40,7 +40,15 @@ done
 # Resolve the version: explicit override or latest-from-GitHub-API.
 if [ -z "${DGW_VERSION:-}" ]; then
   log "querying GitHub for latest release tag"
-  tag=$(curl -fsSL "$DGW_API" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/')
+  # Capture the whole API response FIRST. Piping curl straight into `grep -m1`
+  # makes grep close the pipe after the first match → curl gets SIGPIPE writing
+  # the rest of the JSON → under `set -o pipefail` the script dies with curl
+  # exit 23 ("Failure writing output to destination"). Reading it into a var,
+  # then parsing with a non-early-closing `sed -n …/p` (and trimming to the
+  # first line via shell expansion), avoids any SIGPIPE.
+  api_body=$(curl -fsSL --retry 3 --retry-delay 2 "$DGW_API")
+  tag=$(sed -nE 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v?([^"]+)".*/\1/p' <<<"$api_body")
+  tag=${tag%%$'\n'*}
   if [ -z "$tag" ]; then
     die "could not parse tag_name from $DGW_API (rate-limited? set DGW_VERSION=<x.y.z> to skip)"
   fi
@@ -61,7 +69,7 @@ dest="$INSTALL_PREFIX/devolutions-gateway"
 log "downloading $url"
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-if ! curl -fsSL "$url" -o "$tmp"; then
+if ! curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$tmp"; then
   die "download failed (check version + arch exist upstream, or set DGW_MIRROR=<internal>)"
 fi
 
