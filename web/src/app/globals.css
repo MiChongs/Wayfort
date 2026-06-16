@@ -297,6 +297,20 @@
   .dark {
     color-scheme: dark;
   }
+
+  /* 启动动画抗闪烁遮罩(预水合)——layout.tsx 的内联脚本在「本会话尚未展示启动动画」
+     时给 <html> 打上 data-splash-pending,这里在 React 接管前就铺满一层不透明
+     bg-background,杜绝冷启动底层应用闪现。background 用 CSS 变量,主题切换自动跟随。
+     SplashScreen(z-[9999])挂载后下一帧移除该属性;脚本另有 5s 兜底。详见
+     components/splash/splash-screen.tsx。 */
+  html[data-splash-pending]::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 9998;
+    background-color: var(--background);
+    pointer-events: none;
+  }
 }
 
 @layer components {
