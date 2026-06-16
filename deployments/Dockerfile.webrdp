@@ -15,8 +15,12 @@
 FROM golang:1.26-trixie AS build
 
 # FreeRDP 3.x + WebRTC 编解码器 + SIMD JPEG —— freerdp-worker 经 pkg-config 链接的全部模块。
+# 附带 FreeRDP3/WinPR3 .pc 的 Requires(.private)传递依赖:Debian 的 pkg-config 是 pkgconf,
+# 其依赖图解析会校验 Requires.private(cJSON / zlib / krb5 / systemd),最小镜像里这些 -dev
+# 不会被 freerdp3-dev 自动拉全,缺则 --cflags 解析失败 —— 显式补齐(注意是 libcjson,非 json-c)。
 RUN apt-get update && apt-get install -y --no-install-recommends \
         freerdp3-dev libwinpr3-dev libvpx-dev libaom-dev libturbojpeg0-dev \
+        libcjson-dev zlib1g-dev libkrb5-dev libsystemd-dev \
         pkg-config build-essential ca-certificates curl file bash \
     && rm -rf /var/lib/apt/lists/*
 
@@ -28,9 +32,10 @@ COPY . .
 # 网关:纯 Go(关 CGO → 静态、体积小)。
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/wayfort ./cmd/wayfort
 
-# freerdp-worker:开 CGO + -tags freerdp。先用 pkg-config 自检,缺包即列出已装模块再退出。
-RUN pkg-config --exists freerdp3 freerdp-client3 winpr3 vpx aom libturbojpeg \
-      || { echo "ERROR: freerdp-worker 缺少 pkg-config 模块;已安装:"; pkg-config --list-all | sort; exit 1; }; \
+# freerdp-worker:开 CGO + -tags freerdp。自检用 --cflags --libs(与 cgo 实际调用一致,
+# 而非更严苛、会因 Requires.private 误报的 --exists)+ --print-errors,缺包时精确报出模块名。
+RUN pkg-config --print-errors --cflags --libs freerdp3 freerdp-client3 winpr3 vpx aom libturbojpeg >/dev/null \
+      || { echo "ERROR: freerdp-worker pkg-config 解析失败(见上方);已安装:"; pkg-config --list-all | sort; exit 1; }; \
     CGO_ENABLED=1 go build -tags freerdp -trimpath -o /out/freerdp-worker ./cmd/freerdp-worker
 
 # Devolutions Gateway(ironrdp):上游 Release 是直接的 ELF 二进制,脚本仅 curl 下载 + chmod。
