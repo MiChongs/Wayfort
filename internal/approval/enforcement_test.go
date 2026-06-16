@@ -81,6 +81,69 @@ func TestCheckEnforced_EnforcerErrorFailsClosed(t *testing.T) {
 	}
 }
 
+// stubConnRules returns a fixed verdict for the access-control rule layer.
+type stubConnRules struct{ action ConnReviewAction }
+
+func (s stubConnRules) ConnectionReview(_ context.Context, _ ConnReviewInput) ConnReviewAction {
+	return s.action
+}
+
+func TestCheckEnforced_RuleDenyBlocks(t *testing.T) {
+	// A deny rule blocks outright even when the flag is NOT set.
+	svc := &Service{
+		enforcer:  &stubEnforcer{gated: map[string]bool{}},
+		connRules: stubConnRules{action: ConnReviewDeny},
+	}
+	res, err := svc.CheckEnforced(context.Background(), EnforcementCheck{
+		UserID: 1, BusinessType: model.ApprovalBizAssetAccess, ResourceType: "node", ResourceID: "1",
+	})
+	if err != nil || res.Allowed || !res.Required {
+		t.Fatalf("deny rule must block, got %+v err=%v", res, err)
+	}
+}
+
+func TestCheckEnforced_RuleAcceptExemptsGatedFlag(t *testing.T) {
+	// An accept rule exempts the connection even though the node flag is set.
+	svc := &Service{
+		enforcer:  &stubEnforcer{gated: map[string]bool{"node:1": true}},
+		connRules: stubConnRules{action: ConnReviewAccept},
+	}
+	res, err := svc.CheckEnforced(context.Background(), EnforcementCheck{
+		UserID: 1, BusinessType: model.ApprovalBizAssetAccess, ResourceType: "node", ResourceID: "1",
+	})
+	if err != nil || !res.Allowed || res.Required {
+		t.Fatalf("accept rule must exempt the gated flag, got %+v err=%v", res, err)
+	}
+}
+
+func TestCheckEnforced_RuleIgnoredForNonConnectBiz(t *testing.T) {
+	// A deny rule must NOT affect credential_use (not connect-family) — it falls
+	// back to the flag (here: not gated → allowed).
+	svc := &Service{
+		enforcer:  &stubEnforcer{gated: map[string]bool{}},
+		connRules: stubConnRules{action: ConnReviewDeny},
+	}
+	res, err := svc.CheckEnforced(context.Background(), EnforcementCheck{
+		UserID: 1, BusinessType: model.ApprovalBizCredentialUse, ResourceType: "credential", ResourceID: "9",
+	})
+	if err != nil || !res.Allowed || res.Required {
+		t.Fatalf("rule must not apply to credential_use, got %+v err=%v", res, err)
+	}
+}
+
+func TestCheckEnforced_RuleNoneFallsBackToFlag(t *testing.T) {
+	svc := &Service{
+		enforcer:  &stubEnforcer{gated: map[string]bool{}},
+		connRules: stubConnRules{action: ConnReviewNone},
+	}
+	res, err := svc.CheckEnforced(context.Background(), EnforcementCheck{
+		UserID: 1, BusinessType: model.ApprovalBizAssetAccess, ResourceType: "node", ResourceID: "1",
+	})
+	if err != nil || !res.Allowed || res.Required {
+		t.Fatalf("no-match rule must fall back to (ungated) flag, got %+v err=%v", res, err)
+	}
+}
+
 func TestEnforcementError_IsErrApprovalRequired(t *testing.T) {
 	e := &EnforcementError{Result: EnforcementResult{Reason: "blocked"}}
 	if !errors.Is(e, ErrApprovalRequired) {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
 	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
 	"github.com/michongs/jumpserver-anonymous/internal/ai"
 	"github.com/michongs/jumpserver-anonymous/internal/ai/optools"
@@ -29,10 +30,10 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/audit/export"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
 	"github.com/michongs/jumpserver-anonymous/internal/backup"
+	"github.com/michongs/jumpserver-anonymous/internal/breakglass"
 	"github.com/michongs/jumpserver-anonymous/internal/cache"
 	"github.com/michongs/jumpserver-anonymous/internal/capture"
 	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/geoip"
 	"github.com/michongs/jumpserver-anonymous/internal/cron"
 	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
 	"github.com/michongs/jumpserver-anonymous/internal/desktop"
@@ -41,6 +42,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/domain"
 	"github.com/michongs/jumpserver-anonymous/internal/files"
 	"github.com/michongs/jumpserver-anonymous/internal/firewall"
+	"github.com/michongs/jumpserver-anonymous/internal/geoip"
 	"github.com/michongs/jumpserver-anonymous/internal/guard"
 	"github.com/michongs/jumpserver-anonymous/internal/hardware"
 	"github.com/michongs/jumpserver-anonymous/internal/health"
@@ -81,6 +83,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
 	"github.com/michongs/jumpserver-anonymous/internal/wireguard"
 	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/jumpserver-anonymous/pkg/edition"
 	"github.com/michongs/jumpserver-anonymous/pkg/kms"
 	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
 	"go.uber.org/zap"
@@ -175,6 +178,25 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	}
 	cfg = settingsCenter.Snapshot()
 	settingsProber := settings.NewProber(settingsCenter)
+
+	// Edition / licensing — resolve the entitlement provider. In the open-source
+	// build this is the Community provider (grants nothing, no verifier/key). The
+	// private enterprise overlay, when compiled in, registers the real
+	// license-verifying Authority via edition.RegisterFactory.
+	editionProvider := edition.Resolve(edition.Deps{
+		DB:                db,
+		ConfigLicense:     cfg.Edition.License,
+		ConfigLicenseFile: cfg.Edition.LicenseFile,
+		Logger:            logger,
+	})
+	{
+		ent := editionProvider.Current()
+		logger.Info("edition",
+			zap.String("edition", ent.Edition),
+			zap.String("state", ent.State),
+			zap.Bool("licensed", ent.Licensed),
+			zap.Bool("supported", editionProvider.Supported()))
+	}
 
 	// One pkg/crypto.Vault per call-site OwnerType. Each adapter
 	// records its own envelope rows so audit + rotation can target
@@ -578,6 +600,15 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// use the same connection pools / proxy chains / dialect adapters.
 	dbSvc := dbquery.New(wsGateway, sealer, logger, assetResolver)
 
+	// Access-control unified rule repo + engine — shared by the CRUD handler, the
+	// user-login gate (P3, wired into AuthHandler below) and the connection-review
+	// adapter (P2, wired after the approval service). Reuses asset.Resolver for the
+	// user dimension and edition for X-Pack gating.
+	accessRuleRepo := repo.NewAccessRuleRepo(db)
+	acEngine := accesscontrol.NewEngine(accessRuleRepo, assetResolver, editionProvider, logger)
+	// P6 — data-masking rules (X-Pack) redact DB Studio query result columns.
+	dbSvc.SetMaskRules(acEngine)
+
 	routes := &server.Routes{
 		Auth: &api.AuthHandler{
 			Registry: registry, Issuer: issuer,
@@ -586,9 +617,10 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			TOTP: totpSvc, Email: emailOTP, Recovery: recoverySvc,
 			Passkey: passkeySvc, OIDC: oidcManager, OIDCRepo: oidcRepo,
 			Anomaly: anomalyDetector, Mailer: mailer,
-			Writer:   auditWriter,
-			AnonEna:  anonService != nil,
-			AnonSpec: cfg.Anonymous,
+			Writer:     auditWriter,
+			LoginRules: acEngine,
+			AnonEna:    anonService != nil,
+			AnonSpec:   cfg.Anonymous,
 		},
 		Node:   &api.NodeHandler{Repo: nodeRepo, Creds: credRepo, Proxies: proxyRepo, Tags: tagRepo, Resolver: resolver, AccessItems: accessItemRepo, Access: assetResolver},
 		Proxy:  &api.ProxyHandler{Repo: proxyRepo, Templates: chainTemplateRepo, Groups: proxyGroupRepo, Builder: chain},
@@ -667,6 +699,14 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 			Service:   secretsBoot.Service,
 			Unsealer:  secretsBoot.Unsealer,
 		},
+
+		// Edition / licensing — entitlement snapshot for the route gates +
+		// frontend, plus the super-admin license install/remove surface.
+		Edition:    editionProvider,
+		EditionAPI: &api.EditionHandler{Provider: editionProvider},
+
+		// Access control — consolidated 访问控制 rule CRUD.
+		AccessRule: &api.AccessRuleHandler{Repo: accessRuleRepo, Edition: editionProvider},
 
 		// System settings center — super-admin runtime configuration.
 		Settings: &api.SettingsHandler{Center: settingsCenter, Prober: settingsProber, Writer: auditWriter},
@@ -796,7 +836,14 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// Pre-Phase-16 subsystems still build without these calls — passing
 	// a nil approval Service degrades the gate to a no-op.
 	approvalSvc := approvalBoot.Service
+	// P2 — drive asset_connection_review from the consolidated access-control rule
+	// engine (additive on top of the per-resource RequiresApproval* flags); the
+	// adapter feeds approval.CheckEnforced. acEngine is built once above.
+	approvalSvc.SetConnReviewRules(accesscontrol.NewConnReviewAdapter(acEngine))
 	wsGateway.SetApproval(approvalSvc)
+	// P4 + P5 — consolidated access-control rules on the gateway: command_filter
+	// (every SSH/Telnet/DB-CLI command) and connection_method (enforced at Admit).
+	wsGateway.SetAccessRules(acEngine)
 	sftpHandler.Approval = approvalSvc
 	ossHandler.Approval = approvalSvc
 	if guacHandler != nil {
@@ -951,6 +998,36 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 				zap.String("listen_url", runtime.ListenURL),
 				zap.String("advertised_url", sup.AdvertisedURL()))
 		}
+	}
+
+	// Break-glass (应急访问) — emergency-access governance built on top of the
+	// approval engine. Reuses approval grants + asset grants + the critical
+	// audit path + the notification dispatcher; the kill-switch reuses the same
+	// session terminators the sessions-audit page uses (SSH gateway + desktop
+	// manager). Settings are read live so the global switch / caps hot-reload.
+	breakGlassRepo := repo.NewBreakGlassRepo(db)
+	bgTerminators := []breakglass.SessionTerminator{wsGateway}
+	if desktopMgr != nil {
+		bgTerminators = append(bgTerminators, desktopMgr)
+	}
+	breakGlassSvc := breakglass.New(breakglass.Deps{
+		Repo:        breakGlassRepo,
+		Approval:    approvalSvc,
+		Grants:      grantRepo,
+		Asset:       assetResolver,
+		Audit:       auditWriter,
+		Dispatcher:  notifDispatcher,
+		Sessions:    sessionRepo,
+		Nodes:       nodeRepo,
+		Users:       userRepo,
+		Terminators: bgTerminators,
+		Settings:    func() config.BreakGlassConfig { return settingsCenter.Snapshot().BreakGlass },
+		BaseCtx:     rootCtx,
+		Logger:      logger,
+	})
+	routes.BreakGlass = api.NewBreakGlassHandler(breakGlassSvc)
+	if err := seedBreakGlassPolicy(rootCtx, breakGlassRepo); err != nil {
+		logger.Warn("break-glass: seed default policy failed", zap.Error(err))
 	}
 
 	// Workspace v2 — firewall + docker management panels. Both run
@@ -1192,6 +1269,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	if approvalBoot != nil && approvalBoot.Reconciler != nil {
 		g.Go(func() error { return approvalBoot.Reconciler.Run(gctx) })
 	}
+	// Break-glass reconciler: promotes approved emergency requests to active and
+	// expires lapsed windows (severing sessions on nodes WatchGrant doesn't cover).
+	if breakGlassSvc != nil {
+		g.Go(func() error { return breakGlassSvc.Run(gctx) })
+	}
 	// Plan 18 — async desktop worker bootstrap. Returns nil on failure so
 	// the gateway keeps running; per-session error surfaces via 503 and
 	// state surfaces via GET /api/v1/desktop/stats. The "scheduled" log
@@ -1431,6 +1513,31 @@ func geoipConfig(c config.GeoIPConfig) geoip.Config {
 		Language:        c.Language,
 		AllowPrivateURL: c.AllowPrivateURL,
 	}
+}
+
+// seedBreakGlassPolicy inserts a sane default break-glass policy on first boot
+// so the feature is usable immediately (approver-mediated, incident ref + review
+// required, fail-open OFF). Idempotent: only seeds when no policy exists, so an
+// operator's edits / deletions are never clobbered.
+func seedBreakGlassPolicy(ctx context.Context, r *repo.BreakGlassRepo) error {
+	n, err := r.CountPolicies(ctx)
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return r.CreatePolicy(ctx, &model.BreakGlassPolicy{
+		Name:                 "默认应急访问策略",
+		Description:          "适用于全部资产的默认 break-glass 策略：需事前审批(任一 operator 加速批准)、强制工单号与事后复核、最长 30 分钟、未开启自助破玻璃。",
+		Enabled:              true,
+		ScopeType:            model.BreakGlassScopeAll,
+		MaxDurationSec:       1800,
+		RequireIncidentRef:   true,
+		RequireDualAuth:      false,
+		AllowFailOpen:        false,
+		RequirePostUseReview: true,
+	})
 }
 
 func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, bootstrapAdmin string) error {

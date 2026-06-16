@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
 	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
 	"github.com/michongs/jumpserver-anonymous/internal/auth"
@@ -40,12 +42,16 @@ type AuthHandler struct {
 	Mailer    *notify.Mailer
 	// Writer mirrors login outcomes into the global audit trail so the audit
 	// center's 认证 lane is populated. May be nil (events are then skipped).
-	Writer    *audit.Writer
-	AnonEna   bool
+	Writer  *audit.Writer
+	AnonEna bool
 	// AnonSpec carries the sandbox resource caps so the public sandbox page can
 	// render an honest spec (TTL countdown, limits) without a second endpoint.
-	AnonSpec  config.AnonymousConfig
-	OIDCRepo  *repo.OIDCClientRepo
+	AnonSpec config.AnonymousConfig
+	OIDCRepo *repo.OIDCClientRepo
+	// LoginRules is the consolidated access-control rule engine evaluated on each
+	// password login (kind=user_login): deny / require-MFA / notify / alert by
+	// user × IP × time. Nil → no login rules (Community default = zero impact).
+	LoginRules *accesscontrol.Engine
 }
 
 // ----- Step 1: password -----
@@ -93,11 +99,47 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 	h.Lockout.ClearFailures(c.Request.Context(), user.Username)
 
+	// P3 — access-control user-login rules (kind=user_login, Community). Match by
+	// user × source IP × time window → deny / require-MFA / review / notify. No
+	// rules configured ⇒ zero impact (Community default).
+	forceMFA := false
+	if h.LoginRules != nil {
+		dec, _ := h.LoginRules.Evaluate(c.Request.Context(), model.RuleUserLogin, accesscontrol.Input{
+			UserID:   user.ID,
+			ClientIP: c.ClientIP(),
+		})
+		if dec.Matched {
+			switch dec.Action {
+			case model.ActionDeny:
+				h.recordHistory(c, &user.ID, user.Username, model.LoginFailed, model.AuthMethodPassword, model.MFAMethodNone, "登录被访问控制规则拒绝")
+				c.JSON(http.StatusForbidden, gin.H{"error": "登录被访问控制规则拒绝"})
+				return
+			case model.ActionReview:
+				// Synchronous login can't wait on an async work order; surface a
+				// clear "needs approval" block. (Full async login-approval is a
+				// follow-up that needs a pending-login UX.)
+				h.recordHistory(c, &user.ID, user.Username, model.LoginFailed, model.AuthMethodPassword, model.MFAMethodNone, "登录需管理员审批")
+				c.JSON(http.StatusForbidden, gin.H{"error": "登录需管理员审批，请联系管理员"})
+				return
+			}
+			// require_mfa modifier (applies when the login is allowed): force the
+			// MFA step even if the user hasn't enrolled a factor.
+			if loginRuleRequiresMFA(dec.Rule) {
+				forceMFA = true
+			}
+		}
+	}
+
 	// MFA?
 	methods, err := h.availableMFA(c.Request.Context(), user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if len(methods) == 0 && forceMFA {
+		// Rule forced step-up but nothing enrolled → push the email-OTP path
+		// (mirrors the MFAEnforced fallback in availableMFA).
+		methods = []string{"email"}
 	}
 	if len(methods) > 0 {
 		token, exp, err := h.Issuer.IssueChallenge(user.ID, user.Username, methods, 5*time.Minute)
@@ -118,6 +160,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Fully authenticated.
 	pair := h.finalizeLogin(c, user, model.AuthMethodPassword, model.MFAMethodNone)
 	c.JSON(http.StatusOK, pair)
+}
+
+// loginRuleRequiresMFA reads the user_login rule's Spec for {"require_mfa":true}.
+func loginRuleRequiresMFA(r *model.AccessRule) bool {
+	if r == nil || r.Spec == "" {
+		return false
+	}
+	var s struct {
+		RequireMFA bool `json:"require_mfa"`
+	}
+	_ = json.Unmarshal([]byte(r.Spec), &s)
+	return s.RequireMFA
 }
 
 func (h *AuthHandler) availableMFA(ctx context.Context, user *model.User) ([]string, error) {
@@ -234,10 +288,21 @@ func (h *AuthHandler) LoginRecovery(c *gin.Context) {
 // consumeChallenge validates the challenge_token from the JSON body, returns
 // the linked user, and aborts (writing the response) on failure.
 func (h *AuthHandler) consumeChallenge(c *gin.Context, requiredMethod string) (*model.User, bool) {
+	// Read the body once and immediately restore it, so the downstream handler
+	// can still bind the full payload (challenge_token + code). The wrapper is
+	// parsed off the captured bytes — decoding it via c.ShouldBindJSON here would
+	// drain the request and leave the handler's second bind with an empty body
+	// (EOF → 400).
+	var raw []byte
+	if c.Request.Body != nil {
+		raw, _ = io.ReadAll(c.Request.Body)
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+
 	var p struct {
 		ChallengeToken string `json:"challenge_token"`
 	}
-	if err := c.ShouldBindJSON(&p); err != nil || p.ChallengeToken == "" {
+	if err := json.Unmarshal(raw, &p); err != nil || p.ChallengeToken == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "challenge_token required"})
 		return nil, false
 	}
@@ -246,9 +311,6 @@ func (h *AuthHandler) consumeChallenge(c *gin.Context, requiredMethod string) (*
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid challenge token"})
 		return nil, false
 	}
-	// Re-bind body for downstream handlers that also need code/etc. The JSON
-	// payload is small, so we replace c.Request.Body with a re-readable copy.
-	rebindBody(c)
 	user, err := h.Users.FindByID(c.Request.Context(), claims.UserID)
 	if err != nil || user == nil || user.Disabled {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "user gone"})
@@ -268,26 +330,6 @@ func (h *AuthHandler) consumeChallenge(c *gin.Context, requiredMethod string) (*
 		}
 	}
 	return user, true
-}
-
-// rebindBody peeks the JSON body and replaces c.Request.Body so the handler can
-// re-decode it (we already consumed it parsing the challenge_token wrapper).
-func rebindBody(c *gin.Context) {
-	if c.Request.Body == nil {
-		return
-	}
-	b, _ := io.ReadAll(c.Request.Body)
-	c.Request.Body = io.NopCloser(byteReader(b))
-}
-
-type byteReader []byte
-
-func (b byteReader) Read(p []byte) (int, error) {
-	if len(b) == 0 {
-		return 0, io.EOF
-	}
-	n := copy(p, b)
-	return n, nil
 }
 
 // ----- Passkey login -----
@@ -520,11 +562,11 @@ func (h *AuthHandler) finalizeLogin(c *gin.Context, user *model.User, am model.A
 		sig = h.Anomaly.Inspect(c.Request.Context(), user, ip, ua)
 	}
 	row := &model.LoginHistory{
-		UserID:    &user.ID,
-		Username:  user.Username,
-		IP:        ip,
-		UserAgent: ua,
-		Result:    model.LoginSuccess,
+		UserID:     &user.ID,
+		Username:   user.Username,
+		IP:         ip,
+		UserAgent:  ua,
+		Result:     model.LoginSuccess,
 		AuthMethod: am, MFAMethod: mm,
 		Anomaly:        sig.Anomalous,
 		RiskScore:      sig.Score,
@@ -580,11 +622,11 @@ func (h *AuthHandler) recordHistory(c *gin.Context, userID *uint64, username str
 	}
 	ip := c.ClientIP()
 	row := &model.LoginHistory{
-		UserID:    userID,
-		Username:  username,
-		IP:        ip,
-		UserAgent: c.GetHeader("User-Agent"),
-		Result:    result,
+		UserID:     userID,
+		Username:   username,
+		IP:         ip,
+		UserAgent:  c.GetHeader("User-Agent"),
+		Result:     result,
 		AuthMethod: am, MFAMethod: mm,
 		Reason:    reason,
 		CreatedAt: time.Now(),

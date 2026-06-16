@@ -396,12 +396,16 @@ func builtinTemplates() []model.ApprovalTemplate {
 		{
 			Name: "builtin.break_glass", IsSystem: true, Enabled: true, Priority: 50,
 			BusinessType: model.ApprovalBizBreakGlass,
-			Description:  "应急访问 (break-glass) — 全部 operator 必须批准, 短时窗",
+			Description:  "应急访问 (break-glass) — 任一 operator 加速批准, 短时窗 (无人可批时由 break-glass 策略的 fail-open 自助)",
+			// Any single operator may grant emergency access — break-glass exists
+			// for the incident operators may be locked out of, so a会签 (StageAll)
+			// would make it unusable exactly when it's needed. When no approver is
+			// reachable at all, the break-glass policy's fail-open path takes over.
 			Stages: jsonStages([]StageSpec{
-				{Mode: model.ApprovalStageAll, RoleNames: []string{"operator"}, TimeoutSec: 0},
+				{Mode: model.ApprovalStageAny, RoleNames: []string{"operator"}, TimeoutSec: 0},
 			}),
 			RiskRule:       jsonRisk("critical"),
-			MaxDurationSec: 600,
+			MaxDurationSec: 1800,
 		},
 		{
 			Name: "builtin.vendor_access", IsSystem: true, Enabled: true, Priority: 100,

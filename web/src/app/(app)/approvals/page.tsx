@@ -7,6 +7,7 @@ import {
   CalendarCheck,
   Inbox,
   KeyRound,
+  LifeBuoy,
   RefreshCw,
   Search,
   Send,
@@ -40,6 +41,7 @@ import {
 import { CreateRequestDialog } from "@/components/approvals/create-request-dialog"
 import { QuickDecide, BulkDecideBar } from "@/components/approvals/decision"
 import { GrantCard } from "@/components/approvals/grant-card"
+import { EmergencyAccessDialog } from "@/components/break-glass/emergency-access-dialog"
 import type { ApprovalInboxItem, ApprovalRequest } from "@/lib/api/types"
 
 type View = "inbox" | "mine" | "grants"
@@ -47,6 +49,7 @@ type View = "inbox" | "mine" | "grants"
 export default function ApprovalsPage() {
   const access = useAccess()
   const [view, setView] = React.useState<View>("inbox")
+  const [bgOpen, setBgOpen] = React.useState(false)
 
   const overview = useQuery({
     queryKey: ["approval", "overview"],
@@ -73,9 +76,14 @@ export default function ApprovalsPage() {
               </Link>
             </Button>
           )}
+          <Button variant="outline" className="gap-1.5" onClick={() => setBgOpen(true)}>
+            <LifeBuoy className="h-4 w-4 text-orange-500" /> 应急访问
+          </Button>
           <CreateRequestDialog />
         </div>
       </header>
+
+      <EmergencyAccessDialog open={bgOpen} onOpenChange={setBgOpen} />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard

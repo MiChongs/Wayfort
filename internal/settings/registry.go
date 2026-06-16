@@ -28,6 +28,8 @@ var groups = []Group{
 		Subtitle: "一次性容器终端的镜像与资源限额", Integrations: []string{"docker_anon"}},
 	{ID: "archive", Title: "审批归档", Icon: "archive", Order: 90,
 		Subtitle: "审批账本离线归档到 S3 兼容对象存储", Integrations: []string{"s3archive"}},
+	{ID: "break_glass", Title: "应急访问", Icon: "life-buoy", Order: 92,
+		Subtitle: "break-glass 应急访问的全局开关、时窗上限、自助破玻璃与强制复核"},
 	{ID: "office", Title: "在线文档", Icon: "file-text", Order: 100,
 		Subtitle: "OnlyOffice / Collabora 在浏览器内编辑文档", Integrations: []string{"office"}},
 	{ID: "watermark", Title: "界面水印", Icon: "droplets", Order: 105,
@@ -384,6 +386,19 @@ var specs = []Spec{
 		DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "攒批推送归档的最大间隔。"},
 	{Key: "approval.archive.batch_size", Group: "archive", Type: TypeInt, Label: "推送批量条数", Advanced: true,
 		Min: f(1), Max: f(4096), DependsOn: "approval.archive.enabled", DependsValue: "true", Help: "单批推送的事件条数。"},
+
+	// ---------------- 应急访问 break-glass (request-time → live) ----------------
+	{Key: "break_glass.enabled", Group: "break_glass", Type: TypeBool, Label: "启用应急访问", Live: true,
+		Help: "总开关。关闭后所有应急访问激活接口返回 503，进行中的窗口仍按既定到期回收。"},
+	{Key: "break_glass.allow_fail_open", Group: "break_glass", Type: TypeBool, Label: "允许自助破玻璃 (fail-open)", Live: true,
+		DependsOn: "break_glass.enabled", DependsValue: "true",
+		Help: "全局允许「无需事前审批、自助立即开通」的应急访问；与每条策略的同名开关同时为真才生效。开通即向安全团队告警并强制事后复核。默认关闭。"},
+	{Key: "break_glass.max_duration", Group: "break_glass", Type: TypeDuration, Label: "时窗上限", Live: true,
+		DependsOn: "break_glass.enabled", DependsValue: "true",
+		Help: "任何一次应急访问的最大有效时长上限；实际时窗取 策略 ∩ 此值 ∩ 审批模板 的最小者。"},
+	{Key: "break_glass.require_review", Group: "break_glass", Type: TypeBool, Label: "强制事后复核", Live: true,
+		DependsOn: "break_glass.enabled", DependsValue: "true",
+		Help: "强制每次应急访问结束后必须由他人复核签字才算闭环（合规覆盖，优先于单条策略设置）。"},
 
 	// ---------------- 在线文档 (boot-wired) ----------------
 	{Key: "office.enabled", Group: "office", Type: TypeBool, Label: "启用在线文档编辑", Integration: "office",

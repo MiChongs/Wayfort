@@ -7,6 +7,7 @@ const nextConfig = {
   // web/src/app and can't find `next/package.json`, failing the build with
   // "Next.js inferred your workspace root, but it may not be correct".
   // https://nextjs.org/docs/app/api-reference/config/next-config-js/turbopack#root-directory
+  allowedDevOrigins: ['trycloudflare.com'],
   turbopack: {
     root: import.meta.dirname,
   },

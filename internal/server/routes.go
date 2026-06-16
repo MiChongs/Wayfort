@@ -14,6 +14,7 @@ import (
 	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
 	"github.com/michongs/jumpserver-anonymous/internal/sftp"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	"github.com/michongs/jumpserver-anonymous/pkg/edition"
 )
 
 // firewallHandler / dockerHandler — 503-stub pattern shared with insights:
@@ -273,6 +274,17 @@ type Routes struct {
 	// under /api/v1/setup/kms/*.
 	KMS *api.KMSHandler
 
+	// Edition / licensing. Provider feeds the per-feature route gates (feat());
+	// EditionAPI serves /me/edition + the super-admin install/remove surface.
+	// In the open-source build this is the Community provider (grants nothing).
+	Edition    edition.Provider
+	EditionAPI *api.EditionHandler
+
+	// Access control — the consolidated 访问控制 rule module (CRUD over the unified
+	// AccessRule model: command_filter / user_login / asset_connection_review /
+	// data_masking / connection_method). Nil disables the admin CRUD routes.
+	AccessRule *api.AccessRuleHandler
+
 	// System settings — DB-backed runtime configuration center. Super-admin
 	// only (gated with the system:admin permission). Nil when not wired.
 	Settings *api.SettingsHandler
@@ -285,6 +297,10 @@ type Routes struct {
 	// disabled (the routes are still registered and return 503 stubs the
 	// same way insights/firewall do).
 	Approval *api.ApprovalHandler
+
+	// Break-glass (应急访问) — emergency-access governance over the approval
+	// engine. Nil when unwired; every handler degrades to 503.
+	BreakGlass *api.BreakGlassHandler
 
 	// Phase 17 — visual DB browser. Backs the structured schema /
 	// table-rows / SQL editor UI; complements the legacy /ws/dbcli
@@ -336,6 +352,10 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		Blocklist: rt.Blocklist,
 	})
 	perm := func(p string) gin.HandlerFunc { return auth.RequirePermission(p, rt.Resolver) }
+	// feat gates a route on an edition feature (independent of RBAC — even a
+	// super-admin is blocked when the feature isn't licensed). A nil Authority
+	// allows through, so an un-licensed build behaves exactly as before.
+	feat := func(f string) gin.HandlerFunc { return edition.RequireFeature(f, rt.Edition) }
 
 	// OnlyOffice Document Server callbacks — authorized by the signed
 	// per-document token in ?t=, not the user JWT (the Document Server pulls
@@ -390,6 +410,11 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		me.GET("/nodes", rt.Me.VisibleNodes)
 		me.GET("/directory", rt.AccessTree.MyDirectory)
 		me.GET("/access", rt.Dashboard.Access)
+		// Edition / entitlements — readable by every authenticated user (no
+		// secrets); the frontend reads this to gate nav + show an upsell banner.
+		if rt.EditionAPI != nil {
+			me.GET("/edition", rt.EditionAPI.Get)
+		}
 
 		// Phase 11 — terminal personalization. User-scoped (no admin
 		// perm needed): every authenticated user manages their own
@@ -497,20 +522,24 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			admin.DELETE("/domains/:id", perm(auth.PermDomainManage), rt.Domain.Delete)
 		}
 		// Reverse-connect Gateway Agents — admin lifecycle (security-architecture.md §4).
+		// Reverse-connect Gateway Agents — Enterprise feature (reverse_agent).
 		if rt.Agent != nil {
-			admin.GET("/domains/:id/agents", perm(auth.PermAgentManage), rt.Agent.List)
-			admin.POST("/domains/:id/agents/enroll-token", perm(auth.PermAgentManage), rt.Agent.GenerateEnrollToken)
-			admin.POST("/agents/:agentId/activate", perm(auth.PermAgentManage), rt.Agent.Activate)
-			admin.POST("/agents/:agentId/revoke", perm(auth.PermAgentManage), rt.Agent.Revoke)
-			admin.DELETE("/agents/:agentId", perm(auth.PermAgentManage), rt.Agent.Delete)
+			ra := admin.Group("", feat(edition.FeatureReverseAgent))
+			ra.GET("/domains/:id/agents", perm(auth.PermAgentManage), rt.Agent.List)
+			ra.POST("/domains/:id/agents/enroll-token", perm(auth.PermAgentManage), rt.Agent.GenerateEnrollToken)
+			ra.POST("/agents/:agentId/activate", perm(auth.PermAgentManage), rt.Agent.Activate)
+			ra.POST("/agents/:agentId/revoke", perm(auth.PermAgentManage), rt.Agent.Revoke)
+			ra.DELETE("/agents/:agentId", perm(auth.PermAgentManage), rt.Agent.Delete)
 			// Agent面 status + install-command composition for the console.
-			admin.GET("/agent-gateway/info", perm(auth.PermAgentManage), rt.Agent.Info)
+			ra.GET("/agent-gateway/info", perm(auth.PermAgentManage), rt.Agent.Info)
 		}
 		// Internal PKI — CA metadata + issued-cert ledger (security-architecture.md §6).
+		// Part of the reverse_agent feature (the agents' mTLS trust root).
 		if rt.PKI != nil {
-			admin.GET("/pki/ca", perm(auth.PermPKIManage), rt.PKI.CA)
-			admin.GET("/pki/certificates", perm(auth.PermPKIManage), rt.PKI.Certificates)
-			admin.POST("/pki/certificates/:serial/revoke", perm(auth.PermPKIManage), rt.PKI.Revoke)
+			rp := admin.Group("", feat(edition.FeatureReverseAgent))
+			rp.GET("/pki/ca", perm(auth.PermPKIManage), rt.PKI.CA)
+			rp.GET("/pki/certificates", perm(auth.PermPKIManage), rt.PKI.Certificates)
+			rp.POST("/pki/certificates/:serial/revoke", perm(auth.PermPKIManage), rt.PKI.Revoke)
 		}
 		// Phase 10 — proxy chain validate / test / templates.
 		admin.POST("/proxies/chains/validate", perm(auth.PermProxyManage), rt.Proxy.ValidateChain)
@@ -600,6 +629,25 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			admin.DELETE("/oidc-clients/:id", perm(auth.PermOIDCManage), rt.OIDCClient.Delete)
 		}
 
+		// Edition / licensing — super-admin install/remove + admin view.
+		if rt.EditionAPI != nil {
+			eg := admin.Group("/edition", perm(auth.PermSystemAdmin))
+			eg.GET("", rt.EditionAPI.AdminGet)
+			eg.POST("/license", rt.EditionAPI.Install)
+			eg.DELETE("/license", rt.EditionAPI.Remove)
+		}
+
+		// Access control — consolidated 访问控制 rule CRUD. One permission gates all
+		// five rule kinds; X-Pack kinds are additionally edition-gated in the
+		// handler (and hidden in the UI without the feature).
+		if rt.AccessRule != nil {
+			acg := admin.Group("/access-rules", perm(auth.PermAccessControlManage))
+			acg.GET("", rt.AccessRule.List)
+			acg.POST("", rt.AccessRule.Create)
+			acg.PATCH("/:id", rt.AccessRule.Update)
+			acg.DELETE("/:id", rt.AccessRule.Delete)
+		}
+
 		// System settings — DB-backed runtime configuration center. Gated on
 		// system:admin (super-admin only): these knobs reshape auth policy,
 		// secret handling and every protocol gateway.
@@ -642,11 +690,13 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// Security center — anomalous-login list/stats + GeoIP database status and
 		// manual refresh. Reads gate on audit:read; the GeoIP refresh (outbound
 		// download) gates on system:admin.
+		// Security analytics (anomaly + GeoIP) — Enterprise feature.
 		if rt.Security != nil {
-			ops.GET("/admin/security/anomalies", perm(auth.PermAuditRead), rt.Security.ListAnomalies)
-			ops.GET("/admin/security/anomalies/stats", perm(auth.PermAuditRead), rt.Security.AnomalyStats)
-			ops.GET("/admin/security/geoip/status", perm(auth.PermAuditRead), rt.Security.GeoIPStatus)
-			ops.POST("/admin/security/geoip/refresh", perm(auth.PermSystemAdmin), rt.Security.GeoIPRefresh)
+			sec := ops.Group("", feat(edition.FeatureSecurityAnalytics))
+			sec.GET("/admin/security/anomalies", perm(auth.PermAuditRead), rt.Security.ListAnomalies)
+			sec.GET("/admin/security/anomalies/stats", perm(auth.PermAuditRead), rt.Security.AnomalyStats)
+			sec.GET("/admin/security/geoip/status", perm(auth.PermAuditRead), rt.Security.GeoIPStatus)
+			sec.POST("/admin/security/geoip/refresh", perm(auth.PermSystemAdmin), rt.Security.GeoIPRefresh)
 		}
 		ops.GET("/nodes/:id/sftp/ls", rt.SFTP.List)
 		ops.GET("/nodes/:id/sftp/stat", rt.SFTP.Stat)
@@ -850,7 +900,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.
-		ops.POST("/desktop/sessions", desktopControl(rt).Start)
+		ops.POST("/desktop/sessions", feat(edition.FeatureDesktop), desktopControl(rt).Start)
 		ops.DELETE("/desktop/sessions/:session_id", desktopControl(rt).End)
 		ops.GET("/desktop/stats", desktopControl(rt).Stats)
 		// Per-user file drive (redirected into RDP sessions). Each user only
@@ -874,14 +924,16 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// require admin because the ingested AuthSecret is a
 		// credential that grants decrypt-everything-this-gateway-
 		// owns access.
+		// Advanced KMS (multi-provider setup / rotation / rewrap) — Flagship feature.
 		if rt.KMS != nil {
-			ops.GET("/setup/kms/status", auth.RequireAdmin(), rt.KMS.Status)
-			ops.GET("/setup/kms", auth.RequireAdmin(), rt.KMS.List)
-			ops.POST("/setup/kms", auth.RequireAdmin(), rt.KMS.Create)
-			ops.POST("/setup/kms/:id/test", auth.RequireAdmin(), rt.KMS.Test)
-			ops.POST("/setup/kms/:id/promote", auth.RequireAdmin(), rt.KMS.Promote)
-			ops.DELETE("/setup/kms/:id", auth.RequireAdmin(), rt.KMS.Delete)
-			ops.POST("/setup/kms/rewrap", auth.RequireAdmin(), rt.KMS.Rewrap)
+			km := ops.Group("", feat(edition.FeatureAdvancedKMS))
+			km.GET("/setup/kms/status", auth.RequireAdmin(), rt.KMS.Status)
+			km.GET("/setup/kms", auth.RequireAdmin(), rt.KMS.List)
+			km.POST("/setup/kms", auth.RequireAdmin(), rt.KMS.Create)
+			km.POST("/setup/kms/:id/test", auth.RequireAdmin(), rt.KMS.Test)
+			km.POST("/setup/kms/:id/promote", auth.RequireAdmin(), rt.KMS.Promote)
+			km.DELETE("/setup/kms/:id", auth.RequireAdmin(), rt.KMS.Delete)
+			km.POST("/setup/kms/rewrap", auth.RequireAdmin(), rt.KMS.Rewrap)
 		}
 
 		// Phase 15 — Approval Service. The Create / List / Get / Cancel
@@ -938,6 +990,28 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ag.POST("/subscriptions", perm(auth.PermApprovalSubscribeManage), rt.Approval.CreateSubscription)
 			ag.PATCH("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.UpdateSubscription)
 			ag.DELETE("/subscriptions/:id", perm(auth.PermApprovalSubscribeManage), rt.Approval.DeleteSubscription)
+		}
+
+		// Break-glass (应急访问). Self-service activate / list-mine / get for any
+		// authenticated user (the policy + global gates decide what actually
+		// happens). Governance (cross-user list, stats, policy CRUD, post-use
+		// review) is gated on break_glass:manage; the kill-switch (revoke) is
+		// gated higher on system:admin — privilege separation so a break-glass
+		// operator can never silently revoke the audit trail of their own access.
+		// Static paths are registered before "/:id" so they win the route match.
+		if rt.BreakGlass != nil {
+			bg := ops.Group("/break-glass", feat(edition.FeatureBreakGlass))
+			bg.POST("/activations", rt.BreakGlass.Activate)
+			bg.GET("/activations/mine", rt.BreakGlass.ListMine)
+			bg.GET("/activations", perm(auth.PermBreakGlassManage), rt.BreakGlass.List)
+			bg.GET("/stats", perm(auth.PermBreakGlassManage), rt.BreakGlass.Stats)
+			bg.GET("/activations/:id", rt.BreakGlass.Get)
+			bg.POST("/activations/:id/revoke", perm(auth.PermSystemAdmin), rt.BreakGlass.Revoke)
+			bg.POST("/activations/:id/review", perm(auth.PermBreakGlassManage), rt.BreakGlass.SubmitReview)
+			bg.GET("/policies", perm(auth.PermBreakGlassManage), rt.BreakGlass.ListPolicies)
+			bg.POST("/policies", perm(auth.PermBreakGlassManage), rt.BreakGlass.CreatePolicy)
+			bg.PATCH("/policies/:id", perm(auth.PermBreakGlassManage), rt.BreakGlass.UpdatePolicy)
+			bg.DELETE("/policies/:id", perm(auth.PermBreakGlassManage), rt.BreakGlass.DeletePolicy)
 		}
 		ops.GET("/ws/v2/desktop/:session_id", desktopWS(rt).Handle)
 		ops.GET("/ws/ssh/:node_id", rt.WS.HandleNodeSSH)
@@ -1010,7 +1084,7 @@ func (rt *Routes) Mount(r *gin.Engine) {
 
 	// AI assistant subsystem
 	if rt.AI != nil && rt.AI.Enabled {
-		aiGroup := authed.Group("/ai")
+		aiGroup := authed.Group("/ai", feat(edition.FeatureAI))
 		aiGroup.GET("/providers", perm(auth.PermAIUse), rt.AI.Provider.List)
 		aiGroup.POST("/providers", perm(auth.PermAIProviderUser), rt.AI.Provider.Create)
 		aiGroup.PATCH("/providers/:id", perm(auth.PermAIProviderUser), rt.AI.Provider.Update)

@@ -225,9 +225,25 @@ func (r *Resolver) granteesForUser(ctx context.Context, user *model.User) map[mo
 	return granteeIDs
 }
 
+// GranteesForUser is the exported form of granteesForUser: it loads the user and
+// returns the (granteeType → ids) map with department / group ancestors and
+// roles expanded. Used by the access-control rule engine to match a rule's USER
+// dimension (user / group / department / role selectors) without re-implementing
+// the ancestor-expansion logic.
+func (r *Resolver) GranteesForUser(ctx context.Context, userID uint64) (map[model.GranteeType][]uint64, error) {
+	user, err := r.users.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return map[model.GranteeType][]uint64{}, nil
+	}
+	return r.granteesForUser(ctx, user), nil
+}
+
 type accessSet struct {
-	All     map[string]bool      `json:"all"`
-	Nodes   map[uint64][]string  `json:"nodes"`
+	All   map[string]bool     `json:"all"`
+	Nodes map[uint64][]string `json:"nodes"`
 }
 
 func newAccessSet() *accessSet {

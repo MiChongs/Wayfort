@@ -129,6 +129,7 @@ func (g *Gateway) runTelnetSession(ctx context.Context, conn *websocket.Conn, se
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
 			SessionID: sessionID, NodeID: &nodeID, ClientIP: clientIP, Payload: cmd,
 		})
+		g.applyCommandRules(ctx, sess, claims.UserID, nodeID, clientIP, sessionID, claims.Username, cmd)
 	})
 	sess.OnCommand(tracker.feed)
 

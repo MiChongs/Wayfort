@@ -257,6 +257,112 @@ export interface AccessInfo {
   permissions: string[]
 }
 
+// --- edition / licensing ---
+
+export type EditionTier = "community" | "enterprise" | "flagship"
+export type EditionState = "community" | "active" | "grace" | "expired" | "invalid"
+export type EditionFeature =
+  | "break_glass"
+  | "security_analytics"
+  | "reverse_agent"
+  | "ai"
+  | "desktop"
+  | "advanced_kms"
+  | "connection_review"
+  | "data_masking"
+  | "connection_method"
+
+// Slim payload from GET /me/edition — only what nav-gating + the banner need.
+export interface EditionInfo {
+  edition: EditionTier
+  state: EditionState
+  features: Partial<Record<EditionFeature, boolean>>
+  message?: string
+}
+
+// --- access control (consolidated 访问控制 rule module) ---
+
+export type AccessRuleKind =
+  | "command_filter"
+  | "user_login"
+  | "asset_connection_review"
+  | "data_masking"
+  | "connection_method"
+
+export type AccessRuleAction = "accept" | "deny" | "review" | "notify" | "alert"
+
+// AccessRuleScope is the decoded form of a dimension column (users/assets/
+// accounts). Empty/undefined column ⇒ {all:true}. Account dimension = credential.
+export interface AccessRuleScope {
+  all?: boolean
+  user_ids?: number[]
+  group_ids?: number[]
+  dept_ids?: number[]
+  role_ids?: number[]
+  node_ids?: number[]
+  asset_group_ids?: number[]
+  tag_ids?: number[]
+  credential_ids?: number[]
+}
+
+export interface AccessRuleTimeWindow {
+  weekdays?: number[] // 0=Sun..6=Sat; empty = every day
+  start?: string // "HH:MM"
+  end?: string
+}
+
+export interface AccessRule {
+  id: number
+  kind: AccessRuleKind
+  name: string
+  description?: string
+  priority: number
+  active: boolean
+  is_system?: boolean
+  users?: string // JSON-encoded AccessRuleScope
+  assets?: string
+  accounts?: string
+  ip_rule?: string
+  time_window?: string // JSON-encoded AccessRuleTimeWindow
+  action: AccessRuleAction
+  spec?: string
+  valid_from?: string
+  valid_to?: string
+  created_at?: string
+  updated_at?: string
+}
+
+export interface AccessRuleInput {
+  kind: AccessRuleKind
+  name: string
+  description?: string
+  priority?: number
+  active?: boolean
+  users?: string
+  assets?: string
+  accounts?: string
+  ip_rule?: string
+  time_window?: string
+  action: AccessRuleAction
+  spec?: string
+}
+
+// Richer payload from GET /admin/edition (super-admin license manager).
+export interface AdminEditionInfo {
+  edition: EditionTier
+  state: EditionState
+  licensed: boolean
+  supported: boolean
+  features: Partial<Record<EditionFeature, boolean>>
+  limits?: Record<string, number>
+  customer?: string
+  license_id?: string
+  issued_at?: string
+  expires_at?: string
+  grace_until?: string
+  message?: string
+}
+
 export interface DashKV {
   name: string
   value: number
@@ -2716,4 +2822,78 @@ export interface SettingsAudit {
   actor_id: number
   actor_name: string
   created_at: string
+}
+
+// ----- Break-glass (应急访问) -----
+
+export type BreakGlassMode = "pre_approved" | "fail_open"
+export type BreakGlassStatus =
+  | "pending"
+  | "active"
+  | "expired"
+  | "revoked"
+  | "rejected"
+  | "under_review"
+  | "closed"
+export type BreakGlassScopeType = "all" | "tag" | "node"
+export type BreakGlassReviewVerdict = "justified" | "unjustified" | "inconclusive"
+
+export interface BreakGlassPolicy {
+  id: number
+  name: string
+  description?: string
+  enabled: boolean
+  scope_type: BreakGlassScopeType
+  scope_id?: number | null
+  max_duration_sec: number
+  require_incident_ref: boolean
+  require_dual_auth: boolean
+  allow_fail_open: boolean
+  require_post_use_review: boolean
+  created_by?: number
+  created_at: string
+  updated_at: string
+}
+
+export interface BreakGlassActivation {
+  id: string
+  policy_id?: number | null
+  policy_name?: string
+  requester_id: number
+  requester_name: string
+  resource_type: string
+  resource_id: string
+  resource_name?: string
+  justification: string
+  incident_ref?: string
+  mode: BreakGlassMode
+  status: BreakGlassStatus
+  approval_request_id?: string
+  approval_grant_id?: string
+  asset_grant_id?: number | null
+  activated_at?: string | null
+  not_after?: string | null
+  revoked_by?: number | null
+  revoked_by_name?: string
+  revoked_at?: string | null
+  revoke_reason?: string
+  review_required: boolean
+  reviewer_id?: number | null
+  reviewer_name?: string
+  reviewed_at?: string | null
+  review_verdict?: BreakGlassReviewVerdict
+  review_comment?: string
+  client_ip?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface BreakGlassStats {
+  active: number
+  pending: number
+  under_review: number
+  total: number
+  today: number
+  revoked_total: number
+  fail_open_total: number
 }

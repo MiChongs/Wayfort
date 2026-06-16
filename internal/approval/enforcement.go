@@ -39,6 +39,54 @@ type EnforcementCheck struct {
 	// (e.g. "connect", "sftp_write", "credential_use"). Pass "" to
 	// match any action covered by the grant.
 	Action string
+	// CredentialID + ClientIP feed the consolidated access-control rule layer
+	// (kind=asset_connection_review), which can match on the account (credential)
+	// and source IP dimensions. Both optional — zero/empty means "not provided",
+	// in which case account/IP-restricted rules simply don't match (the boolean
+	// RequiresApproval* flags still apply).
+	CredentialID uint64
+	ClientIP     string
+}
+
+// ConnReviewAction is the verdict the consolidated access-control rule layer
+// returns for a connection (kind=asset_connection_review).
+type ConnReviewAction string
+
+const (
+	ConnReviewNone   ConnReviewAction = ""       // no rule matched → fall back to flags
+	ConnReviewAccept ConnReviewAction = "accept" // explicit exemption: no review even if a flag is set
+	ConnReviewDeny   ConnReviewAction = "deny"   // hard block
+	ConnReviewReview ConnReviewAction = "review" // force review even if no flag is set
+	ConnReviewNotify ConnReviewAction = "notify" // non-blocking
+	ConnReviewAlert  ConnReviewAction = "alert"  // non-blocking
+)
+
+// ConnReviewInput carries the facts the rule layer matches a connection against.
+type ConnReviewInput struct {
+	UserID       uint64
+	NodeID       uint64
+	CredentialID uint64
+	ClientIP     string
+}
+
+// ConnReviewRules lets CheckEnforced consult the consolidated access-control rule
+// engine (kind=asset_connection_review) so admins can drive "is review required?"
+// by user × asset × account rules instead of only the per-resource flags.
+// Implemented by an adapter over accesscontrol.Engine; nil = flags only.
+type ConnReviewRules interface {
+	ConnectionReview(ctx context.Context, in ConnReviewInput) ConnReviewAction
+}
+
+// isConnectFamily reports whether a business type represents connecting to /
+// operating on a node (so the asset_connection_review rule layer applies).
+func isConnectFamily(bt model.ApprovalBusinessType) bool {
+	switch bt {
+	case model.ApprovalBizAssetAccess, model.ApprovalBizCommandExec,
+		model.ApprovalBizSessionExtend, model.ApprovalBizSessionElevate,
+		model.ApprovalBizVendorAccess, model.ApprovalBizFileTransfer:
+		return true
+	}
+	return false
 }
 
 // EnforcementResult is what the service returns. Allowed=true is the only
@@ -80,19 +128,49 @@ type EnforcementResult struct {
 // (e.g. "every prod-tagged node requires approval for ssh_exec") via the
 // template selector; the Enforcer interface is the seam for that.
 func (s *Service) CheckEnforced(ctx context.Context, chk EnforcementCheck) (EnforcementResult, error) {
-	enf := s.enforcer
-	if enf == nil {
-		// No enforcer wired → nothing is gated. Behaviour matches the
-		// pre-Phase-16 codebase.
-		return EnforcementResult{Required: false, Allowed: true}, nil
+	// Access-control rule layer (asset_connection_review) — additive on top of
+	// the per-resource flags. Only consulted for connect-family business types on
+	// a node. A decisive rule (deny/review/accept) overrides the flag; anything
+	// else falls back to the boolean enforcer so existing behaviour is preserved.
+	ruleAction := ConnReviewNone
+	if s.connRules != nil && chk.ResourceType == "node" && isConnectFamily(chk.BusinessType) {
+		nodeID, _ := strconv.ParseUint(chk.ResourceID, 10, 64)
+		ruleAction = s.connRules.ConnectionReview(ctx, ConnReviewInput{
+			UserID:       chk.UserID,
+			NodeID:       nodeID,
+			CredentialID: chk.CredentialID,
+			ClientIP:     chk.ClientIP,
+		})
+		if ruleAction == ConnReviewDeny {
+			return EnforcementResult{Required: true, Allowed: false,
+				Reason: "访问控制规则拒绝了此连接"}, nil
+		}
 	}
-	required, err := enf.IsEnforced(ctx, chk.BusinessType, chk.ResourceType, chk.ResourceID)
-	if err != nil {
-		// Fail closed: an unreachable repo / DB hiccup must not silently
-		// open the gate. The caller still gets Allowed=false with a
-		// reason so the audit trail captures the denial.
-		return EnforcementResult{Required: true, Allowed: false,
-			Reason: "approval gate lookup failed: " + err.Error()}, err
+
+	var required bool
+	switch ruleAction {
+	case ConnReviewReview:
+		required = true // a rule forces review regardless of the flag
+	case ConnReviewAccept:
+		required = false // a rule explicitly exempts this connection
+	default:
+		// No decisive rule (none / notify / alert) → fall back to the
+		// per-resource RequiresApproval* flags.
+		enf := s.enforcer
+		if enf == nil {
+			// No enforcer wired → nothing is gated. Behaviour matches the
+			// pre-Phase-16 codebase.
+			return EnforcementResult{Required: false, Allowed: true}, nil
+		}
+		r, err := enf.IsEnforced(ctx, chk.BusinessType, chk.ResourceType, chk.ResourceID)
+		if err != nil {
+			// Fail closed: an unreachable repo / DB hiccup must not silently
+			// open the gate. The caller still gets Allowed=false with a
+			// reason so the audit trail captures the denial.
+			return EnforcementResult{Required: true, Allowed: false,
+				Reason: "approval gate lookup failed: " + err.Error()}, err
+		}
+		required = r
 	}
 	if !required {
 		return EnforcementResult{Required: false, Allowed: true}, nil
@@ -154,7 +232,7 @@ type repoEnforcer struct {
 	nodes *repo.NodeRepo
 	creds *repo.CredentialRepo
 
-	cache   sync.Map // map[cacheKey]cachedFlag
+	cache    sync.Map // map[cacheKey]cachedFlag
 	cacheTTL time.Duration
 }
 
@@ -162,10 +240,10 @@ type cacheKey struct {
 	rt, rid string
 }
 type cachedFlag struct {
-	connect    bool
-	fileXfer   bool
-	credUse    bool
-	expiresAt  time.Time
+	connect   bool
+	fileXfer  bool
+	credUse   bool
+	expiresAt time.Time
 }
 
 // NewRepoEnforcer is the default constructor. Pass non-nil repos; the

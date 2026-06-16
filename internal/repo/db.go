@@ -178,6 +178,12 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.ApprovalGrant{},
 		&model.ApprovalSubscription{},
 
+		// Break-glass (应急访问) — governance layer over the approval engine.
+		// Migrated after approval since activations reference approval request /
+		// grant ids (plain string columns, no FK constraint).
+		&model.BreakGlassPolicy{},
+		&model.BreakGlassActivation{},
+
 		// Phase 12 — SSH power
 		&model.SSHKey{},
 		&model.KnownHost{},
@@ -187,6 +193,9 @@ func AutoMigrate(db *gorm.DB) error {
 		// System settings — DB-backed runtime configuration + change trail.
 		&model.SystemSetting{},
 		&model.SystemSettingAudit{},
+
+		// Access control — unified rule model for the consolidated 访问控制 module.
+		&model.AccessRule{},
 	)
 }
 

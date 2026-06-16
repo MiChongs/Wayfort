@@ -73,6 +73,41 @@ func AccountLockedEmail(username string, minutes int) (subject, htmlBody, text s
 	return
 }
 
+// BreakGlassEmail builds the security-team alert for an emergency-access event.
+// `action` is a short Chinese verb ("已激活" / "已被吊销" / "已到期"); `mode` is the
+// human mode label ("自助破玻璃" / "审批激活"). `until` is the access window end
+// (zero when the access is already closed).
+func BreakGlassEmail(action, requester, resource, incident, justification, mode string, until time.Time) (subject, htmlBody, text string) {
+	subject = fmt.Sprintf("[JumpServer] 应急访问%s：%s → %s", action, requester, resource)
+	untilStr := "—"
+	if !until.IsZero() {
+		untilStr = until.Format("2006-01-02 15:04:05")
+	}
+	inc := incident
+	if inc == "" {
+		inc = "（未填写）"
+	}
+	just := justification
+	if just == "" {
+		just = "（未填写）"
+	}
+	text = fmt.Sprintf(
+		"应急访问（break-glass）%s。\n申请人：%s\n目标资产：%s\n方式：%s\n工单/事件号：%s\n到期：%s\n申请理由：%s\n\n请在「应急访问」治理台核查会话录像并完成事后复核。",
+		action, requester, resource, mode, inc, untilStr, just)
+	htmlBody = fmt.Sprintf(`<p><b>应急访问（break-glass）%s。</b></p>
+<ul>
+  <li>申请人：<b>%s</b></li>
+  <li>目标资产：<b>%s</b></li>
+  <li>方式：%s</li>
+  <li>工单/事件号：%s</li>
+  <li>到期：%s</li>
+  <li>申请理由：%s</li>
+</ul>
+<p>请在「应急访问」治理台核查会话录像并完成事后复核。</p>`,
+		esc(action), esc(requester), esc(resource), esc(mode), esc(inc), esc(untilStr), esc(just))
+	return
+}
+
 func esc(s string) string { return html.EscapeString(s) }
 
 // humanizeDuration renders a duration as a short Chinese string (分钟/小时).

@@ -33,6 +33,8 @@ import type {
   KBIngestStatus,
   AccessExplanation,
   AccessInfo,
+  EditionInfo,
+  AdminEditionInfo,
   WatermarkRuntime,
   DashboardSummary,
   NodeListParams,
@@ -202,6 +204,8 @@ export const meService = {
   access: () => api<AccessInfo>("GET", "/me/access"),
   // Resolved anti-leak watermark policy + this user's masked identity.
   watermark: () => api<WatermarkRuntime>("GET", "/me/watermark"),
+  // Current edition + entitlement snapshot (which paid features are unlocked).
+  edition: () => api<EditionInfo>("GET", "/me/edition"),
   updateProfile: (body: Partial<User>) => api<User>("PATCH", "/me/profile", { body }),
   changePassword: (old_password: string, new_password: string) =>
     api<void>("POST", "/me/password", { body: { old_password, new_password } }),
@@ -2114,4 +2118,83 @@ export const settingsService = {
   test: (id: string) =>
     api<{ ok: boolean; integration: IntegrationStatus }>("POST", `/settings/integrations/${id}/test`),
   audits: () => api<{ ok: boolean; audits: SettingsAudit[] }>("GET", "/settings/audits"),
+}
+
+// ---------- Access control (consolidated 访问控制 rule module) ----------
+type ACRule = import("./types").AccessRule
+type ACRuleInput = import("./types").AccessRuleInput
+type ACRuleKind = import("./types").AccessRuleKind
+export const accessRuleService = {
+  list: (kind?: ACRuleKind) =>
+    api<{ rules: ACRule[] }>("GET", `/access-rules${kind ? `?kind=${kind}` : ""}`),
+  create: (body: ACRuleInput) => api<ACRule>("POST", "/access-rules", { body }),
+  update: (id: number, body: ACRuleInput) => api<ACRule>("PATCH", `/access-rules/${id}`, { body }),
+  remove: (id: number) => api<{ ok: boolean }>("DELETE", `/access-rules/${id}`),
+}
+
+// ---------- Edition / licensing (super-admin) ----------
+export const editionAdminService = {
+  get: () => api<AdminEditionInfo>("GET", "/edition"),
+  install: (license: string) => api<AdminEditionInfo>("POST", "/edition/license", { body: { license } }),
+  remove: () => api<AdminEditionInfo>("DELETE", "/edition/license"),
+}
+
+// ---------- Break-glass (应急访问) ----------
+// Emergency-access governance over the approval engine. Activating is
+// self-service (any authenticated user); the governance reads + policy CRUD +
+// post-use review need break_glass:manage; revoke needs system:admin.
+
+type BGActivation = import("./types").BreakGlassActivation
+type BGPolicy = import("./types").BreakGlassPolicy
+type BGStats = import("./types").BreakGlassStats
+type BGMode = import("./types").BreakGlassMode
+type BGVerdict = import("./types").BreakGlassReviewVerdict
+
+export const breakGlassService = {
+  activate: (body: {
+    node_id: number
+    policy_id?: number
+    justification: string
+    incident_ref?: string
+    mode?: BGMode
+    duration_sec?: number
+  }) => api<{ activation: BGActivation }>("POST", "/break-glass/activations", { body }),
+  mine: (opts: { status?: string; limit?: number; offset?: number } = {}) =>
+    api<{ activations: BGActivation[]; total: number }>("GET", "/break-glass/activations/mine", {
+      query: opts,
+    }),
+  get: (id: string) =>
+    api<{ activation: BGActivation }>("GET", `/break-glass/activations/${id}`),
+  list: (
+    opts: {
+      status?: string
+      mode?: string
+      resource_id?: string
+      requester_id?: number
+      q?: string
+      from?: string
+      to?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) =>
+    api<{ activations: BGActivation[]; total: number }>("GET", "/break-glass/activations", {
+      query: opts as Record<string, string | number | undefined>,
+    }),
+  stats: () => api<BGStats>("GET", "/break-glass/stats"),
+  revoke: (id: string, reason: string) =>
+    api<{ activation: BGActivation }>("POST", `/break-glass/activations/${id}/revoke`, {
+      body: { reason },
+    }),
+  review: (id: string, verdict: BGVerdict, comment: string) =>
+    api<{ activation: BGActivation }>("POST", `/break-glass/activations/${id}/review`, {
+      body: { verdict, comment },
+    }),
+  policies: () => api<{ policies: BGPolicy[] }>("GET", "/break-glass/policies"),
+  createPolicy: (body: Partial<BGPolicy>) =>
+    api<{ policy: BGPolicy }>("POST", "/break-glass/policies", { body }),
+  updatePolicy: (id: number, body: Partial<BGPolicy>) =>
+    api<{ policy: BGPolicy }>("PATCH", `/break-glass/policies/${id}`, { body }),
+  deletePolicy: (id: number) =>
+    api<{ ok: boolean }>("DELETE", `/break-glass/policies/${id}`),
 }

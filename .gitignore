@@ -41,9 +41,20 @@ bin/
 # baoyu-design HTML artifacts
 designs/
 
+# License signing PRIVATE keys — must never be committed.
+*license_ed25519.key
+*.lic
+# PRIVATE enterprise overlay — lives in a SEPARATE private repo, never in the
+# open-source core. (pkg/edition holds only the public interface + Community
+# default; this dir holds the real verifier/key/signer.)
+/enterprise/
+
 # Compiled binaries — never commit build artifacts.
 /gateway-agent.exe
 *.exe
 # scripts/build-agent.sh output (prebuilt gateway-agent binaries staged for the
 # /dl/gateway-agent download endpoint). Operators stage these at deploy time.
 /dist/
+
+# 产品官网(独立的 Vite + React 站点)——按要求不纳入主仓库版本控制。
+/website/

@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
 	"github.com/michongs/jumpserver-anonymous/internal/asset"
 	"github.com/michongs/jumpserver-anonymous/internal/model"
 	"github.com/michongs/jumpserver-anonymous/internal/webssh"
@@ -44,6 +45,9 @@ type Service struct {
 	logger   *zap.Logger
 	access   accessChecker
 	registry *Registry
+	// mask is the access-control data-masking engine (P6, X-Pack). Nil → no
+	// masking. Fail-opens when the feature is unlicensed.
+	mask *accesscontrol.Engine
 
 	mu    sync.Mutex
 	pools map[string]*pool
@@ -230,7 +234,43 @@ func (s *Service) Query(ctx context.Context, nodeID uint64, userID uint64,
 	}
 	out.RowCount = len(out.Rows)
 	out.Elapsed = time.Since(started)
+	s.applyMasking(ctx, userID, nodeID, out)
 	return out, nil
+}
+
+// SetMaskRules wires the access-control data-masking engine (P6, X-Pack).
+func (s *Service) SetMaskRules(e *accesscontrol.Engine) { s.mask = e }
+
+// applyMasking redacts result columns matched by a data_masking rule. No-op when
+// no engine is wired, the feature is unlicensed, or no rule matches this
+// (user, node). Masking applies to the values in place; column metadata is kept
+// so the grid still renders the column (with redacted cells).
+func (s *Service) applyMasking(ctx context.Context, userID, nodeID uint64, out *QueryResult) {
+	if s.mask == nil || out == nil || len(out.Rows) == 0 {
+		return
+	}
+	plan, err := s.mask.DataMask(ctx, accesscontrol.Input{UserID: userID, NodeID: nodeID})
+	if err != nil || plan == nil {
+		return
+	}
+	maskCol := make([]bool, len(out.Columns))
+	any := false
+	for i, c := range out.Columns {
+		if plan.ShouldMask(c.Name) {
+			maskCol[i] = true
+			any = true
+		}
+	}
+	if !any {
+		return
+	}
+	for _, row := range out.Rows {
+		for i := range row {
+			if i < len(maskCol) && maskCol[i] {
+				row[i] = plan.Apply(row[i])
+			}
+		}
+	}
 }
 
 // Exec runs INSERT / UPDATE / DELETE / DDL. Returns affected rows.

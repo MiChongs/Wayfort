@@ -39,11 +39,18 @@ type Service struct {
 	engine   Engine
 	enricher ContextEnricher
 	enforcer Enforcer
-	notifier *FanoutNotifier
-	hub      *Hub
-	logger   *zap.Logger
-	clock    func() time.Time
+	// connRules is the optional consolidated access-control rule layer consulted
+	// by CheckEnforced (kind=asset_connection_review). Nil → flags only.
+	connRules ConnReviewRules
+	notifier  *FanoutNotifier
+	hub       *Hub
+	logger    *zap.Logger
+	clock     func() time.Time
 }
+
+// SetConnReviewRules wires the access-control rule layer for connection review.
+// Called once from the composition root after the rule engine is built.
+func (s *Service) SetConnReviewRules(r ConnReviewRules) { s.connRules = r }
 
 // Hub exposes the realtime fan-out so SSE handlers can subscribe.
 func (s *Service) Hub() *Hub { return s.hub }
@@ -486,6 +493,77 @@ func defaultActionsFor(bt model.ApprovalBusinessType) string {
 	return "connect"
 }
 
+// EmergencyGrantInput drives IssueEmergencyGrant — the fail-open break-glass
+// path. The caller (internal/breakglass) has already enforced policy + the
+// global kill-switch and computed the capped DurationSec.
+type EmergencyGrantInput struct {
+	RequesterID   uint64
+	RequesterName string
+	ResourceType  string
+	ResourceID    string
+	Title         string
+	Reason        string
+	ClientIP      string
+	// DurationSec is the already-capped window length. The issued grant runs
+	// from now for this many seconds.
+	DurationSec int
+}
+
+// IssueEmergencyGrant creates an auto-approved break_glass request and issues
+// its grant in ONE shot, with NO approver stages. It exists solely for the
+// fail-open emergency path, where waiting for an approver is itself the
+// emergency. Every other path goes through CreateRequest + Decide. The request
+// + hash-chained ledger are still written so the action is fully non-repudiable
+// and the grant is revocable / reconciler-expired exactly like any other.
+func (s *Service) IssueEmergencyGrant(ctx context.Context, in EmergencyGrantInput) (*model.ApprovalRequest, *model.ApprovalGrant, error) {
+	if in.RequesterID == 0 {
+		return nil, nil, errors.New("approval: requester required")
+	}
+	if in.DurationSec <= 0 {
+		return nil, nil, errors.New("approval: duration required for emergency grant")
+	}
+	now := s.clock()
+	req := &model.ApprovalRequest{
+		ID:            uuid.NewString(),
+		BusinessType:  model.ApprovalBizBreakGlass,
+		Title:         truncate(in.Title, 255),
+		Reason:        truncate(in.Reason, 1024),
+		RequesterID:   in.RequesterID,
+		RequesterName: in.RequesterName,
+		ResourceType:  in.ResourceType,
+		ResourceID:    in.ResourceID,
+		RiskLevel:     model.ApprovalRiskCritical,
+		Status:        model.ApprovalReqPending,
+		WindowStart:   now,
+		WindowEnd:     now.Add(time.Duration(in.DurationSec) * time.Second),
+		CurrentStage:  -1,
+		TotalStages:   0,
+		Version:       0,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ClientIP:      in.ClientIP,
+	}
+	if err := s.repo.CreateRequest(ctx, req); err != nil {
+		return nil, nil, fmt.Errorf("approval: persist emergency request: %w", err)
+	}
+	if _, err := s.ledger.AppendForRequest(ctx, req.ID, model.ApprovalEvRequestCreated,
+		req.RequesterID, req.RequesterName, map[string]any{
+			"business_type": string(req.BusinessType),
+			"resource":      req.ResourceType + ":" + req.ResourceID,
+			"emergency":     true,
+		}); err != nil {
+		s.logger.Warn("approval: emergency ledger genesis failed", zap.Error(err))
+	}
+	dec := &PolicyDecision{MaxDurationSec: in.DurationSec}
+	grant, err := s.finalApprove(ctx, req, dec, in.RequesterID, in.RequesterName,
+		model.ApprovalReqAutoApproved, "emergency break-glass (fail-open)", in.DurationSec)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.dispatchNotify(ctx, req, model.ApprovalEvAutoApproved, grant)
+	return req, grant, nil
+}
+
 // DecideInput / DecideOutput
 type DecideInput struct {
 	ApproverID uint64
@@ -559,6 +637,15 @@ func (s *Service) RevokeGrant(ctx context.Context, grantID string, by uint64, re
 	return nil
 }
 
+// SetGrantWindow re-anchors an active grant's [NotBefore, NotAfter] window. The
+// break-glass layer uses it so a pre-approved emergency grant, approved some
+// time after it was requested, starts its approved duration from the actual
+// activation moment instead of from request-creation time. The window is the
+// caller's responsibility to keep within policy caps.
+func (s *Service) SetGrantWindow(ctx context.Context, grantID string, notBefore, notAfter time.Time) error {
+	return s.repo.SetGrantWindow(ctx, grantID, notBefore, notAfter)
+}
+
 // GrantCheck is the enforcement-point query used by webssh / dbcli / sftp /
 // secrets / desktop / portforward. Pass the user, the resource, and the
 // action being attempted; the service returns whether an active grant
@@ -592,7 +679,14 @@ func (s *Service) VerifyGrant(ctx context.Context, chk GrantCheck) (GrantCheckRe
 		return GrantCheckResult{}, err
 	}
 	for _, g := range grants {
-		if chk.BusinessType != "" && g.BusinessType != chk.BusinessType {
+		// A break_glass grant is honoured by EVERY enforcement point regardless
+		// of the business type being checked — emergency access deliberately
+		// satisfies connect / exec / file / credential gates in one shot. Normal
+		// grants still match strictly by business type. The action filter below
+		// still applies, so a break_glass grant only satisfies actions its
+		// Actions list actually covers (defaultActionsFor(BreakGlass)).
+		if chk.BusinessType != "" && g.BusinessType != chk.BusinessType &&
+			g.BusinessType != model.ApprovalBizBreakGlass {
 			continue
 		}
 		if chk.Action != "" && !actionCovers(g.Actions, chk.Action) {

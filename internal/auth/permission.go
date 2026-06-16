@@ -83,6 +83,19 @@ const (
 	PermApprovalTemplateManage  = "approval:template:manage"  // CRUD templates
 	PermApprovalSubscribeManage = "approval:subscribe:manage" // CRUD IM/Webhook integrations
 	PermApprovalAuditRead       = "approval:audit:read"       // dump + verify the ledger
+
+	// Break-glass (应急访问) governance. Activating emergency access for oneself
+	// needs NO permission (any operator can break the glass, gated by policy) —
+	// this code gates the GOVERNANCE surface: viewing all activations, managing
+	// break-glass policies, and signing post-use reviews. The kill-switch
+	// (revoke) is intentionally gated higher, on system:admin, so a break-glass
+	// operator can never silently revoke the audit trail of their own access.
+	PermBreakGlassManage = "break_glass:manage"
+
+	// Access control — the consolidated 「访问控制」 rule module (命令过滤 / 用户登录 /
+	// 资产连接复核 / 数据脱敏 / 连接方式). One permission gates authoring all rule
+	// kinds; the X-Pack kinds are additionally edition-gated at the engine + UI.
+	PermAccessControlManage = "access_control:manage"
 )
 
 // AllPermissions is the catalogue that gets seeded into the DB on boot so the
@@ -140,6 +153,8 @@ var AllPermissions = []struct {
 	{PermApprovalTemplateManage, "approval", "审批：管理审批模板（管理员）"},
 	{PermApprovalSubscribeManage, "approval", "审批：管理 IM/Webhook 集成（管理员）"},
 	{PermApprovalAuditRead, "approval", "审批：导出与验签审计账本"},
+	{PermBreakGlassManage, "approval", "应急访问：治理台、策略管理与事后复核（管理员）"},
+	{PermAccessControlManage, "access_control", "访问控制：命令过滤 / 用户登录 / 资产连接复核 / 数据脱敏 / 连接方式 规则管理"},
 }
 
 // BuiltinRoles are seeded on first boot and protected from deletion.
@@ -190,7 +205,8 @@ var adminTierPerms = []string{
 	PermProcessManage, PermCronManage, PermPackageManage, PermStorageManage,
 	PermKernelManage, PermSysUserManage, PermNetworkManage, PermWireGuardManage, PermSecurityManage,
 	PermApprovalDecide, PermApprovalAdmin, PermApprovalTemplateManage,
-	PermApprovalSubscribeManage, PermApprovalAuditRead,
+	PermApprovalSubscribeManage, PermApprovalAuditRead, PermBreakGlassManage,
+	PermAccessControlManage,
 	PermAIAgentGlobal, PermAIProviderGlobal, PermAIKnowledge,
 }
 

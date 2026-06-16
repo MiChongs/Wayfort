@@ -9,16 +9,21 @@ import {
   Bot,
   Brain,
   Building2,
+  Cable,
   CheckCircle,
   ChevronLeft,
   ChevronRight,
   Cog,
+  Crown,
+  EyeOff,
   FileLock2,
   FolderTree,
   Gavel,
   KeyRound,
   LayoutDashboard,
+  LifeBuoy,
   LayoutGrid,
+  LogIn,
   Network,
   ScrollText,
   Server,
@@ -27,12 +32,14 @@ import {
   SlidersHorizontal,
   Sparkles,
   Tag as TagIcon,
+  Terminal,
   Users,
   Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAccess, tierRank } from "@/lib/hooks/use-access"
-import type { AccessTier } from "@/lib/api/types"
+import { useEdition } from "@/lib/hooks/use-edition"
+import type { AccessTier, EditionFeature } from "@/lib/api/types"
 
 type IconType = React.ComponentType<{ className?: string }>
 type NavItem = {
@@ -47,6 +54,12 @@ type NavItem = {
    * though it lives in a superadmin group. Superadmins always pass.
    */
   requiredPerm?: string
+  /**
+   * Edition feature that must be licensed for this item to show. Cosmetic only —
+   * the real gate is the server-side feat() route middleware. Items without it
+   * are always visible (Community features).
+   */
+  requiredFeature?: EditionFeature
 }
 type NavGroup = { title?: string; minTier?: AccessTier; items: NavItem[] }
 
@@ -60,7 +73,7 @@ const NAV: NavGroup[] = [
       { href: "/approvals", label: "审批", icon: CheckCircle },
       { href: "/port-forwards", label: "端口转发", icon: Share2 },
       { href: "/ssh-tools", label: "SSH 工具", icon: Zap },
-      { href: "/ai", label: "AI 助手", icon: Sparkles },
+      { href: "/ai", label: "AI 助手", icon: Sparkles, requiredFeature: "ai" },
     ],
   },
   {
@@ -74,6 +87,18 @@ const NAV: NavGroup[] = [
       { href: "/admin/tags", label: "标签", icon: TagIcon, minTier: "admin" },
       { href: "/admin/asset-grants", label: "访问策略", icon: FileLock2, minTier: "admin" },
       { href: "/admin/approvals", label: "审批治理", icon: Gavel, minTier: "admin" },
+      { href: "/admin/break-glass", label: "应急访问", icon: LifeBuoy, minTier: "admin", requiredPerm: "break_glass:manage", requiredFeature: "break_glass" },
+    ],
+  },
+  {
+    title: "访问控制",
+    minTier: "admin",
+    items: [
+      { href: "/admin/access-control/command-filter", label: "命令过滤", icon: Terminal, minTier: "superadmin", requiredPerm: "access_control:manage" },
+      { href: "/admin/access-control/login", label: "用户登录", icon: LogIn, minTier: "superadmin", requiredPerm: "access_control:manage" },
+      { href: "/admin/access-control/connection-review", label: "资产连接复核", icon: Gavel, minTier: "superadmin", requiredPerm: "access_control:manage", requiredFeature: "connection_review" },
+      { href: "/admin/access-control/data-masking", label: "数据脱敏", icon: EyeOff, minTier: "superadmin", requiredPerm: "access_control:manage", requiredFeature: "data_masking" },
+      { href: "/admin/access-control/connection-method", label: "连接方式", icon: Cable, minTier: "superadmin", requiredPerm: "access_control:manage", requiredFeature: "connection_method" },
     ],
   },
   {
@@ -84,13 +109,14 @@ const NAV: NavGroup[] = [
       { href: "/admin/roles", label: "角色 / 权限", icon: ShieldCheck, minTier: "superadmin" },
       { href: "/admin/organization", label: "组织架构", icon: Building2, minTier: "superadmin" },
       { href: "/admin/oidc-clients", label: "OIDC 客户端", icon: ShieldCheck, minTier: "superadmin" },
-      { href: "/admin/ai/providers", label: "AI 提供商", icon: Bot, minTier: "superadmin" },
-      { href: "/admin/ai/agents", label: "AI Agent", icon: Bot, minTier: "superadmin" },
-      { href: "/admin/ai/knowledge", label: "AI 知识库", icon: BookOpen, minTier: "superadmin" },
-      { href: "/admin/ai/memory", label: "AI 记忆", icon: Brain, minTier: "superadmin" },
-      { href: "/admin/ai/usage", label: "AI 用量", icon: Activity, minTier: "superadmin" },
-      { href: "/admin/pki", label: "内部 PKI", icon: ShieldCheck, minTier: "admin", requiredPerm: "pki:manage" },
+      { href: "/admin/ai/providers", label: "AI 提供商", icon: Bot, minTier: "superadmin", requiredFeature: "ai" },
+      { href: "/admin/ai/agents", label: "AI Agent", icon: Bot, minTier: "superadmin", requiredFeature: "ai" },
+      { href: "/admin/ai/knowledge", label: "AI 知识库", icon: BookOpen, minTier: "superadmin", requiredFeature: "ai" },
+      { href: "/admin/ai/memory", label: "AI 记忆", icon: Brain, minTier: "superadmin", requiredFeature: "ai" },
+      { href: "/admin/ai/usage", label: "AI 用量", icon: Activity, minTier: "superadmin", requiredFeature: "ai" },
+      { href: "/admin/pki", label: "内部 PKI", icon: ShieldCheck, minTier: "admin", requiredPerm: "pki:manage", requiredFeature: "reverse_agent" },
       { href: "/admin/audit", label: "审计日志", icon: ScrollText, minTier: "superadmin", requiredPerm: "audit:read" },
+      { href: "/admin/edition", label: "版本与授权", icon: Crown, minTier: "superadmin" },
       { href: "/admin/settings", label: "系统设置", icon: SlidersHorizontal, minTier: "superadmin" },
     ],
   },
@@ -101,6 +127,7 @@ const COLLAPSE_KEY = "jumpserver:sidebar:collapsed"
 export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const pathname = usePathname()
   const { tier, isSuperadmin, permissions } = useAccess()
+  const { has: hasFeature } = useEdition()
   const [collapsed, setCollapsed] = React.useState(false)
 
   React.useEffect(() => {
@@ -132,8 +159,9 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   // whenever it has at least one visible item — items already encode their own
   // gate, so the group title follows its contents.
   const canSee = (it: NavItem) =>
-    rank >= tierRank(it.minTier ?? "user") ||
-    (!!it.requiredPerm && (isSuperadmin || permissions.includes(it.requiredPerm)))
+    (rank >= tierRank(it.minTier ?? "user") ||
+      (!!it.requiredPerm && (isSuperadmin || permissions.includes(it.requiredPerm)))) &&
+    (!it.requiredFeature || hasFeature(it.requiredFeature))
   const groups = NAV.map((g) => ({
     ...g,
     items: g.items.filter(canSee),

@@ -398,6 +398,16 @@ func (r *ApprovalRepo) RevokeGrant(ctx context.Context, id string, by uint64, re
 		}).Error
 }
 
+// SetGrantWindow re-anchors an active grant's validity window. Used by the
+// break-glass layer to start the approved DURATION from the actual activation
+// moment (a pre-approved request approved minutes later must not hand out a
+// window that already elapsed). Only touches active grants.
+func (r *ApprovalRepo) SetGrantWindow(ctx context.Context, id string, notBefore, notAfter time.Time) error {
+	return r.db.WithContext(ctx).Model(&model.ApprovalGrant{}).
+		Where("id = ? AND status = ?", id, model.ApprovalGrantActive).
+		Updates(map[string]any{"not_before": notBefore, "not_after": notAfter}).Error
+}
+
 // ExpireOldGrants flips active grants past their NotAfter to expired. The
 // reconciler calls this periodically.
 func (r *ApprovalRepo) ExpireOldGrants(ctx context.Context, now time.Time) (int64, error) {

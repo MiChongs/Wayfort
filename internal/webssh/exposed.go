@@ -120,15 +120,20 @@ func (g *Gateway) BeginSession(ctx context.Context, sessionID string, kind model
 // CLI / Telnet input is audited the same way SSH is.
 func (g *Gateway) CommandAuditor(sessionID string, claims *auth.Claims, clientIP string, node *model.Node) func(string) {
 	var nodeID *uint64
+	var nodeU uint64
 	if node != nil {
 		id := node.ID
 		nodeID = &id
+		nodeU = id
 	}
 	tracker := newCmdTracker(func(cmd string) {
 		g.audit.Log(model.AuditLog{
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
 			SessionID: sessionID, NodeID: nodeID, ClientIP: clientIP, Payload: cmd,
 		})
+		// CommandAuditor has no session handle (it's a shared callback for dbcli /
+		// telnet), so deny can't interrupt here — audit-only for these protocols.
+		g.applyCommandRules(context.Background(), nil, claims.UserID, nodeU, clientIP, sessionID, claims.Username, cmd)
 	})
 	return tracker.feed
 }
@@ -173,15 +178,15 @@ func (g *Gateway) EndSession(ctx context.Context, row *model.Session, claims *au
 	// partial update (mirrors the SSH main path's recordEnd).
 	g.finalizeLifecycle(row)
 	if err := g.sessions.Finish(ctx, row.ID, map[string]any{
-		"ended_at":        end,
-		"bytes_in":        row.BytesIn,
-		"bytes_out":       row.BytesOut,
-		"status":          row.Status,
-		"reason":          row.Reason,
-		"current_phase":   row.CurrentPhase,
-		"peak_rtt_ms":     row.PeakRTTMs,
-		"avg_rtt_ms":      row.AvgRTTMs,
-		"reconnect_count": row.ReconnectCount,
+		"ended_at":         end,
+		"bytes_in":         row.BytesIn,
+		"bytes_out":        row.BytesOut,
+		"status":           row.Status,
+		"reason":           row.Reason,
+		"current_phase":    row.CurrentPhase,
+		"peak_rtt_ms":      row.PeakRTTMs,
+		"avg_rtt_ms":       row.AvgRTTMs,
+		"reconnect_count":  row.ReconnectCount,
 		"recording_sha256": row.RecordingSHA256,
 	}); err != nil {
 		g.logger.Warn("session row finish failed", zap.Error(err))

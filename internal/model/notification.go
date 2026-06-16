@@ -12,6 +12,7 @@ const (
 	NotifyKindAccountLocked NotificationKind = "account_locked" // lockout policy tripped
 	NotifyKindSecurity      NotificationKind = "security"       // generic security notice
 	NotifyKindSystem        NotificationKind = "system"         // generic system notice
+	NotifyKindBreakGlass    NotificationKind = "break_glass"    // emergency-access activation / revoke
 )
 
 // NotificationSeverity drives the UI accent (badge colour / icon).

@@ -14,6 +14,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
 	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
 	"github.com/michongs/jumpserver-anonymous/internal/approval"
 	"github.com/michongs/jumpserver-anonymous/internal/audit"
@@ -67,6 +68,12 @@ type Gateway struct {
 	// dial against any node whose RequiresApprovalForConnect flag is
 	// set and the requesting user has no active grant.
 	approval *approval.Service
+
+	// acRules is the consolidated access-control rule engine, used for
+	// command_filter (P4, Community — best-effort input-side: audit + interrupt,
+	// NOT a hard sandbox) and connection_method (P5, X-Pack — enforced at Admit).
+	// Nil → neither applies.
+	acRules *accesscontrol.Engine
 
 	// metrics is the lifecycle-v3 connection-quality sample queue. Nil-safe:
 	// when unwired, MetricSink returns a no-op sink and sampling is skipped.
@@ -130,6 +137,19 @@ func (g *Gateway) SetGuard(l *guard.Limiter, b *guard.Breaker, r *guard.RateLimi
 // Sibling protocol packages call this through the exposed facade.
 func (g *Gateway) Admit(ctx context.Context, userID uint64, node *model.Node) (release func(), err error) {
 	noop := func() {}
+	// P5 — connection_method rules (X-Pack). Checked first so it applies even when
+	// no overload guard is wired. The engine fail-opens when the feature is
+	// unlicensed, so this never blocks a Community deployment.
+	if g.acRules != nil && node != nil {
+		if dec, derr := g.acRules.Evaluate(ctx, model.RuleConnectionMethod, accesscontrol.Input{
+			UserID: userID, NodeID: node.ID, Protocol: string(node.EffectiveProtocol()),
+		}); derr == nil && dec.Matched && dec.Action == model.ActionDeny {
+			return noop, &guard.RejectError{
+				Reason:  guard.RejectDomainConcurrency,
+				Message: "该连接方式被访问控制规则禁止",
+			}
+		}
+	}
 	if g.guard == nil && g.rate == nil {
 		return noop, nil
 	}
@@ -393,6 +413,56 @@ func (g *Gateway) TerminateSession(_ context.Context, sessionID string) bool {
 // gate; the gateway behaves identically to the pre-Phase-16 codebase.
 func (g *Gateway) SetApproval(svc *approval.Service) { g.approval = svc }
 
+// SetAccessRules wires the consolidated access-control rule engine (command_filter
+// P4 + connection_method P5).
+func (g *Gateway) SetAccessRules(e *accesscontrol.Engine) { g.acRules = e }
+
+// applyCommandRules evaluates command_filter rules for one captured command and
+// records the verdict to the audit trail. Called from every cmdTracker emit
+// callback. On a deny it best-effort interrupts the backend (Ctrl-C) when a
+// session is available — input-side capture cannot truly prevent execution, so
+// this is deterrence + audit, not a hard sandbox.
+func (g *Gateway) applyCommandRules(ctx context.Context, sess *Session, userID, nodeID uint64, clientIP, sessionID, username, cmd string) {
+	if g.acRules == nil {
+		return
+	}
+	dec, err := g.acRules.Evaluate(ctx, model.RuleCommandFilter, accesscontrol.Input{
+		UserID: userID, NodeID: nodeID, ClientIP: clientIP, Command: cmd,
+	})
+	if err != nil || !dec.Matched {
+		return
+	}
+	var nodePtr *uint64
+	if nodeID != 0 {
+		nodePtr = &nodeID
+	}
+	name := ""
+	if dec.Rule != nil {
+		name = dec.Rule.Name
+	}
+	tag := ""
+	switch dec.Action {
+	case model.ActionDeny:
+		tag = "命令过滤·拒绝"
+		if sess != nil && sess.Backend != nil {
+			_, _ = sess.Backend.Write([]byte{0x03}) // best-effort interrupt
+		}
+	case model.ActionReview:
+		tag = "命令过滤·待复核"
+	case model.ActionAlert:
+		tag = "命令过滤·告警"
+	case model.ActionNotify:
+		tag = "命令过滤·通知"
+	default:
+		return // accept → nothing to record beyond the normal command audit
+	}
+	g.audit.Log(model.AuditLog{
+		Kind: model.AuditCommand, UserID: userID, Username: username,
+		SessionID: sessionID, NodeID: nodePtr, ClientIP: clientIP,
+		Payload: "[" + tag + ":" + name + "] " + cmd,
+	})
+}
+
 // HandleNodeSSH upgrades the request to WebSocket and tunnels into the named node.
 func (g *Gateway) HandleNodeSSH(c *gin.Context) {
 	claims := auth.FromContext(c.Request.Context())
@@ -635,6 +705,7 @@ func (g *Gateway) runNodeSession(ctx context.Context, conn *websocket.Conn, sess
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
 			SessionID: sessionID, NodeID: &nodeID, ClientIP: clientIP, Payload: cmd,
 		})
+		g.applyCommandRules(ctx, sess, claims.UserID, nodeID, clientIP, sessionID, claims.Username, cmd)
 	})
 	sess.OnCommand(tracker.feed)
 
@@ -705,6 +776,7 @@ func (g *Gateway) runAnonSession(ctx context.Context, conn *websocket.Conn, sess
 			Kind: model.AuditCommand, UserID: claims.UserID, Username: claims.Username,
 			SessionID: sessionID, ClientIP: clientIP, Payload: cmd,
 		})
+		g.applyCommandRules(ctx, sess, claims.UserID, 0, clientIP, sessionID, claims.Username, cmd)
 	})
 	sess.OnCommand(tracker.feed)
 
@@ -815,15 +887,15 @@ func (g *Gateway) recordEnd(row *model.Session, sess *Session, claims *auth.Clai
 	// clobbered by a full-row Save.
 	g.finalizeLifecycle(row)
 	if err := g.sessions.Finish(context.Background(), row.ID, map[string]any{
-		"ended_at":        end,
-		"bytes_in":        row.BytesIn,
-		"bytes_out":       row.BytesOut,
-		"status":          row.Status,
-		"reason":          row.Reason,
-		"current_phase":   row.CurrentPhase,
-		"peak_rtt_ms":     row.PeakRTTMs,
-		"avg_rtt_ms":      row.AvgRTTMs,
-		"reconnect_count": row.ReconnectCount,
+		"ended_at":         end,
+		"bytes_in":         row.BytesIn,
+		"bytes_out":        row.BytesOut,
+		"status":           row.Status,
+		"reason":           row.Reason,
+		"current_phase":    row.CurrentPhase,
+		"peak_rtt_ms":      row.PeakRTTMs,
+		"avg_rtt_ms":       row.AvgRTTMs,
+		"reconnect_count":  row.ReconnectCount,
 		"recording_sha256": row.RecordingSHA256,
 	}); err != nil {
 		g.logger.Warn("session row finish failed", zap.Error(err))

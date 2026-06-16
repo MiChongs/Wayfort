@@ -37,13 +37,14 @@ export function AgentAvatar({
   className,
 }: {
   agent?: Pick<AIAgent, "name" | "icon"> | null
-  size?: "sm" | "md"
+  size?: "sm" | "md" | "lg"
   className?: string
 }) {
   const icon = agent?.icon?.trim()
   const initial = initialOf(agent?.name)
   const colors = agent?.name ? paletteFor(agent.name) : "bg-card text-foreground border"
-  const sizeCls = size === "sm" ? "w-6 h-6 text-[10px]" : "w-7 h-7 text-xs"
+  const sizeCls = size === "sm" ? "w-6 h-6 text-[10px]" : size === "lg" ? "w-10 h-10 text-sm" : "w-7 h-7 text-xs"
+  const iconSize = size === "sm" ? 14 : size === "lg" ? 20 : 16
   return (
     <Avatar className={cn(sizeCls, "shrink-0 shadow-sm", className)}>
       <AvatarFallback
@@ -55,9 +56,9 @@ export function AgentAvatar({
         )}
       >
         {icon ? (
-          <AppIcon icon={icon} size={size === "sm" ? 14 : 16} />
+          <AppIcon icon={icon} size={iconSize} />
         ) : (
-          initial ?? <Bot className={cn(size === "sm" ? "w-3 h-3" : "w-3.5 h-3.5")} />
+          initial ?? <Bot className={cn(size === "sm" ? "w-3 h-3" : size === "lg" ? "w-5 h-5" : "w-3.5 h-3.5")} />
         )}
       </AvatarFallback>
     </Avatar>

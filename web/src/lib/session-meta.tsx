@@ -20,6 +20,7 @@ import {
   HardDrive,
   Info,
   KeyRound,
+  LifeBuoy,
   LogIn,
   LogOut,
   Maximize2,
@@ -174,6 +175,12 @@ const AUDIT_META: Record<string, AuditMeta> = {
   "approval.decide": { label: "审批裁决", icon: ClipboardCheck, group: "lifecycle", tone: "info" },
   "approval.revoke": { label: "审批撤销", icon: ClipboardX, group: "lifecycle", tone: "warning" },
   "config.change": { label: "配置变更", icon: Settings, group: "lifecycle", tone: "warning" },
+  // Break-glass (应急访问) lifecycle.
+  "breakglass.request": { label: "应急申请", icon: LifeBuoy, group: "lifecycle", tone: "warning" },
+  "breakglass.activate": { label: "应急开通", icon: LifeBuoy, group: "lifecycle", tone: "warning" },
+  "breakglass.expire": { label: "应急到期", icon: ShieldAlert, group: "lifecycle", tone: "secondary" },
+  "breakglass.revoke": { label: "应急吊销", icon: ShieldX, group: "lifecycle", tone: "destructive" },
+  "breakglass.review": { label: "应急复核", icon: ShieldCheck, group: "lifecycle", tone: "info" },
 }
 
 export function auditMeta(kind: string): AuditMeta {

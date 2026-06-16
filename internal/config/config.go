@@ -31,8 +31,43 @@ type Config struct {
 	Watermark WatermarkConfig `mapstructure:"watermark"`
 	Agent     AgentConfig     `mapstructure:"agent"`
 	Guard     GuardConfig     `mapstructure:"guard"`
-	Metrics   MetricsConfig   `mapstructure:"metrics"`
-	GeoIP     GeoIPConfig     `mapstructure:"geoip"`
+	Metrics    MetricsConfig    `mapstructure:"metrics"`
+	GeoIP      GeoIPConfig      `mapstructure:"geoip"`
+	BreakGlass BreakGlassConfig `mapstructure:"break_glass"`
+	Edition    EditionConfig    `mapstructure:"edition"`
+}
+
+// EditionConfig is the bootstrap fallback for the license. The preferred path is
+// to install the license at runtime via the admin UI (stored in the DB); these
+// fields let an operator pin a license in YAML/env or from a file for air-gapped
+// / immutable deployments. A DB-installed license takes precedence over both.
+type EditionConfig struct {
+	// License is an inline license token (the whole JSL1.… string).
+	License string `mapstructure:"license"`
+	// LicenseFile is a path to a file containing a license token. Read at startup
+	// and on reload. Intentionally NOT exposed in the settings UI (it reads an
+	// arbitrary filesystem path) — YAML/env only.
+	LicenseFile string `mapstructure:"license_file"`
+}
+
+// BreakGlassConfig is the global kill-switch + ceilings for emergency access
+// (应急访问). Per-asset granularity lives in break_glass_policies; these are the
+// system-wide gates the settings center exposes (all live / hot-reloaded).
+type BreakGlassConfig struct {
+	// Enabled turns the whole break-glass surface on. When false the activate
+	// endpoint refuses with 503 and the reconciler idles.
+	Enabled bool `mapstructure:"enabled"`
+	// AllowFailOpen is the GLOBAL gate for self-service (no-prior-approval)
+	// activation. AND-ed with each policy's AllowFailOpen — both must be true for
+	// a fail-open activation to be permitted. Off by default: a fresh install
+	// only allows the approver-mediated path until an operator opts in.
+	AllowFailOpen bool `mapstructure:"allow_fail_open"`
+	// MaxDuration caps every activation window regardless of policy. The
+	// effective window is min(policy, this, approval-template).
+	MaxDuration time.Duration `mapstructure:"max_duration"`
+	// RequireReview forces post-use review on for every activation regardless of
+	// per-policy settings (a compliance override).
+	RequireReview bool `mapstructure:"require_review"`
 }
 
 // GeoIPConfig drives IP→location resolution (login history "where from" + the
@@ -742,6 +777,18 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("geoip.download_timeout", 2*time.Minute)
 	v.SetDefault("geoip.language", "zh-CN")
 	v.SetDefault("geoip.allow_private_url", false)
+	// Break-glass (应急访问) — enabled so the approver-mediated path works out of
+	// the box; self-service fail-open stays OFF globally until an operator opts
+	// in (defense in depth: per-policy opt-in is AND-ed with this gate).
+	v.SetDefault("break_glass.enabled", true)
+	v.SetDefault("break_glass.allow_fail_open", false)
+	v.SetDefault("break_glass.max_duration", 30*time.Minute)
+	v.SetDefault("break_glass.require_review", true)
+	// Edition / licensing — no license by default (Community). Operators point
+	// these at a license token / file for air-gapped pinning; the admin UI install
+	// path (DB-stored) takes precedence over both.
+	v.SetDefault("edition.license", "")
+	v.SetDefault("edition.license_file", "")
 	v.SetDefault("notify.worker.chan_size", 256)
 	v.SetDefault("notify.worker.max_retries", 3)
 	v.SetDefault("notify.smtp.tls", "starttls")

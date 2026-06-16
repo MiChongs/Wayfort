@@ -79,6 +79,16 @@ const (
 	AuditApprovalRevoke  AuditEventKind = "approval.revoke"
 	AuditConfigChange    AuditEventKind = "config.change"
 
+	// Break-glass (应急访问) lifecycle. High-sensitivity: emitted via the audit
+	// writer's blocking critical path so a command flood cannot suppress the
+	// record of an emergency-access activation. request/activate/expire/revoke/
+	// review cover the full governance timeline.
+	AuditBreakGlassRequest  AuditEventKind = "breakglass.request"  // an activation was requested
+	AuditBreakGlassActivate AuditEventKind = "breakglass.activate" // access was granted (window opened)
+	AuditBreakGlassExpire   AuditEventKind = "breakglass.expire"   // window lapsed, access revoked
+	AuditBreakGlassRevoke   AuditEventKind = "breakglass.revoke"   // admin kill-switch
+	AuditBreakGlassReview   AuditEventKind = "breakglass.review"   // post-use review signed
+
 	// Reverse-connect agent + internal PKI lifecycle (security-architecture.md
 	// §4/§6/§9). High-sensitivity: emitted via the audit writer's blocking
 	// critical path so a command flood can't suppress them.
@@ -192,6 +202,8 @@ var auditCategoryKinds = map[string][]string{
 		string(AuditConfigChange),
 		string(AuditAgentEnroll), string(AuditAgentActivate), string(AuditAgentRevoke),
 		string(AuditAgentDelete), string(AuditAgentEnrollToken), string(AuditPKICertRevoke),
+		string(AuditBreakGlassRequest), string(AuditBreakGlassActivate), string(AuditBreakGlassExpire),
+		string(AuditBreakGlassRevoke), string(AuditBreakGlassReview),
 	},
 	AuditCatOSS: {
 		string(AuditOSSList), string(AuditOSSDownload), string(AuditOSSUpload),
@@ -228,6 +240,9 @@ var AuditAbnormalKinds = []string{
 	string(AuditLoginFailed), string(AuditAnomalyLogin), string(AuditBruteForce),
 	string(AuditGraphicalError), string(AuditSessionTerminate),
 	string(AuditFileDelete), string(AuditOSSDelete),
+	// Break-glass is inherently noteworthy — every emergency-access activation or
+	// kill-switch should surface in the "仅异常" filter for security review.
+	string(AuditBreakGlassActivate), string(AuditBreakGlassRevoke), string(AuditBreakGlassExpire),
 }
 
 // AuditDangerousCommandMarkers flag a command line as high-risk by substring.
