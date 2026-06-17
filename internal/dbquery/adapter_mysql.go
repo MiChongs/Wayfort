@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // mysqlAdapter is the canonical MySQL adapter. Every MySQL-wire-protocol-

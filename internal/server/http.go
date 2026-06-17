@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 	"go.uber.org/zap"
 )
 
@@ -28,7 +28,7 @@ func NewEngine(cfg config.ServerConfig, logger *zap.Logger) *gin.Engine {
 	// banners all hit "/").
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"service":  "jumpserver-anonymous",
+			"service":  "wayfort",
 			"version":  buildVersion,
 			"commit":   buildCommit,
 			"docs":     "/api/v1",

@@ -3,7 +3,7 @@ package firewall
 import (
 	"context"
 
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/sshrun"
 )
 
 // logs.go follows the firewall's kernel log lines (blocked/allowed packets) and

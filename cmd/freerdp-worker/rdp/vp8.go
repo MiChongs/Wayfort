@@ -218,7 +218,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/internal/desktop"
 	"go.uber.org/zap"
 )
 

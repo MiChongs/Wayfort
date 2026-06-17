@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/office"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/office"
 )
 
 const officeAccessTTL = 12 * time.Hour

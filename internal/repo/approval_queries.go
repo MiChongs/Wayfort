@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // approval_queries.go holds the read-only aggregates and joined look-ups the

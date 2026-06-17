@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
-	"github.com/michongs/jumpserver-anonymous/pkg/kms"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
+	"github.com/michongs/wayfort/pkg/kms"
 	"go.uber.org/zap"
 
 	"gorm.io/driver/sqlite"

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 func dummyTool(name string, danger Danger) *Tool {

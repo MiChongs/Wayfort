@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/model"
 	"github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )

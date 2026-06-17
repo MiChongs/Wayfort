@@ -44,7 +44,7 @@ type CA struct {
 }
 
 // NewCA generates a fresh self-signed issuing CA. commonName labels it in
-// certificate viewers (e.g. "JumpServer Agent CA").
+// certificate viewers (e.g. "Wayfort Agent CA").
 func NewCA(commonName string) (*CA, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -57,7 +57,7 @@ func NewCA(commonName string) (*CA, error) {
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"JumpServer"}},
+		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"Wayfort"}},
 		NotBefore:             now.Add(-5 * time.Minute), // small skew tolerance
 		NotAfter:              now.Add(caValidity),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
@@ -143,7 +143,7 @@ func (c *CA) Issue(csr *x509.CertificateRequest, opts IssueOptions) (*IssuedCert
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: opts.CommonName, Organization: []string{"JumpServer Agent"}},
+		Subject:      pkix.Name{CommonName: opts.CommonName, Organization: []string{"Wayfort Agent"}},
 		NotBefore:    now.Add(-5 * time.Minute),
 		NotAfter:     now.Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
@@ -180,14 +180,14 @@ func (c *CA) IssueServerCert(hosts []string, validity time.Duration) (tls.Certif
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	cn := "jumpserver-gateway"
+	cn := "wayfort-gateway"
 	if len(hosts) > 0 {
 		cn = hosts[0]
 	}
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: cn, Organization: []string{"JumpServer Gateway"}},
+		Subject:      pkix.Name{CommonName: cn, Organization: []string{"Wayfort Gateway"}},
 		NotBefore:    now.Add(-5 * time.Minute),
 		NotAfter:     now.Add(validity),
 		KeyUsage:     x509.KeyUsageDigitalSignature,

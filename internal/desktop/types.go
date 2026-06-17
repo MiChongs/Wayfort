@@ -450,7 +450,7 @@ type StartParams struct {
 	RDP RdpOptions
 	// SOCKSHost / SOCKSPort point the worker's libfreerdp transport at a
 	// gateway-local SOCKS5 listener that tunnels the TCP connection through
-	// the node's JumpServer proxy chain (SSH bastion / SOCKS5 hops). Empty
+	// the node's Wayfort proxy chain (SSH bastion / SOCKS5 hops). Empty
 	// host = direct dial to Host:Port (no proxy chain configured for the node).
 	// The worker still connects to Host:Port — it just routes via the proxy.
 	SOCKSHost string
@@ -459,7 +459,7 @@ type StartParams struct {
 	// a mounted drive (rdpdr filesystem redirection) so the user can move files
 	// between the browser host and the remote desktop. Empty DrivePath leaves
 	// device redirection off. DriveName is the share label shown in the remote
-	// "This PC" (ASCII; defaults to "JumpServer" when blank).
+	// "This PC" (ASCII; defaults to "Wayfort" when blank).
 	DriveName string
 	DrivePath string
 	// VideoMode selects the worker's video transport at connect AND, for the

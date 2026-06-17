@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/breakglass"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/breakglass"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // BreakGlassHandler exposes the emergency-access (应急访问) surface. The Svc is

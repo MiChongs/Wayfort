@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	"github.com/michongs/wayfort/internal/ai/provider"
+	"github.com/michongs/wayfort/internal/ai/ratelimit"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/audit"
 	"go.uber.org/zap"
 )
 

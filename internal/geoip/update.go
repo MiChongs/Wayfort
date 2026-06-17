@@ -252,7 +252,7 @@ func (s *Service) fetchDatabase(ctx context.Context, url string, timeout time.Du
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "jumpserver-anonymous-geoip/1")
+	req.Header.Set("User-Agent", "wayfort-geoip/1")
 	client := s.httpClient
 	if client == nil {
 		client = http.DefaultClient

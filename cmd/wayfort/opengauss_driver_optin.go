@@ -3,11 +3,11 @@
 //
 // 启用方式：
 //
-//	GOPROXY=https://goproxy.cn,direct go build -tags opengauss_driver -o jumpserver ./cmd/jumpserver
+//	GOPROXY=https://goproxy.cn,direct go build -tags opengauss_driver -o wayfort ./cmd/wayfort
 //
 // 同时启用多个国产驱动：
 //
-//	go build -tags "dm_driver opengauss_driver" -o jumpserver ./cmd/jumpserver
+//	go build -tags "dm_driver opengauss_driver" -o wayfort ./cmd/wayfort
 //
 // 不加 tag 时 openGauss 节点会走 pgx 通用 PG 线协议——能连通明文/MD5
 // 配置的实例，但 SM3 / SHA-256 password_encryption 集群必须走官方驱动。
@@ -17,4 +17,4 @@
 
 package main
 
-import _ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/opengauss"
+import _ "github.com/michongs/wayfort/internal/dbquery/native/opengauss"

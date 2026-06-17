@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 )

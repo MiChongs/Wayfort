@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/michongs/jumpserver-anonymous/pkg/kms"
+	"github.com/michongs/wayfort/pkg/kms"
 )
 
 // KMSSignerLookup is the closure the bootstrap hands the ledger so each

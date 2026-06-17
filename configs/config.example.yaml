@@ -12,7 +12,7 @@ db:
   # rewrapped DEK blobs of varying length).
   #
   # Format: host=... user=... password=... dbname=... port=... sslmode=...
-  dsn: "host=127.0.0.1 user=jumpserver password=jumpserver dbname=jumpserver port=5432 sslmode=disable"
+  dsn: "host=127.0.0.1 user=wayfort password=wayfort dbname=wayfort port=5432 sslmode=disable"
   max_open: 50
   max_idle: 10
   conn_max_lifetime: 1h
@@ -37,14 +37,14 @@ auth:
     duration: 15m
   mfa:
     enforce_for_admin: false
-    totp_issuer: "JumpServer"
+    totp_issuer: "Wayfort"
     email_otp_ttl: 5m
     email_otp_cooldown: 60s
     recovery_codes_count: 10
   passkey:
     enabled: false
     rp_id: "localhost"
-    rp_display: "JumpServer"
+    rp_display: "Wayfort"
     rp_origins: ["http://localhost:8080"]
     discoverable_login: true
   anomaly:
@@ -88,7 +88,7 @@ notify:
     port: 587
     username: ""
     password: ""
-    from: "JumpServer <noreply@example.com>"
+    from: "Wayfort <noreply@example.com>"
     tls: "starttls"
   worker:
     chan_size: 256
@@ -194,7 +194,7 @@ desktop:
   drive:
     enabled: true
     dir: "" # empty => <storage.sessions_dir>/desktop-drives ; per-user under user-<id>
-    name: "JumpServer" # share label shown in the remote "This PC" (ASCII)
+    name: "Wayfort" # share label shown in the remote "This PC" (ASCII)
     allow_upload: true # local -> remote
     allow_download: true # remote -> local (set false to block exfiltration)
     max_file_mb: 1024 # per-file cap, 0 = unlimited
@@ -238,13 +238,13 @@ desktop:
     # at startup to download it from upstream.
     auto_install: true
     # When true (default) the gateway subprocess is spawned and
-    # supervised by jumpserver. Disable if you run the gateway under
-    # systemd / Windows service / Docker — then jumpserver only writes
+    # supervised by wayfort. Disable if you run the gateway under
+    # systemd / Windows service / Docker — then wayfort only writes
     # the JSON config + mints JWTs.
     auto_start: true
     # Install / config / key locations. Empty entries pick platform
     # defaults relative to install_prefix.
-    install_prefix: ""               # e.g. /opt/jumpserver/devolutions-gateway
+    install_prefix: ""               # e.g. /opt/wayfort/devolutions-gateway
     binary_path: ""                  # <install_prefix>/devolutions-gateway[.exe]
     config_path: ""                  # <install_prefix>/config/gateway.json
     id_file: ""                      # <install_prefix>/config/gateway-id
@@ -330,5 +330,5 @@ protocols:
 office:
   enabled: false
   document_server_url: "http://127.0.0.1:18082/"
-  jwt_secret: "jumpserver-onlyoffice-secret-change-me"
+  jwt_secret: "wayfort-onlyoffice-secret-change-me"
   callback_base_url: "http://host.docker.internal:8080"

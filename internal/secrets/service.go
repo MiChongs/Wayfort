@@ -40,10 +40,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
-	"github.com/michongs/jumpserver-anonymous/pkg/kms"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
+	"github.com/michongs/wayfort/pkg/kms"
 )
 
 // Service is the envelope encryption gateway. There is exactly one of
@@ -71,7 +71,7 @@ type Service struct {
 
 // DecryptGate is the approval-enforcement contract Decrypt invokes once it
 // has loaded the envelope row but before it asks the KMS to unwrap. The
-// implementation is wired by cmd/jumpserver during bootstrap; secrets
+// implementation is wired by cmd/wayfort during bootstrap; secrets
 // itself remains free of any approval-package import.
 type DecryptGate func(ctx context.Context, ownerType model.SecretEnvelopeOwnerType, ownerID uint64, audit AuditContext) error
 

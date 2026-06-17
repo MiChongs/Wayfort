@@ -8,7 +8,7 @@
 
 help:
 	@echo "Targets:"
-	@echo "  make build                   # Build gateway binary (no CGo) → ./bin/jumpserver"
+	@echo "  make build                   # Build gateway binary (no CGo) → ./bin/wayfort"
 	@echo "  make build-worker            # Build worker binary (-tags freerdp) → ./bin/freerdp-worker"
 	@echo "  make install-worker          # Build + install worker (auto-detects OS)"
 	@echo "  make install-worker-linux    # Force Linux script"

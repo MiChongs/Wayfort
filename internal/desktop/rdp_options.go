@@ -139,7 +139,7 @@ type RdpOptions struct {
 	// RD Gateway (Microsoft Remote Desktop Gateway, MS-TSGU). When GatewayHost
 	// is set, the worker reaches the target THROUGH the gateway (HTTPS/RPC
 	// tunnel) instead of connecting to it directly — for RDP hosts that are only
-	// published via an RD Gateway. Independent of proxy_chain (that's JumpServer's
+	// published via an RD Gateway. Independent of proxy_chain (that's Wayfort's
 	// own SSH/SOCKS jump hosts).
 	GatewayHost string  `json:"gateway_host,omitempty"`
 	GatewayPort *uint32 `json:"gateway_port,omitempty"` // default 443

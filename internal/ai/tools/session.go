@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // RegisterSessionTools adds the session/audit/portforward catalogue queries.

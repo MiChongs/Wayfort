@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // WebhookSink POSTs each event as JSON to a URL, signed with HMAC-SHA256 over
@@ -75,7 +75,7 @@ func (s *WebhookSink) Send(ctx context.Context, ev model.AuditLog) error {
 	if len(s.secret) > 0 {
 		mac := hmac.New(sha256.New, s.secret)
 		mac.Write(body)
-		req.Header.Set("X-JumpServer-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+		req.Header.Set("X-Wayfort-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {

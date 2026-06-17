@@ -51,7 +51,7 @@ func (s *Service) secret() []byte {
 	if s.cfg.JWTSecret != "" {
 		return []byte(s.cfg.JWTSecret)
 	}
-	return []byte("jumpserver-office-dev-secret-change-me")
+	return []byte("wayfort-office-dev-secret-change-me")
 }
 
 func (s *Service) SignAccess(a Access, ttl time.Duration) (string, error) {

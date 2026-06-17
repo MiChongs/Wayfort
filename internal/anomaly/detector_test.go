@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/geoip"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/geoip"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 func TestHaversineKm(t *testing.T) {

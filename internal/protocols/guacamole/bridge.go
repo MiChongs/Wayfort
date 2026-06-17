@@ -17,9 +17,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/model"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )

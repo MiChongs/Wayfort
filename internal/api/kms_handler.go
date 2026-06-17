@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/secrets"
-	"github.com/michongs/jumpserver-anonymous/pkg/kms"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/secrets"
+	"github.com/michongs/wayfort/pkg/kms"
 )
 
 // KMSHandler exposes the Phase 14 setup endpoints for registering,

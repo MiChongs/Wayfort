@@ -8,7 +8,7 @@ import "testing"
 // settings device collection — the regression that left the remote desktop
 // with no drive. It exercises the real libfreerdp device API, not a mock.
 func TestDriveRedirectRegisters(t *testing.T) {
-	count, deviceRedir, redirectDrives, ok := driveRedirectProbe("JumpServer", ".")
+	count, deviceRedir, redirectDrives, ok := driveRedirectProbe("Wayfort", ".")
 	if !ok {
 		t.Fatal("wAddDriveRedirect failed")
 	}
@@ -27,7 +27,7 @@ func TestDriveRedirectRegisters(t *testing.T) {
 // the targeted tags (the prior WLog_SetStringLogLevel approach returned success
 // but left DEBUG inactive — that's why no rdpdr handshake was ever visible).
 func TestChannelDebugActuallyEngages(t *testing.T) {
-	const tag = "com.test.jumpserver.drivefix"
+	const tag = "com.test.wayfort.drivefix"
 	// Control: an unfiltered tag must NOT have DEBUG active by default.
 	if wlogDebugActiveProbe(tag + ".control") {
 		t.Skip("default log level already includes DEBUG; can't distinguish")
@@ -46,7 +46,7 @@ func TestChannelDebugActuallyEngages(t *testing.T) {
 // remote desktop with no drive. Building the device directly must register it
 // regardless, so a path that doesn't exist yet still yields a device.
 func TestDriveRedirectSurvivesMissingPath(t *testing.T) {
-	count, _, _, ok := driveRedirectProbe("JumpServer", "/no/such/path/should/exist/xyzzy")
+	count, _, _, ok := driveRedirectProbe("Wayfort", "/no/such/path/should/exist/xyzzy")
 	if !ok {
 		t.Fatal("wAddDriveRedirect failed for a not-yet-existing path")
 	}

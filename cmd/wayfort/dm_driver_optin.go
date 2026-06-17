@@ -4,7 +4,7 @@
 //
 // 启用方式：
 //
-//	GOPROXY=https://goproxy.cn,direct go build -tags dm_driver -o jumpserver ./cmd/jumpserver
+//	GOPROXY=https://goproxy.cn,direct go build -tags dm_driver -o wayfort ./cmd/wayfort
 //
 // 启用后 internal/dbquery/native/dameng.init() 会向 dbquery.RegisterNativeDriver
 // 注册 "dm" 名下的官方驱动；damengAdapter.Driver() 命中即返回它。
@@ -16,4 +16,4 @@
 
 package main
 
-import _ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/dameng"
+import _ "github.com/michongs/wayfort/internal/dbquery/native/dameng"

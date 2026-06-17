@@ -136,7 +136,7 @@ This layer carries `StartParams{Host,Port,...}` (types.go:270, set from
 hands Host/Port to libfreerdp's `FreeRDP_ServerHostname/ServerPort` (see
 client.go). Unlike guacamole/tcpfwd, there is **no hook** in the StartParams
 contract or the bridge to route the worker's TCP connection through
-JumpServer's proxy-chain / gateway. So a node only reachable via a SOCKS/jump
+Wayfort's proxy-chain / gateway. So a node only reachable via a SOCKS/jump
 chain cannot be reached by the freerdp backend — a genuine 转发 capability gap,
 not a bug in existing code. Confirmed at the contract boundary: `StartParams`
 has no proxy/gateway field; nothing in main.go or worker_freerdp.go consults a

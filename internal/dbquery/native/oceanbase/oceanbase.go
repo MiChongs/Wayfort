@@ -24,8 +24,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type oceanbaseNativeDriver struct{}

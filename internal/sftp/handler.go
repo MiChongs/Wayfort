@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/approval"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/office"
-	"github.com/michongs/jumpserver-anonymous/internal/sesswin"
+	"github.com/michongs/wayfort/internal/approval"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/office"
+	"github.com/michongs/wayfort/internal/sesswin"
 	pkgsftp "github.com/pkg/sftp"
 	"go.uber.org/zap"
 )

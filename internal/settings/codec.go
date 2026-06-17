@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 )
 
 var durationType = reflect.TypeOf(time.Duration(0))

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )

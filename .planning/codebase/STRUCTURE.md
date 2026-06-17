@@ -4,23 +4,23 @@ This map is evidence-based from the current repository tree. Paths marked Unknow
 
 ## Top-Level Directories And Files
 
-- `cmd/` contains Go executables: `cmd/jumpserver/main.go` for the main gateway and `cmd/freerdp-worker/` for the FreeRDP desktop worker.
+- `cmd/` contains Go executables: `cmd/wayfort/main.go` for the main gateway and `cmd/freerdp-worker/` for the FreeRDP desktop worker.
 - `internal/` contains backend application packages. Most business logic and HTTP/WS handlers live here.
 - `pkg/` contains shared lower-level Go packages: `pkg/crypto`, `pkg/kms`, and `pkg/log`.
 - `web/` contains the Next.js frontend app, package manifests, static/public assets, scripts, and frontend source under `web/src`.
 - `configs/` contains `config.example.yaml`, the main documented backend config template.
 - `config.yaml` is a local/root config file. Contents were not inspected for this documentation.
 - `deployments/` contains deployment artifacts including `Dockerfile`, `docker-compose.yaml`, and a `var/` directory.
-- `scripts/` contains operational/install scripts, including scripts referenced by desktop/Devolutions Gateway startup code in `cmd/jumpserver/main.go`.
+- `scripts/` contains operational/install scripts, including scripts referenced by desktop/Devolutions Gateway startup code in `cmd/wayfort/main.go`.
 - `proto/desktop/` contains protocol definitions or generated assets for the desktop subsystem. Exact contents need verification.
 - `docs/` contains project documentation. Exact contents need verification.
 - `var/sessions/` contains runtime session recording artifacts (`.cast` files observed).
-- `bin/`, `jumpserver.exe`, and `freerdp-worker.exe` are built/runtime binaries. Whether they are current is Unknown.
+- `bin/`, `wayfort.exe`, and `freerdp-worker.exe` are built/runtime binaries. Whether they are current is Unknown.
 - `.planning/codebase/` contains these generated implementation-agent notes.
 
 ## Backend Entry And Server
 
-- `cmd/jumpserver/main.go` is the composition root: config load, DB/Redis setup, repo construction, service wiring, route mounting, background goroutines, and graceful shutdown orchestration.
+- `cmd/wayfort/main.go` is the composition root: config load, DB/Redis setup, repo construction, service wiring, route mounting, background goroutines, and graceful shutdown orchestration.
 - `internal/server/http.go` builds the Gin engine, request ID middleware, zap request logging, root JSON response, health check, and `http.Server` lifecycle.
 - `internal/server/routes.go` defines `server.Routes`, mounts `/api/v1` resources, auth middleware, permission gates, optional subsystem stubs, and all REST/WS route shapes.
 
@@ -31,12 +31,12 @@ This map is evidence-based from the current repository tree. Paths marked Unknow
 - `internal/repo/db.go` opens PostgreSQL with GORM and performs `AutoMigrate` for backend models.
 - `internal/repo/*.go` contains repository wrappers for users, roles, nodes, credentials, sessions, audit, port forwards, org assets, KMS/secret rows, OIDC, MFA/passkey, and approvals.
 - `internal/model/*.go` contains GORM models for core entities such as users, nodes, credentials, proxies, sessions, audit logs, RBAC/org structures, assets/grants, MFA, OIDC, WebAuthn, secrets, and approvals.
-- `internal/cache/redis.go` wraps Redis for active sessions, anonymous container tracking, and port-forward tracking; Redis clients are also passed into auth/RBAC/MFA/passkey/AI code from `cmd/jumpserver/main.go`.
+- `internal/cache/redis.go` wraps Redis for active sessions, anonymous container tracking, and port-forward tracking; Redis clients are also passed into auth/RBAC/MFA/passkey/AI code from `cmd/wayfort/main.go`.
 
 ## Backend Auth, Access, And Security
 
 - `internal/auth/` contains JWT issuing/parsing, Gin middleware, blocklist, local/OIDC providers, password hashing, rate/lockout helpers, permission catalog, and RBAC resolver.
-- `internal/mfa/` handles TOTP, email OTP, and recovery codes. It is wired from `cmd/jumpserver/main.go`.
+- `internal/mfa/` handles TOTP, email OTP, and recovery codes. It is wired from `cmd/wayfort/main.go`.
 - `internal/passkey/` handles WebAuthn/passkey support. It is optional based on config.
 - `internal/secrets/` handles KMS-backed envelope encryption bootstrap and vault adapters. It feeds credential/OIDC/MFA/AI secret storage.
 - `pkg/crypto/` contains cryptographic vault/sealer primitives used by legacy and envelope-backed secret flows.
@@ -68,7 +68,7 @@ This map is evidence-based from the current repository tree. Paths marked Unknow
 - `internal/api/` contains Gin HTTP handlers for auth, users, roles, org/group/department, assets, credentials, proxies, nodes, sessions, SFTP-adjacent resources, OIDC clients, KMS setup, approvals, DB browser, firewall, and Docker panels.
 - `internal/ai/` contains AI assistant composition plus subpackages `bridge`, `handler`, `model`, `provider`, `repo`, `runner`, and `tools`.
 - `internal/audit/` contains asynchronous audit writing and recording support.
-- `internal/anomaly/` handles anomalous login detection as wired by `cmd/jumpserver/main.go`.
+- `internal/anomaly/` handles anomalous login detection as wired by `cmd/wayfort/main.go`.
 - `internal/notify/` contains SMTP/mail worker support.
 
 ## Frontend App Structure
@@ -107,7 +107,7 @@ This map is evidence-based from the current repository tree. Paths marked Unknow
 
 ## Common Change Locations
 
-- Add a backend API endpoint: update `internal/server/routes.go`, implement/extend a handler in `internal/api`, wire dependencies in `cmd/jumpserver/main.go`, and add models/repos if persistence is needed.
+- Add a backend API endpoint: update `internal/server/routes.go`, implement/extend a handler in `internal/api`, wire dependencies in `cmd/wayfort/main.go`, and add models/repos if persistence is needed.
 - Add durable backend state: add `internal/model` type, `internal/repo` methods, and `repo.AutoMigrate` entry in `internal/repo/db.go`.
 - Add a frontend REST feature: add/extend types and service functions in `web/src/lib/api`, then build UI under the relevant `web/src/app` route and `web/src/components` product folder.
 - Add terminal/WebSocket behavior: coordinate backend protocol handling in `internal/webssh` or `internal/protocols/*` with frontend clients in `web/src/lib/ws` and terminal components.

@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/catalog"
-	aihealth "github.com/michongs/jumpserver-anonymous/internal/ai/health"
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/ai/catalog"
+	aihealth "github.com/michongs/wayfort/internal/ai/health"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	"github.com/michongs/wayfort/internal/ai/provider"
+	"github.com/michongs/wayfort/internal/ai/ratelimit"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/auth"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 type ProviderHandler struct {

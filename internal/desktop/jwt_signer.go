@@ -89,7 +89,7 @@ func (s *JWTSigner) SignForwardRDP(dst string, ttl time.Duration) (string, error
 		JetAP: "rdp",
 		DstH:  dst,
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    "jumpserver-anonymous",
+			Issuer:    "wayfort",
 			IssuedAt:  jwt.NewNumericDate(now),
 			NotBefore: jwt.NewNumericDate(now.Add(-5 * time.Second)),
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),

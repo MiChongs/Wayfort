@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/repo"
 	"github.com/redis/go-redis/v9"
 )
 

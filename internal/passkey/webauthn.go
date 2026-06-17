@@ -13,8 +13,8 @@ import (
 
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -41,7 +41,7 @@ func New(cfg Config, users *repo.UserRepo, creds *repo.WebauthnRepo, cache *redi
 		return nil, errors.New("passkey: at least one origin required")
 	}
 	if cfg.RPDisplay == "" {
-		cfg.RPDisplay = "JumpServer"
+		cfg.RPDisplay = "Wayfort"
 	}
 	wa, err := webauthn.New(&webauthn.Config{
 		RPID:          cfg.RPID,

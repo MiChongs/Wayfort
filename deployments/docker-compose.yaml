@@ -1,11 +1,11 @@
 # Dev-environment compose. The app binary is intentionally NOT a service
-# here — operators run it on the host (`go run ./cmd/jumpserver` or via
+# here — operators run it on the host (`go run ./cmd/wayfort` or via
 # GoLand) so iteration loops aren't gated on `docker build`. This file
 # only stands up the stateful + protocol dependencies the local binary
 # dials over the host-published ports.
 #
 # Host-side DSN for the locally-run app:
-#   db.dsn: "host=127.0.0.1 user=jumpserver password=jumpserver dbname=jumpserver port=5432 sslmode=disable"
+#   db.dsn: "host=127.0.0.1 user=wayfort password=wayfort dbname=wayfort port=5432 sslmode=disable"
 #   redis.addr: "127.0.0.1:6379"
 #   protocols.guacamole.guacd_addr: "127.0.0.1:4822"
 #
@@ -23,9 +23,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: jumpserver
-      POSTGRES_USER: jumpserver
-      POSTGRES_PASSWORD: jumpserver
+      POSTGRES_DB: wayfort
+      POSTGRES_USER: wayfort
+      POSTGRES_PASSWORD: wayfort
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
     # Map to host port 5433 to avoid colliding with any locally-installed
     # PostgreSQL service that already owns 5432 (Windows `pgAdmin`,
@@ -35,7 +35,7 @@ services:
     volumes:
       - postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U jumpserver -d jumpserver"]
+      test: ["CMD-SHELL", "pg_isready -U wayfort -d wayfort"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -99,7 +99,7 @@ services:
     image: guacamole/guacd:1.5.5
     ports: ["4822:4822"]
     volumes:
-      - sessions:/var/lib/jumpserver/sessions
+      - sessions:/var/lib/wayfort/sessions
     restart: unless-stopped
 
   # OnlyOffice Document Server — backs the in-browser Office editor used by the
@@ -114,7 +114,7 @@ services:
     image: onlyoffice/documentserver:8.2
     environment:
       JWT_ENABLED: "true"
-      JWT_SECRET: "jumpserver-onlyoffice-secret-change-me"
+      JWT_SECRET: "wayfort-onlyoffice-secret-change-me"
       JWT_HEADER: "Authorization"
       JWT_IN_BODY: "true"
     # Host 18082 → container 80. 8082 falls inside a Windows reserved/excluded

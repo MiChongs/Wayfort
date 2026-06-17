@@ -12,7 +12,7 @@ package catalog
 import (
 	"sort"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 // Region groups presets for the gallery's category tabs.

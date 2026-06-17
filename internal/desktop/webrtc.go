@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
@@ -232,7 +232,7 @@ func (b *webrtcBridge) ensurePCLocked() (*webrtc.PeerConnection, error) {
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: mimeType},
-		"video", "jumpserver-desktop")
+		"video", "wayfort-desktop")
 	if err != nil {
 		_ = pc.Close()
 		return nil, err

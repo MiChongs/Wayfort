@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // mysqlCompatAdapter is the base struct for every MySQL-wire-protocol-

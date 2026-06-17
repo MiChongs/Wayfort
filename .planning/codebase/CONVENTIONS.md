@@ -4,7 +4,7 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 
 ## Project Shape
 
-- Backend is Go module `github.com/michongs/jumpserver-anonymous` with entrypoints in `cmd/jumpserver/main.go` and `cmd/freerdp-worker/main.go`.
+- Backend is Go module `github.com/michongs/wayfort` with entrypoints in `cmd/wayfort/main.go` and `cmd/freerdp-worker/main.go`.
 - Backend packages are grouped by feature under `internal/` (`internal/auth`, `internal/api`, `internal/repo`, `internal/model`, `internal/desktop`, `internal/protocols/*`) and shared packages under `pkg/` (`pkg/crypto`, `pkg/kms`, `pkg/log`).
 - Frontend is a Next.js app under `web/`, using App Router route groups in `web/src/app/(app)`, `web/src/app/(auth)`, and `web/src/app/(workspace)`.
 - Frontend shared UI and helpers live under `web/src/components`, `web/src/lib`, `web/src/i18n`, and `web/src/types`.
@@ -12,7 +12,7 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 ## Coding Style
 
 - Go code follows standard `gofmt` style; README badges explicitly call out `gofmt` (`README.md`).
-- Go errors are generally wrapped at boundaries with context using `fmt.Errorf("...: %w", err)`, e.g. startup wiring in `cmd/jumpserver/main.go` and DB open in `internal/repo/db.go`.
+- Go errors are generally wrapped at boundaries with context using `fmt.Errorf("...: %w", err)`, e.g. startup wiring in `cmd/wayfort/main.go` and DB open in `internal/repo/db.go`.
 - Go packages use short, feature-oriented names and constructors like `NewUserRepo`, `NewEngine`, `NewManager`, `NewService` (`internal/repo/user_repo.go`, `internal/server/http.go`, `internal/desktop/bootstrap_test.go`).
 - TypeScript uses 2-space indentation, double quotes, no semicolons, and `@/*` path imports configured in `web/tsconfig.json`.
 - Frontend files commonly use named service objects and named components; page files default-export route components (`web/src/app/(auth)/login/page.tsx`, `web/src/lib/api/services.ts`).
@@ -45,23 +45,23 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 
 ## Backend Service Patterns
 
-- Startup wiring is explicit dependency assembly in `cmd/jumpserver/main.go`: load config, initialize logger, DB, migrations, secrets, cache, repos, services, then mount routes.
-- Long-running server behavior uses contexts and graceful shutdown (`signal.NotifyContext` in `cmd/jumpserver/main.go`, `Serve(ctx, ...)` in `internal/server/http.go`).
+- Startup wiring is explicit dependency assembly in `cmd/wayfort/main.go`: load config, initialize logger, DB, migrations, secrets, cache, repos, services, then mount routes.
+- Long-running server behavior uses contexts and graceful shutdown (`signal.NotifyContext` in `cmd/wayfort/main.go`, `Serve(ctx, ...)` in `internal/server/http.go`).
 - DB access uses GORM with `WithContext(ctx)` in repositories (`internal/repo/user_repo.go`).
 - Missing rows are often normalized to `(nil, nil)` in repo lookup methods, e.g. `FindByUsername`, `FindByID` (`internal/repo/user_repo.go`).
-- Logging uses zap (`pkg/log`, `internal/server/http.go`, `cmd/jumpserver/main.go`). HTTP access logs classify health probes as debug, 5xx as error, 4xx as warn.
-- Security-sensitive services use envelope/KMS abstractions under `internal/secrets` and `pkg/kms`; bootstrap and legacy migration behavior is wired in `cmd/jumpserver/main.go`.
+- Logging uses zap (`pkg/log`, `internal/server/http.go`, `cmd/wayfort/main.go`). HTTP access logs classify health probes as debug, 5xx as error, 4xx as warn.
+- Security-sensitive services use envelope/KMS abstractions under `internal/secrets` and `pkg/kms`; bootstrap and legacy migration behavior is wired in `cmd/wayfort/main.go`.
 
 ## Error Handling
 
 - Backend HTTP handlers usually respond immediately and return after `c.JSON(...)` on validation/auth/business errors (`internal/api/auth_handler.go`).
-- Backend startup/service errors are wrapped and propagated upward; `main()` logs fatal only at the top (`cmd/jumpserver/main.go`).
+- Backend startup/service errors are wrapped and propagated upward; `main()` logs fatal only at the top (`cmd/wayfort/main.go`).
 - Frontend `api()` extracts backend `error` fields into `ApiError.message`, clears tokens and redirects to `/login` on 401, and returns text for non-JSON success bodies (`web/src/lib/api/client.ts`).
 - Frontend pages generally display mutation/query failures via Sonner toasts (`web/src/app/(auth)/login/page.tsx`, `web/src/app/(app)/admin/nodes/page.tsx`).
 
 ## Config And Env
 
-- Backend config is loaded by Viper from an explicit `-config` path or `./configs/config.yaml` / `./config.yaml`; environment variables prefixed with `JUMPSERVER_` override file values, with dots mapped to underscores (`internal/config/config.go`).
+- Backend config is loaded by Viper from an explicit `-config` path or `./configs/config.yaml` / `./config.yaml`; environment variables prefixed with `WAYFORT_` override file values, with dots mapped to underscores (`internal/config/config.go`).
 - Example backend config is `configs/config.example.yaml`; private runtime config is ignored as `/configs/config.yaml` and `/config.yaml` in `.gitignore`.
 - Required backend config includes `auth.jwt_secret` length >= 16 and non-empty `db.dsn` (`internal/config/config.go`).
 - Backend DB config is PostgreSQL-oriented in code and example config (`internal/repo/db.go`, `configs/config.example.yaml`), despite older README table text mentioning MySQL.
@@ -70,7 +70,7 @@ Evidence is from the current repository. Items marked Unknown or Needs verificat
 
 ## Migrations
 
-- Schema migration is GORM `AutoMigrate` in `internal/repo/db.go`, invoked at startup by `cmd/jumpserver/main.go`.
+- Schema migration is GORM `AutoMigrate` in `internal/repo/db.go`, invoked at startup by `cmd/wayfort/main.go`.
 - There is no standalone `migrations/` directory in the checked tree. Unknown whether production deployments require out-of-band migration controls.
 - `AutoMigrate` currently covers core models, RBAC/org/asset models, MFA/passkey/auth audit, AI assistant models, KMS/envelope tables, and approval service tables (`internal/repo/db.go`).
 - GORM is configured with `DisableForeignKeyConstraintWhenMigrating: true` and a silenced migration logger (`internal/repo/db.go`).

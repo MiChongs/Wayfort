@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/sshrun"
 )
 
 // install.go gets a firewall (or fail2ban) onto a node: a single-round-trip

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // This file holds the lifecycle-v3 plumbing shared across every protocol that

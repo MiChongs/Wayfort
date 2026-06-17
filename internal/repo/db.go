@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/model"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

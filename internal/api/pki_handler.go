@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/pki"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/pki"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // PKIHandler is the admin view of the internal certificate authority

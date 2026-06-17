@@ -16,8 +16,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type highgoNativeDriver struct{}
@@ -33,7 +33,7 @@ func (highgoNativeDriver) Open(ctx context.Context, p dbquery.ConnectionParams, 
 		defaultDB = "highgo"
 	}
 	runtime := map[string]string{
-		"application_name": "jumpserver-dbstudio",
+		"application_name": "wayfort-dbstudio",
 		"client_encoding":  "UTF8",
 	}
 	for k, v := range p.Extra {

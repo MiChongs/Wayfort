@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	appssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	appssh "github.com/michongs/wayfort/internal/ssh"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"golang.org/x/net/proxy"
 )
 

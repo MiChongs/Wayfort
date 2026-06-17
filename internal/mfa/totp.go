@@ -11,9 +11,9 @@ import (
 	"image/png"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 )
@@ -27,7 +27,7 @@ type TOTPService struct {
 
 func NewTOTPService(issuer string, r *repo.UserMFARepo, s pkgcrypto.Vault) *TOTPService {
 	if issuer == "" {
-		issuer = "JumpServer"
+		issuer = "Wayfort"
 	}
 	return &TOTPService{issuer: issuer, repo: r, sealer: s}
 }

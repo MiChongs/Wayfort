@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/perf"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/perf"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // PerfHandler exposes read-only performance diagnostics. All endpoints require

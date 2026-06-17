@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
+	"github.com/michongs/wayfort/internal/asset"
 	"mvdan.cc/sh/v3/syntax"
 )
 

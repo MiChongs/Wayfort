@@ -4,7 +4,7 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // NativeDriverRegistry holds vendor-native database/sql Driver impls,

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/notify"
+	"github.com/michongs/wayfort/internal/notify"
 	"github.com/redis/go-redis/v9"
 )
 

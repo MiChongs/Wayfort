@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -28,7 +28,7 @@ func sampleEvent() model.AuditLog {
 
 func TestFormatCEF_HeaderAndChainFields(t *testing.T) {
 	line := FormatCEF(sampleEvent())
-	if !strings.HasPrefix(line, "CEF:0|JumpServer|Gateway|1.0|command|command|") {
+	if !strings.HasPrefix(line, "CEF:0|Wayfort|Gateway|1.0|command|command|") {
 		t.Fatalf("unexpected CEF header: %s", line)
 	}
 	for _, want := range []string{
@@ -108,7 +108,7 @@ func TestWebhookSink_SignsBody(t *testing.T) {
 	var gotSig string
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotSig = r.Header.Get("X-JumpServer-Signature")
+		gotSig = r.Header.Get("X-Wayfort-Signature")
 		gotBody, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	}))

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/api"
+	"github.com/michongs/wayfort/internal/api"
 )
 
 // TestWireGuardRoutesRegister makes sure the WireGuard route set (the only place

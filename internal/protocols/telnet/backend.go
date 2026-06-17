@@ -12,8 +12,8 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/model"
 	"golang.org/x/net/proxy"
 )
 

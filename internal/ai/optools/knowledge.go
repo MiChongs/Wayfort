@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/ai/tools"
 )
 
 // registerKnowledgeTools wires the RAG retrieval + ops-knowledge distillation

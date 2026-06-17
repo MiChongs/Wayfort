@@ -1,4 +1,4 @@
-# Requirements: JumpServer-Anonymous DB Studio Adapter Expansion
+# Requirements: Wayfort DB Studio Adapter Expansion
 
 **Defined:** 2026-05-21
 **Core Value:** Operators can use DB Studio against supported relational databases through one safe adapter layer, with Dameng working end-to-end without adding more per-dialect hardcoding.
@@ -15,7 +15,7 @@
 
 - [x] **ADPT-01**: Backend has a relational DB adapter registry keyed by `model.NodeProtocol` or equivalent protocol identifier.
 - [x] **ADPT-02**: Each adapter exposes capabilities such as schemas, row edits, explain, process list, kill, DDL, export, and database/schema selection semantics.
-- [ ] **ADPT-03**: Connector behavior is adapter-owned and supports JumpServer proxy-chain dialing, credential handling, default port behavior, and database/schema options.
+- [ ] **ADPT-03**: Connector behavior is adapter-owned and supports Wayfort proxy-chain dialing, credential handling, default port behavior, and database/schema options.
 - [ ] **ADPT-04**: Dialect behavior is adapter-owned for identifier quoting, placeholders, pagination, order clauses, DDL, explain, and row CRUD SQL.
 - [ ] **ADPT-05**: Metadata behavior is adapter-owned for database/schema lists, tables/views, columns, indexes, foreign keys, table stats, and process information.
 
@@ -28,7 +28,7 @@
 ### Dameng Support
 
 - [ ] **DM-01**: Dameng is represented as a first-class node protocol with default port `5236` in backend and frontend protocol metadata.
-- [ ] **DM-02**: Dameng DB Studio connections open through JumpServer's proxy chain using a verified Go driver and adapter-owned DSN/connection construction.
+- [ ] **DM-02**: Dameng DB Studio connections open through Wayfort's proxy chain using a verified Go driver and adapter-owned DSN/connection construction.
 - [ ] **DM-03**: Dameng metadata browsing supports schemas, tables/views, columns, indexes, foreign keys where available, table stats where available, and DDL where available.
 - [ ] **DM-04**: Dameng row browsing, SQL query, explain, row insert/update/delete, and export use Dameng-aware quoting, placeholders, pagination, and type normalization.
 - [ ] **DM-05**: Dameng process listing and kill behavior is implemented when safely available, or capability-disabled with clear frontend behavior when unavailable.

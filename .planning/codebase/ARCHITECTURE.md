@@ -4,7 +4,7 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 
 ## High-Level Shape
 
-- Backend is a Go service using Gin, GORM, Redis, zap logging, and an `errgroup` runtime. Main wiring is in `cmd/jumpserver/main.go`; HTTP engine and route registration are in `internal/server/http.go` and `internal/server/routes.go`.
+- Backend is a Go service using Gin, GORM, Redis, zap logging, and an `errgroup` runtime. Main wiring is in `cmd/wayfort/main.go`; HTTP engine and route registration are in `internal/server/http.go` and `internal/server/routes.go`.
 - Frontend is a Next.js 16 / React 19 app under `web/`, with App Router routes in `web/src/app`, shadcn/Radix-style UI components in `web/src/components`, and API/WS clients in `web/src/lib`.
 - The frontend uses a Next.js API reverse proxy for REST/SSE at `web/src/app/api/proxy/[...path]/route.ts`. WebSockets are not proxied by Next; browser WS clients connect directly to the Go backend using `NEXT_PUBLIC_BACKEND_WS_URL`.
 - The backend is a multi-protocol bastion gateway for SSH, Telnet, SFTP, RDP/VNC, DB CLI, structured DB browsing, TCP port forwarding, firewall/docker panels, approvals, AI assistant, and anonymous sandbox sessions.
@@ -20,8 +20,8 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 
 ## Backend Runtime Components
 
-- Startup flow in `cmd/jumpserver/main.go` loads config, opens PostgreSQL, auto-migrates models, bootstraps secrets/KMS, Redis, repositories, auth providers, MFA/passkey/OIDC helpers, SSH pool/dialer chain, audit writer, anonymous Docker service, protocol handlers, approval service, insights, desktop manager, firewall/docker managers, AI subsystem, and Gin routes.
-- Long-running goroutines are started via `errgroup` in `cmd/jumpserver/main.go`: audit writer, SSH pool watchdog/runtime, anonymous janitor, TCP port-forward manager, mailer worker, AI janitor, HTTP server, approval reconciler, desktop worker bootstrap, and optional Devolutions Gateway ensure loop.
+- Startup flow in `cmd/wayfort/main.go` loads config, opens PostgreSQL, auto-migrates models, bootstraps secrets/KMS, Redis, repositories, auth providers, MFA/passkey/OIDC helpers, SSH pool/dialer chain, audit writer, anonymous Docker service, protocol handlers, approval service, insights, desktop manager, firewall/docker managers, AI subsystem, and Gin routes.
+- Long-running goroutines are started via `errgroup` in `cmd/wayfort/main.go`: audit writer, SSH pool watchdog/runtime, anonymous janitor, TCP port-forward manager, mailer worker, AI janitor, HTTP server, approval reconciler, desktop worker bootstrap, and optional Devolutions Gateway ensure loop.
 - HTTP server shutdown is context-driven with `http.Server.Shutdown` in `internal/server/http.go`; `WriteTimeout` is set to `0` to avoid killing long-lived WS traffic.
 - `cmd/freerdp-worker/` is a separate worker executable for FreeRDP-backed desktop sessions; `freerdp-worker.exe` and `bin/freerdp-worker` are present in the workspace.
 
@@ -29,9 +29,9 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 
 - Primary relational store is PostgreSQL via GORM. `internal/repo/db.go` uses `gorm.io/driver/postgres`; `configs/config.example.yaml` shows a PostgreSQL DSN.
 - `internal/repo/db.go` auto-migrates users, credentials, proxies, nodes, sessions, audit logs, port forwards, org/RBAC tables, asset groups/tags/grants, MFA/passkeys/OIDC, AI tables, KMS/secret envelope tables, and approval tables.
-- Redis is used by `internal/cache/redis.go` for active WebSSH session sets, anonymous container TTL keys, port-forward TTL keys, and as a dependency for auth/RBAC/cache-oriented services in `cmd/jumpserver/main.go`.
+- Redis is used by `internal/cache/redis.go` for active WebSSH session sets, anonymous container TTL keys, port-forward TTL keys, and as a dependency for auth/RBAC/cache-oriented services in `cmd/wayfort/main.go`.
 - Session recordings are stored on disk under `storage.sessions_dir`, defaulting to `./var/sessions` in `configs/config.example.yaml`; current workspace contains `.cast` files under `var/sessions/...`.
-- Secret storage uses envelope encryption bootstrapped in `cmd/jumpserver/main.go` through `internal/secrets` and KMS provider rows; legacy fixed AES-GCM key fallback exists only when `crypto.master_key_hex` is configured.
+- Secret storage uses envelope encryption bootstrapped in `cmd/wayfort/main.go` through `internal/secrets` and KMS provider rows; legacy fixed AES-GCM key fallback exists only when `crypto.master_key_hex` is configured.
 - Approval ledger may optionally archive to S3-compatible storage with Object Lock settings via `approval.archive` config in `internal/config/config.go` and `internal/approval/archiver_s3.go`.
 
 ## API And Routing Shape
@@ -49,8 +49,8 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 - Token revocation is checked with Redis-backed `auth.Blocklist` when wired. Non-active auth-step tokens are rejected unless middleware is configured to allow challenges.
 - Permission checks use `auth.RequirePermission` with `auth.Resolver`, which aggregates role permissions and caches them in-process plus Redis in `internal/auth/rbac.go`.
 - `auth.RejectAnonymous()` blocks anonymous tokens from operational routes while `/api/v1/ws/ssh/anonymous` is mounted separately and allows anonymous authenticated tokens.
-- Asset-level access is separate from global RBAC. `cmd/jumpserver/main.go` wires `asset.NewResolver(...)` into `MeHandler`, SFTP/insights/firewall/docker/desktop/AI-related dependencies, and handlers that need node visibility checks.
-- Approval is a cross-cutting enforcement seam. `cmd/jumpserver/main.go` wires `approvalSvc` into WebSSH, SFTP, Guacamole, DBCLI, structured DB, TCP forwarding, desktop, and secret decrypt gating for credential use.
+- Asset-level access is separate from global RBAC. `cmd/wayfort/main.go` wires `asset.NewResolver(...)` into `MeHandler`, SFTP/insights/firewall/docker/desktop/AI-related dependencies, and handlers that need node visibility checks.
+- Approval is a cross-cutting enforcement seam. `cmd/wayfort/main.go` wires `approvalSvc` into WebSSH, SFTP, Guacamole, DBCLI, structured DB, TCP forwarding, desktop, and secret decrypt gating for credential use.
 - Frontend auth guard is client-side in `web/src/app/(app)/layout.tsx`, using localStorage-backed token helpers in `web/src/lib/auth/tokens.ts`. This is not a backend security boundary.
 
 ## Frontend Architecture
@@ -64,9 +64,9 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 
 ## Major Seams For Future Work
 
-- Backend route seam: add HTTP/WS surfaces through `server.Routes` in `internal/server/routes.go`, then wire concrete handlers in `cmd/jumpserver/main.go`.
+- Backend route seam: add HTTP/WS surfaces through `server.Routes` in `internal/server/routes.go`, then wire concrete handlers in `cmd/wayfort/main.go`.
 - Persistence seam: new durable entities should be added to `internal/model`, repository methods under `internal/repo`, and `repo.AutoMigrate` in `internal/repo/db.go`.
-- Secret/credential seam: user-initiated credential decrypts should go through the `secretsBoot.Service.SetDecryptGate` path in `cmd/jumpserver/main.go`; avoid bypassing the KMS/envelope vaults.
+- Secret/credential seam: user-initiated credential decrypts should go through the `secretsBoot.Service.SetDecryptGate` path in `cmd/wayfort/main.go`; avoid bypassing the KMS/envelope vaults.
 - Protocol seam: SSH/Telnet core uses `internal/webssh`; optional protocols are under `internal/protocols`; desktop/RDP v2 is under `internal/desktop` plus `cmd/freerdp-worker`.
 - Frontend REST seam: add typed wrappers in `web/src/lib/api/services.ts` and consume via React Query from route/page components.
 - Frontend WS seam: add or extend clients under `web/src/lib/ws` or `web/src/lib/desktop`; do not expect Next.js route handlers to proxy WS upgrades.
@@ -75,5 +75,5 @@ Evidence is from the repository as of this workspace snapshot. If a runtime beha
 ## Unknowns / Needs Verification
 
 - Production deployment topology is not fully determined from code alone. `deployments/docker-compose.yaml`, `deployments/Dockerfile`, `web/Dockerfile`, and config files exist, but actual deployed reverse proxy/TLS/process supervision are Unknown.
-- Whether the checked-in binaries (`jumpserver.exe`, `freerdp-worker.exe`, `bin/freerdp-worker`) match current source is Unknown.
+- Whether the checked-in binaries (`wayfort.exe`, `freerdp-worker.exe`, `bin/freerdp-worker`) match current source is Unknown.
 - Exact frontend route coverage versus backend route coverage needs verification with a running app; code indicates many screens, but runtime feature flags may disable subsystems.

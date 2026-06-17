@@ -10,11 +10,11 @@
 # Environment overrides:
 #   DGW_VERSION     pinned upstream tag (default: latest from GitHub API)
 #   INSTALL_PREFIX  where the binary lands (default:
-#                   ~/Library/Application Support/JumpServer/devolutions-gateway)
+#                   ~/Library/Application Support/Wayfort/devolutions-gateway)
 
 set -euo pipefail
 
-INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/Library/Application Support/JumpServer/devolutions-gateway}"
+INSTALL_PREFIX="${INSTALL_PREFIX:-$HOME/Library/Application Support/Wayfort/devolutions-gateway}"
 DGW_API="${DGW_API:-https://api.github.com/repos/Devolutions/devolutions-gateway/releases/latest}"
 DGW_REPO="${DGW_REPO:-https://github.com/Devolutions/devolutions-gateway.git}"
 

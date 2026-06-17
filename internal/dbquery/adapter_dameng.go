@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // damengAdapter is the 达梦 DM8 adapter. DM uses an Oracle-flavoured
@@ -60,7 +60,7 @@ func (damengAdapter) Dialect() Dialect { return damengDialect{} }
 // with `-tags dm_driver`, internal/dbquery/native/dameng/init() will
 // have registered the gitee.com/chunanyong/dm-backed driver and we
 // route through it. Otherwise the legacy damengDriver still tries
-// sql.Open("dm", ...) so a hand-side-effect-import in cmd/jumpserver
+// sql.Open("dm", ...) so a hand-side-effect-import in cmd/wayfort
 // also works (back-compat with operators already using that pattern).
 func (damengAdapter) Driver() Driver {
 	if d, ok := LookupNativeDriver(model.NodeProtoDameng); ok {
@@ -112,7 +112,7 @@ func (d damengDialect) BuildRowsSQL(schema, table, orderBy, orderDir string, lim
 // damengDriver delegates to a runtime-registered "dm" sql driver. The
 // `gitee.com/chunanyong/dm` package registers itself with database/sql
 // under the name "dm" via its own init(). If the operator bundles that
-// import in their build (via a side-effect import in cmd/jumpserver),
+// import in their build (via a side-effect import in cmd/wayfort),
 // Open() opens cleanly. If not, sql.Open returns "unknown driver" and
 // we wrap that with a Chinese-friendly hint pointing at the gitee
 // module.

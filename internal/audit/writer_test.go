@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/model"
 	"go.uber.org/zap"
 )
 

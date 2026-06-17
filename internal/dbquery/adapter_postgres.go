@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // postgresAdapter is the canonical Postgres adapter. PG-wire-protocol-

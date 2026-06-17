@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
+	"github.com/michongs/wayfort/internal/asset"
 )
 
 // Maximum bytes a single sftp_read call may return (256 KB is plenty for logs/configs).

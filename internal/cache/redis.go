@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 	"github.com/redis/go-redis/v9"
 )
 

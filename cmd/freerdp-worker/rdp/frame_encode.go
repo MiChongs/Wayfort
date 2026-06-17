@@ -12,7 +12,7 @@ import (
 
 	"github.com/klauspost/compress/zlib"
 	"github.com/klauspost/compress/zstd"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/internal/desktop"
 	ants "github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )

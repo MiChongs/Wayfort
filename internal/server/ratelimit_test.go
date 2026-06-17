@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
+	"github.com/michongs/wayfort/internal/guard"
 )
 
 func TestWriteRateLimit_ThrottlesWritesNotReads(t *testing.T) {

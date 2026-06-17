@@ -5,14 +5,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 	"go.uber.org/zap"
 )
 
 // TestCandidatePaths confirms the path table includes the configured
 // WorkerPath plus the right OS-default fallbacks for the host we're on.
 // On Linux that's /usr/local/bin/freerdp-worker; on macOS it's the brew
-// prefix's bin; on Windows it's Program Files\JumpServer.
+// prefix's bin; on Windows it's Program Files\Wayfort.
 func TestCandidatePaths(t *testing.T) {
 	mgr := NewManager(config.DesktopConfig{WorkerPath: "/custom/wp"}, Deps{Logger: zap.NewNop()})
 	paths := mgr.candidateWorkerPaths()

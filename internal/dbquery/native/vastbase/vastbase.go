@@ -3,7 +3,7 @@
 // Vastbase 是 openGauss 衍生的商业 PG 兼容引擎；其 wire 协议和默认
 // PG / openGauss 一致，pgx 直接走通。本包相对默认 compat 适配器多做：
 //
-//   - 默认 application_name=jumpserver-dbstudio，符合 Vastbase 推荐
+//   - 默认 application_name=wayfort-dbstudio，符合 Vastbase 推荐
 //     的 connection identification 规范；
 //   - 连接后探针 SELECT version() 校验 vendor 字符串包含 "Vastbase"；
 //   - 把 db_compatibility 默认设为 'A' (Oracle 模式)，绝大多数 Vastbase
@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type vastbaseNativeDriver struct{}
@@ -37,7 +37,7 @@ func (vastbaseNativeDriver) Open(ctx context.Context, p dbquery.ConnectionParams
 		defaultDB = "postgres"
 	}
 	runtime := map[string]string{
-		"application_name": "jumpserver-dbstudio",
+		"application_name": "wayfort-dbstudio",
 		"client_encoding":  "UTF8",
 	}
 	for k, v := range p.Extra {

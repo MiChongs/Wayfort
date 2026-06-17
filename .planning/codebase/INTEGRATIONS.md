@@ -61,6 +61,6 @@ Evidence is from the current repository snapshot. Items marked Unknown or Needs 
 ## Operational Dependencies And Defaults
 
 - `deployments/docker-compose.yaml` starts PostgreSQL, Redis, guacd, and a test SSH target, but intentionally does not run the app container for local development.
-- Backend config defaults are documented in `configs/config.example.yaml`; Viper also supports `JUMPSERVER_` environment overrides.
+- Backend config defaults are documented in `configs/config.example.yaml`; Viper also supports `WAYFORT_` environment overrides.
 - Session recording storage is filesystem-backed by default; guacd can mount the same sessions volume for `.guac` recordings.
 - Production reverse proxy/TLS/origin policy is Unknown from the repository alone and should be documented before hardening WS or token-query flows.

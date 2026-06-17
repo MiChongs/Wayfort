@@ -1,10 +1,10 @@
-# JumpServer-Anonymous DB Studio Adapter Expansion
+# Wayfort DB Studio Adapter Expansion
 
 ## What This Is
 
-JumpServer-Anonymous is an existing Go and Next.js browser bastion platform for SSH, Telnet, SFTP, RDP/VNC, DB CLI, structured DB browsing, TCP forwarding, audit, approvals, and AI-assisted operations. This project stream focuses on evolving the structured DB Studio from a MySQL/PostgreSQL-specific implementation into a dynamic relational database adapter system, with Dameng support delivered end-to-end.
+Wayfort is an existing Go and Next.js browser bastion platform for SSH, Telnet, SFTP, RDP/VNC, DB CLI, structured DB browsing, TCP forwarding, audit, approvals, and AI-assisted operations. This project stream focuses on evolving the structured DB Studio from a MySQL/PostgreSQL-specific implementation into a dynamic relational database adapter system, with Dameng support delivered end-to-end.
 
-The immediate users are operators and administrators who need one browser-based database studio that works safely through JumpServer's existing credentials, proxy chains, approval gates, audit trail, and asset model.
+The immediate users are operators and administrators who need one browser-based database studio that works safely through Wayfort's existing credentials, proxy chains, approval gates, audit trail, and asset model.
 
 ## Core Value
 
@@ -17,7 +17,7 @@ Operators can use DB Studio against supported relational databases through one s
 - [x] Browser bastion gateway supports node-based protocol access for SSH, Telnet, RDP, VNC, DB CLI, Redis, Mongo, and TCP-style targets - existing
 - [x] Structured DB Studio endpoints and frontend exist for MySQL/PostgreSQL schema browsing, rows, SQL query/exec, row edits, process list, and export - existing
 - [x] Frontend has a typed API layer and DB Studio UI that can be extended without replacing the whole page - existing
-- [x] Backend already routes database connections through JumpServer credential lookup and proxy-chain dialing - existing
+- [x] Backend already routes database connections through Wayfort credential lookup and proxy-chain dialing - existing
 - [x] The codebase has RBAC, asset grants, approval gates, KMS-backed secret handling, audit logging, and session recording foundations - existing
 
 ### Active
@@ -27,7 +27,7 @@ Operators can use DB Studio against supported relational databases through one s
 - [ ] Add Dameng as a first-class relational database protocol and DB Studio adapter.
 - [ ] Make row browsing, CRUD SQL, metadata, process controls, explain, and DDL access adapter/dialect-driven instead of handler heuristics.
 - [ ] Make frontend DB Studio and node management capability-aware so new relational adapters do not require UI hardcoding beyond protocol registration.
-- [ ] Preserve JumpServer security boundaries before expanding DB access: asset grants, approval gates, audit, and credential handling must remain explicit.
+- [ ] Preserve Wayfort security boundaries before expanding DB access: asset grants, approval gates, audit, and credential handling must remain explicit.
 - [ ] Add focused tests and manual verification paths for adapter behavior, Dameng semantics, and existing MySQL/PostgreSQL compatibility.
 
 ### Out of Scope

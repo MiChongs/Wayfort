@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/catalog"
+	"github.com/michongs/wayfort/internal/ai/catalog"
 )
 
 // resolver.go centralizes model capability + pricing resolution so the runner

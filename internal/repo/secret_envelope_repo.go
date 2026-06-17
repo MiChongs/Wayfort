@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 	"gorm.io/gorm"
 )
 

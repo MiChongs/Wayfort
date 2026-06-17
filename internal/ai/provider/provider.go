@@ -8,7 +8,7 @@ import (
 	"context"
 	"errors"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 type Kind = aimodel.ProviderKind

@@ -70,7 +70,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/internal/desktop"
 	ants "github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )
@@ -419,7 +419,7 @@ func (c *Client) applySettings() error {
 	// populated here before freerdp_connect() builds the PDU. Symptom of
 	// missing values: TLS completes, then 6+ seconds of silence followed
 	// by BIO_read retries exceeded → 0x0002000D.
-	hostname := "JumpServer"
+	hostname := "Wayfort"
 	if h, err := os.Hostname(); err == nil && h != "" {
 		if len(h) > 15 {
 			h = h[:15]
@@ -596,7 +596,7 @@ func (c *Client) applySettings() error {
 	// Proxy chain forwarding. When the gateway stood up a per-session SOCKS5
 	// listener (manager.StartSession resolved node.ProxyChain), route
 	// libfreerdp's transport through it so the connect to
-	// ServerHostname:ServerPort is tunnelled through JumpServer's bastion /
+	// ServerHostname:ServerPort is tunnelled through Wayfort's bastion /
 	// SOCKS5 hops instead of dialed directly — the same way guacd reaches
 	// these targets. The listener is localhost + no-auth, so we leave
 	// ProxyUsername / ProxyPassword empty.
@@ -775,7 +775,7 @@ func (c *Client) applySettings() error {
 	if c.params.DrivePath != "" {
 		name := c.params.DriveName
 		if name == "" {
-			name = "JumpServer"
+			name = "Wayfort"
 		}
 		// Defensive: the gateway creates this folder, but the device is
 		// dropped outright if the path is missing when libfreerdp registers

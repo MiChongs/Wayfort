@@ -3,8 +3,8 @@ package ssh
 import (
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	xssh "golang.org/x/crypto/ssh"
 )
 

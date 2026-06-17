@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/loganalytics"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/loganalytics"
 )
 
 // LogAnalyticsHandler exposes read-only log search + severity aggregation.

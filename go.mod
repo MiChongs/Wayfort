@@ -1,4 +1,4 @@
-module github.com/michongs/jumpserver-anonymous
+module github.com/michongs/wayfort
 
 go 1.26.3
 

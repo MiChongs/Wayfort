@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/knowledge"
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/ai/knowledge"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	"github.com/michongs/wayfort/internal/ai/provider"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // KnowledgeHandler serves knowledge-base + document CRUD, uploads/ingest, the
@@ -215,7 +215,7 @@ func (h *KnowledgeHandler) ImportURL(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	req.Header.Set("User-Agent", "JumpServer-Knowledge-Importer/1.0")
+	req.Header.Set("User-Agent", "Wayfort-Knowledge-Importer/1.0")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "抓取失败: " + err.Error()})

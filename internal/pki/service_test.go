@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // fakeStore is an in-memory Store. fakeSealer is an identity sealer — the real

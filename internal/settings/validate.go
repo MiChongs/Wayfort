@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 )
 
 // validateValue checks one incoming change against its spec: correct JSON

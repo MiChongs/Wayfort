@@ -1,12 +1,12 @@
 // Package dameng wires the official 达梦 DM8 Go driver into the dbquery
 // native registry. Only compiled when the build is invoked with the
-// `dm_driver` build tag, so the default jumpserver binary stays
+// `dm_driver` build tag, so the default wayfort binary stays
 // portable on environments that cannot reach gitee.com (CI, air-gapped
 // installations, etc.).
 //
 // To enable real DM8 connectivity:
 //
-//	GOPROXY=https://goproxy.cn,direct go build -tags dm_driver -o jumpserver ./cmd/jumpserver
+//	GOPROXY=https://goproxy.cn,direct go build -tags dm_driver -o wayfort ./cmd/wayfort
 //
 // The vendor module `gitee.com/chunanyong/dm` registers itself with
 // database/sql under the driver name "dm" via its own init(). This
@@ -26,8 +26,8 @@ import (
 
 	_ "gitee.com/chunanyong/dm" // registers driver "dm" with database/sql
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // damengNativeDriver opens a connection using the gitee-hosted driver.

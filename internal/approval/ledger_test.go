@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // TestCanonicalDigestInput_Deterministic — same inputs produce identical

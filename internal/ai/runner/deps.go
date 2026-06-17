@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // ToolDepsView is a small shared box that the gate consults for auth + asset

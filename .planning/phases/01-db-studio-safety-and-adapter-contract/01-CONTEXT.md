@@ -66,14 +66,14 @@ Downstream agents must read these before planning or implementing.
 - `internal/firewall/manager.go` - another asset check before credential lookup pattern.
 - `internal/desktop/manager.go` - asset check before desktop session setup.
 - `internal/protocols/dbcli/gateway.go` - DB CLI session gateway and approval check location.
-- `cmd/jumpserver/main.go` - `assetResolver` construction and DB Studio/DB CLI wiring.
+- `cmd/wayfort/main.go` - `assetResolver` construction and DB Studio/DB CLI wiring.
 </canonical_refs>
 
 <specifics>
 ## Specific Ideas
 
 - Add `asset *asset.Resolver` or equivalent to `dbquery.Service` and enforce access inside `getOrOpen` before pool lookup.
-- Add `Asset *asset.Resolver` to `dbcli.Handler` and wire it in `cmd/jumpserver/main.go`.
+- Add `Asset *asset.Resolver` to `dbcli.Handler` and wire it in `cmd/wayfort/main.go`.
 - Add SQL classifier helper functions in `internal/api/db_handler.go` or a new `internal/api/db_sql_safety.go` if the logic grows.
 - Add `internal/dbquery/adapter.go`, `internal/dbquery/adapter_mysql.go`, and `internal/dbquery/adapter_postgres.go` for Phase 1 contract and default registry.
 - Add `Service.BuildRowsSQL(ctx, nodeID, userID, database, schema, table, orderBy, orderDir string, limit, offset int) (string, error)` so `DBHandler.Rows` no longer guesses dialect from column type strings.

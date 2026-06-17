@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/auth"
 )
 
 // Decision tells the runner what to do with an LLM-issued tool call.

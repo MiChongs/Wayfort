@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 // RegisterSubAgentTool exposes the call_subagent primitive that lets a parent

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // cefSeverity maps an audit kind to a CEF severity 0–10. Abnormal events
@@ -30,7 +30,7 @@ func cefSeverity(ev model.AuditLog) int {
 //
 //	CEF:Version|Device Vendor|Device Product|Device Version|Signature ID|Name|Severity|Extension
 func FormatCEF(ev model.AuditLog) string {
-	header := fmt.Sprintf("CEF:0|JumpServer|Gateway|1.0|%s|%s|%d|",
+	header := fmt.Sprintf("CEF:0|Wayfort|Gateway|1.0|%s|%s|%d|",
 		cefEscapeHeader(string(ev.Kind)),
 		cefEscapeHeader(string(ev.Kind)),
 		cefSeverity(ev),

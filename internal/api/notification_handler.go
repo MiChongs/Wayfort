@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/notifications"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/notifications"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // NotificationHandler serves the per-user in-app notification center under

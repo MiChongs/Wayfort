@@ -17,9 +17,9 @@
 package main
 
 import (
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/kingbase"
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/vastbase"
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/highgo"
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/oceanbase"
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/gbase8s"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/kingbase"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/vastbase"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/highgo"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/oceanbase"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/gbase8s"
 )

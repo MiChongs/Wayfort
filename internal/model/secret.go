@@ -106,7 +106,7 @@ type SecretEnvelope struct {
 	// providers are added / disabled / renamed.
 	ProviderID uint64 `gorm:"index;not null" json:"provider_id"`
 	// KeyID is the KMS-side key name. For Vault Transit it's the key
-	// name (e.g. "jumpserver-creds"), for AWS KMS the key alias or
+	// name (e.g. "wayfort-creds"), for AWS KMS the key alias or
 	// CMK ID, for Azure the key URI, for GCP the resource path.
 	KeyID string `gorm:"size:256;not null" json:"key_id"`
 	// KeyVersion captures which version of the KEK wrapped this DEK.
@@ -277,7 +277,7 @@ func (SecretAudit) TableName() string { return "secret_audits" }
 // Rationale: the user goal forbids storing master keys in config files or
 // environment variables. But we still need *some* way to bootstrap the
 // chain — somebody has to be allowed to read the Vault AppRole secret_id
-// after a fresh `systemctl restart jumpserver`. We solve that by:
+// after a fresh `systemctl restart wayfort`. We solve that by:
 //
 //   1. The KEK that actually wraps DEKs lives in Vault / KMS (per goal).
 //   2. The auth credential for that KMS (Vault SecretID, etc.) is sealed

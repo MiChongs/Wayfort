@@ -23,7 +23,7 @@ import "C"
 import (
 	"unicode/utf16"
 
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/internal/desktop"
 )
 
 func (c *Client) drainInput(limit int) {

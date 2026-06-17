@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // Session is one live desktop connection: a worker + bookkeeping. The

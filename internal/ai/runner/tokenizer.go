@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
+	"github.com/michongs/wayfort/internal/ai/provider"
 	tiktoken "github.com/pkoukk/tiktoken-go"
 )
 

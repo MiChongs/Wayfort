@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // SyslogSink ships events as newline-delimited CEF over a TCP (optionally TLS)

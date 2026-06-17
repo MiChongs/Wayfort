@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	"github.com/michongs/wayfort/internal/ai/provider"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
 	"github.com/panjf2000/ants/v2"
 	"go.uber.org/zap"
 )

@@ -2,19 +2,19 @@ package server
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/ai"
-	"github.com/michongs/jumpserver-anonymous/internal/api"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
-	"github.com/michongs/jumpserver-anonymous/internal/insights"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
-	"github.com/michongs/jumpserver-anonymous/internal/sftp"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
-	"github.com/michongs/jumpserver-anonymous/pkg/edition"
+	"github.com/michongs/wayfort/internal/ai"
+	"github.com/michongs/wayfort/internal/api"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/desktop"
+	"github.com/michongs/wayfort/internal/guard"
+	"github.com/michongs/wayfort/internal/insights"
+	"github.com/michongs/wayfort/internal/protocols/dbcli"
+	"github.com/michongs/wayfort/internal/protocols/guacamole"
+	"github.com/michongs/wayfort/internal/protocols/oss"
+	"github.com/michongs/wayfort/internal/protocols/tcpfwd"
+	"github.com/michongs/wayfort/internal/sftp"
+	"github.com/michongs/wayfort/internal/webssh"
+	"github.com/michongs/wayfort/pkg/edition"
 )
 
 // firewallHandler / dockerHandler — 503-stub pattern shared with insights:

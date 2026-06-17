@@ -25,8 +25,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type gbase8sNativeDriver struct{}
@@ -38,7 +38,7 @@ func (gbase8sNativeDriver) Open(_ context.Context, p dbquery.ConnectionParams, _
 		return nil, nil, errors.New(
 			"gbase8s: 未在 database/sql 注册名为 \"gbase8s\" 的驱动；" +
 				"GBase 8s 走 Informix DRDA 私有协议，pgx 无法兼容。" +
-				"请在 cmd/jumpserver 里 side-effect import 厂商 Go 驱动" +
+				"请在 cmd/wayfort 里 side-effect import 厂商 Go 驱动" +
 				"(联系南大通用客户支持获取)，注册名 \"gbase8s\" 即可。",
 		)
 	}

@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/pkg/edition"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/pkg/edition"
 )
 
 // EditionHandler exposes the current edition/entitlements and the super-admin

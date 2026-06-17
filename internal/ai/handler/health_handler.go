@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	aihealth "github.com/michongs/jumpserver-anonymous/internal/ai/health"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/ratelimit"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	aihealth "github.com/michongs/wayfort/internal/ai/health"
+	"github.com/michongs/wayfort/internal/ai/ratelimit"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // AIHealthHandler serves AI provider reachability: a JSON snapshot, an SSE

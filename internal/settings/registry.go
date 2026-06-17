@@ -172,7 +172,7 @@ var specs = []Spec{
 	{Key: "notify.smtp.password", Group: "notify", Type: TypeSecret, Label: "密码", Live: true, Integration: "smtp",
 		Help: "SMTP 鉴权密码 / 授权码，加密存储，保存后不再回显。"},
 	{Key: "notify.smtp.from", Group: "notify", Type: TypeString, Label: "发件人", Live: true, Integration: "smtp",
-		Placeholder: "JumpServer <noreply@example.com>", Help: "邮件的 From 头，可带显示名。"},
+		Placeholder: "Wayfort <noreply@example.com>", Help: "邮件的 From 头，可带显示名。"},
 	{Key: "notify.smtp.tls", Group: "notify", Type: TypeEnum, Label: "加密方式", Live: true, Integration: "smtp",
 		Enum: []EnumOption{
 			{Value: "starttls", Label: "STARTTLS"},

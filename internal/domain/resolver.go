@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // ErrAgentDomain is returned when a node belongs to an agent (reverse-connect)

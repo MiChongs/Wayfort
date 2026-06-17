@@ -19,13 +19,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/domain"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/domain"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
+	"github.com/michongs/wayfort/internal/sshrun"
 	xssh "golang.org/x/crypto/ssh"
 )
 

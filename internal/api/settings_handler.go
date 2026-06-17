@@ -7,10 +7,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/settings"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/settings"
 )
 
 // SettingsHandler exposes the super-admin system-settings surface: a

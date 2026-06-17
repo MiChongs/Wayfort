@@ -3,7 +3,7 @@ package runner
 import (
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/provider"
+	"github.com/michongs/wayfort/internal/ai/provider"
 )
 
 // Pricing is a best-effort static price table used only to surface an estimated

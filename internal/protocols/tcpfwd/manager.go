@@ -8,11 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/cache"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/cache"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )

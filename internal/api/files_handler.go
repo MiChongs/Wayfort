@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/files"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/files"
 )
 
 // FilesHandler exposes the remote file manager + config editor. List/Read

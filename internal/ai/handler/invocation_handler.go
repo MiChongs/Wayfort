@@ -4,9 +4,9 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/runner"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/ai/runner"
+	"github.com/michongs/wayfort/internal/auth"
 )
 
 // InvocationHandler implements the approve/reject endpoints used by the

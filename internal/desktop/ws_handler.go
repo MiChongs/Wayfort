@@ -10,9 +10,9 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/livewatch"
+	"github.com/michongs/wayfort/internal/webssh"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )

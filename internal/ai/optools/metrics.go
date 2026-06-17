@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/ai/tools"
 )
 
 func registerMetricsTools(reg *tools.Registry, deps Deps) {

@@ -1,4 +1,4 @@
-# Roadmap: JumpServer-Anonymous DB Studio Adapter Expansion
+# Roadmap: Wayfort DB Studio Adapter Expansion
 
 ## Overview
 
@@ -82,7 +82,7 @@ Plans:
 
 ### Phase 3: Dameng Backend Adapter
 
-**Goal**: Dameng is a first-class backend relational DB Studio adapter reachable through JumpServer proxy chains.
+**Goal**: Dameng is a first-class backend relational DB Studio adapter reachable through Wayfort proxy chains.
 
 **Depends on**: Phase 2
 

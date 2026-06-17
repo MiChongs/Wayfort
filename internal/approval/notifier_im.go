@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // IM card notifiers share a small set of helpers so each channel-specific
@@ -308,12 +308,12 @@ func dingTalkActionCard(env NotifyEnvelope) map[string]any {
 	if env.Event.Kind == model.ApprovalEvRequestCreated ||
 		env.Event.Kind == model.ApprovalEvTaskCreated {
 		card["btns"] = []map[string]any{
-			{"title": "批准", "actionURL": "dingtalk://jumpserver/approve/" + env.Request.ID},
-			{"title": "驳回", "actionURL": "dingtalk://jumpserver/reject/" + env.Request.ID},
+			{"title": "批准", "actionURL": "dingtalk://wayfort/approve/" + env.Request.ID},
+			{"title": "驳回", "actionURL": "dingtalk://wayfort/reject/" + env.Request.ID},
 		}
 	} else {
 		card["singleTitle"] = "查看详情"
-		card["singleURL"] = "dingtalk://jumpserver/view/" + env.Request.ID
+		card["singleURL"] = "dingtalk://wayfort/view/" + env.Request.ID
 	}
 	return map[string]any{
 		"msgtype":    "actionCard",
@@ -465,12 +465,12 @@ func (n *TeamsNotifier) Notify(ctx context.Context, env NotifyEnvelope) error {
 			{
 				"@type":  "OpenUri",
 				"name":   "Approve",
-				"targets": []map[string]string{{"os": "default", "uri": "https://jumpserver/approvals/" + env.Request.ID + "/approve"}},
+				"targets": []map[string]string{{"os": "default", "uri": "https://wayfort/approvals/" + env.Request.ID + "/approve"}},
 			},
 			{
 				"@type":  "OpenUri",
 				"name":   "Reject",
-				"targets": []map[string]string{{"os": "default", "uri": "https://jumpserver/approvals/" + env.Request.ID + "/reject"}},
+				"targets": []map[string]string{{"os": "default", "uri": "https://wayfort/approvals/" + env.Request.ID + "/reject"}},
 			},
 		}
 	}

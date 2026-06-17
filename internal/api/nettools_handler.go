@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/nettools"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/nettools"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // NetToolsHandler exposes network inspection + diagnostics + interface control.

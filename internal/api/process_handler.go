@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/process"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/process"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // ProcessHandler exposes the ops-dock process surface. Reads require

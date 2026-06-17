@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // Chainer maintains a per-instance, append-only hash chain over the audit log

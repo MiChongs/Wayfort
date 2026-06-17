@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
 )
 
 // EmbeddingResolver decides which provider+model performs embeddings for the

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 func TestDefaultRegistry(t *testing.T) {

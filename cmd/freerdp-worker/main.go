@@ -29,8 +29,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/cmd/freerdp-worker/rdp"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/cmd/freerdp-worker/rdp"
+	"github.com/michongs/wayfort/internal/desktop"
 	"go.uber.org/zap"
 )
 

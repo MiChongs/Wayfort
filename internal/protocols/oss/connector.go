@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/domain"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/domain"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 // Connector resolves a node (or raw options + credential) into a ready

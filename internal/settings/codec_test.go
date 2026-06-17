@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
+	"github.com/michongs/wayfort/internal/config"
 )
 
 // TestEveryManagedKeyResolves guards the single biggest risk: a registry key

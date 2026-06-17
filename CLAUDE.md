@@ -4,7 +4,7 @@ Read `.planning/STATE.md` and `.planning/PROJECT.md` before starting GSD-managed
 
 ## Current Focus
 
-- Project: JumpServer-Anonymous DB Studio Adapter Expansion
+- Project: Wayfort DB Studio Adapter Expansion
 - Next phase: Phase 1, DB Studio Safety And Adapter Contract
 - Core goal: move structured DB Studio to a safe relational adapter system and add Dameng support without more hardcoded dialect branching.
 

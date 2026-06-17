@@ -5,10 +5,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/settings"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/settings"
 )
 
 // WatermarkHandler serves GET /api/v1/me/watermark — the per-user anti-leak

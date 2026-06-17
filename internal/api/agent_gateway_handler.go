@@ -13,10 +13,10 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/pki"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/agentgw"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/pki"
+	"github.com/michongs/wayfort/internal/repo"
 	"go.uber.org/zap"
 )
 

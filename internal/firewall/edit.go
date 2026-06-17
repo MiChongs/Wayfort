@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // edit.go makes ufw + nftables first-class: insert-at-position, in-place edit,

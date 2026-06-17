@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/secaudit"
 )
 
 // SecAuditHandler exposes the read-only security posture report (ActionConnect).

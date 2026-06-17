@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // gateway.go turns a node into a WireGuard gateway: enabling (and persisting)
@@ -27,7 +27,7 @@ type GatewayStatus struct {
 	SampledAt          time.Time `json:"sampled_at"`
 }
 
-const sysctlPersistFile = "/etc/sysctl.d/99-jumpserver-wg.conf"
+const sysctlPersistFile = "/etc/sysctl.d/99-wayfort-wg.conf"
 
 // natRules returns the PostUp/PostDown lines that set up MASQUERADE NAT for an
 // interface, using wg-quick's %i interface placeholder so they bind to whichever

@@ -1,5 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Standalone output: `next build` additionally emits .next/standalone/ — a
+  // self-contained server.js with a file-traced, minimal node_modules (~100-200MB
+  // vs the full ~1.1GB). The Windows native installer bundles THAT instead of the
+  // whole node_modules so Setup.exe stays well under Inno's ~4.2GB single-file cap.
+  // Additive: the normal .next/ build is still produced, so the Docker image's
+  // `next start` keeps working unchanged. Run standalone with `node server.js`.
+  output: "standalone",
   // Pin the Turbopack workspace root to THIS directory (web/). Next 16's
   // Turbopack otherwise infers the root by walking up the tree for a lockfile,
   // and a stray parent-dir lockfile (e.g. a leftover ~/pnpm-lock.yaml in the

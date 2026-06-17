@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // stubEnforcer is a deterministic Enforcer used by the unit tests so we

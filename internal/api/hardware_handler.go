@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/hardware"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/hardware"
 )
 
 // HardwareHandler exposes read-only hardware inventory (ActionConnect only).

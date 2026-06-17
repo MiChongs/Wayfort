@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"golang.org/x/crypto/hkdf"
 )
 

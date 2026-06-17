@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/api"
+	"github.com/michongs/wayfort/internal/api"
 )
 
 // TestFirewallRoutesRegister guards the firewall route tree, where static

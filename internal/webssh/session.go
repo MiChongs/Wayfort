@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/latency"
-	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/latency"
+	"github.com/michongs/wayfort/internal/livewatch"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )

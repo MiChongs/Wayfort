@@ -8,7 +8,7 @@
 // 启用方式（必须同时启用 opengauss_driver 标签，因为 SM3 连接器只在
 // 那个标签下链入二进制）：
 //
-//	go build -tags "opengauss_driver gaussdb_driver" -o jumpserver ./cmd/jumpserver
+//	go build -tags "opengauss_driver gaussdb_driver" -o wayfort ./cmd/wayfort
 //
 // 默认构建（无标签）走 pgx 通用 PG 线协议，能连标准 SHA-256/MD5 认证
 // 的 GaussDB 实例；SM3 password_encryption=2 部署必须启用标签。
@@ -27,10 +27,10 @@ import (
 	// Pull in the openGauss native subpackage so its init() side-effect-
 	// registers the "opengauss" sql driver. Operators enabling gaussdb_driver
 	// MUST also enable opengauss_driver — the connector lives there.
-	_ "github.com/michongs/jumpserver-anonymous/internal/dbquery/native/opengauss"
+	_ "github.com/michongs/wayfort/internal/dbquery/native/opengauss"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type gaussdbNativeDriver struct{}

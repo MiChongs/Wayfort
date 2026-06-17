@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
+	"github.com/michongs/wayfort/internal/sshrun"
 	"go.uber.org/zap"
 	xssh "golang.org/x/crypto/ssh"
 )

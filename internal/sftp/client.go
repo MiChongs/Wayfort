@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/domain"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/domain"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
 	pkgsftp "github.com/pkg/sftp"
 	xssh "golang.org/x/crypto/ssh"
 )

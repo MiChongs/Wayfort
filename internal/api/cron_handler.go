@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/cron"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/cron"
 )
 
 // CronHandler exposes scheduled-task inspection + editing. Info requires

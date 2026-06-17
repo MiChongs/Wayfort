@@ -1,7 +1,7 @@
 # RDP Investigation — Forwarding / Dialing / Proxy-Chain + Session Orchestration
 
 Branch: `claude/ssh-bastion-gateway-2GCU5`. Layer: how the freerdp/ironrdp desktop
-session reaches the target, and whether it traverses JumpServer's proxy chain like
+session reaches the target, and whether it traverses Wayfort's proxy chain like
 every other protocol does.
 
 ## How the layer works
@@ -39,7 +39,7 @@ every other protocol does.
   `jet_cm="fwd"`, `jet_ap="rdp"`, `dst_hst=dst` (`jwt_signer.go:78`). The browser opens
   a WebSocket to the Devolutions Gateway subprocess and presents the token; the gateway
   **byte-proxies TCP to `dst` itself** (`gateway_proc.go` supervises the subprocess;
-  the gateway dials the target). Again **no JumpServer proxy chain** is consulted —
+  the gateway dials the target). Again **no Wayfort proxy chain** is consulted —
   `dst` is the raw node address.
 
 ### Compare: how every other protocol forwards (the bastion model)
@@ -72,7 +72,7 @@ every other protocol does.
 
 ## Findings
 
-### F1 (high) — freerdp worker bypasses the JumpServer proxy chain entirely
+### F1 (high) — freerdp worker bypasses the Wayfort proxy chain entirely
 The desktop freerdp path dials the target **directly** (`client.go:318/321`), unlike
 every other protocol which routes through `node.ProxyChain`. A node only reachable
 through a bastion/SOCKS5 hop (the entire reason proxy chains exist) **cannot be reached
@@ -80,7 +80,7 @@ via WebRDP**, while the same node works over guacamole-RDP, SSH, tcpfwd, etc. Th
 real "完整支持RDP转发" gap, not a style nit.
 
 Root cause is structural and three-layered:
-1. `desktop.NewManager` (`cmd/jumpserver/main.go:574`) is built with
+1. `desktop.NewManager` (`cmd/wayfort/main.go:574`) is built with
    `Deps{Logger,Nodes,Creds,Asset,Sealer,Audit,Sessions}` — **no `Proxies` repo and no
    `*dialer.ChainBuilder`**. Compare guacamole's handler which receives the whole
    `*webssh.Gateway` (with `Chain()`/`ProxyRepo()`/`ResolveHops`/`BuildChain`), and the
@@ -111,7 +111,7 @@ guacd):
 ### F2 (high) — ironrdp path also bypasses the proxy chain
 `manager.go:253` builds `dst` as the raw `node.Host:node.Port` and the Devolutions
 Gateway subprocess opens the backend TCP connection itself. There is no hook to route
-that backend dial through JumpServer's bastion chain, so ironrdp has the same
+that backend dial through Wayfort's bastion chain, so ironrdp has the same
 direct-dial limitation as freerdp. Unlike freerdp, this is **not fixable with a local
 SOCKS listener** unless Devolutions Gateway is told to use a SOCKS proxy for its `fwd`
 connections (the generated config in `gateway_config.go` sets no proxy). If

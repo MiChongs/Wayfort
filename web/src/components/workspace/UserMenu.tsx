@@ -20,7 +20,7 @@ import { useCurrentUser } from "@/lib/hooks/use-current-user"
 import { useAccess } from "@/lib/hooks/use-access"
 
 const VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "dev"
-const REPO = "https://github.com/MiChongs/JumpServer-Anonymous"
+const REPO = "https://github.com/MiChongs/Wayfort"
 
 const THEMES: { value: string; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { value: "light", label: "明亮", icon: Sun },

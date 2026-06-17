@@ -17,75 +17,75 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
-	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
-	"github.com/michongs/jumpserver-anonymous/internal/ai"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/optools"
-	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
-	"github.com/michongs/jumpserver-anonymous/internal/anonymous"
-	"github.com/michongs/jumpserver-anonymous/internal/api"
-	"github.com/michongs/jumpserver-anonymous/internal/approval"
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/audit/export"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/backup"
-	"github.com/michongs/jumpserver-anonymous/internal/breakglass"
-	"github.com/michongs/jumpserver-anonymous/internal/cache"
-	"github.com/michongs/jumpserver-anonymous/internal/capture"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/cron"
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	dockerpkg "github.com/michongs/jumpserver-anonymous/internal/docker"
-	"github.com/michongs/jumpserver-anonymous/internal/domain"
-	"github.com/michongs/jumpserver-anonymous/internal/files"
-	"github.com/michongs/jumpserver-anonymous/internal/firewall"
-	"github.com/michongs/jumpserver-anonymous/internal/geoip"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
-	"github.com/michongs/jumpserver-anonymous/internal/hardware"
-	"github.com/michongs/jumpserver-anonymous/internal/health"
-	"github.com/michongs/jumpserver-anonymous/internal/insights"
-	"github.com/michongs/jumpserver-anonymous/internal/kernel"
-	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
-	"github.com/michongs/jumpserver-anonymous/internal/loganalytics"
-	"github.com/michongs/jumpserver-anonymous/internal/logs"
-	"github.com/michongs/jumpserver-anonymous/internal/metrics"
-	"github.com/michongs/jumpserver-anonymous/internal/mfa"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/nettools"
-	"github.com/michongs/jumpserver-anonymous/internal/notifications"
-	"github.com/michongs/jumpserver-anonymous/internal/notify"
-	"github.com/michongs/jumpserver-anonymous/internal/office"
-	"github.com/michongs/jumpserver-anonymous/internal/passkey"
-	"github.com/michongs/jumpserver-anonymous/internal/perf"
-	pkg "github.com/michongs/jumpserver-anonymous/internal/pkg"
-	"github.com/michongs/jumpserver-anonymous/internal/pki"
-	"github.com/michongs/jumpserver-anonymous/internal/process"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/dbcli"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/guacamole"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
-	"github.com/michongs/jumpserver-anonymous/internal/secrets"
-	"github.com/michongs/jumpserver-anonymous/internal/server"
-	"github.com/michongs/jumpserver-anonymous/internal/sesswin"
-	"github.com/michongs/jumpserver-anonymous/internal/settings"
-	"github.com/michongs/jumpserver-anonymous/internal/sftp"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
-	"github.com/michongs/jumpserver-anonymous/internal/sshpool"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
-	"github.com/michongs/jumpserver-anonymous/internal/storage"
-	"github.com/michongs/jumpserver-anonymous/internal/systemd"
-	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
-	"github.com/michongs/jumpserver-anonymous/internal/wireguard"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
-	"github.com/michongs/jumpserver-anonymous/pkg/edition"
-	"github.com/michongs/jumpserver-anonymous/pkg/kms"
-	pkglog "github.com/michongs/jumpserver-anonymous/pkg/log"
+	"github.com/michongs/wayfort/internal/accesscontrol"
+	"github.com/michongs/wayfort/internal/agentgw"
+	"github.com/michongs/wayfort/internal/ai"
+	"github.com/michongs/wayfort/internal/ai/optools"
+	"github.com/michongs/wayfort/internal/anomaly"
+	"github.com/michongs/wayfort/internal/anonymous"
+	"github.com/michongs/wayfort/internal/api"
+	"github.com/michongs/wayfort/internal/approval"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/audit/export"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/backup"
+	"github.com/michongs/wayfort/internal/breakglass"
+	"github.com/michongs/wayfort/internal/cache"
+	"github.com/michongs/wayfort/internal/capture"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/cron"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/desktop"
+	"github.com/michongs/wayfort/internal/dialer"
+	dockerpkg "github.com/michongs/wayfort/internal/docker"
+	"github.com/michongs/wayfort/internal/domain"
+	"github.com/michongs/wayfort/internal/files"
+	"github.com/michongs/wayfort/internal/firewall"
+	"github.com/michongs/wayfort/internal/geoip"
+	"github.com/michongs/wayfort/internal/guard"
+	"github.com/michongs/wayfort/internal/hardware"
+	"github.com/michongs/wayfort/internal/health"
+	"github.com/michongs/wayfort/internal/insights"
+	"github.com/michongs/wayfort/internal/kernel"
+	"github.com/michongs/wayfort/internal/livewatch"
+	"github.com/michongs/wayfort/internal/loganalytics"
+	"github.com/michongs/wayfort/internal/logs"
+	"github.com/michongs/wayfort/internal/metrics"
+	"github.com/michongs/wayfort/internal/mfa"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/nettools"
+	"github.com/michongs/wayfort/internal/notifications"
+	"github.com/michongs/wayfort/internal/notify"
+	"github.com/michongs/wayfort/internal/office"
+	"github.com/michongs/wayfort/internal/passkey"
+	"github.com/michongs/wayfort/internal/perf"
+	pkg "github.com/michongs/wayfort/internal/pkg"
+	"github.com/michongs/wayfort/internal/pki"
+	"github.com/michongs/wayfort/internal/process"
+	"github.com/michongs/wayfort/internal/protocols/dbcli"
+	"github.com/michongs/wayfort/internal/protocols/guacamole"
+	"github.com/michongs/wayfort/internal/protocols/oss"
+	"github.com/michongs/wayfort/internal/protocols/tcpfwd"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/secaudit"
+	"github.com/michongs/wayfort/internal/secrets"
+	"github.com/michongs/wayfort/internal/server"
+	"github.com/michongs/wayfort/internal/sesswin"
+	"github.com/michongs/wayfort/internal/settings"
+	"github.com/michongs/wayfort/internal/sftp"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
+	"github.com/michongs/wayfort/internal/sshpool"
+	"github.com/michongs/wayfort/internal/sshrun"
+	"github.com/michongs/wayfort/internal/storage"
+	"github.com/michongs/wayfort/internal/systemd"
+	"github.com/michongs/wayfort/internal/sysuser"
+	"github.com/michongs/wayfort/internal/webssh"
+	"github.com/michongs/wayfort/internal/wireguard"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
+	"github.com/michongs/wayfort/pkg/edition"
+	"github.com/michongs/wayfort/pkg/kms"
+	pkglog "github.com/michongs/wayfort/pkg/log"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/errgroup"
@@ -490,7 +490,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	// ready and surfaces a clear startup error if the KMS can't unseal it.
 	pkiRepo := repo.NewPKIRepo(db)
 	pkiVault := secretsBoot.NewVaultFor(model.OwnerPKICAKey)
-	pkiService, err := pki.Bootstrap(rootCtx, pkiRepo, pkiVault, "JumpServer Agent CA")
+	pkiService, err := pki.Bootstrap(rootCtx, pkiRepo, pkiVault, "Wayfort Agent CA")
 	if err != nil {
 		return fmt.Errorf("pki bootstrap: %w", err)
 	}
@@ -1293,7 +1293,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 				if err := desktopMgr.EnsureGateway(gctx); err != nil {
 					// Surface the error in /desktop/stats but don't
 					// fail the errgroup — operators can fix the gateway
-					// without restarting the whole jumpserver.
+					// without restarting the whole wayfort.
 					logger.Warn("devolutions gateway ensure failed",
 						zap.Error(err))
 				}
@@ -1302,7 +1302,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		}
 	}
 
-	logger.Info("jumpserver started", zap.String("addr", cfg.Server.Addr))
+	logger.Info("wayfort started", zap.String("addr", cfg.Server.Addr))
 	printBootstrapBanner(bootstrap, cfg.Server.Addr)
 	waitErr := g.Wait()
 	// Every background worker (the geoip updater included) and the HTTP server
@@ -1457,7 +1457,7 @@ func printBootstrapBanner(res *bootstrapResult, addr string) {
 	lines := []string{
 		"",
 		"  " + bar,
-		"  ┃  JumpServer Anonymous — 首次启动",
+		"  ┃  Wayfort — 首次启动",
 		"  " + bar,
 		"  ┃  已自动创建管理员账号。请妥善保存以下凭据；本信息只显示这一次。",
 		"  ┃",
@@ -1590,9 +1590,9 @@ func seedRBAC(ctx context.Context, roles *repo.RoleRepo, users *repo.UserRepo, b
 //
 // Path conventions:
 //
-//	InstallPrefix       /opt/jumpserver/devolutions-gateway          (Linux)
-//	                    ~/Library/Application Support/JumpServer/... (macOS)
-//	                    %LOCALAPPDATA%\Programs\JumpServer\...       (Windows)
+//	InstallPrefix       /opt/wayfort/devolutions-gateway          (Linux)
+//	                    ~/Library/Application Support/Wayfort/... (macOS)
+//	                    %LOCALAPPDATA%\Programs\Wayfort\...       (Windows)
 //	BinaryPath          <InstallPrefix>/devolutions-gateway[.exe]
 //	ConfigPath          <InstallPrefix>/config/gateway.json
 //	IDFile              <InstallPrefix>/config/gateway-id
@@ -1659,12 +1659,12 @@ func buildDesktopIronRDP(cfg config.DevolutionsGatewayConfig, logger *zap.Logger
 func defaultDevolutionsPrefix() string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "JumpServer", "devolutions-gateway")
+		return filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "Wayfort", "devolutions-gateway")
 	case "darwin":
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, "Library", "Application Support", "JumpServer", "devolutions-gateway")
+		return filepath.Join(home, "Library", "Application Support", "Wayfort", "devolutions-gateway")
 	default:
-		return "/opt/jumpserver/devolutions-gateway"
+		return "/opt/wayfort/devolutions-gateway"
 	}
 }
 
@@ -1675,7 +1675,7 @@ func defaultDevolutionsPrefix() string {
 func runInstallDevolutionsScript(installPrefix string, logger *zap.Logger) error {
 	scriptsDir := "scripts"
 	if exe, err := os.Executable(); err == nil {
-		// When running from a binary outside the repo (e.g. /usr/local/bin/jumpserver)
+		// When running from a binary outside the repo (e.g. /usr/local/bin/wayfort)
 		// the scripts/ dir is conventionally next to the binary or one level up.
 		// Try both before falling back to the CWD-relative path.
 		cands := []string{

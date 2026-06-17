@@ -6,10 +6,10 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/auth"
 )
 
 type AgentHandler struct {

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/logs"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/logs"
 )
 
 // LogsHandler exposes read-only log access: file enumeration, one-shot tail, and

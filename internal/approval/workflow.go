@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // ApproverLookup resolves role names to concrete user IDs at the moment a

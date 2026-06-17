@@ -12,7 +12,7 @@ package notifications
 import (
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // Hub is the in-process realtime fan-out for new notifications, mirroring

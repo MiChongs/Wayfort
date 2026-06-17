@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/docker"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/docker"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 type DockerHandler struct {

@@ -152,7 +152,7 @@ func portOf(addr string) string {
 // body can contain % freely.
 func installScript(dlBase, server string) string {
 	const tmpl = `#!/bin/sh
-# JumpServer reverse-connect gateway-agent installer.
+# Wayfort reverse-connect gateway-agent installer.
 # A domain can hold MANY agents (they load-balance + fail over = HA). Run this on
 # each host you want to enroll. Second agent on the SAME host: add --state DIR.
 #   curl -fsSL DL_BASE/dl/gateway-agent.sh | sh -s -- --token <ENROLL_TOKEN> [--name NAME]

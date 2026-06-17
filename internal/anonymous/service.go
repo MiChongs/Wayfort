@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/cache"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	"github.com/michongs/wayfort/internal/cache"
+	"github.com/michongs/wayfort/internal/webssh"
 	"go.uber.org/zap"
 )
 

@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/dockerx"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/dockerx"
 )
 
 // IntegrationState is the connectivity state machine surfaced per external

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/sshrun"
 )
 
 // install.go handles getting WireGuard onto a node: a single-round-trip probe of

@@ -3,7 +3,7 @@ package approval
 import (
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 func TestRuleEval_Equality(t *testing.T) {

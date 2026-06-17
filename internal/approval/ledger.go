@@ -31,8 +31,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // LedgerSigner is the optional interface for KMS-backed authentication on

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 // Build constructs a runtime Provider from a stored DB row. The Sealer is used

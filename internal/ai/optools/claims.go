@@ -1,18 +1,18 @@
 package optools
 
 import (
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/cron"
-	"github.com/michongs/jumpserver-anonymous/internal/docker"
-	"github.com/michongs/jumpserver-anonymous/internal/firewall"
-	"github.com/michongs/jumpserver-anonymous/internal/kernel"
-	"github.com/michongs/jumpserver-anonymous/internal/nettools"
-	"github.com/michongs/jumpserver-anonymous/internal/pkg"
-	"github.com/michongs/jumpserver-anonymous/internal/process"
-	"github.com/michongs/jumpserver-anonymous/internal/secaudit"
-	"github.com/michongs/jumpserver-anonymous/internal/storage"
-	"github.com/michongs/jumpserver-anonymous/internal/sysuser"
-	"github.com/michongs/jumpserver-anonymous/internal/systemd"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/cron"
+	"github.com/michongs/wayfort/internal/docker"
+	"github.com/michongs/wayfort/internal/firewall"
+	"github.com/michongs/wayfort/internal/kernel"
+	"github.com/michongs/wayfort/internal/nettools"
+	"github.com/michongs/wayfort/internal/pkg"
+	"github.com/michongs/wayfort/internal/process"
+	"github.com/michongs/wayfort/internal/secaudit"
+	"github.com/michongs/wayfort/internal/storage"
+	"github.com/michongs/wayfort/internal/sysuser"
+	"github.com/michongs/wayfort/internal/systemd"
 )
 
 // Each ops package declares its own (structurally identical) AuditClaims type,

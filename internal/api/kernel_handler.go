@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/kernel"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/kernel"
 )
 
 // KernelHandler exposes kernel parameter inspection + tuning. Info requires

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // safeapply.go is the anti-lockout core. Managing a firewall over SSH means one

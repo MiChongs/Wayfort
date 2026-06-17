@@ -7,11 +7,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/sshrun"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
@@ -127,7 +127,7 @@ func (m *Manager) SetSysctl(ctx context.Context, userID, nodeID uint64, claims A
 	}
 	cmd := fmt.Sprintf("sysctl -w %s 2>&1", shellQuote(key+"="+value))
 	if persist {
-		cmd += fmt.Sprintf(" && printf '%%s = %%s\\n' %s %s >> /etc/sysctl.d/99-jumpserver.conf 2>&1",
+		cmd += fmt.Sprintf(" && printf '%%s = %%s\\n' %s %s >> /etc/sysctl.d/99-wayfort.conf 2>&1",
 			shellQuote(key), shellQuote(value))
 	}
 	cctx, cancel := context.WithTimeout(ctx, m.cfg.SSHTimeout)

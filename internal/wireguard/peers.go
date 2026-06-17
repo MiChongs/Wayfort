@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/sshrun"
 )
 
 // peers.go owns peer CRUD with a double-write strategy: the change is applied to

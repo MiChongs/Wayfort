@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/michongs/jumpserver-anonymous/internal/desktop"
+	"github.com/michongs/wayfort/internal/desktop"
 )
 
 func TestStripAvc420Wrapper(t *testing.T) {

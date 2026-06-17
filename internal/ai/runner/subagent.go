@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 // RunSub is invoked by the call_subagent tool. It allocates a child

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // config_file.go owns the on-disk /etc/wireguard/<name>.conf surface: parsing

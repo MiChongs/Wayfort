@@ -98,10 +98,10 @@ func osDefaultWorkerPaths() []string {
 		}
 	case "windows":
 		if pf := os.Getenv("ProgramFiles"); pf != "" {
-			paths = append(paths, filepath.Join(pf, "JumpServer", name))
+			paths = append(paths, filepath.Join(pf, "Wayfort", name))
 		}
 		if local := os.Getenv("LOCALAPPDATA"); local != "" {
-			paths = append(paths, filepath.Join(local, "Programs", "JumpServer", name))
+			paths = append(paths, filepath.Join(local, "Programs", "Wayfort", name))
 		}
 	default:
 		paths = append(paths,

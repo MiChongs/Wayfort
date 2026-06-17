@@ -13,21 +13,21 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/michongs/jumpserver-anonymous/internal/approval"
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/livewatch"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/socks5"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/wayfort/internal/approval"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/livewatch"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/socks5"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )
 
-// DialChainFunc resolves a node's JumpServer proxy chain into a ContextDialer
+// DialChainFunc resolves a node's Wayfort proxy chain into a ContextDialer
 // that tunnels TCP to the target through every hop, plus a release func that
 // MUST be called exactly once when the session ends to decrement bastion
 // refcounts. Wired from main.go using the same webssh.Gateway ResolveHops +
@@ -83,7 +83,7 @@ type Manager struct {
 	gatewaySup *GatewaySupervisor
 
 	// dialChain routes the freerdp worker's TCP connection through the node's
-	// JumpServer proxy chain via a per-session SOCKS5 listener. Nil = direct
+	// Wayfort proxy chain via a per-session SOCKS5 listener. Nil = direct
 	// dial (matches pre-proxy-chain behaviour).
 	dialChain DialChainFunc
 }
@@ -155,7 +155,7 @@ func (m *Manager) SetApproval(svc *approval.Service) { m.approval = svc }
 // EnsureGateway brings up the Devolutions Gateway subprocess (and
 // generates its on-disk config) if the ironrdp backend is enabled.
 // Safe to call when no supervisor is attached — it's a no-op then.
-// Called once at startup from cmd/jumpserver/main.go inside the same
+// Called once at startup from cmd/wayfort/main.go inside the same
 // errgroup that runs EnsureWorker, so both backends are independent.
 func (m *Manager) EnsureGateway(ctx context.Context) error {
 	if m.gatewaySup == nil {
@@ -432,7 +432,7 @@ func (m *Manager) StartSession(ctx context.Context, claims *auth.Claims, clientI
 			drivePath = dir
 			driveName = m.cfg.Drive.Name
 			if driveName == "" {
-				driveName = "JumpServer"
+				driveName = "Wayfort"
 			}
 			m.logger.Info("desktop drive redirect prepared",
 				zap.Uint64("user", claims.UserID),

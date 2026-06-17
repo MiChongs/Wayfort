@@ -5,8 +5,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/guard"
 )
 
 // writeRateLimit returns a middleware that throttles state-changing requests

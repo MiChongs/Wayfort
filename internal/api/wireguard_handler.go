@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
-	"github.com/michongs/jumpserver-anonymous/internal/wireguard"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/sse"
+	"github.com/michongs/wayfort/internal/wireguard"
 )
 
 // WireGuardHandler exposes the WireGuard ops surface. Status/Stream require

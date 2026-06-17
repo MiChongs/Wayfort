@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // Store persists the CA material and the issued-certificate ledger. Satisfied

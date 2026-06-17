@@ -1,10 +1,10 @@
-# Build + install the freerdp-worker binary on Windows via MSYS2.
+﻿# Build + install the freerdp-worker binary on Windows via MSYS2.
 #
 # Usage:
 #   .\scripts\build-worker-windows.ps1
 #   .\scripts\build-worker-windows.ps1 -Subenv mingw64
 #   .\scripts\build-worker-windows.ps1 -Msys2Root D:\msys64
-#   .\scripts\build-worker-windows.ps1 -InstallDir "C:\Program Files\JumpServer"
+#   .\scripts\build-worker-windows.ps1 -InstallDir "C:\Program Files\Wayfort"
 #   .\scripts\build-worker-windows.ps1 -SkipDeps
 #
 # MSYS2 sub-environments are mutually incompatible (different C runtimes
@@ -12,8 +12,8 @@
 # PKG_CONFIG_PATH and the pacman package prefix all come from the same
 # place. Default is ucrt64 (MSYS2's recommended default since 2022).
 #
-# Install location defaults to %LOCALAPPDATA%\Programs\JumpServer so no
-# admin privileges are needed. Pass -InstallDir "$env:ProgramFiles\JumpServer"
+# Install location defaults to %LOCALAPPDATA%\Programs\Wayfort so no
+# admin privileges are needed. Pass -InstallDir "$env:ProgramFiles\Wayfort"
 # for a machine-wide install (run PowerShell as Administrator).
 
 [CmdletBinding()]
@@ -21,7 +21,7 @@ param(
     [ValidateSet("ucrt64", "mingw64", "clang64", "mingw32")]
     [string]$Subenv = "ucrt64",
     [string]$Msys2Root = "C:\msys64",
-    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\JumpServer",
+    [string]$InstallDir = "$env:LOCALAPPDATA\Programs\Wayfort",
     [switch]$SkipDeps
 )
 
@@ -117,7 +117,7 @@ Cannot rename existing $out aside ($_).
 Most likely a running gateway/worker process is holding the binary open.
 Stop the gateway and any leftover freerdp-worker.exe, then re-run:
   Get-Process freerdp-worker -ErrorAction SilentlyContinue | Stop-Process -Force
-  Get-Process jumpserver     -ErrorAction SilentlyContinue | Stop-Process -Force
+  Get-Process wayfort     -ErrorAction SilentlyContinue | Stop-Process -Force
 "@
         }
     }

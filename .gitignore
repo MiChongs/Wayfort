@@ -62,3 +62,10 @@ designs/
 
 # 产品官网(独立的 Vite + React 站点)——按要求不纳入主仓库版本控制。
 /website/
+
+# Claude Code / agent 本地工具与技能缓存(同 /.claude/)——不纳入版本控制。
+/.agents/
+/skills-lock.json
+
+# 本地测试环境变量(可能含密钥)——不提交。
+/.env.test

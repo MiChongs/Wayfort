@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
-	"github.com/michongs/jumpserver-anonymous/internal/sshrun"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
+	"github.com/michongs/wayfort/internal/sshrun"
 	"go.uber.org/zap"
 	"golang.org/x/sync/singleflight"
 )
@@ -270,7 +270,7 @@ var fixCommands = map[string]string{
 	"ssh_root":   "sed -i 's/^#\\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config && systemctl reload sshd 2>/dev/null || systemctl reload ssh",
 	"ssh_pw":     "sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl reload sshd 2>/dev/null || systemctl reload ssh",
 	"fail2ban":   "(apt-get install -y fail2ban || yum install -y fail2ban || dnf install -y fail2ban) && systemctl enable --now fail2ban",
-	"harden":     "sysctl -w kernel.randomize_va_space=2 net.ipv4.tcp_syncookies=1 net.ipv4.conf.all.rp_filter=1 && printf 'kernel.randomize_va_space=2\\nnet.ipv4.tcp_syncookies=1\\nnet.ipv4.conf.all.rp_filter=1\\n' > /etc/sysctl.d/99-jumpserver-harden.conf",
+	"harden":     "sysctl -w kernel.randomize_va_space=2 net.ipv4.tcp_syncookies=1 net.ipv4.conf.all.rp_filter=1 && printf 'kernel.randomize_va_space=2\\nnet.ipv4.tcp_syncookies=1\\nnet.ipv4.conf.all.rp_filter=1\\n' > /etc/sysctl.d/99-wayfort-harden.conf",
 	"unattended": "(apt-get install -y unattended-upgrades && dpkg-reconfigure -f noninteractive unattended-upgrades) || (dnf install -y dnf-automatic && systemctl enable --now dnf-automatic.timer)",
 }
 

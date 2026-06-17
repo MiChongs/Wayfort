@@ -3,7 +3,7 @@ package dbquery
 import (
 	"context"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // EngineInfo is the catalog row the UI consumes for the node-creation

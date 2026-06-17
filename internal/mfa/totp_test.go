@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"github.com/pquerna/otp/totp"
 )
 

@@ -29,11 +29,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/accesscontrol"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/webssh"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 	"go.uber.org/zap"
 )
 

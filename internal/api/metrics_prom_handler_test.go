@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
+	"github.com/michongs/wayfort/internal/guard"
 )
 
 func TestPrometheus_EmitsMetricsAndGatesOnToken(t *testing.T) {

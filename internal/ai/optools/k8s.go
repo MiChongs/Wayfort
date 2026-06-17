@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/asset"
 )
 
 // flatten decodes the tool args into a flat string map, coercing numbers/bools

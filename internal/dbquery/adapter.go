@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // DatabaseScope describes how the engine partitions namespaces — does a

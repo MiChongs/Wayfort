@@ -1,0 +1,30 @@
+# Wayfort 原生 Windows 单一入口反向代理(localhost 上各本地进程)。
+# 与 docker 版同构,仅上游从服务名改为 127.0.0.1:
+#   /api/v1/*  → 后端(127.0.0.1:8080):全部 WebSocket、freerdp 帧流。
+#   /jet/*     → Devolutions Gateway(127.0.0.1:7171):ironrdp。
+#   其余        → 前端 Next.js(127.0.0.1:3000;它再经 /api/proxy/* 转发 REST/SSE)。
+#
+# 站点地址用 {$WAYFORT_SITE::18080} —— run 脚本以环境变量传入端口(默认 18080,
+# 避开 Windows 保留段 ~7999–8098)。启用 HTTPS:把它设成你的域名并放通 80/443。
+
+{
+	admin off
+}
+
+{$WAYFORT_SITE::18080} {
+	@backend path /api/v1/*
+	handle @backend {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	@jet path /jet/*
+	handle @jet {
+		reverse_proxy 127.0.0.1:7171
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	encode zstd gzip
+}

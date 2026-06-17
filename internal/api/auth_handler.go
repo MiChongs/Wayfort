@@ -10,17 +10,17 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/accesscontrol"
-	"github.com/michongs/jumpserver-anonymous/internal/anomaly"
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/geoip"
-	"github.com/michongs/jumpserver-anonymous/internal/mfa"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/notify"
-	"github.com/michongs/jumpserver-anonymous/internal/passkey"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/accesscontrol"
+	"github.com/michongs/wayfort/internal/anomaly"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/geoip"
+	"github.com/michongs/wayfort/internal/mfa"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/notify"
+	"github.com/michongs/wayfort/internal/passkey"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // AuthHandler glues together the password / MFA / Passkey / OIDC login flows

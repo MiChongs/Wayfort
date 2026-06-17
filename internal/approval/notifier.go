@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 	"go.uber.org/zap"
 )
 
@@ -161,8 +161,8 @@ func (n *WebhookNotifier) Notify(ctx context.Context, env NotifyEnvelope) error 
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-JumpServer-Event", string(env.Event.Kind))
-	req.Header.Set("X-JumpServer-Request", env.Request.ID)
+	req.Header.Set("X-Wayfort-Event", string(env.Event.Kind))
+	req.Header.Set("X-Wayfort-Request", env.Request.ID)
 	if sec := env.Subscription.Secret; sec != "" {
 		req.Header.Set("Authorization", "Bearer "+sec)
 	}

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // AAD construction
@@ -20,7 +20,7 @@ import (
 //
 // Canonical AAD layout is:
 //
-//   "jumpserver.envelope|owner_type|owner_id|version|extra_k1=v1|extra_k2=v2…"
+//   "wayfort.envelope|owner_type|owner_id|version|extra_k1=v1|extra_k2=v2…"
 //
 // where extra_k=v pairs come from the caller's per-Seal context map
 // (used by multi-tenant deployments to bind on tenant_id, by the SSH
@@ -44,7 +44,7 @@ type AADInput struct {
 // Build computes the canonical AAD bytes.
 func (a AADInput) Build() []byte {
 	var b strings.Builder
-	b.WriteString("jumpserver.envelope")
+	b.WriteString("wayfort.envelope")
 	b.WriteByte('|')
 	b.WriteString(string(a.OwnerType))
 	b.WriteByte('|')
@@ -100,9 +100,9 @@ func Verify(input AADInput, stored []byte) error {
 // KMS provider.
 func EncryptionContextFor(input AADInput) map[string]string {
 	ec := map[string]string{
-		"jumpserver.envelope.owner_type": string(input.OwnerType),
-		"jumpserver.envelope.owner_id":   formatUint(input.OwnerID),
-		"jumpserver.envelope.version":    formatUint(uint64(input.Version)),
+		"wayfort.envelope.owner_type": string(input.OwnerType),
+		"wayfort.envelope.owner_id":   formatUint(input.OwnerID),
+		"wayfort.envelope.version":    formatUint(uint64(input.Version)),
 	}
 	for k, v := range input.Extra {
 		ec["x."+k] = v

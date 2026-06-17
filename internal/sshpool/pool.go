@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/dialer"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	pkgssh "github.com/michongs/jumpserver-anonymous/internal/ssh"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/dialer"
+	"github.com/michongs/wayfort/internal/model"
+	pkgssh "github.com/michongs/wayfort/internal/ssh"
 	xssh "golang.org/x/crypto/ssh"
 	"golang.org/x/net/proxy"
 )

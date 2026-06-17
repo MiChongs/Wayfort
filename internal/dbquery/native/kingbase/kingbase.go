@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type kingbaseNativeDriver struct{}
@@ -40,7 +40,7 @@ func (kingbaseNativeDriver) Open(ctx context.Context, p dbquery.ConnectionParams
 	}
 	// KingbaseES 推荐的 session 默认值。operator 可通过 Extra 覆盖。
 	runtime := map[string]string{
-		"application_name": "jumpserver-dbstudio",
+		"application_name": "wayfort-dbstudio",
 		"client_encoding":  "UTF8",
 		"DateStyle":        "ISO, YMD",
 		// search_path 双引号让 KingbaseES 接受大写 PUBLIC schema。

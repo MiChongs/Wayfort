@@ -1,6 +1,6 @@
 // Command gateway-agent is the reverse-connect Gateway Agent: a single static
 // binary deployed inside an isolated network. It only ever connects OUTBOUND to
-// the JumpServer gateway (it never listens), runs the agent side of the yamux
+// the Wayfort gateway (it never listens), runs the agent side of the yamux
 // tunnel, and dials targets on the gateway's behalf. See
 // docs/security-architecture.md §4.
 //
@@ -33,8 +33,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
-	"github.com/michongs/jumpserver-anonymous/internal/pki"
+	"github.com/michongs/wayfort/internal/agentgw"
+	"github.com/michongs/wayfort/internal/pki"
 )
 
 const identityFile = "identity.json"
@@ -84,7 +84,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `gateway-agent — reverse-connect JumpServer agent
+	fmt.Fprint(os.Stderr, `gateway-agent — reverse-connect Wayfort agent
 
   gateway-agent enroll --server wss://host:8443 --token <OTT> [--name NAME] [--state DIR]
   gateway-agent run    --server wss://host:8443                [--state DIR]

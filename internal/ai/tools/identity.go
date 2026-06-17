@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/asset"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // RegisterIdentityTools adds read-only tools that introspect the calling

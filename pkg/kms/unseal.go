@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 // Unsealer turns a bootstrap passphrase into the symmetric key that

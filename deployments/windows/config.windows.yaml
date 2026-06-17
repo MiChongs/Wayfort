@@ -1,0 +1,125 @@
+# Wayfort —— 原生 Windows 部署配置(无 Docker)。
+#
+# 所有依赖以本地进程跑在 127.0.0.1:wayfort 用服务名→localhost 直连。路径用相对路径,
+# 由 run 脚本把工作目录设为安装/数据根目录(见 scripts/wayfort-windows.ps1)。
+# 密钥(jwt/db 口令/管理员初始密码)由 run 脚本首次 init 时经 WAYFORT_* 环境变量注入,
+# 不写进此文件。
+#
+# 与 docker 版差异:服务地址用 127.0.0.1;guacamole 关闭(Windows 无 guacd,
+# RDP 走内置 freerdp-worker.exe / Devolutions Gateway);路径为 Windows 相对路径。
+
+server:
+  addr: "127.0.0.1:8080"
+  read_timeout: 30s
+  write_timeout: 30s
+  shutdown_timeout: 10s
+
+db:
+  # password 由 WAYFORT_DB_DSN 覆盖(含 run 脚本生成的本地 Postgres 口令)。
+  dsn: "host=127.0.0.1 user=wayfort password=wayfort dbname=wayfort port=5432 sslmode=disable"
+  max_open: 50
+  max_idle: 10
+  conn_max_lifetime: 1h
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+
+auth:
+  jwt_secret: "OVERRIDDEN-BY-WAYFORT_AUTH_JWT_SECRET-ENV"
+  access_ttl: 1h
+  refresh_ttl: 168h
+  bootstrap_admin: "admin"
+  bootstrap_password: "" # 由 WAYFORT_AUTH_BOOTSTRAP_PASSWORD 注入
+  lockout: { enabled: true, threshold: 5, window: 15m, duration: 15m }
+  mfa: { enforce_for_admin: false, totp_issuer: "Wayfort", email_otp_ttl: 5m, email_otp_cooldown: 60s, recovery_codes_count: 10 }
+  passkey: { enabled: false, rp_id: "localhost", rp_display: "Wayfort", rp_origins: ["http://localhost:18080"], discoverable_login: true }
+  anomaly: { enabled: true, notify_email: false }
+
+ai:
+  enabled: true
+  default_permission_mode: normal
+  max_iterations: 20
+  max_subagent_depth: 2
+  tool_timeout: 60s
+  approval_timeout: 2m
+  conversation_ttl_days: 90
+  seed_default_agents: true
+  ssh_exec_readonly_allow: []
+  ssh_exec_readonly_allow_extra: []
+
+notify:
+  smtp: { host: "", port: 587, username: "", password: "", from: "Wayfort <noreply@example.com>", tls: "starttls" }
+  worker: { chan_size: 256, max_retries: 3 }
+
+crypto:
+  # 解封口令文件(首启自动生成 0600);相对工作目录(安装根)的 var\。务必离线备份。
+  unseal_passphrase_file: "./var/keystore.unseal"
+  master_key_hex: ""
+
+storage:
+  sessions_dir: "./var/sessions"
+
+sshpool: { max_sessions_per_client: 8, idle_eviction: 10m, dial_timeout: 15s, keepalive: 30s }
+
+# 匿名沙箱 / DB CLI 容器需要 Docker —— 原生 Windows 部署无 Docker,关闭。
+anonymous:
+  enabled: false
+  image: "alpine:latest"
+  ttl: 10m
+  cpu: 0.5
+  memory_mb: 128
+  pids_limit: 64
+  network: "none"
+  shell: ["/bin/sh"]
+
+recorder: { chan_size: 1024, flush_interval: 250ms }
+audit: { chan_size: 4096, batch_size: 64, batch_interval: 200ms }
+webssh: { read_buffer: 8192, write_timeout: 10s, ping_interval: 30s }
+insights: { enabled: true, cache_ttl: 3s, ssh_timeout: 10s, process_limit: 200 }
+
+# 新版 WebRDP:freerdp-worker.exe(随包内置,与 wayfort.exe 同目录,自动被发现)+
+# Devolutions Gateway(随包内置 .exe)。
+desktop:
+  enabled: true
+  default_backend: freerdp
+  max_concurrent_sessions: 64
+  recording: { enabled: true, dir: "", include_input: true }
+  drive: { enabled: true, dir: "", name: "Wayfort", allow_upload: true, allow_download: true, max_file_mb: 1024, max_total_mb: 4096 }
+  # WebRTC 需浏览器↔后端直连 UDP;本机部署同机访问通常可用 host candidate,
+  # 跨机访问需设 public_ip + 放通 UDP。默认开,失败自动回落 WS。
+  webrtc: { enabled: true, codec: vp9, bitrate_kbps: 8000, fps: 30 }
+  devolutions_gateway:
+    enabled: true
+    auto_install: false # 随包内置,勿在启动时联网下载
+    auto_start: true # wayfort 监管子进程
+    install_prefix: "./devolutions-gateway"
+    binary_path: "./devolutions-gateway/devolutions-gateway.exe"
+    config_path: "./var/devolutions-gateway/gateway.json"
+    id_file: "./var/devolutions-gateway/gateway-id"
+    jwt_private_key_file: "./var/devolutions-gateway/jwt.key"
+    listen_addr: "http://127.0.0.1:7171"
+    advertised_url: "" # run 脚本注入 ${WS_SCHEME}://${PUBLIC_HOST}:${WEB_PORT}/jet/rdp
+    external_url: "" # run 脚本注入 ${PUBLIC_SCHEME}://${PUBLIC_HOST}:${WEB_PORT}
+    token_ttl: 90s
+    health_timeout: 15s
+    verbosity: info
+
+agent: { enabled: false, addr: ":8443", public_host: "", dist_dir: "dist/agent" }
+
+protocols:
+  # Windows 无 guacd → 关闭 guacamole;RDP/VNC 走上面的新版 WebRDP。
+  guacamole: { enabled: false, guacd_addr: "127.0.0.1:4822", recording: false, socks_listen_host: "127.0.0.1", recording_path_in_guacd: "" }
+  dbcli:
+    enabled: false # 需 Docker
+    images: { mysql: "mysql:8.0", postgres: "postgres:16-alpine", redis: "redis:7-alpine", mongo: "mongo:7" }
+    ttl: 30m
+  tcpfwd: { enabled: true, listen_host: "127.0.0.1", port_range: [40000, 49999], default_ttl: 1h, max_per_user: 8 }
+  telnet: { enabled: true, timeout: 15s }
+
+office:
+  enabled: false
+  document_server_url: "http://127.0.0.1:18082/"
+  jwt_secret: "OVERRIDDEN-BY-WAYFORT_OFFICE_JWT_SECRET-ENV"
+  callback_base_url: "http://127.0.0.1:8080"

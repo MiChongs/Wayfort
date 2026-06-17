@@ -71,7 +71,7 @@ gates are sound.
 Connection establishment, security negotiation, GCC core data, and the
 suppress-output + refresh-rect first-frame handshake are implemented carefully
 and look correct. The biggest user-goal gap is **forwarding**: the worker dials
-the target directly and has no path through JumpServer's proxy-chain/gateway.
+the target directly and has no path through Wayfort's proxy-chain/gateway.
 Secondary gaps are in fallback coverage and a resize/refresh dimension
 mismatch.
 

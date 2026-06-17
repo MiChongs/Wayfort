@@ -9,8 +9,8 @@ import (
 	"github.com/docker/docker/api/types/image"
 	dockertypes "github.com/docker/docker/api/types"
 	dclient "github.com/docker/docker/client"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/dockerx"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/dockerx"
 )
 
 // Launcher creates a one-shot container preloaded with a database CLI client
@@ -48,8 +48,8 @@ func (l *Launcher) Launch(ctx context.Context, sessionID string, spec LaunchSpec
 		AttachStderr: true,
 		StdinOnce:    true,
 		Labels: map[string]string{
-			"jumpserver.session": sessionID,
-			"jumpserver.kind":    "dbcli",
+			"wayfort.session": sessionID,
+			"wayfort.kind":    "dbcli",
 		},
 	}
 	hostCfg := &container.HostConfig{

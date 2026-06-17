@@ -386,8 +386,8 @@ type DevolutionsGatewayConfig struct {
 	AutoStart bool `mapstructure:"auto_start"`
 	// InstallPrefix is the directory the install script drops the
 	// binary into and where the supervisor expects to find it (unless
-	// BinaryPath overrides). Default: /opt/jumpserver/devolutions-gateway
-	// on Linux, %LOCALAPPDATA%\Programs\JumpServer\devolutions-gateway
+	// BinaryPath overrides). Default: /opt/wayfort/devolutions-gateway
+	// on Linux, %LOCALAPPDATA%\Programs\Wayfort\devolutions-gateway
 	// on Windows.
 	InstallPrefix string `mapstructure:"install_prefix"`
 	// BinaryPath is the absolute path to the gateway executable.
@@ -412,7 +412,7 @@ type DevolutionsGatewayConfig struct {
 	// Gateway rejects the config outright when this field is missing,
 	// hence it's plumbed through here. Empty = same as ListenAddr (fine
 	// for single-host loopback deploys; reverse-proxy fronting sets
-	// e.g. "https://jumpserver.example.com").
+	// e.g. "https://wayfort.example.com").
 	ExternalURL string `mapstructure:"external_url"`
 	// JWTPrivateKeyFile holds the RS256 private key the signer uses to
 	// mint pre-auth tokens. Generated on first run if missing.
@@ -703,10 +703,10 @@ type WebSSHConfig struct {
 
 // Load reads configuration from the given path. If path is empty, it looks for
 // configs/config.yaml relative to the working directory. Environment variables
-// prefixed with JUMPSERVER_ override file values (e.g. JUMPSERVER_DB_DSN).
+// prefixed with WAYFORT_ override file values (e.g. WAYFORT_DB_DSN).
 func Load(path string) (*Config, error) {
 	v := viper.New()
-	v.SetEnvPrefix("JUMPSERVER")
+	v.SetEnvPrefix("WAYFORT")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 	if path != "" {
@@ -747,7 +747,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.lockout.threshold", 5)
 	v.SetDefault("auth.lockout.window", 15*time.Minute)
 	v.SetDefault("auth.lockout.duration", 15*time.Minute)
-	v.SetDefault("auth.mfa.totp_issuer", "JumpServer")
+	v.SetDefault("auth.mfa.totp_issuer", "Wayfort")
 	v.SetDefault("auth.mfa.email_otp_ttl", 5*time.Minute)
 	v.SetDefault("auth.mfa.email_otp_cooldown", 60*time.Second)
 	v.SetDefault("auth.mfa.recovery_codes_count", 10)
@@ -891,7 +891,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("desktop.recording.include_input", true)
 	v.SetDefault("desktop.drive.enabled", true)
 	v.SetDefault("desktop.drive.dir", "")
-	v.SetDefault("desktop.drive.name", "JumpServer")
+	v.SetDefault("desktop.drive.name", "Wayfort")
 	v.SetDefault("desktop.drive.allow_upload", true)
 	v.SetDefault("desktop.drive.allow_download", true)
 	v.SetDefault("desktop.drive.max_file_mb", 1024)

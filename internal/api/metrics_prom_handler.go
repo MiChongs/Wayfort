@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/guard"
+	"github.com/michongs/wayfort/internal/guard"
 )
 
 // PrometheusHandler exposes gateway health in Prometheus text format

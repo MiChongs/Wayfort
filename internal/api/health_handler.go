@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/health"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/health"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // HealthHandler serves proxy reachability: a JSON snapshot, an SSE stream that

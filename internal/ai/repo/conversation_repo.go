@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 	"gorm.io/gorm"
 )
 

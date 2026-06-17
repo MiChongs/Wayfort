@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // This file holds the lifecycle-v3 plumbing for desktop sessions: bridging the

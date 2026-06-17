@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/process"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/process"
 )
 
 func registerProcessTools(reg *tools.Registry, deps Deps) {

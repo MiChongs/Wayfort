@@ -4,8 +4,8 @@ Evidence is from the current repository snapshot. Items marked Unknown or Needs 
 
 ## Backend
 
-- Language/runtime: Go module `github.com/michongs/jumpserver-anonymous`; `go.mod` declares Go `1.26.3`.
-- Main gateway entrypoint: `cmd/jumpserver/main.go`; HTTP routing is assembled through `internal/server/http.go` and `internal/server/routes.go`.
+- Language/runtime: Go module `github.com/michongs/wayfort`; `go.mod` declares Go `1.26.3`.
+- Main gateway entrypoint: `cmd/wayfort/main.go`; HTTP routing is assembled through `internal/server/http.go` and `internal/server/routes.go`.
 - Secondary executable: `cmd/freerdp-worker/` builds a FreeRDP worker binary; `Makefile` has `make build-worker` and OS-specific install targets.
 - HTTP framework: Gin (`github.com/gin-gonic/gin`) with route groups under `/api/v1` in `internal/server/routes.go`.
 - WebSocket implementation: `github.com/coder/websocket`; terminal-style and protocol WS endpoints live under `/api/v1/ws/...`.

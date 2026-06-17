@@ -3,8 +3,8 @@
 ## Gateway
 
 ```bash
-bash scripts/build-gateway.sh           # → ./bin/jumpserver{,.exe}
-bash scripts/build-gateway.sh /opt/js   # → /opt/js/jumpserver{,.exe}
+bash scripts/build-gateway.sh           # → ./bin/wayfort{,.exe}
+bash scripts/build-gateway.sh /opt/js   # → /opt/js/wayfort{,.exe}
 ```
 
 Pure Go, no CGo, works on every OS Go supports.
@@ -23,7 +23,7 @@ Pick the script matching your OS:
 | --- | --- | --- |
 | Linux (Debian/Ubuntu/Fedora/Alpine) | `bash scripts/build-worker-linux.sh` | `/usr/local/bin/freerdp-worker` |
 | macOS | `bash scripts/build-worker-darwin.sh` | `$(brew --prefix)/bin/freerdp-worker` |
-| Windows | `powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1` | `%LOCALAPPDATA%\Programs\JumpServer\freerdp-worker.exe` |
+| Windows | `powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1` | `%LOCALAPPDATA%\Programs\Wayfort\freerdp-worker.exe` |
 
 Or auto-detect (run from any shell, including Git Bash on Windows):
 
@@ -56,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1 -Suben
 powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1 -Msys2Root D:\msys64
 
 # Windows: machine-wide install (run PowerShell as Administrator)
-powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1 -InstallDir "$env:ProgramFiles\JumpServer"
+powershell -ExecutionPolicy Bypass -File scripts/build-worker-windows.ps1 -InstallDir "$env:ProgramFiles\Wayfort"
 ```
 
 ### Make targets

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 // Registry caches built Provider instances so we don't re-do API discovery on

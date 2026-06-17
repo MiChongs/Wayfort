@@ -10,7 +10,7 @@
 // connection succeeds only against clusters configured for plain MD5
 // or trust auth — not realistic for production.
 //
-//	GOPROXY=https://goproxy.cn,direct go build -tags opengauss_driver -o jumpserver ./cmd/jumpserver
+//	GOPROXY=https://goproxy.cn,direct go build -tags opengauss_driver -o wayfort ./cmd/wayfort
 //
 //go:build opengauss_driver
 // +build opengauss_driver
@@ -25,8 +25,8 @@ import (
 
 	_ "gitee.com/opengauss/openGauss-connector-go-pq" // registers driver "opengauss"
 
-	"github.com/michongs/jumpserver-anonymous/internal/dbquery"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // opengaussNativeDriver opens through the vendor-provided lib/pq-style

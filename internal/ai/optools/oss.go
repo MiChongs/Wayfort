@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/oss"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/protocols/oss"
 )
 
 // withStore opens the object store for a node, runs fn, and always releases the

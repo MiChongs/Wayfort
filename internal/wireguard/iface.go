@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // iface.go owns the interface lifecycle: key generation, create / update /

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // fail2ban.go manages the fail2ban intrusion-prevention layer alongside the

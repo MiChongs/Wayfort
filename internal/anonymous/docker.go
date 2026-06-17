@@ -11,8 +11,8 @@ import (
 	"github.com/docker/docker/api/types/image"
 	dockertypes "github.com/docker/docker/api/types"
 	dclient "github.com/docker/docker/client"
-	"github.com/michongs/jumpserver-anonymous/internal/config"
-	"github.com/michongs/jumpserver-anonymous/internal/dockerx"
+	"github.com/michongs/wayfort/internal/config"
+	"github.com/michongs/wayfort/internal/dockerx"
 )
 
 type DockerLauncher struct {
@@ -53,8 +53,8 @@ func (l *DockerLauncher) Create(ctx context.Context, sessionID string) (string, 
 		AttachStdout: false,
 		AttachStderr: false,
 		Labels: map[string]string{
-			"jumpserver.session": sessionID,
-			"jumpserver.kind":    "anonymous",
+			"wayfort.session": sessionID,
+			"wayfort.kind":    "anonymous",
 		},
 	}
 	hostCfg := &container.HostConfig{
@@ -147,13 +147,13 @@ type ManagedContainer struct {
 }
 
 func (l *DockerLauncher) ListManaged(ctx context.Context) ([]ManagedContainer, error) {
-	cl, err := l.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: jumpserverFilter()})
+	cl, err := l.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: wayfortFilter()})
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ManagedContainer, 0, len(cl))
 	for _, c := range cl {
-		out = append(out, ManagedContainer{ID: c.ID, SessionID: c.Labels["jumpserver.session"]})
+		out = append(out, ManagedContainer{ID: c.ID, SessionID: c.Labels["wayfort.session"]})
 	}
 	return out, nil
 }

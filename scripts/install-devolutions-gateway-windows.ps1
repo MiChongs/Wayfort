@@ -1,4 +1,4 @@
-# install-devolutions-gateway-windows.ps1
+﻿# install-devolutions-gateway-windows.ps1
 #
 # One-shot installer that fetches the latest Devolutions Gateway
 # release from GitHub and drops the binary into $InstallPrefix. The
@@ -9,14 +9,14 @@
 # Parameters / env overrides:
 #   -Version          DGW release tag (default: latest from GitHub API)
 #   -InstallPrefix    where the binary ends up (default:
-#                     $env:LOCALAPPDATA\Programs\JumpServer\devolutions-gateway)
+#                     $env:LOCALAPPDATA\Programs\Wayfort\devolutions-gateway)
 #   -Mirror           alternate base URL when GitHub release CDN is slow
 #                     from the deploy host
 
 [CmdletBinding()]
 param(
     [string]$Version = $env:DGW_VERSION,
-    [string]$InstallPrefix = $(if ($env:INSTALL_PREFIX) { $env:INSTALL_PREFIX } else { "$env:LOCALAPPDATA\Programs\JumpServer\devolutions-gateway" }),
+    [string]$InstallPrefix = $(if ($env:INSTALL_PREFIX) { $env:INSTALL_PREFIX } else { "$env:LOCALAPPDATA\Programs\Wayfort\devolutions-gateway" }),
     [string]$Mirror = $(if ($env:DGW_MIRROR) { $env:DGW_MIRROR } else { "https://github.com/Devolutions/devolutions-gateway/releases/download" }),
     [string]$Api = $(if ($env:DGW_API) { $env:DGW_API } else { "https://api.github.com/repos/Devolutions/devolutions-gateway/releases/latest" })
 )
@@ -24,12 +24,13 @@ param(
 $ErrorActionPreference = "Stop"
 function Log($msg) { Write-Host "[install-devolutions-gateway] $msg" }
 
-# Architecture detection. Upstream currently only ships x86_64 .exe for
-# Windows; arm64 ships as `jetsocat-windows-arm64.zip` but not the
-# gateway itself. Refuse arm64 with a clear message rather than 404'ing.
+# Architecture / asset platform. The Windows release is a ZIP named
+# `DevolutionsGateway-<ver>-windows-x64.zip` (NOT the underscore/.exe form the
+# Linux/macOS assets use — that naming 404s). Upstream ships only x64 for the
+# gateway; refuse arm64 with a clear message rather than 404'ing.
 $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
-    "AMD64" { "x86_64" }
-    "ARM64" { throw "Devolutions Gateway upstream does not yet ship a Windows ARM64 binary. Run on x64 (incl. via Windows-on-ARM emulation) or build from source." }
+    "AMD64" { "windows-x64" }
+    "ARM64" { throw "Devolutions Gateway upstream does not ship a Windows ARM64 gateway binary. Run on x64 (incl. Windows-on-ARM emulation) or build from source." }
     default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
 }
 
@@ -50,27 +51,39 @@ if (-not (Test-Path $InstallPrefix)) { New-Item -ItemType Directory -Force -Path
 $configDir = Join-Path $InstallPrefix "config"
 if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Force -Path $configDir | Out-Null }
 
-$asset = "DevolutionsGateway_Windows_${Version}_${arch}.exe"
+# e.g. DevolutionsGateway-2026.2.2-windows-x64.zip
+$asset = "DevolutionsGateway-${Version}-${arch}.zip"
 $url = "$Mirror/v$Version/$asset"
 $dest = Join-Path $InstallPrefix "devolutions-gateway.exe"
 $tmp = New-TemporaryFile
+$extract = $null
 
 try {
     Log "downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
 
-    # Sanity check: a small response usually means the GitHub CDN
-    # returned an HTML 404 page instead of the binary. A real
-    # devolutions-gateway.exe is ~20–40 MB.
+    # Sanity check: a small response usually means the GitHub CDN returned an
+    # HTML 404 page instead of the ~22MB zip.
     if ((Get-Item $tmp).Length -lt 1MB) {
         $head = Get-Content -LiteralPath $tmp -TotalCount 1
         throw "downloaded payload too small ($((Get-Item $tmp).Length) bytes; first line: $head). Asset name or version likely wrong."
     }
 
-    # If the destination .exe is held by a running gateway process,
-    # Windows refuses to overwrite it but does allow rename. Move the
-    # existing binary aside (unique suffix to avoid colliding with an
-    # equally-locked .old from a previous run).
+    # The Windows asset is a ZIP whose root holds DevolutionsGateway.exe + xmf.dll
+    # (its runtime DLL) + a webapp/ folder. Extract to a temp dir, then move the
+    # whole payload into $InstallPrefix and place the gateway under our canonical
+    # name devolutions-gateway.exe (xmf.dll + webapp/ must sit beside it).
+    $extract = Join-Path ([System.IO.Path]::GetTempPath()) ("dgw_" + [Guid]::NewGuid().ToString('N'))
+    Expand-Archive -LiteralPath $tmp -DestinationPath $extract -Force
+    $innerExe = Get-ChildItem -LiteralPath $extract -Filter 'DevolutionsGateway.exe' -Recurse | Select-Object -First 1
+    if (-not $innerExe) {
+        $innerExe = Get-ChildItem -LiteralPath $extract -Filter '*.exe' -Recurse | Sort-Object Length -Descending | Select-Object -First 1
+    }
+    if (-not $innerExe) { throw "no gateway .exe found inside $asset" }
+    $srcDir = $innerExe.Directory.FullName
+
+    # If a running gateway holds devolutions-gateway.exe, Windows allows rename
+    # but not overwrite — move the existing one aside first.
     if (Test-Path $dest) {
         $stale = "$dest.$([Guid]::NewGuid().ToString('N')).old"
         try {
@@ -80,9 +93,10 @@ try {
             throw
         }
     }
-    Move-Item -LiteralPath $tmp -Destination $dest -Force
-    $tmp = $null  # ownership transferred — skip cleanup
-    Log "installed: $dest"
+    Copy-Item -Path (Join-Path $srcDir '*') -Destination $InstallPrefix -Recurse -Force
+    $placed = Join-Path $InstallPrefix $innerExe.Name
+    if ($placed -ne $dest) { Move-Item -LiteralPath $placed -Destination $dest -Force }
+    Log "installed: $dest (+ xmf.dll, webapp/)"
     & $dest --version
 
     # Best-effort cleanup of stale `.old` siblings from prior installs.
@@ -90,4 +104,5 @@ try {
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 } finally {
     if ($tmp -and (Test-Path $tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    if ($extract -and (Test-Path $extract)) { Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue }
 }

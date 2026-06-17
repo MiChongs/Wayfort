@@ -21,7 +21,7 @@ Repository snapshot: Go/Gin backend under `internal/`, Next.js frontend under `w
 
 ## Secret And Config Risks
 
-- Config can provide sensitive values through YAML or `JUMPSERVER_` env overrides (`internal/config/config.go:366-395`), including `auth.jwt_secret`, DB DSN, Redis password, SMTP password, KMS archive keys, and legacy `crypto.master_key_hex` (`internal/config/config.go:238-324`). Secret storage policy and deployment examples need verification.
+- Config can provide sensitive values through YAML or `WAYFORT_` env overrides (`internal/config/config.go:366-395`), including `auth.jwt_secret`, DB DSN, Redis password, SMTP password, KMS archive keys, and legacy `crypto.master_key_hex` (`internal/config/config.go:238-324`). Secret storage policy and deployment examples need verification.
 - JWT signing uses HS256 with a minimum secret length of 16 bytes (`internal/auth/jwt.go:111-123`, `internal/config/config.go:523-526`). Consider stronger entropy requirements and rotation guidance.
 - KMS/envelope encryption design exists (`internal/secrets/service.go:1-33`), but plaintext credentials are still converted to strings for DB/RDP/DBCLI use (`internal/dbquery/service.go:341-349`, `internal/desktop/manager.go:238-270`, `internal/protocols/dbcli/gateway.go:141-156`). Memory lifetime after string conversion is not wiped. Needs verification for threat model.
 - Devolutions Gateway mints short-lived RDP JWTs and returns gateway token plus destination, username, and password to the browser for `ironrdp` (`internal/desktop/manager.go:238-270`). This may be intended, but it exposes target credentials client-side.

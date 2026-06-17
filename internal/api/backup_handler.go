@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/backup"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/backup"
 )
 
 // BackupHandler exposes backup snapshots + `at` job orchestration. Info reads

@@ -57,7 +57,7 @@ type DevolutionsGatewayRuntime struct {
 	ConfigPath    string        // where we write the gateway's JSON config
 	IDFile        string        // sidecar holding the gateway's persistent Id
 	ListenURL     string        // e.g. http://127.0.0.1:7171 — what the gateway binds
-	ExternalURL   string        // e.g. https://jumpserver.example.com — gateway's public face (empty → same as ListenURL; required field in the gateway's own JSON)
+	ExternalURL   string        // e.g. https://wayfort.example.com — gateway's public face (empty → same as ListenURL; required field in the gateway's own JSON)
 	AdvertisedURL string        // e.g. ws://localhost:7171/jet/rdp — WebSocket URL handed to the browser
 	HealthTimeout time.Duration // how long to wait for /jet/health after spawn
 	Verbosity     string        // gateway log verbosity (warn/info/debug)
@@ -110,7 +110,7 @@ func (s *GatewaySupervisor) Ensure(ctx context.Context) error {
 		PublicKeyPath: s.signer.PublicKeyPath(),
 		ListenURL:     s.cfg.ListenURL,
 		ExternalURL:   s.cfg.ExternalURL,
-		Hostname:      "jumpserver-anonymous",
+		Hostname:      "wayfort",
 		IDFile:        s.cfg.IDFile,
 		Verbosity:     s.cfg.Verbosity,
 	}); err != nil {

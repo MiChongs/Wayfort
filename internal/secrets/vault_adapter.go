@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	pkgcrypto "github.com/michongs/jumpserver-anonymous/pkg/crypto"
+	"github.com/michongs/wayfort/internal/model"
+	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
 )
 
 // EnvelopeVault is the pkg/crypto.Vault implementation backed by the

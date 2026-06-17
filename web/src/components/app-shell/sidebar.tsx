@@ -122,7 +122,7 @@ const NAV: NavGroup[] = [
   },
 ]
 
-const COLLAPSE_KEY = "jumpserver:sidebar:collapsed"
+const COLLAPSE_KEY = "wayfort:sidebar:collapsed"
 
 export function Sidebar({ mobile = false }: { mobile?: boolean }) {
   const pathname = usePathname()
@@ -186,7 +186,7 @@ export function Sidebar({ mobile = false }: { mobile?: boolean }) {
         {!isCollapsed && (
           <div className="min-w-0 leading-tight">
             <div className="truncate text-[15px] font-semibold tracking-tight text-sidebar-accent-foreground">
-              JumpServer
+              Wayfort
             </div>
             <div className="truncate text-[10px] text-muted-foreground">多协议运维网关</div>
           </div>

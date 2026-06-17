@@ -3,8 +3,8 @@ package accesscontrol
 import (
 	"context"
 
-	"github.com/michongs/jumpserver-anonymous/internal/approval"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/approval"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // ConnReviewAdapter adapts the rule Engine to approval.ConnReviewRules, letting

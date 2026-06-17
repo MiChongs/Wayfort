@@ -126,7 +126,7 @@ export function RDPDisplay({
   React.useEffect(() => {
     if (rdp.phase !== "connected" || !nodeName) return
     const prev = document.title
-    document.title = `${nodeName} · ${protocol.toUpperCase()} · JumpServer`
+    document.title = `${nodeName} · ${protocol.toUpperCase()} · Wayfort`
     return () => {
       document.title = prev
     }

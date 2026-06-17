@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 // postgresCompatAdapter is the base struct for every PG-wire-protocol-

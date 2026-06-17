@@ -10,7 +10,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/model"
 )
 
 type OIDCProvider struct{}

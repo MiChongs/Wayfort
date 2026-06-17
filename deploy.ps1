@@ -1,4 +1,4 @@
-<#
+﻿<#
   Wayfort 一键部署(Windows / PowerShell 7+)。Linux/macOS 用 deploy.sh。
 
     ./deploy.ps1 [up|down|restart|logs|status|update|destroy] [--office] [--sandbox]

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛡️ JumpServer-Anonymous
+# 🛡️ Wayfort
 
 **一个用 Go + Next.js 打造的现代化、全协议、浏览器原生的特权访问管理平台（PAM / 堡垒机）**
 
@@ -34,7 +34,7 @@
 
 ## 📖 项目简介
 
-**JumpServer-Anonymous** 是一个面向运维与安全团队的 **Web 特权访问管理平台**：后端纯 Go（Gin + GORM + Redis + pion WebRTC），前端 Next.js 16 / React 19。它把传统运维需要的一大堆客户端（mstsc、SecureCRT、Navicat、FileZilla、各家对象存储工具……）统一收敛进浏览器，并在统一的**代理链路、RBAC + 资产授权、审批工作流、会话录像、异步审计、KMS 凭据加密**之上，把所有运维动作纳入可观测、可追溯、可治理的轨道。
+**Wayfort** 是一个面向运维与安全团队的 **Web 特权访问管理平台**：后端纯 Go（Gin + GORM + Redis + pion WebRTC），前端 Next.js 16 / React 19。它把传统运维需要的一大堆客户端（mstsc、SecureCRT、Navicat、FileZilla、各家对象存储工具……）统一收敛进浏览器，并在统一的**代理链路、RBAC + 资产授权、审批工作流、会话录像、异步审计、KMS 凭据加密**之上，把所有运维动作纳入可观测、可追溯、可治理的轨道。
 
 > 项目名带 *Anonymous*：除了完整的企业账号体系，它还内置一次性「**匿名 Docker 沙箱**」，无需注册即可拿到一个带 TTL 自动销毁的隔离 shell —— 适合演示、CTF 靶场与临时命令练习。
 
@@ -275,8 +275,8 @@
 
 ```bash
 # 1. 克隆
-git clone https://github.com/MiChongs/JumpServer-Anonymous.git
-cd JumpServer-Anonymous
+git clone https://github.com/MiChongs/wayfort.git
+cd wayfort
 
 # 2. 起依赖（PostgreSQL + Redis + 测试 SSHD + guacd）
 docker compose -f deployments/docker-compose.yaml up -d postgres redis sshd-target guacd
@@ -506,7 +506,7 @@ pnpm dev                     # http://localhost:4001
 ## 📂 项目结构
 
 ```
-JumpServer-Anonymous/
+wayfort/
 ├── cmd/
 │   ├── jumpserver/             # 主网关：DI 装配、errgroup、信号、引导管理员
 │   └── freerdp-worker/         # WebRDP worker（CGO + libfreerdp + libvpx/libaom + WebRTC 编码）
@@ -603,7 +603,7 @@ cd web && pnpm typecheck
 
 ## 📜 License
 
-[MIT](LICENSE) © JumpServer-Anonymous contributors
+[MIT](LICENSE) © Wayfort contributors
 
 ## 🙏 致谢
 

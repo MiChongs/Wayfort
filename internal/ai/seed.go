@@ -9,8 +9,8 @@ import (
 	"context"
 	"encoding/json"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
-	airepo "github.com/michongs/jumpserver-anonymous/internal/ai/repo"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
+	airepo "github.com/michongs/wayfort/internal/ai/repo"
 	"go.uber.org/zap"
 )
 

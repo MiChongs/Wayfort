@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
+	"github.com/michongs/wayfort/internal/auth"
 )
 
 // ControlHandler — REST endpoints (control plane). Plan 17 M1 ships JSON-

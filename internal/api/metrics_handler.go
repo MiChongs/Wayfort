@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/metrics"
-	"github.com/michongs/jumpserver-anonymous/internal/sse"
+	"github.com/michongs/wayfort/internal/metrics"
+	"github.com/michongs/wayfort/internal/sse"
 )
 
 // MetricsHandler serves proxy-chain connection metrics as a JSON snapshot and an

@@ -493,14 +493,20 @@ function Toolbar(props: ToolbarProps) {
         {props.visible} / {props.total}
       </div>
       <div className="ml-auto flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={props.onSelectAll}>
+        <div
+          role="button"
+          tabIndex={0}
+          className="inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium text-sm h-8 px-3 rounded-md hover:bg-accent hover:text-accent-foreground cursor-pointer select-none"
+          onClick={props.onSelectAll}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); props.onSelectAll(); } }}
+        >
           <Checkbox
             checked={props.allVisibleSelected}
             className="mr-1 pointer-events-none"
             aria-hidden
           />
           全选当前
-        </Button>
+        </div>
         {props.selectedCount > 0 ? (
           <>
             <Badge variant="outline">已选 {props.selectedCount}</Badge>

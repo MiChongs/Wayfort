@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/notify"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/notify"
+	"github.com/michongs/wayfort/internal/repo"
 	"go.uber.org/zap"
 )
 
@@ -146,7 +146,7 @@ func (d *Dispatcher) Notify(ctx context.Context, ev Event) {
 		if ev.SendEmail && r.Email != "" && d.mailer != nil && d.allowEmail(r.UserID, debKey, ev.DebounceWindow) {
 			subject := ev.EmailSubject
 			if subject == "" {
-				subject = "[JumpServer] " + ev.Title
+				subject = "[Wayfort] " + ev.Title
 			}
 			html := ev.EmailHTML
 			text := ev.EmailText

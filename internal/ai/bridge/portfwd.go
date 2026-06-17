@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/ai/tools"
-	"github.com/michongs/jumpserver-anonymous/internal/protocols/tcpfwd"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/ai/tools"
+	"github.com/michongs/wayfort/internal/protocols/tcpfwd"
+	"github.com/michongs/wayfort/internal/repo"
 )
 
 // PortForwardManager adapts the existing tcpfwd.Manager to tools.PortForwardManager.

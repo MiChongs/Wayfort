@@ -8,8 +8,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/webssh"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/webssh"
 )
 
 // WSEvents streams port-forward lifecycle + throughput events to a browser

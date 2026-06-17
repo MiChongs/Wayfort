@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/coder/websocket"
-	"github.com/michongs/jumpserver-anonymous/internal/agentgw"
-	"github.com/michongs/jumpserver-anonymous/internal/domain"
+	"github.com/michongs/wayfort/internal/agentgw"
+	"github.com/michongs/wayfort/internal/domain"
 )
 
 // TestCloseForError locks the mapping the frontend relies on: an agent-domain

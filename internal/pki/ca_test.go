@@ -8,7 +8,7 @@ import (
 )
 
 func TestCA_IssueAndVerifyChain(t *testing.T) {
-	ca, err := NewCA("JumpServer Agent CA")
+	ca, err := NewCA("Wayfort Agent CA")
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
 	}

@@ -1,7 +1,7 @@
 // Package oss is the object-storage bastion adapter layer. It exposes a single
 // provider-neutral ObjectStore interface implemented per cloud (Aliyun OSS,
 // Tencent COS, generic S3/MinIO) using each vendor's native SDK. All outbound
-// traffic is routed through the JumpServer credential pool + proxy chain (see
+// traffic is routed through the Wayfort credential pool + proxy chain (see
 // connector.go) so object storage is reached the same audited, brokered way as
 // every other protocol.
 package oss

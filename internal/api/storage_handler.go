@@ -6,8 +6,8 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/jumpserver-anonymous/internal/auth"
-	"github.com/michongs/jumpserver-anonymous/internal/storage"
+	"github.com/michongs/wayfort/internal/auth"
+	"github.com/michongs/wayfort/internal/storage"
 )
 
 // StorageHandler exposes storage inspection + mount control. Info requires

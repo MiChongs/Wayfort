@@ -2,8 +2,8 @@
 // reload keeps you logged in) and parse the JWT payload on demand to feed
 // useCurrentUser / permission checks.
 
-const ACCESS_KEY = "jumpserver:access"
-const REFRESH_KEY = "jumpserver:refresh"
+const ACCESS_KEY = "wayfort:access"
+const REFRESH_KEY = "wayfort:refresh"
 
 export type Claims = {
   uid: number

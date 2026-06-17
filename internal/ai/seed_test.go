@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	aimodel "github.com/michongs/jumpserver-anonymous/internal/ai/model"
+	aimodel "github.com/michongs/wayfort/internal/ai/model"
 )
 
 // Verify the seed catalogue is well-formed: unique names, valid permission

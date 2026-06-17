@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/michongs/jumpserver-anonymous/internal/model"
-	"github.com/michongs/jumpserver-anonymous/internal/repo"
+	"github.com/michongs/wayfort/internal/model"
+	"github.com/michongs/wayfort/internal/repo"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
-// BootstrapDeps bundles the pieces cmd/jumpserver hands the bootstrap.
+// BootstrapDeps bundles the pieces cmd/wayfort hands the bootstrap.
 type BootstrapDeps struct {
 	DB     *gorm.DB
 	Repo   *repo.ApprovalRepo
@@ -41,7 +41,7 @@ type BootstrapDeps struct {
 	Archiver LedgerArchiver
 }
 
-// BootstrapResult is what cmd/jumpserver hangs onto so it can spawn the
+// BootstrapResult is what cmd/wayfort hangs onto so it can spawn the
 // reconciler and inject the handler into Routes.
 type BootstrapResult struct {
 	Service     *Service
@@ -52,7 +52,7 @@ type BootstrapResult struct {
 	Notifier    *FanoutNotifier
 }
 
-// Bootstrap is the single entry point cmd/jumpserver calls. It composes the
+// Bootstrap is the single entry point cmd/wayfort calls. It composes the
 // approval subsystem from the supplied repos, seeds the built-in templates,
 // and returns the orchestrating Service plus the reconciler the caller is
 // expected to spawn via errgroup.

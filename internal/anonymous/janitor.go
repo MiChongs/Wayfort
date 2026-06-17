@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/michongs/jumpserver-anonymous/internal/audit"
-	"github.com/michongs/jumpserver-anonymous/internal/cache"
-	"github.com/michongs/jumpserver-anonymous/internal/model"
+	"github.com/michongs/wayfort/internal/audit"
+	"github.com/michongs/wayfort/internal/cache"
+	"github.com/michongs/wayfort/internal/model"
 	"go.uber.org/zap"
 )
 

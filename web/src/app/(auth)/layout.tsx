@@ -18,7 +18,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <header className="flex items-center justify-between gap-4 px-5 py-4 sm:px-8">
           <a href="/login" className="flex items-center gap-2.5 outline-none">
             <BurstMark className="h-6 w-6 shrink-0 text-primary" />
-            <span className="text-[15px] font-semibold tracking-tight">JumpServer</span>
+            <span className="text-[15px] font-semibold tracking-tight">Wayfort</span>
           </a>
           <Button variant="outline" size="sm" asChild className="rounded-full">
             <a href="/sandbox">
@@ -38,7 +38,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
         <div className="border-t border-border" />
 
         <footer className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-4 text-[11px] text-muted-foreground sm:px-8">
-          <span>© JumpServer · Open Source</span>
+          <span>© Wayfort · Open Source</span>
           <span className="tracking-wide">Bastion · 远程访问网关</span>
         </footer>
       </div>
