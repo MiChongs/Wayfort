@@ -2,13 +2,15 @@
 
 # 🛡️ Wayfort
 
-**一个用 Go + Next.js 打造的现代化、全协议、浏览器原生的特权访问管理平台（PAM / 堡垒机）**
+**用 Go + Next.js 打造的现代化特权访问管理平台（PAM / 堡垒机）—— 全协议、浏览器原生、零客户端**
 
 把 SSH · Telnet · RDP · VNC · 数据库 · 对象存储 · 文件传输 · 端口转发 统一收敛到浏览器，
 配合多级代理链、细粒度授权、审批工作流、会话录像、异步审计、KMS 凭据加密与内置 AI 运维助手，
 让每一次运维行为都**可视、可控、可追溯**。
 
 <br/>
+
+[![官网 Website](https://img.shields.io/badge/🌐_官网-wayfort.karpov.cn-6366F1?style=for-the-badge)](https://wayfort.karpov.cn/)
 
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white)](https://nextjs.org/)
@@ -26,7 +28,7 @@
 [![Docker](https://img.shields.io/badge/Container-Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%C2%B7%20Claude%20%C2%B7%20Gemini-10a37f?style=flat-square&logo=openai&logoColor=white)](#-ai-运维助手)
 
-[功能特性](#-功能特性) · [能力矩阵](#-协议与能力矩阵) · [架构](#-架构总览) · [快速开始](#-快速开始) · [配置](#-配置参考) · [API](#-api-概览) · [部署](#-部署)
+[🌐 官网](https://wayfort.karpov.cn/) · [功能特性](#-功能特性) · [能力矩阵](#-协议与能力矩阵) · [架构](#-架构总览) · [快速开始](#-快速开始) · [配置](#-配置参考) · [API](#-api-概览) · [部署](#-部署)
 
 </div>
 
@@ -36,7 +38,7 @@
 
 **Wayfort** 是一个面向运维与安全团队的 **Web 特权访问管理平台**：后端纯 Go（Gin + GORM + Redis + pion WebRTC），前端 Next.js 16 / React 19。它把传统运维需要的一大堆客户端（mstsc、SecureCRT、Navicat、FileZilla、各家对象存储工具……）统一收敛进浏览器，并在统一的**代理链路、RBAC + 资产授权、审批工作流、会话录像、异步审计、KMS 凭据加密**之上，把所有运维动作纳入可观测、可追溯、可治理的轨道。
 
-> 项目名带 *Anonymous*：除了完整的企业账号体系，它还内置一次性「**匿名 Docker 沙箱**」，无需注册即可拿到一个带 TTL 自动销毁的隔离 shell —— 适合演示、CTF 靶场与临时命令练习。
+> 💡 除完整的企业账号体系外，Wayfort 还内置一次性「**匿名 Docker 沙箱**」：无需注册即可领到一个带 TTL 自动销毁的隔离 shell —— 适合产品演示、CTF 靶场与临时命令练习。
 
 ### 🎯 解决了什么问题
 
@@ -218,7 +220,7 @@
 
 **每会话核心 goroutine**：WS reader（浏览器输入）、Backend reader（目标输出）、Heartbeat（ping/pong）、Recorder writer（录像落盘），外加协议特定 goroutine（SOCKS5 listener / TCP accept / docker exec / FreeRDP worker 帧泵）。
 
-**全局后台 goroutine**（`cmd/jumpserver/main.go` 的 errgroup）：审计 writer、SSH 池 watchdog、匿名容器 janitor、端口转发 manager、邮件 worker、AI janitor、审批 reconciler、桌面 worker bootstrap、Devolutions Gateway ensure。
+**全局后台 goroutine**（`cmd/wayfort/main.go` 的 errgroup）：审计 writer、SSH 池 watchdog、匿名容器 janitor、端口转发 manager、邮件 worker、AI janitor、审批 reconciler、桌面 worker bootstrap、Devolutions Gateway ensure。
 
 **背压策略**：录像 chan 满则丢帧 + `lossy:N` 标记；审计 chan 满则丢命令级事件保连接级事件；WebSocket 写 10s 超时即断开。
 
@@ -287,7 +289,7 @@ docker compose -f deployments/docker-compose.yaml up -d postgres redis sshd-targ
 cp configs/config.example.yaml configs/config.yaml
 
 # 4. 启动网关（首次自动建表 + 创建管理员）
-go run ./cmd/jumpserver --config configs/config.yaml
+go run ./cmd/wayfort --config configs/config.yaml
 ```
 
 > 首次启动若未设置 `auth.bootstrap_password`，系统会生成 **20 位强随机密码并在控制台 banner 打印一次**——请立即记录。
@@ -438,7 +440,7 @@ pnpm dev                     # http://localhost:4001
 | `anonymous` | 匿名沙箱镜像、TTL、CPU/内存/PID 限额、网络隔离 |
 | `recorder` / `audit` / `webssh` / `sshpool` / `notify` / `storage` | 录像/审计背压、WS 缓冲、SSH 池、邮件、会话目录 |
 
-所有配置均可用 `JUMPSERVER_` 前缀环境变量覆盖（`.`→`_`），例如 `JUMPSERVER_DB_DSN`、`JUMPSERVER_REDIS_ADDR`。
+所有配置均可用 `WAYFORT_` 前缀环境变量覆盖（`.`→`_`），例如 `WAYFORT_DB_DSN`、`WAYFORT_REDIS_ADDR`。
 
 ---
 
@@ -508,7 +510,7 @@ pnpm dev                     # http://localhost:4001
 ```
 wayfort/
 ├── cmd/
-│   ├── jumpserver/             # 主网关：DI 装配、errgroup、信号、引导管理员
+│   ├── wayfort/                # 主网关：DI 装配、errgroup、信号、引导管理员
 │   └── freerdp-worker/         # WebRDP worker（CGO + libfreerdp + libvpx/libaom + WebRTC 编码）
 ├── internal/
 │   ├── server/                 # Gin engine、路由(routes.go)、中间件、优雅停机
@@ -549,8 +551,8 @@ docker compose -f deployments/docker-compose.yaml up -d
 
 ```bash
 # 后端
-CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o jumpserver ./cmd/jumpserver
-./jumpserver --config /etc/jumpserver/config.yaml
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o wayfort ./cmd/wayfort
+./wayfort --config /etc/wayfort/config.yaml
 
 # WebRDP freerdp worker（需 libfreerdp 3.x，按平台选脚本）
 bash scripts/build-worker-linux.sh        # Linux
@@ -558,9 +560,9 @@ bash scripts/build-worker-darwin.sh       # macOS
 pwsh scripts/build-worker-windows.ps1     # Windows（MSYS2 ucrt64）
 
 # 前端
-docker build -t jumpserver-web ./web
+docker build -t wayfort-web ./web
 docker run -d -p 3000:3000 -e BACKEND_HTTP_URL=http://app:8080 \
-  -e NEXT_PUBLIC_BACKEND_WS_URL=wss://your.domain jumpserver-web
+  -e NEXT_PUBLIC_BACKEND_WS_URL=wss://your.domain wayfort-web
 ```
 
 ### 生产注意事项
@@ -609,4 +611,10 @@ cd web && pnpm typecheck
 
 [Gin](https://github.com/gin-gonic/gin) · [GORM](https://gorm.io/) · [pion/webrtc](https://github.com/pion/webrtc) · [FreeRDP](https://www.freerdp.com/) · [IronRDP / Devolutions Gateway](https://github.com/Devolutions/IronRDP) · [Apache Guacamole](https://guacamole.apache.org/) · [Next.js](https://nextjs.org/) · [shadcn/ui](https://ui.shadcn.com/) · [xterm.js](https://xtermjs.org/) · [OnlyOffice](https://www.onlyoffice.com/) · [JumpServer](https://github.com/jumpserver/jumpserver)（设计思路参考）
 
-<div align="center"><br/>如果这个项目对你有帮助，欢迎点一个 ⭐ Star！</div>
+<div align="center">
+
+**🌐 官网 · [wayfort.karpov.cn](https://wayfort.karpov.cn/)**
+
+如果 Wayfort 对你有帮助，欢迎点一个 ⭐ Star！
+
+</div>
