@@ -62,17 +62,17 @@ type Node struct {
 	// ProxyChain is the legacy, ordered comma-separated list of Proxy IDs applied
 	// left-to-right (outermost first), e.g. "3,1". DEPRECATED in favour of
 	// DomainID; kept as a per-node override during the compatibility window.
-	ProxyChain   string       `gorm:"size:255" json:"proxy_chain"`
+	ProxyChain string `gorm:"size:255" json:"proxy_chain"`
 	// ProtoOptions is a JSON blob with protocol-specific knobs (database name,
 	// VNC color depth, RDP security mode, etc.). Empty == use protocol defaults.
-	ProtoOptions string    `gorm:"type:text" json:"proto_options,omitempty"`
-	Tags         string    `gorm:"size:255" json:"tags"`
+	ProtoOptions string `gorm:"type:text" json:"proto_options,omitempty"`
+	Tags         string `gorm:"size:255" json:"tags"`
 	// Icon is an optional unified icon token ("simple:postgresql", "lucide:server",
 	// "emoji:🐳", "text:DB"). Empty == derive from protocol on the client.
-	Icon         string    `gorm:"size:48" json:"icon,omitempty"`
-	Region       string    `gorm:"size:64" json:"region"`
-	Description  string    `gorm:"size:512" json:"description"`
-	Disabled     bool      `gorm:"default:false" json:"disabled"`
+	Icon        string `gorm:"size:48" json:"icon,omitempty"`
+	Region      string `gorm:"size:64" json:"region"`
+	Description string `gorm:"size:512" json:"description"`
+	Disabled    bool   `gorm:"default:false" json:"disabled"`
 
 	// Phase 16 — approval enforcement flags. When set, the action-bearing
 	// modules (webssh / dbcli / sftp / desktop / portforward) refuse the
@@ -81,8 +81,13 @@ type Node struct {
 	RequiresApprovalForConnect  bool `gorm:"default:false" json:"requires_approval_for_connect"`
 	RequiresApprovalForFileXfer bool `gorm:"default:false" json:"requires_approval_for_file_xfer"`
 
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	// Phase 1.5 — Db Studio connection metadata. DBVirtualGroups holds a JSON
+	// array of virtual group ids the node belongs to for Db Studio grouping.
+	DBColor         string    `gorm:"size:16" json:"db_color,omitempty"`
+	DBGroupPath     string    `gorm:"size:512" json:"db_group_path,omitempty"`
+	DBVirtualGroups string    `gorm:"type:longtext" json:"db_virtual_groups,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 func (Node) TableName() string { return "nodes" }

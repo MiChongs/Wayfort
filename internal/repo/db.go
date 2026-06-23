@@ -196,6 +196,15 @@ func AutoMigrate(db *gorm.DB) error {
 
 		// Access control — unified rule model for the consolidated 访问控制 module.
 		&model.AccessRule{},
+
+		// Db Studio Phase 1.5 — persistent state for the SQL editor / data
+		// viewer / ER-diagram subsystem (saved queries, pinned result
+		// snapshots, query history, table view profiles, ER models).
+		&model.SavedQuery{},
+		&model.PinnedResult{},
+		&model.QueryHistory{},
+		&model.ViewProfile{},
+		&model.ERModel{},
 	)
 }
 
