@@ -56,9 +56,16 @@ type Capabilities struct {
 	Functions      bool          `json:"functions"`
 	Transactions   bool          `json:"transactions"`
 	DatabaseScope  DatabaseScope `json:"database_scope"`
-	// VendorLabel is the Chinese-readable engine name shown in the UI
-	// (e.g. "达梦 DM8"). Empty falls back to the protocol id.
-	VendorLabel string `json:"vendor_label,omitempty"`
+	VendorLabel    string        `json:"vendor_label,omitempty"`
+
+	// Phase 1 新增：Navicat 平替能力旗
+	ObjectDesigner   ObjectKindSet `json:"object_designer"`
+	VisualQueryPlan  bool          `json:"visual_query_plan"`
+	DataProfiling    bool          `json:"data_profiling"`
+	SchemaCompletion bool          `json:"schema_completion"`
+	ERModel          bool          `json:"er_model"`
+	PinnedResults    bool          `json:"pinned_results"`
+	VisualBuilder    bool          `json:"visual_builder"`
 }
 
 // Dialect groups every syntax-flavour decision the executor needs at

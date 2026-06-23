@@ -97,3 +97,14 @@ func TestBuildRowsSQLRejectsNegativeLimitOffset(t *testing.T) {
 		t.Fatalf("BuildRowsSQL() with negative offset error = nil, want error")
 	}
 }
+
+func TestCapabilitiesNewFieldsZeroValue(t *testing.T) {
+	var caps Capabilities
+	if caps.ObjectDesigner != 0 {
+		t.Fatal("ObjectDesigner default must be 0 (no kinds)")
+	}
+	if caps.VisualQueryPlan || caps.DataProfiling || caps.SchemaCompletion ||
+		caps.ERModel || caps.PinnedResults || caps.VisualBuilder {
+		t.Fatal("new bool capabilities must default false")
+	}
+}
