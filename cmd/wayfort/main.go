@@ -36,6 +36,7 @@ import (
 	"github.com/michongs/wayfort/internal/config"
 	"github.com/michongs/wayfort/internal/cron"
 	"github.com/michongs/wayfort/internal/dbquery"
+	"github.com/michongs/wayfort/internal/dbstudio"
 	"github.com/michongs/wayfort/internal/desktop"
 	"github.com/michongs/wayfort/internal/dialer"
 	dockerpkg "github.com/michongs/wayfort/internal/docker"
@@ -608,6 +609,11 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 	acEngine := accesscontrol.NewEngine(accessRuleRepo, assetResolver, editionProvider, logger)
 	// P6 — data-masking rules (X-Pack) redact DB Studio query result columns.
 	dbSvc.SetMaskRules(acEngine)
+	// Phase 1 — cross-subproject Db Studio business layer. Shares the
+	// gateway GORM db, the dbquery pools, and the audit writer with the
+	// REST DB handler so both surfaces see the same state. The handler
+	// is nil-safe: parse-uri is a pure URI parser and the ER surface stubs.
+	dbStudioSvc := dbstudio.NewService(db, dbSvc, auditWriter)
 
 	routes := &server.Routes{
 		Auth: &api.AuthHandler{
@@ -649,6 +655,7 @@ func run(cfg *config.Config, logger *zap.Logger) error {
 		Guacamole:        guacHandler,
 		DBCLI:            dbcliHandler,
 		DB:               api.NewDBHandler(dbSvc, nil, auditWriter),
+		DbStudio:         api.NewDBStudioHandler(dbStudioSvc),
 		TCPFwd:           pfHandler,
 		TCPRelay:         pfRelay,
 		TCPEvents:        pfEvents,

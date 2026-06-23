@@ -307,6 +307,12 @@ type Routes struct {
 	// terminal which stays for operators who want a literal psql/mysql
 	// shell.
 	DB *api.DBHandler
+
+	// Phase 1 — cross-subproject Db Studio. parse-uri is live (pure URI
+	// parser, no DB round-trip); the ER-model surface stubs to 501 until
+	// its sub-project plan ships concrete persistence. Nil-safe like the
+	// other handlers — routes mount only when wired.
+	DbStudio *api.DBStudioHandler
 }
 
 func (rt *Routes) Mount(r *gin.Engine) {
@@ -1067,6 +1073,23 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			// Phase 20 — server-side process panel + cancel
 			ops.GET("/nodes/:id/db/processes", rt.DB.Processes)
 			ops.POST("/nodes/:id/db/kill", rt.DB.Kill)
+		}
+		// Phase 1 — cross-subproject Db Studio. parse-uri is the live
+		// (pure) endpoint backing the node-creation quick-connect form;
+		// the ER-model surface stubs to 501 until sub-project F lands.
+		// Mounted under ops so the existing JWT + RejectAnonymous
+		// middleware applies — a connection URI carries credentials.
+		if rt.DbStudio != nil {
+			ops.POST("/dbstudio/connections/parse-uri", rt.DbStudio.ParseURI)
+			erm := ops.Group("/dbstudio/er-models")
+			erm.GET("", rt.DbStudio.ERModelStub)
+			erm.POST("", rt.DbStudio.ERModelStub)
+			erm.GET("/:id", rt.DbStudio.ERModelStub)
+			erm.PUT("/:id", rt.DbStudio.ERModelStub)
+			erm.DELETE("/:id", rt.DbStudio.ERModelStub)
+			erm.POST("/:id/reverse", rt.DbStudio.ERModelStub)
+			erm.POST("/:id/forward", rt.DbStudio.ERModelStub)
+			erm.POST("/:id/diff", rt.DbStudio.ERModelStub)
 		}
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)
