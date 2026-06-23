@@ -167,6 +167,16 @@ export interface DBCapabilities {
   transactions: boolean
   database_scope: "catalog" | "schema"
   vendor_label?: string
+  // Phase 1 — Navicat-parity capability flags. object_designer is a CSV of
+  // ObjectKindSet (e.g. "table,view,index"); the others are gating booleans
+  // the UI uses to disable / enable per-feature affordances.
+  object_designer: string
+  visual_query_plan: boolean
+  data_profiling: boolean
+  schema_completion: boolean
+  er_model: boolean
+  pinned_results: boolean
+  visual_builder: boolean
 }
 
 // DBEngineInfo is one entry of the cluster-level engine catalog

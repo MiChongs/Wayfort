@@ -2105,7 +2105,30 @@ export const dbService = {
     if (opts.limit && opts.limit > 0) q.set("limit", String(opts.limit))
     return withTokenQuery(`/api/proxy/api/v1/nodes/${nodeId}/db/export?${q.toString()}`)
   },
+  // Phase 1.7 — schema-aware completion snapshot. Sub-project A wires the
+  // backend; today the route is a stub returning the raw payload the
+  // schema-cache hook casts into SchemaSnapshot.
+  completionSnapshot: (nodeId: number, database: string) =>
+    api<unknown>("GET", `/nodes/${nodeId}/db/completion/snapshot`, { query: { database } }),
 }
+
+// ---------- DB Studio (Phase 1) ----------
+// dbStudioService fronts the /dbstudio/* orchestration routes. Phase 1
+// ships only parseUri — the connection-quick-connect URI prefill. Field
+// names are the Go ConnectionURI struct's exported (PascalCase) names;
+// Gin marshals them verbatim because the struct has no json tags.
+export const dbStudioService = {
+  parseUri: (uri: string) =>
+    api<{
+      Scheme: string
+      Host: string
+      Port: number
+      Database: string
+      User: string
+      Password: string
+      Params: Record<string, string>
+    }>("POST", "/dbstudio/connections/parse-uri", { body: { uri } }),
+};
 
 // ---------- System settings (super-admin runtime configuration) ----------
 export const settingsService = {
