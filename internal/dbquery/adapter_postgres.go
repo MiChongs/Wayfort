@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -41,6 +46,13 @@ func (postgresAdapter) Capabilities() Capabilities {
 
 func (postgresAdapter) Dialect() Dialect { return postgresDialect{} }
 func (postgresAdapter) Driver() Driver   { return postgresDriver{defaultDB: "postgres"} }
+
+// Phase 1 能力族：Postgres 适配器暂未实现，返回 nil。具体实现在 sub-project B。
+func (postgresAdapter) Designer() designer.Designer     { return nil }
+func (postgresAdapter) Planner() planner.Planner        { return nil }
+func (postgresAdapter) Profiler() profiler.Profiler     { return nil }
+func (postgresAdapter) Completion() completion.Provider { return nil }
+func (postgresAdapter) Modeler() modeler.Modeler        { return nil }
 
 func init() { register(postgresAdapter{}) }
 

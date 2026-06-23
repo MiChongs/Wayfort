@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -68,6 +73,13 @@ func (damengAdapter) Driver() Driver {
 	}
 	return damengDriver{}
 }
+
+// Phase 1 能力族：Dameng 适配器暂未实现，返回 nil。具体实现在 sub-project B。
+func (damengAdapter) Designer() designer.Designer     { return nil }
+func (damengAdapter) Planner() planner.Planner        { return nil }
+func (damengAdapter) Profiler() profiler.Profiler     { return nil }
+func (damengAdapter) Completion() completion.Provider { return nil }
+func (damengAdapter) Modeler() modeler.Modeler        { return nil }
 
 func init() { register(damengAdapter{}) }
 

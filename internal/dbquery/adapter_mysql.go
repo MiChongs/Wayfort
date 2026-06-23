@@ -5,6 +5,11 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -42,6 +47,13 @@ func (mysqlAdapter) Capabilities() Capabilities {
 
 func (mysqlAdapter) Dialect() Dialect { return mysqlDialect{} }
 func (mysqlAdapter) Driver() Driver   { return mysqlDriver{} }
+
+// Phase 1 能力族：MySQL 适配器暂未实现，返回 nil。具体实现在 sub-project B。
+func (mysqlAdapter) Designer() designer.Designer     { return nil }
+func (mysqlAdapter) Planner() planner.Planner        { return nil }
+func (mysqlAdapter) Profiler() profiler.Profiler     { return nil }
+func (mysqlAdapter) Completion() completion.Provider { return nil }
+func (mysqlAdapter) Modeler() modeler.Modeler        { return nil }
 
 // init self-registers the canonical MySQL adapter. The MySQL-compat
 // children (TiDB / OceanBase / ...) register themselves in

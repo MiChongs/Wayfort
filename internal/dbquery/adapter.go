@@ -6,6 +6,11 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -87,6 +92,16 @@ type Adapter interface {
 	Capabilities() Capabilities
 	Dialect() Dialect
 	Driver() Driver
+
+	// Phase 1 新增能力族：返回 nil 表示该 adapter 暂未实现该能力族，
+	// 前端据 capability gate 关闭对应入口（designer / planner / profiler /
+	// completion / modeler）。Phase 1 仅落接口与默认 nil，具体实现在
+	// sub-project B 落地。
+	Designer() designer.Designer
+	Planner() planner.Planner
+	Profiler() profiler.Profiler
+	Completion() completion.Provider
+	Modeler() modeler.Modeler
 }
 
 // ----- Registry -------------------------------------------------------------

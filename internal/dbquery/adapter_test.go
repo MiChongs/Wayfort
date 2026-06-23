@@ -108,3 +108,27 @@ func TestCapabilitiesNewFieldsZeroValue(t *testing.T) {
 		t.Fatal("new bool capabilities must default false")
 	}
 }
+
+// TestAllAdaptersImplementNewCapabilityFamilies is the Phase 1.3 contract
+// test: every registered adapter must respond to the 5 new capability-
+// family accessors without panicking. Returning nil signals "not yet
+// implemented" — the front-end capability gate treats that as disabled.
+func TestAllAdaptersImplementNewCapabilityFamilies(t *testing.T) {
+	t.Parallel()
+	for _, proto := range Default().List() {
+		proto := proto
+		t.Run(string(proto), func(t *testing.T) {
+			t.Parallel()
+			ad, ok := Default().Get(proto)
+			if !ok {
+				t.Fatalf("registered protocol %q lost from registry", proto)
+			}
+			// 仅断言"调用不 panic"。返回 nil 表示该 adapter 暂未支持该能力。
+			_ = ad.Designer()
+			_ = ad.Planner()
+			_ = ad.Profiler()
+			_ = ad.Completion()
+			_ = ad.Modeler()
+		})
+	}
+}

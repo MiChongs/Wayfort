@@ -4,6 +4,11 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -56,6 +61,13 @@ func (a postgresCompatAdapter) Driver() Driver {
 	}
 	return postgresCompatDriver{defaultDB: a.defaultDB, runtime: a.runtime}
 }
+
+// Phase 1 能力族：PG 兼容引擎适配器暂未实现，返回 nil。具体实现在 sub-project B。
+func (postgresCompatAdapter) Designer() designer.Designer     { return nil }
+func (postgresCompatAdapter) Planner() planner.Planner        { return nil }
+func (postgresCompatAdapter) Profiler() profiler.Profiler     { return nil }
+func (postgresCompatAdapter) Completion() completion.Provider { return nil }
+func (postgresCompatAdapter) Modeler() modeler.Modeler        { return nil }
 
 type postgresCompatDriver struct {
 	defaultDB string

@@ -5,6 +5,11 @@ import (
 	"database/sql"
 	"strings"
 
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/designer"
+	"github.com/michongs/wayfort/internal/dbquery/modeler"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 )
 
@@ -19,10 +24,10 @@ import (
 // "driver name" (sql.Open key) when an engine has truly different DSN
 // surface; otherwise the underlying network behaviour is identical.
 type mysqlCompatAdapter struct {
-	protocol     model.NodeProtocol
-	vendorLabel  string
-	dsnExtras    string
-	caps         Capabilities
+	protocol    model.NodeProtocol
+	vendorLabel string
+	dsnExtras   string
+	caps        Capabilities
 }
 
 func (a mysqlCompatAdapter) Protocol() model.NodeProtocol { return a.protocol }
@@ -53,6 +58,13 @@ func (a mysqlCompatAdapter) Driver() Driver {
 	}
 	return mysqlCompatDriver{extras: a.dsnExtras}
 }
+
+// Phase 1 能力族：MySQL 兼容引擎适配器暂未实现，返回 nil。具体实现在 sub-project B。
+func (mysqlCompatAdapter) Designer() designer.Designer     { return nil }
+func (mysqlCompatAdapter) Planner() planner.Planner        { return nil }
+func (mysqlCompatAdapter) Profiler() profiler.Profiler     { return nil }
+func (mysqlCompatAdapter) Completion() completion.Provider { return nil }
+func (mysqlCompatAdapter) Modeler() modeler.Modeler        { return nil }
 
 type mysqlCompatDriver struct{ extras string }
 
