@@ -74,7 +74,12 @@ func (damengAdapter) Driver() Driver {
 	return damengDriver{}
 }
 
-// Phase 1 能力族：Dameng 适配器暂未实现，返回 nil。具体实现在 sub-project B。
+	// Phase 1 baseline — each capability family is wired here as nil and lit
+	// up by its owning sub-project plan:
+	//   - Designer    → sub-project B (object designer)
+	//   - Planner     → sub-project A (visual execution plan)
+	//   - Profiler    → sub-project C (data profiling)
+
 func (damengAdapter) Designer() designer.Designer     { return nil }
 func (damengAdapter) Planner() planner.Planner        { return nil }
 func (damengAdapter) Profiler() profiler.Profiler     { return nil }

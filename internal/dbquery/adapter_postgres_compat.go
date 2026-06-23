@@ -62,7 +62,12 @@ func (a postgresCompatAdapter) Driver() Driver {
 	return postgresCompatDriver{defaultDB: a.defaultDB, runtime: a.runtime}
 }
 
-// Phase 1 能力族：PG 兼容引擎适配器暂未实现，返回 nil。具体实现在 sub-project B。
+	// Phase 1 baseline — each capability family is wired here as nil and lit
+	// up by its owning sub-project plan:
+	//   - Designer    → sub-project B (object designer)
+	//   - Planner     → sub-project A (visual execution plan)
+	//   - Profiler    → sub-project C (data profiling)
+
 func (postgresCompatAdapter) Designer() designer.Designer     { return nil }
 func (postgresCompatAdapter) Planner() planner.Planner        { return nil }
 func (postgresCompatAdapter) Profiler() profiler.Profiler     { return nil }

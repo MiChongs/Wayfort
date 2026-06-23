@@ -48,7 +48,12 @@ func (mysqlAdapter) Capabilities() Capabilities {
 func (mysqlAdapter) Dialect() Dialect { return mysqlDialect{} }
 func (mysqlAdapter) Driver() Driver   { return mysqlDriver{} }
 
-// Phase 1 能力族：MySQL 适配器暂未实现，返回 nil。具体实现在 sub-project B。
+	// Phase 1 baseline — each capability family is wired here as nil and lit
+	// up by its owning sub-project plan:
+	//   - Designer    → sub-project B (object designer)
+	//   - Planner     → sub-project A (visual execution plan)
+	//   - Profiler    → sub-project C (data profiling)
+
 func (mysqlAdapter) Designer() designer.Designer     { return nil }
 func (mysqlAdapter) Planner() planner.Planner        { return nil }
 func (mysqlAdapter) Profiler() profiler.Profiler     { return nil }

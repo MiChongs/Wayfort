@@ -61,6 +61,9 @@ type Capabilities struct {
 	Functions      bool          `json:"functions"`
 	Transactions   bool          `json:"transactions"`
 	DatabaseScope  DatabaseScope `json:"database_scope"`
+	// VendorLabel is the Chinese-readable engine name shown in the UI
+	// (e.g. "达梦 DM8"). Empty falls back to the protocol id.
+
 	VendorLabel    string        `json:"vendor_label,omitempty"`
 
 	// Phase 1 新增：Navicat 平替能力旗
