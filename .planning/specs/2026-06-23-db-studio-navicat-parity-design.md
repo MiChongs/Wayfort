@@ -5,6 +5,20 @@
 - 范围：Wayfort Db Studio 全功能升级，对标 Navicat 17 核心 80%
 - 后续：本 spec 通过后，按 §12 路线图为每个子项目（A–F）各开一份实施 plan
 
+
+> **Phase 1 (基础设施) 状态**: ✅ **已完成** (2026-06-23)。提交范围 `573661b..1fc8605` (8 + 1 fix)。
+>
+> - §1.1 后端目录（dbstudio + 5 能力族包）: `573661b` `022cb95` `961f281` `dd0acfe` `9a0fa67`
+> - §1.2 Adapter 契约扩展 + Capabilities 7 字段 + ObjectKindSet bitmask
+> - §1.3 前端 shared/ 骨架 + 6 子模块目录: `6a0f790`
+> - §8 持久化模型 (5 张表 + Node 3 列): `e191d4d`
+> - §9 API 表面 (/api/v1/dbstudio/ 路由 + parse-uri 实装 + ER stub): `f29a685`
+> - JSON wire format 对齐: `1fc8605` (ObjectKindSet CSV 序列化)
+>
+> 实施 plan: `.planning/plans/2026-06-23-db-studio-phase1-foundation.md`
+> 进度账本: `.superpowers/sdd/progress.md`
+>
+> 子项目 A-F plan 可启动。
 ---
 
 ## 0. 背景与范围
