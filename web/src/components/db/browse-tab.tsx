@@ -3,6 +3,7 @@
 import * as React from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
+  BarChart3,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -25,10 +26,13 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { dbService } from "@/lib/api/services"
-import type { DBCapabilities, DBTableInfo } from "@/lib/api/types"
+import type { DBCapabilities, DBTableInfo, ViewProfile } from "@/lib/api/types"
 import { Input } from "@/components/ui/input"
 import { ColumnStatsPopover } from "./column-stats-popover"
 import { ResultGrid } from "./result-grid"
+import { DataProfiling } from "./viewer/data-profiling"
+import { ForeignKeyPicker } from "./viewer/foreign-key-picker"
+import { ViewProfiles } from "./viewer/view-profiles"
 import { RowEditor, deleteRow, coerceCell } from "./row-editor"
 import { StructureTab } from "./structure-tab"
 
@@ -256,6 +260,48 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
     [rows, cols.data, nodeId, table.schema, table.name, database],
   )
 
+  // Phase 2C — view profiles + data profiling + foreign-key picker.
+  const colNames = React.useMemo(
+    () => (cols.data?.columns ?? []).map((c) => c.name),
+    [cols.data],
+  )
+  const [profilingOpen, setProfilingOpen] = React.useState(false)
+  const applyProfile = React.useCallback((p: ViewProfile) => {
+    try {
+      if (p.filter_json) {
+        const f: unknown = JSON.parse(p.filter_json)
+        setFilter(typeof f === "string" ? f : "")
+      } else {
+        setFilter("")
+      }
+    } catch {
+      /* malformed filter_json — leave filter untouched */
+    }
+    try {
+      if (p.sort_json) {
+        const parsed: unknown = JSON.parse(p.sort_json)
+        const first = Array.isArray(parsed) ? parsed[0] : null
+        if (first && typeof first === "object" && "col" in first && "dir" in first) {
+          const col = first.col
+          const dir = first.dir
+          if (typeof col === "string") {
+            setOrderBy(col)
+            setOrderDir(typeof dir === "string" && dir.toUpperCase() === "DESC" ? "DESC" : "ASC")
+          }
+        }
+      }
+    } catch {
+      /* malformed sort_json */
+    }
+    setPage(0)
+  }, [])
+  // Phase 2C.1 — foreign-key picker. The 🔗 icon (ResultGrid) opens a Sheet
+  // listing candidate values from the referenced table; picking one writes it
+  // back via saveCellEdit. Enabled only when the adapter allows row edits and
+  // advertises foreign-key introspection.
+  const [fkPick, setFkPick] = React.useState<{ rowIdx: number; columnName: string } | null>(null)
+  const canFk = canEdit && !!caps?.foreign_keys
+
   return (
     <Tabs value={sub} onValueChange={(v) => setSub(v as "data" | "structure")} className="flex-1 min-h-0 flex flex-col">
       <div className="border-b px-3 py-1.5 flex items-center justify-between gap-2 shrink-0">
@@ -383,6 +429,30 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
         )}
       </div>
 
+      {sub === "data" && (
+        <div className="border-b px-3 py-1 flex items-center gap-2 shrink-0">
+          <ViewProfiles
+            nodeId={nodeId}
+            tableFqn={`${table.schema}.${table.name}`}
+            current={{ filter, sort: orderBy ? { col: orderBy, dir: orderDir } : null, columns: colNames }}
+            onApply={applyProfile}
+          />
+          <div className="flex-1" />
+          {caps?.data_profiling && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={!cols.data}
+              onClick={() => setProfilingOpen(true)}
+              title="数据剖析：基本统计 / 分布 / Top-N / 正则模式"
+            >
+              <BarChart3 className="w-3.5 h-3.5" /> 数据剖析
+            </Button>
+          )}
+        </div>
+      )}
       <TabsContent value="data" className="flex-1 min-h-0 m-0 flex">
         <ResultGrid
           result={rows.data}
@@ -410,6 +480,7 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
           onToggleAll={toggleAll}
           // Phase 30f — column header → stats popover.
           onColumnStats={openColumnStats}
+          onForeignKeyPick={canFk ? (rowIdx, columnName) => setFkPick({ rowIdx, columnName }) : undefined}
           rowActions={
             // Phase 25 — per-row Edit/Delete only rendered when the
             // adapter advertises row_edits. OLAP engines (StarRocks/
@@ -469,6 +540,37 @@ export function BrowseTab({ nodeId, table, database, caps }: Props) {
           onClose={() => setColStats(null)}
         />
       )}
+      {fkPick && (
+        <ForeignKeyPicker
+          open
+          onClose={() => setFkPick(null)}
+          nodeId={nodeId}
+          schema={table.schema}
+          table={table.name}
+          column={fkPick.columnName}
+          database={database}
+          onPick={async (val) => {
+            try {
+              await saveCellEdit(
+                fkPick.rowIdx,
+                fkPick.columnName,
+                val === null || val === undefined ? null : String(val),
+              )
+            } catch {
+              /* saveCellEdit surfaces its own toast on failure */
+            }
+          }}
+        />
+      )}
+      <DataProfiling
+        open={profilingOpen}
+        onClose={() => setProfilingOpen(false)}
+        nodeId={nodeId}
+        schema={table.schema}
+        table={table.name}
+        database={database}
+        columns={(cols.data?.columns ?? []).map((c) => ({ name: c.name, dataType: c.type }))}
+      />
     </Tabs>
   )
 }

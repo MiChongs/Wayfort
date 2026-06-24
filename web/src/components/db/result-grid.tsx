@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowDown, ArrowUp, BarChart3, Check, Copy, Download, Eye, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
+import { ArrowDown, ArrowUp, BarChart3, Check, Copy, Download, Eye, FileJson, KeyRound, Link2, Loader2, Maximize2, X } from "lucide-react"
 import type { DBQueryResult } from "@/lib/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -59,6 +59,10 @@ type Props = {
   // pre-selected. Alt-click on the header text also triggers it as a
   // power-user keyboard-light path.
   onColumnStats?: (columnName: string, anchor: HTMLElement) => void
+  // Phase 2C.1 — per-cell foreign-key picker. When provided, each cell
+  // renders a hover 🔗 icon that the parent wires to a ForeignKeyPicker
+  // Sheet; picking a value writes it back via the same onCellEdit path.
+  onForeignKeyPick?: (rowIdx: number, columnName: string) => void
 }
 
 // ResultGrid — paginated/server-sortable result table. Handles JSON /
@@ -81,6 +85,7 @@ export function ResultGrid({
   onToggleRow,
   onToggleAll,
   onColumnStats,
+  onForeignKeyPick,
 }: Props) {
   const [filter, setFilter] = React.useState("")
   const [inspect, setInspect] = React.useState<{ row: unknown[]; columns: { name: string; type: string }[] } | null>(null)
@@ -295,6 +300,7 @@ export function ResultGrid({
                           ? () => setPreview({ row: r, col: c })
                           : undefined
                       }
+                      onFkPick={onForeignKeyPick ? () => onForeignKeyPick(r, colName) : undefined}
                       editing={isEditing}
                       editValue={editValue}
                       saving={isEditing && saving}
@@ -406,6 +412,7 @@ function Cell({
   columnName,
   columnType,
   onPreview,
+  onFkPick,
 }: {
   value: unknown
   editable: boolean
@@ -419,6 +426,7 @@ function Cell({
   columnName: string
   columnType: string
   onPreview?: () => void
+  onFkPick?: () => void
 }) {
   const text = formatCell(value)
   const isNull = value === null
@@ -499,7 +507,7 @@ function Cell({
         isNull && "text-muted-foreground italic",
         isNumber && "tabular-nums text-right",
         editable && "cursor-text",
-        previewable && "relative",
+        (previewable || !!onFkPick) && "relative",
       )}
       title={isNull ? "NULL" : editable ? `${text}\n\n双击以编辑` : text}
       onClick={() => copy(text)}
@@ -526,20 +534,39 @@ function Cell({
       ) : (
         text
       )}
-      {previewable && (
-        <button
-          type="button"
-          aria-label="预览单元格"
-          title="预览"
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            onPreview?.()
-          }}
-          className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center rounded border bg-card/90 opacity-0 group-hover:opacity-100 hover:text-primary transition-opacity"
-        >
-          <Eye className="w-3 h-3" />
-        </button>
+      {(previewable || onFkPick) && (
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 flex items-center gap-px opacity-0 group-hover:opacity-100 transition-opacity">
+          {onFkPick && (
+            <button
+              type="button"
+              aria-label="选择外键目标值"
+              title="选择外键目标值"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onFkPick()
+              }}
+              className="inline-flex h-5 w-5 items-center justify-center rounded border bg-card/90 hover:text-primary"
+            >
+              <Link2 className="w-3 h-3" />
+            </button>
+          )}
+          {previewable && (
+            <button
+              type="button"
+              aria-label="预览单元格"
+              title="预览"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                onPreview?.()
+              }}
+              className="inline-flex h-5 w-5 items-center justify-center rounded border bg-card/90 hover:text-primary"
+            >
+              <Eye className="w-3 h-3" />
+            </button>
+          )}
+        </div>
       )}
     </td>
   )

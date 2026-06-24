@@ -2975,3 +2975,41 @@ export interface ForeignKeyTarget {
   ref_columns: string[]
   label_column: string
 }
+
+// ----- Phase 2C (Task C5) — Data Profiling -----
+// PascalCase field names mirror the Go profiler structs (no json tags), so
+// Gin marshals them verbatim. Consumed by GET /nodes/:id/db/profile/*.
+
+/** Per-column basic statistics (GET /db/profile/stats). */
+export interface BasicStats {
+  Count: number
+  NullCount: number
+  Distinct: number
+  Min: unknown
+  Max: unknown
+  Avg: number
+  StdDev: number
+}
+
+/** One bucket of a numeric-column histogram (GET /db/profile/distribution). */
+export interface HistogramBucket {
+  LowerBound: unknown
+  UpperBound: unknown
+  Count: number
+}
+
+export interface Histogram {
+  Buckets: HistogramBucket[]
+}
+
+/** A frequent-value row (GET /db/profile/topn). */
+export interface ValueFreq {
+  Value: unknown
+  Count: number
+}
+
+/** A regex-pattern hit against the shared catalog (email/phone/uuid/ipv4). */
+export interface PatternMatch {
+  Pattern: string
+  Count: number
+}

@@ -2036,6 +2036,45 @@ export const dbService = {
     api<import("./types").ForeignKeyTarget>("GET", `/nodes/${nodeId}/db/fk-targets`, {
       query: params,
     }),
+  // Phase 2C (Task C5) — per-column data profiling. SELECT-only stats that
+  // ride the read-only /db/query gate; payloads mirror the Go profiler
+  // structs (PascalCase). buckets/n fall back to server defaults when unset.
+  profile: {
+    stats: (
+      nodeId: number,
+      p: { schema: string; table: string; column: string; database?: string },
+    ) =>
+      api<import("./types").BasicStats>("GET", `/nodes/${nodeId}/db/profile/stats`, { query: p }),
+    distribution: (
+      nodeId: number,
+      p: {
+        schema: string
+        table: string
+        column: string
+        buckets?: number
+        database?: string
+      },
+    ) =>
+      api<import("./types").Histogram>("GET", `/nodes/${nodeId}/db/profile/distribution`, {
+        query: p,
+      }),
+    topn: (
+      nodeId: number,
+      p: { schema: string; table: string; column: string; n?: number; database?: string },
+    ) =>
+      api<{ items: import("./types").ValueFreq[] }>("GET", `/nodes/${nodeId}/db/profile/topn`, {
+        query: p,
+      }),
+    patterns: (
+      nodeId: number,
+      p: { schema: string; table: string; column: string; database?: string },
+    ) =>
+      api<{ items: import("./types").PatternMatch[] }>(
+        "GET",
+        `/nodes/${nodeId}/db/profile/patterns`,
+        { query: p },
+      ),
+  },
   stats: (nodeId: number, schema: string, table: string, database?: string) =>
     api<DBTableStats>("GET", `/nodes/${nodeId}/db/stats`, {
       query: { schema, table, database },
