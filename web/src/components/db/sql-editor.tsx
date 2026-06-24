@@ -2,7 +2,21 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { Bookmark, BookmarkPlus, Clock, Loader2, Play, Save, Sparkles, Square, Trash2, Wand2 } from "lucide-react"
+import {
+  Activity,
+  BookmarkPlus,
+  Clock,
+  Loader2,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Save,
+  Sparkles,
+  Square,
+  Trash2,
+  Wand2,
+} from "lucide-react"
+import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -11,6 +25,12 @@ import { formatSQL } from "@/lib/sql-format"
 import { formatSQL as beautifySQL } from "@/components/db/editor/beautifier"
 import { registerSchemaCompletion } from "@/components/db/editor/completion-provider"
 import { useSchemaSnapshot } from "@/components/db/shared/schema-cache"
+import { dbService, dbStudioService } from "@/lib/api/services"
+import type { PlanNode } from "@/lib/api/types"
+import { SavedQueriesServer, SAVED_QUERIES_KEY } from "@/components/db/editor/saved-queries-server"
+import { QueryHistoryServer } from "@/components/db/editor/query-history-server"
+import { PinnedResultsPanel } from "@/components/db/editor/pinned-results-panel"
+import { ExecutionPlan } from "@/components/db/editor/execution-plan"
 
 // Monaco loads as a heavy ESM bundle; lazy-import to keep the route's
 // first-paint small. SSR is off because Monaco needs the browser
@@ -38,6 +58,10 @@ type Props = {
   // the editor degrades gracefully when embedded without a DB context.
   database?: string
   vendorLabel?: string
+  // Phase 2A.7 — the most recent result the parent rendered, handed down so
+  // the Pinned Results panel can freeze a snapshot of it. Optional: when
+  // absent the pin button stays disabled (nothing to pin yet).
+  lastResult?: { sql: string; rows: Record<string, unknown>[] }
 }
 
 type HistoryEntry = {
@@ -50,33 +74,46 @@ type HistoryEntry = {
 const HISTORY_KEY = (id: number) => `db.history.${id}`
 const HISTORY_MAX = 50
 
-// Phase 30e — saved queries. Per-node localStorage-backed snippet
-// library. Each entry is name + SQL; we deliberately don't persist
-// server-side yet to avoid coupling to a new DB model — operators
-// who switch browsers will rebuild their library, which is the same
-// trade-off the editor history makes.
-const SAVED_KEY = (id: number) => `db.saved.${id}`
-const SAVED_MAX = 50
+// Phase 2A.5 — legacy per-browser saved-queries blob drained into the server
+// store on first mount (see the migration effect below). The editor itself no
+// longer reads or writes this key — saved queries live server-side now.
+const LEGACY_SAVED_KEY = "dbstudio-saved-queries"
 
-type SavedQuery = {
-  id: string
-  name: string
-  sql: string
-  at: number
+type PanelTab = "saved" | "history" | "pinned" | "plan"
+
+const PANEL_LABELS: Record<PanelTab, string> = {
+  saved: "收藏",
+  history: "历史",
+  pinned: "固定",
+  plan: "计划",
 }
 
-// SQLEditor — Monaco editor + run button + local history.
+// SQLEditor — Monaco editor + run button + local history + a server-backed
+// side panel (saved queries / query history / pinned results / execution plan).
 // Keybindings:
 //   Ctrl/Cmd+Enter   → execute selection if any, otherwise statement at cursor
 //   Ctrl/Cmd+S       → save (no-op write to history, surfaces toast)
+//   Shift+Alt+F      → beautify via sql-formatter
 //
 // Statement splitting: we don't try to parse SQL. The "statement at
 // cursor" extraction splits on top-level semicolons (ignoring those
 // inside single/double quotes) and picks whichever segment the cursor
 // is in. Good enough for ad-hoc queries; a real parser is overkill.
-export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extraActions, database, vendorLabel }: Props) {
+export function SQLEditor({
+  nodeId,
+  value,
+  onChange,
+  onRun,
+  busy,
+  onCancel,
+  extraActions,
+  database,
+  vendorLabel,
+  lastResult,
+}: Props) {
   const [history, setHistory] = React.useState<HistoryEntry[]>([])
-  const [saved, setSaved] = React.useState<SavedQuery[]>([])
+  const [panel, setPanel] = React.useState<PanelTab | null>(null)
+  const [plan, setPlan] = React.useState<{ root: PlanNode | null; raw: string } | null>(null)
   const editorRef = React.useRef<unknown>(null)
 
   // Phase 2A.3 — schema-aware completion. monacoRef holds the Monaco
@@ -87,6 +124,7 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
   const monacoRef = React.useRef<typeof import("monaco-editor") | null>(null)
   const completionDisposeRef = React.useRef<{ dispose(): void } | null>(null)
   const { data: snapshot } = useSchemaSnapshot(nodeId, database ?? "")
+  const qc = useQueryClient()
 
   // Phase 2A.4 — beautify via sql-formatter. Shared by the toolbar
   // button and the Shift+Alt+F keybinding. The keybinding is bound once
@@ -124,19 +162,56 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
     try {
       const raw = localStorage.getItem(HISTORY_KEY(nodeId))
       if (raw) setHistory(JSON.parse(raw) as HistoryEntry[])
-      const sraw = localStorage.getItem(SAVED_KEY(nodeId))
-      if (sraw) setSaved(JSON.parse(sraw) as SavedQuery[])
     } catch {
       // ignore parse errors
     }
   }, [nodeId])
 
-  const persistSaved = React.useCallback((next: SavedQuery[]) => {
-    setSaved(next)
-    try { localStorage.setItem(SAVED_KEY(nodeId), JSON.stringify(next)) }
-    catch { /* quota — best-effort */ }
-  }, [nodeId])
+  // Phase 2A.5 — one-time migration: drain the legacy localStorage
+  // saved-queries blob into the server store, then drop the key so it never
+  // runs again. Best-effort — a failed create (network/auth) just skips that
+  // entry; the key is removed only after the batch settles regardless.
+  React.useEffect(() => {
+    let raw: string | null = null
+    try {
+      raw = localStorage.getItem(LEGACY_SAVED_KEY)
+    } catch {
+      return
+    }
+    if (!raw) return
+    let items: Array<{ name?: string; sql?: string }> = []
+    try {
+      items = JSON.parse(raw)
+    } catch {
+      return
+    }
+    void Promise.all(
+      items
+        .filter((it) => it && it.name && it.sql)
+        .map((it) =>
+          dbStudioService.savedQueries
+            .create({
+              name: it.name!,
+              sql: it.sql!,
+              folder_path: "migrated",
+              shared_scope: "user",
+              params_json: "",
+            })
+            .catch(() => null),
+        ),
+    ).then(() => {
+      qc.invalidateQueries({ queryKey: SAVED_QUERIES_KEY })
+      try {
+        localStorage.removeItem(LEGACY_SAVED_KEY)
+      } catch {
+        // ignore
+      }
+    })
+  }, [qc])
 
+  // saveCurrent — server-backed replacement for the old localStorage snippet
+  // library. The owner is derived from the JWT server-side, so the client only
+  // sends name + sql. On success it invalidates the panel's list cache.
   const saveCurrent = React.useCallback(() => {
     const sql = (value || "").trim()
     if (!sql) {
@@ -145,20 +220,29 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
     }
     const name = prompt("起个名字（如：查活跃会话）", summariseSavedName(sql)) ?? ""
     if (!name.trim()) return
-    const entry: SavedQuery = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      name: name.trim(),
-      sql,
-      at: Date.now(),
-    }
-    const next = [entry, ...saved].slice(0, SAVED_MAX)
-    persistSaved(next)
-    toast.success("已保存到收藏")
-  }, [value, saved, persistSaved])
+    dbStudioService.savedQueries
+      .create({ name: name.trim(), sql, folder_path: "", shared_scope: "user", params_json: "" })
+      .then(() => {
+        qc.invalidateQueries({ queryKey: SAVED_QUERIES_KEY })
+        toast.success("已收藏到服务端")
+      })
+      .catch((e: unknown) => toast.error("收藏失败：" + ((e as Error).message ?? "")))
+  }, [value, qc])
 
-  const removeSaved = React.useCallback((id: string) => {
-    persistSaved(saved.filter((s) => s.id !== id))
-  }, [saved, persistSaved])
+  // Phase 2A.8 — fetch the visual execution plan (EXPLAIN) and surface it in
+  // the side panel's 计划 tab. Engines without a planner answer 501, which the
+  // api() helper turns into a thrown Error → toast.
+  const runPlan = React.useCallback(() => {
+    const sql = (value || "").trim()
+    if (!sql || busy) return
+    dbService
+      .plan(nodeId, { sql, database })
+      .then((res) => {
+        setPlan(res)
+        setPanel("plan")
+      })
+      .catch((e: unknown) => toast.error("执行计划失败：" + ((e as Error).message ?? "")))
+  }, [value, busy, nodeId, database])
 
   const runNow = React.useCallback(() => {
     if (busy) return
@@ -273,6 +357,19 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
             <Wand2 className="w-3.5 h-3.5" />
             美化
           </Button>
+          {/* Phase 2A.8 — visual execution plan (EXPLAIN). */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={runPlan}
+            disabled={busy || !value.trim()}
+            className="h-7 px-2 gap-1 text-xs"
+            title="执行计划（EXPLAIN，可视化树形）"
+          >
+            <Activity className="w-3.5 h-3.5" />
+            执行计划
+          </Button>
           {extraActions}
         </div>
         <div className="flex items-center gap-1">
@@ -283,59 +380,107 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
             onClick={saveCurrent}
             disabled={busy || !value.trim()}
             className="h-7 px-2 text-xs gap-1"
-            title="把当前 SQL 加入收藏（本机持久化）"
+            title="把当前 SQL 收藏到服务端"
           >
             <BookmarkPlus className="w-3.5 h-3.5" /> 收藏
           </Button>
-          <SavedButton saved={saved} onPick={(sql) => onChange(sql)} onRemove={removeSaved} />
           <HistoryButton history={history} onPick={(sql) => onChange(sql)} onClear={clearHistory} />
+          {/* Phase 2A.5/6/7/8 — toggle the server-backed side panel. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setPanel((p) => (p ? null : "saved"))}
+            className="h-7 px-2 text-xs gap-1"
+            title={panel ? "关闭侧栏" : "打开侧栏（收藏 / 历史 / 固定 / 计划）"}
+          >
+            {panel ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
+          </Button>
         </div>
       </div>
-      <div className="flex-1 min-h-0">
-        <Monaco
-          height="100%"
-          defaultLanguage="sql"
-          theme="vs"
-          value={value}
-          onChange={(v) => onChange(v ?? "")}
-          onMount={(editor, monaco) => {
-            editorRef.current = editor
-            monacoRef.current = monaco
-            const KeyMod = (
-              monaco as { KeyMod: { CtrlCmd: number; Shift: number; Alt: number } }
-            ).KeyMod
-            const KeyCode = (
-              monaco as { KeyCode: { Enter: number; KeyS: number; KeyF: number } }
-            ).KeyCode
-            ;(editor as {
-              addCommand: (kc: number, fn: () => void) => void
-            }).addCommand(KeyMod.CtrlCmd | KeyCode.Enter, runNow)
-            ;(editor as {
-              addCommand: (kc: number, fn: () => void) => void
-            }).addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
-              // Suppress browser Save dialog; treat as "remember this".
-              pushHistory({ sql: (value || "").trim(), at: Date.now() })
-            })
-            // Phase 2A.4 — beautify shortcut. Bound once at mount; the
-            // command delegates to a ref so it always runs the freshest
-            // beautify closure (which reads the live editor value).
-            ;(editor as {
-              addCommand: (kc: number, fn: () => void) => void
-            }).addCommand(
-              KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF,
-              () => doBeautifyRef.current(),
-            )
-          }}
-          options={{
-            minimap: { enabled: false },
-            fontSize: 13,
-            scrollBeyondLastLine: false,
-            wordWrap: "on",
-            renderLineHighlight: "gutter",
-            tabSize: 2,
-            padding: { top: 8, bottom: 8 },
-          }}
-        />
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-h-0">
+          <Monaco
+            height="100%"
+            defaultLanguage="sql"
+            theme="vs"
+            value={value}
+            onChange={(v) => onChange(v ?? "")}
+            onMount={(editor, monaco) => {
+              editorRef.current = editor
+              monacoRef.current = monaco
+              const KeyMod = (
+                monaco as { KeyMod: { CtrlCmd: number; Shift: number; Alt: number } }
+              ).KeyMod
+              const KeyCode = (
+                monaco as { KeyCode: { Enter: number; KeyS: number; KeyF: number } }
+              ).KeyCode
+              ;(editor as {
+                addCommand: (kc: number, fn: () => void) => void
+              }).addCommand(KeyMod.CtrlCmd | KeyCode.Enter, runNow)
+              ;(editor as {
+                addCommand: (kc: number, fn: () => void) => void
+              }).addCommand(KeyMod.CtrlCmd | KeyCode.KeyS, () => {
+                // Suppress browser Save dialog; treat as "remember this".
+                pushHistory({ sql: (value || "").trim(), at: Date.now() })
+              })
+              // Phase 2A.4 — beautify shortcut. Bound once at mount; the
+              // command delegates to a ref so it always runs the freshest
+              // beautify closure (which reads the live editor value).
+              ;(editor as {
+                addCommand: (kc: number, fn: () => void) => void
+              }).addCommand(
+                KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF,
+                () => doBeautifyRef.current(),
+              )
+            }}
+            options={{
+              minimap: { enabled: false },
+              fontSize: 13,
+              scrollBeyondLastLine: false,
+              wordWrap: "on",
+              renderLineHighlight: "gutter",
+              tabSize: 2,
+              padding: { top: 8, bottom: 8 },
+            }}
+          />
+        </div>
+        {panel && (
+          <aside className="w-80 shrink-0 border-l flex flex-col min-h-0 bg-background">
+            <div className="flex border-b text-xs">
+              {(Object.keys(PANEL_LABELS) as PanelTab[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setPanel(t)}
+                  className={cn(
+                    "flex-1 px-2 py-1.5 transition-colors",
+                    panel === t ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/50",
+                  )}
+                >
+                  {PANEL_LABELS[t]}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1 min-h-0">
+              {panel === "saved" && <SavedQueriesServer onPick={(sql) => onChange(sql)} />}
+              {panel === "history" && (
+                <QueryHistoryServer nodeId={nodeId} onReplay={(sql) => onChange(sql)} />
+              )}
+              {panel === "pinned" && (
+                <PinnedResultsPanel nodeId={nodeId} pinSource={lastResult} />
+              )}
+              {panel === "plan" &&
+                (plan ? (
+                  <ExecutionPlan root={plan.root} raw={plan.raw} />
+                ) : (
+                  <div className="p-4 text-xs text-muted-foreground text-center">
+                    点工具栏「执行计划」生成
+                  </div>
+                ))}
+            </div>
+          </aside>
+        )}
       </div>
     </div>
   )
@@ -360,7 +505,7 @@ function HistoryButton({
         onClick={() => setOpen((v) => !v)}
         className="h-7 px-2 text-xs gap-1"
       >
-        <Clock className="w-3.5 h-3.5" /> 历史
+        <Clock className="w-3.5 h-3.5" /> 本机历史
       </Button>
       {open && (
         <div
@@ -368,7 +513,7 @@ function HistoryButton({
           onMouseLeave={() => setOpen(false)}
         >
           <div className="flex items-center justify-between px-3 py-1.5 border-b">
-            <span className="text-xs font-medium">最近 {history.length} 条</span>
+            <span className="text-xs font-medium">最近 {history.length} 条（本机）</span>
             <button
               type="button"
               onClick={onClear}
@@ -454,77 +599,6 @@ function statementAtOffset(text: string, offset: number): string {
     }
   }
   return text.trim()
-}
-
-function SavedButton({
-  saved,
-  onPick,
-  onRemove,
-}: {
-  saved: SavedQuery[]
-  onPick: (sql: string) => void
-  onRemove: (id: string) => void
-}) {
-  const [open, setOpen] = React.useState(false)
-  return (
-    <div className="relative">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => setOpen((v) => !v)}
-        className="h-7 px-2 text-xs gap-1"
-      >
-        <Bookmark className="w-3.5 h-3.5" /> 收藏 ({saved.length})
-      </Button>
-      {open && (
-        <div
-          className="absolute right-0 top-9 z-20 w-96 rounded-md border bg-popover shadow-lg"
-          onMouseLeave={() => setOpen(false)}
-        >
-          <div className="px-3 py-1.5 border-b text-xs font-medium">
-            收藏的查询
-          </div>
-          <ScrollArea className="max-h-80">
-            {saved.length === 0 && (
-              <div className="px-3 py-4 text-xs text-muted-foreground text-center">
-                还没有收藏 — 写好 SQL 后点「收藏」起个名字
-              </div>
-            )}
-            {saved.map((s) => (
-              <div
-                key={s.id}
-                className="group flex items-start gap-2 px-3 py-1.5 hover:bg-muted/60 border-b last:border-b-0"
-              >
-                <button
-                  type="button"
-                  onClick={() => {
-                    onPick(s.sql)
-                    setOpen(false)
-                  }}
-                  className="flex-1 min-w-0 text-left"
-                  title={s.sql}
-                >
-                  <div className="text-xs font-medium truncate">{s.name}</div>
-                  <div className="text-[10px] text-muted-foreground font-mono truncate">
-                    {s.sql.split("\n")[0]}
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive shrink-0"
-                  onClick={() => onRemove(s.id)}
-                  title="移除"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
-              </div>
-            ))}
-          </ScrollArea>
-        </div>
-      )}
-    </div>
-  )
 }
 
 // summariseSavedName picks a sensible default name for a saved query

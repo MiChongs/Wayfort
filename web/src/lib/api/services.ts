@@ -159,6 +159,7 @@ import type {
   UserDetail,
   UserGroup,
   UserStats,
+  PlanNode,
 } from "./types"
 
 // ----- auth -----
@@ -2142,6 +2143,13 @@ export const dbService = {
     api<{ cancelled: boolean }>("POST", `/nodes/${nodeId}/db/kill`, {
       query: { pid, database },
     }),
+  // Phase 2A.8 — visual execution plan. Runs EXPLAIN in the node's dialect
+  // and returns a normalised tree (`root`) plus the engine's raw textual plan
+  // (`raw`) for the Text tab. Engines without a planner answer 501.
+  plan: (nodeId: number, body: { sql: string; database?: string }) =>
+    api<{ root: PlanNode | null; raw: string }>(
+      "POST", `/nodes/${nodeId}/db/plan`, { body },
+    ),
   // Returns the export URL for a download anchor; bearer token rides as
   // ?token=... so the browser's <a download> works without custom XHR
   // headers (withTokenQuery is the same helper sessions/recording uses).

@@ -2908,6 +2908,21 @@ export interface BreakGlassStats {
   fail_open_total: number
 }
 
+// Phase 2A.8 — one node of a normalised execution-plan tree (POST /db/plan).
+// Field names mirror the Go planner.PlanNode struct verbatim (PascalCase,
+// because Gin marshals the untagged struct fields as-is). The tree is shared
+// across MySQL (FORMAT=TREE), PostgreSQL (FORMAT JSON) and Dameng (PLAN_TABLE)
+// dialects; `Attrs` carries any per-engine extras the parser surfaced.
+export interface PlanNode {
+  Op: string
+  Table?: string
+  Rows?: number
+  Cost?: number
+  Width?: number
+  Children?: PlanNode[]
+  Attrs?: Record<string, string>
+}
+
 // ----- Phase 2 W2 — DB Studio stores (saved queries / history / pinned /
 // view profiles) + FK target -----
 // All ids are uint64 on the Go side; the JSON number stays within
