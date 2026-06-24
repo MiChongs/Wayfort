@@ -143,4 +143,6 @@ func (p *damengProfiler) Patterns(ctx context.Context, schema, table, column str
 // dmIdent quotes an identifier using Dameng/Oracle double quotes. Unquoted
 // Dameng identifiers fold to uppercase, so we uppercase to match the default
 // object-name convention.
-func dmIdent(s string) string { return "\"" + strings.ToUpper(s) + "\"" }
+func dmIdent(s string) string {
+	return "\"" + strings.ReplaceAll(strings.ToUpper(s), "\"", "\"\"") + "\""
+}

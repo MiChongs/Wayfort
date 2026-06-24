@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // postgresProfiler implements Profiler against PostgreSQL.
@@ -63,34 +64,38 @@ func (p *postgresProfiler) Distribution(ctx context.Context, schema, table, colu
 	if buckets <= 0 {
 		buckets = 20
 	}
-	// PostgreSQL: compute the numeric range once, then bucket with width_bucket().
-	rows, err := p.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT lower, upper, cnt FROM (
-			SELECT
-				width_bucket(%s::numeric, mn, mx, %d) AS b,
-				MIN(%s::numeric) AS lower, MAX(%s::numeric) AS upper,
-				COUNT(*) AS cnt,
-				MIN(%s::numeric) OVER () AS mn, MAX(%s::numeric) OVER () AS mx
+	// NOTE: Distribution only works for numeric columns. For non-numeric columns,
+	// callers should fall back to TopN. This CTE-based query assumes numeric type.
+	query := fmt.Sprintf(`
+		WITH bounds AS (
+			SELECT MIN(%s::numeric) AS mn, MAX(%s::numeric) AS mx
 			FROM %s.%s WHERE %s IS NOT NULL
-		) t GROUP BY b, lower, upper ORDER BY b`,
-		pgIdent(column), buckets,
-		pgIdent(column), pgIdent(column),
-		pgIdent(column), pgIdent(column),
-		pgIdent(schema), pgIdent(table), pgIdent(column)))
+		),
+		bucketed AS (
+			SELECT width_bucket(%s::numeric, b.mn, b.mx, %d) AS bkt, %s::numeric AS v
+			FROM %s.%s
+			CROSS JOIN bounds b
+			WHERE %s IS NOT NULL
+		)
+		SELECT MIN(v), MAX(v), COUNT(*) FROM bucketed GROUP BY bkt ORDER BY bkt`,
+		pgIdent(column), pgIdent(column), pgIdent(schema), pgIdent(table), pgIdent(column),
+		pgIdent(column), buckets, pgIdent(column),
+		pgIdent(schema), pgIdent(table), pgIdent(column))
+	rows, err := p.db.QueryContext(ctx, query)
 	if err != nil {
 		return Histogram{}, err
 	}
 	defer rows.Close()
 	var h Histogram
 	for rows.Next() {
-		var lo, hi sql.NullString
+		var lo, hi sql.NullFloat64
 		var cnt int64
 		if err := rows.Scan(&lo, &hi, &cnt); err != nil {
 			return h, err
 		}
-		h.Buckets = append(h.Buckets, HistogramBucket{LowerBound: lo.String, UpperBound: hi.String, Count: cnt})
+		h.Buckets = append(h.Buckets, HistogramBucket{LowerBound: lo.Float64, UpperBound: hi.Float64, Count: cnt})
 	}
-	return h, rows.Err()
+	return h, nil
 }
 
 func (p *postgresProfiler) TopN(ctx context.Context, schema, table, column string, n int) ([]ValueFreq, error) {
@@ -142,4 +147,4 @@ func (p *postgresProfiler) Patterns(ctx context.Context, schema, table, column s
 }
 
 // pgIdent quotes an identifier using PostgreSQL double quotes.
-func pgIdent(s string) string { return "\"" + s + "\"" }
+func pgIdent(s string) string { return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\"" }

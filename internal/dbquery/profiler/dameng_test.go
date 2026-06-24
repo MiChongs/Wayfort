@@ -67,6 +67,41 @@ func TestDamengTopN(t *testing.T) {
 	}
 }
 
+func TestDamengDistribution(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("NTILE").WillReturnRows(sqlmock.NewRows([]string{"lo", "hi", "cnt"}).
+		AddRow(0, 10, 50).AddRow(10, 20, 30))
+	h, err := NewDameng(db).Distribution(context.Background(), "public", "users", "age", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Buckets) != 2 {
+		t.Fatalf("buckets: %d", len(h.Buckets))
+	}
+}
+
+func TestDamengPatterns(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+	for range commonPatterns {
+		mock.ExpectQuery("REGEXP_LIKE ").WillReturnRows(sqlmock.NewRows([]string{"cnt"}).AddRow(5))
+	}
+	out, err := NewDameng(db).Patterns(context.Background(), "public", "users", "email")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) == 0 {
+		t.Fatal("expected pattern matches")
+	}
+}
+
 func TestDamengNoDB(t *testing.T) {
 	if _, err := NewDameng(nil).BasicStats(context.Background(), "s", "t", "c"); err != errNoDB {
 		t.Fatalf("want errNoDB, got %v", err)

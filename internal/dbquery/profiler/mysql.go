@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // mysqlProfiler implements Profiler against MySQL/MariaDB.
@@ -137,4 +138,4 @@ func (p *mysqlProfiler) Patterns(ctx context.Context, schema, table, column stri
 }
 
 // mysqlIdent quotes an identifier using MySQL backticks.
-func mysqlIdent(s string) string { return "`" + s + "`" }
+func mysqlIdent(s string) string { return "`" + strings.ReplaceAll(s, "`", "``") + "`" }
