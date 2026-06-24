@@ -1,7 +1,10 @@
 // Package planner defines the execution-plan parser contract.
 package planner
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Planner parses an engine's EXPLAIN output into a normalised PlanNode
 // tree the UI can render uniformly.
@@ -24,3 +27,7 @@ type PlanNode struct {
 	Attrs      map[string]string // engine-specific extras
 	Children   []*PlanNode
 }
+
+// errNoDB is returned by every Planner method when the backing *sql.DB is nil.
+// Declared once here (not per-dialect) so mysql/postgres/dameng share it.
+var errNoDB = errors.New("planner: backing *sql.DB is nil")
