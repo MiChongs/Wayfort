@@ -35,6 +35,13 @@ const (
 	NodeProtoGBase8a   NodeProtocol = "gbase8a"   // 南大通用 GBase 8a (MySQL-兼容)
 	NodeProtoGBase8s   NodeProtocol = "gbase8s"   // 南大通用 GBase 8s (PG-兼容)
 
+	// Phase 3D — NoSQL engines registered via internal/dbquery/nosql.
+	// Distinct from the legacy NodeProtoMongo="mongo" gateway protocol:
+	// NodeProtoMongoDB is the Db Studio document-store protocol id the
+	// nosql mongo adapter (D2) keys on. NodeProtoRedis (above) is reused
+	// unchanged as the KV-store protocol id for the redis adapter (D3).
+	NodeProtoMongoDB NodeProtocol = "mongodb" // 文档库 MongoDB
+
 	// Object storage bastion. One node = one account/endpoint (credentials +
 	// endpoint + region); the workspace browses every bucket the credential can
 	// see. Provider-specific config (provider/endpoint/region/default bucket)
@@ -85,7 +92,7 @@ type Node struct {
 	// array of virtual group ids the node belongs to for Db Studio grouping.
 	DBColor         string    `gorm:"size:16" json:"db_color,omitempty"`
 	DBGroupPath     string    `gorm:"size:512" json:"db_group_path,omitempty"`
-	DBVirtualGroups string    `gorm:"type:longtext" json:"db_virtual_groups,omitempty"`
+	DBVirtualGroups string    `gorm:"type:text" json:"db_virtual_groups,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
