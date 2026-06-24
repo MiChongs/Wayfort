@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { ArrowDown, ArrowUp, BarChart3, Check, Copy, Download, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
+import { ArrowDown, ArrowUp, BarChart3, Check, Copy, Download, Eye, FileJson, KeyRound, Loader2, Maximize2, X } from "lucide-react"
 import type { DBQueryResult } from "@/lib/api/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { toast } from "@/components/ui/sonner"
+import { BlobPreview } from "./viewer/blob-preview"
 
 type Props = {
   result?: DBQueryResult
@@ -89,6 +90,10 @@ export function ResultGrid({
   const [editing, setEditing] = React.useState<{ row: number; col: number } | null>(null)
   const [editValue, setEditValue] = React.useState<string>("")
   const [saving, setSaving] = React.useState(false)
+  // Phase 2C.3 — cell-level preview Sheet. Opens via the hover Eye
+  // icon on non-trivial cells (BLOB / image / JSON / Geo / long text).
+  // Read-only in 2C; JSON edit-back is a later sub-project.
+  const [preview, setPreview] = React.useState<{ row: number; col: number } | null>(null)
 
   const filtered = React.useMemo(() => {
     if (!result) return null
@@ -283,6 +288,13 @@ export function ResultGrid({
                       key={c}
                       value={cell}
                       editable={isEditable}
+                      columnName={colName}
+                      columnType={result.columns[c]?.type ?? ""}
+                      onPreview={
+                        isPreviewableCell(cell, result.columns[c]?.type ?? "")
+                          ? () => setPreview({ row: r, col: c })
+                          : undefined
+                      }
                       editing={isEditing}
                       editValue={editValue}
                       saving={isEditing && saving}
@@ -370,6 +382,13 @@ export function ResultGrid({
           </div>
         </DialogContent>
       </Dialog>
+      <BlobPreview
+        open={!!preview}
+        onClose={() => setPreview(null)}
+        value={preview ? result.rows[preview.row]?.[preview.col] : undefined}
+        columnName={preview ? result.columns[preview.col]?.name ?? "" : ""}
+        dataType={preview ? result.columns[preview.col]?.type ?? "" : ""}
+      />
     </div>
   )
 }
@@ -384,6 +403,9 @@ function Cell({
   onCancelEdit,
   onChangeEdit,
   onCommitEdit,
+  columnName,
+  columnType,
+  onPreview,
 }: {
   value: unknown
   editable: boolean
@@ -394,6 +416,9 @@ function Cell({
   onCancelEdit: () => void
   onChangeEdit: (v: string) => void
   onCommitEdit: (asNull: boolean) => void
+  columnName: string
+  columnType: string
+  onPreview?: () => void
 }) {
   const text = formatCell(value)
   const isNull = value === null
@@ -410,6 +435,10 @@ function Cell({
     ? value
     : value === "true" || value === "TRUE"
   const isNumber = typeof value === "number" || typeof value === "bigint"
+  // Phase 2C.3 — a hover Eye icon opens the BlobPreview Sheet for
+  // non-trivial cells. `onPreview` is only passed when the cell is
+  // previewable, so its presence is the gate.
+  const previewable = !!onPreview
 
   if (editing) {
     return (
@@ -470,6 +499,7 @@ function Cell({
         isNull && "text-muted-foreground italic",
         isNumber && "tabular-nums text-right",
         editable && "cursor-text",
+        previewable && "relative",
       )}
       title={isNull ? "NULL" : editable ? `${text}\n\n双击以编辑` : text}
       onClick={() => copy(text)}
@@ -495,6 +525,21 @@ function Cell({
         <FileJsonInline text={text} />
       ) : (
         text
+      )}
+      {previewable && (
+        <button
+          type="button"
+          aria-label="预览单元格"
+          title="预览"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onPreview?.()
+          }}
+          className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center rounded border bg-card/90 opacity-0 group-hover:opacity-100 hover:text-primary transition-opacity"
+        >
+          <Eye className="w-3 h-3" />
+        </button>
       )}
     </td>
   )
@@ -533,6 +578,35 @@ function looksLikeJSON(s: string): boolean {
   if (s.length < 2) return false
   const c = s.trimStart()[0]
   return c === "{" || c === "["
+}
+
+// isPreviewableCell — Phase 2C.3 gate: which cells earn a hover Eye
+// icon that opens the BlobPreview Sheet. True for declared BLOB / JSON /
+// geo column types and for values that look like base64 images, GeoJSON,
+// WKT, or long text worth a dedicated viewer.
+function isPreviewableCell(value: unknown, columnType: string): boolean {
+  const dt = columnType.toLowerCase()
+  if (
+    dt.includes("blob") || dt.includes("binary") || dt === "bytea" ||
+    dt.includes("json") || dt.includes("geometry") || dt.includes("geography") ||
+    dt === "point" || dt === "polygon"
+  ) {
+    return true
+  }
+  if (typeof value !== "string") return false
+  if (value.length === 0) return false
+  // base64 image magic bytes
+  const b = value.slice(0, 12).toLowerCase()
+  if (b.startsWith("iv") || b.startsWith("/9j/") || b.startsWith("r0lgo") || b.startsWith("uklgr")) return true
+  // GeoJSON / WKT
+  if (value.trim().startsWith('{"type":"') && value.includes('"coordinates"')) return true
+  if (/^(POINT|POLYGON|LINESTRING|MULTI)/i.test(value.trim())) return true
+  // JSON object/array of meaningful size
+  const trimmed = value.trim()
+  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && trimmed.length > 50) return true
+  // long text worth a scrollable viewer
+  if (value.length > 200) return true
+  return false
 }
 
 function prettyJSON(s: string): string {
