@@ -2,12 +2,15 @@
 
 import * as React from "react"
 import dynamic from "next/dynamic"
-import { Bookmark, BookmarkPlus, Clock, Loader2, Play, Save, Sparkles, Square, Trash2 } from "lucide-react"
+import { Bookmark, BookmarkPlus, Clock, Loader2, Play, Save, Sparkles, Square, Trash2, Wand2 } from "lucide-react"
 import { toast } from "@/components/ui/sonner"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
 import { formatSQL } from "@/lib/sql-format"
+import { formatSQL as beautifySQL } from "@/components/db/editor/beautifier"
+import { registerSchemaCompletion } from "@/components/db/editor/completion-provider"
+import { useSchemaSnapshot } from "@/components/db/shared/schema-cache"
 
 // Monaco loads as a heavy ESM bundle; lazy-import to keep the route's
 // first-paint small. SSR is off because Monaco needs the browser
@@ -30,6 +33,11 @@ type Props = {
   onCancel?: () => void
   // Slot rendered next to the Run button (e.g. EXPLAIN dropdown).
   extraActions?: React.ReactNode
+  // Phase 2A — active database (drives the schema-completion snapshot)
+  // + vendor label (drives the beautifier's SQL dialect). Optional so
+  // the editor degrades gracefully when embedded without a DB context.
+  database?: string
+  vendorLabel?: string
 }
 
 type HistoryEntry = {
@@ -66,10 +74,51 @@ type SavedQuery = {
 // cursor" extraction splits on top-level semicolons (ignoring those
 // inside single/double quotes) and picks whichever segment the cursor
 // is in. Good enough for ad-hoc queries; a real parser is overkill.
-export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extraActions }: Props) {
+export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extraActions, database, vendorLabel }: Props) {
   const [history, setHistory] = React.useState<HistoryEntry[]>([])
   const [saved, setSaved] = React.useState<SavedQuery[]>([])
   const editorRef = React.useRef<unknown>(null)
+
+  // Phase 2A.3 — schema-aware completion. monacoRef holds the Monaco
+  // namespace handed to us in onMount; the completion provider is
+  // re-registered whenever the cached snapshot or vendor changes, and
+  // the prior registration is disposed first so we never leak providers
+  // across a database switch.
+  const monacoRef = React.useRef<typeof import("monaco-editor") | null>(null)
+  const completionDisposeRef = React.useRef<{ dispose(): void } | null>(null)
+  const { data: snapshot } = useSchemaSnapshot(nodeId, database ?? "")
+
+  // Phase 2A.4 — beautify via sql-formatter. Shared by the toolbar
+  // button and the Shift+Alt+F keybinding. The keybinding is bound once
+  // at mount, so it routes through a ref to always run the freshest
+  // closure (which reads the current editor value + vendor label).
+  const doBeautify = React.useCallback(() => {
+    const ed = editorRef.current as { getValue?: () => string } | null
+    const cur = ed?.getValue?.() ?? value
+    if (!cur.trim()) return
+    try {
+      onChange(beautifySQL(cur, vendorLabel ?? "mysql"))
+      toast.success("已美化", { duration: 900 })
+    } catch (e) {
+      toast.error("美化失败：" + ((e as Error).message ?? ""))
+    }
+  }, [value, onChange, vendorLabel])
+  const doBeautifyRef = React.useRef(doBeautify)
+  doBeautifyRef.current = doBeautify
+
+  React.useEffect(() => {
+    const monacoApi = monacoRef.current
+    if (!monacoApi || !snapshot) return
+    completionDisposeRef.current?.dispose()
+    const keywords = (vendorLabel ?? "").toLowerCase().includes("postgres")
+      ? ["SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE", "RETURNING"]
+      : ["SELECT", "FROM", "WHERE", "INSERT", "UPDATE", "DELETE"]
+    completionDisposeRef.current = registerSchemaCompletion(monacoApi, snapshot, keywords)
+    return () => {
+      completionDisposeRef.current?.dispose()
+      completionDisposeRef.current = null
+    }
+  }, [snapshot, vendorLabel])
 
   React.useEffect(() => {
     try {
@@ -209,6 +258,21 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
             <Sparkles className="w-3.5 h-3.5" />
             格式化
           </Button>
+          {/* Phase 2A.4 — full SQL beautifier (sql-formatter). Unlike
+              the keyword-only 格式化 button above, this tokenizes by
+              dialect for idiomatic indenting; Shift+Alt+F triggers it. */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={doBeautify}
+            disabled={busy || !value.trim()}
+            className="h-7 px-2 gap-1 text-xs"
+            title="美化（sql-formatter，按方言重排）— Shift+Alt+F"
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+            美化
+          </Button>
           {extraActions}
         </div>
         <div className="flex items-center gap-1">
@@ -236,8 +300,13 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
           onChange={(v) => onChange(v ?? "")}
           onMount={(editor, monaco) => {
             editorRef.current = editor
-            const KeyMod = (monaco as { KeyMod: { CtrlCmd: number } }).KeyMod
-            const KeyCode = (monaco as { KeyCode: { Enter: number; KeyS: number } }).KeyCode
+            monacoRef.current = monaco
+            const KeyMod = (
+              monaco as { KeyMod: { CtrlCmd: number; Shift: number; Alt: number } }
+            ).KeyMod
+            const KeyCode = (
+              monaco as { KeyCode: { Enter: number; KeyS: number; KeyF: number } }
+            ).KeyCode
             ;(editor as {
               addCommand: (kc: number, fn: () => void) => void
             }).addCommand(KeyMod.CtrlCmd | KeyCode.Enter, runNow)
@@ -247,6 +316,15 @@ export function SQLEditor({ nodeId, value, onChange, onRun, busy, onCancel, extr
               // Suppress browser Save dialog; treat as "remember this".
               pushHistory({ sql: (value || "").trim(), at: Date.now() })
             })
+            // Phase 2A.4 — beautify shortcut. Bound once at mount; the
+            // command delegates to a ref so it always runs the freshest
+            // beautify closure (which reads the live editor value).
+            ;(editor as {
+              addCommand: (kc: number, fn: () => void) => void
+            }).addCommand(
+              KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF,
+              () => doBeautifyRef.current(),
+            )
           }}
           options={{
             minimap: { enabled: false },

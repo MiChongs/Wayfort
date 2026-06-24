@@ -406,6 +406,8 @@ export function DBStudio({ nodeId, embedded, className }: Props) {
                       onChange={setSql}
                       onRun={(s) => runStatement(s, "query")}
                       busy={runPending}
+                      database={database}
+                      vendorLabel={c?.vendor_label}
                       extraActions={
                         <>
                           {/* Phase 30 — Multi-statement script runner. The
