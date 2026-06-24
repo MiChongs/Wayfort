@@ -1,0 +1,6 @@
+CREATE TABLE "public"."users" (
+  "id" BIGINT NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "email" VARCHAR(255) NOT NULL,
+  "created_at" TIMESTAMP NOT NULL,
+  PRIMARY KEY ("id")
+)
