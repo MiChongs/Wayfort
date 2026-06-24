@@ -22,8 +22,9 @@ func TestDamengSnapshot(t *testing.T) {
 	mock.ExpectQuery(`SELECT OWNER, TABLE_NAME, COLUMN_NAME, DATA_TYPE, NULLABLE FROM SYS\.ALL_TAB_COLUMNS`).
 		WillReturnRows(sqlmock.NewRows([]string{"OWNER", "TABLE_NAME", "COLUMN_NAME", "DATA_TYPE", "NULLABLE"}).
 			AddRow("APP_USER", "ORDERS", "ID", "NUMBER", "N"))
-	mock.ExpectQuery(`SELECT OWNER, OBJECT_NAME, '' FROM SYS\.ALL_OBJECTS WHERE OBJECT_TYPE='FUNCTION'`).
-		WillReturnRows(sqlmock.NewRows([]string{"OWNER", "OBJECT_NAME", "ret"}))
+	mock.ExpectQuery(`SELECT OWNER, OBJECT_NAME FROM SYS\.ALL_OBJECTS WHERE OBJECT_TYPE='FUNCTION'`).
+		WillReturnRows(sqlmock.NewRows([]string{"OWNER", "OBJECT_NAME"}).
+			AddRow("APP_USER", "MY_FUNC"))
 
 	snap, err := NewDameng(db).Snapshot(context.Background(), "DMDB")
 	if err != nil {

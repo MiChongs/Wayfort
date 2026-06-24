@@ -85,20 +85,20 @@ func (p *damengProvider) Snapshot(ctx context.Context, database string) (Snapsho
 	rows.Close()
 
 	rows, err = p.db.QueryContext(ctx, `
-		SELECT OWNER, OBJECT_NAME, '' FROM SYS.ALL_OBJECTS WHERE OBJECT_TYPE='FUNCTION'
+		SELECT OWNER, OBJECT_NAME FROM SYS.ALL_OBJECTS WHERE OBJECT_TYPE='FUNCTION'
 		  AND OWNER NOT IN ('SYS','SYSTEM','CTISYS','SYSDBA','SYSAUDITOR','SYSSSO')
 		ORDER BY OWNER, OBJECT_NAME`)
 	if err != nil {
 		return snap, err
 	}
 	for rows.Next() {
-		var owner, name, ret string
-		if err := rows.Scan(&owner, &name, &ret); err != nil {
+		var owner, name string
+		if err := rows.Scan(&owner, &name); err != nil {
 			rows.Close()
 			return snap, err
 		}
 		snap.Functions = append(snap.Functions, FunctionEntry{
-			Schema: owner, Name: name, ArgTypes: nil, ReturnType: ret,
+			Schema: owner, Name: name, ArgTypes: nil, ReturnType: "",
 		})
 	}
 	rows.Close()
