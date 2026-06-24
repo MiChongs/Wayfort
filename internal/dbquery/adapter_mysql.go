@@ -25,40 +25,43 @@ func (mysqlAdapter) Family() Family               { return FamilyMySQL }
 
 func (mysqlAdapter) Capabilities() Capabilities {
 	return Capabilities{
-		ListDatabases:  true,
-		Schemas:        true,
-		RowEdits:       true,
-		Explain:        true,
-		ExplainAnalyze: true,
-		Processes:      true,
-		KillProcess:    true,
-		TableDDL:       true,
-		TableStats:     true,
-		ForeignKeys:    true,
-		Export:         true,
-		LastInsertID:   true,
-		Sequences:      false, // MySQL has AUTO_INCREMENT, not SEQUENCEs
-		Functions:      true,
-		Transactions:   true,
-		DatabaseScope:  DatabaseScopeSchema,
-		VendorLabel:    "MySQL",
+		ListDatabases:    true,
+		Schemas:          true,
+		RowEdits:         true,
+		Explain:          true,
+		ExplainAnalyze:   true,
+		Processes:        true,
+		KillProcess:      true,
+		TableDDL:         true,
+		TableStats:       true,
+		ForeignKeys:      true,
+		Export:           true,
+		LastInsertID:     true,
+		Sequences:        false, // MySQL has AUTO_INCREMENT, not SEQUENCEs
+		Functions:        true,
+		Transactions:     true,
+		DatabaseScope:    DatabaseScopeSchema,
+		VendorLabel:      "MySQL",
+		SchemaCompletion: true,
+		VisualQueryPlan:  true,
+		DataProfiling:    true,
 	}
 }
 
 func (mysqlAdapter) Dialect() Dialect { return mysqlDialect{} }
 func (mysqlAdapter) Driver() Driver   { return mysqlDriver{} }
 
-	// Phase 1 baseline — each capability family is wired here as nil and lit
-	// up by its owning sub-project plan:
-	//   - Designer    → sub-project B (object designer)
-	//   - Planner     → sub-project A (visual execution plan)
-	//   - Profiler    → sub-project C (data profiling)
+// Phase 1 baseline — each capability family is wired here as nil and lit
+// up by its owning sub-project plan:
+//   - Designer    → sub-project B (object designer)
+//   - Planner     → sub-project A (visual execution plan)
+//   - Profiler    → sub-project C (data profiling)
 
-func (mysqlAdapter) Designer() designer.Designer     { return nil }
-func (mysqlAdapter) Planner() planner.Planner        { return nil }
-func (mysqlAdapter) Profiler() profiler.Profiler     { return nil }
-func (mysqlAdapter) Completion() completion.Provider { return nil }
-func (mysqlAdapter) Modeler() modeler.Modeler        { return nil }
+func (mysqlAdapter) Designer() designer.Designer               { return nil }
+func (mysqlAdapter) Planner(db *sql.DB) planner.Planner        { return planner.NewMySQL(db) }
+func (mysqlAdapter) Profiler(db *sql.DB) profiler.Profiler     { return profiler.NewMySQL(db) }
+func (mysqlAdapter) Completion(db *sql.DB) completion.Provider { return completion.NewMySQL(db) }
+func (mysqlAdapter) Modeler() modeler.Modeler                  { return nil }
 
 // init self-registers the canonical MySQL adapter. The MySQL-compat
 // children (TiDB / OceanBase / ...) register themselves in

@@ -24,40 +24,43 @@ func (postgresAdapter) Family() Family               { return FamilyPostgres }
 
 func (postgresAdapter) Capabilities() Capabilities {
 	return Capabilities{
-		ListDatabases:  true,
-		Schemas:        true,
-		RowEdits:       true,
-		Explain:        true,
-		ExplainAnalyze: true,
-		Processes:      true,
-		KillProcess:    true,
-		TableDDL:       true,
-		TableStats:     true,
-		ForeignKeys:    true,
-		Export:         true,
-		LastInsertID:   false, // PG: use RETURNING / sequences
-		Sequences:      true,
-		Functions:      true,
-		Transactions:   true,
-		DatabaseScope:  DatabaseScopeCatalog,
-		VendorLabel:    "PostgreSQL",
+		ListDatabases:    true,
+		Schemas:          true,
+		RowEdits:         true,
+		Explain:          true,
+		ExplainAnalyze:   true,
+		Processes:        true,
+		KillProcess:      true,
+		TableDDL:         true,
+		TableStats:       true,
+		ForeignKeys:      true,
+		Export:           true,
+		LastInsertID:     false, // PG: use RETURNING / sequences
+		Sequences:        true,
+		Functions:        true,
+		Transactions:     true,
+		DatabaseScope:    DatabaseScopeCatalog,
+		VendorLabel:      "PostgreSQL",
+		SchemaCompletion: true,
+		VisualQueryPlan:  true,
+		DataProfiling:    true,
 	}
 }
 
 func (postgresAdapter) Dialect() Dialect { return postgresDialect{} }
 func (postgresAdapter) Driver() Driver   { return postgresDriver{defaultDB: "postgres"} }
 
-	// Phase 1 baseline — each capability family is wired here as nil and lit
-	// up by its owning sub-project plan:
-	//   - Designer    → sub-project B (object designer)
-	//   - Planner     → sub-project A (visual execution plan)
-	//   - Profiler    → sub-project C (data profiling)
+// Phase 1 baseline — each capability family is wired here as nil and lit
+// up by its owning sub-project plan:
+//   - Designer    → sub-project B (object designer)
+//   - Planner     → sub-project A (visual execution plan)
+//   - Profiler    → sub-project C (data profiling)
 
-func (postgresAdapter) Designer() designer.Designer     { return nil }
-func (postgresAdapter) Planner() planner.Planner        { return nil }
-func (postgresAdapter) Profiler() profiler.Profiler     { return nil }
-func (postgresAdapter) Completion() completion.Provider { return nil }
-func (postgresAdapter) Modeler() modeler.Modeler        { return nil }
+func (postgresAdapter) Designer() designer.Designer               { return nil }
+func (postgresAdapter) Planner(db *sql.DB) planner.Planner        { return planner.NewPostgres(db) }
+func (postgresAdapter) Profiler(db *sql.DB) profiler.Profiler     { return profiler.NewPostgres(db) }
+func (postgresAdapter) Completion(db *sql.DB) completion.Provider { return completion.NewPostgres(db) }
+func (postgresAdapter) Modeler() modeler.Modeler                  { return nil }
 
 func init() { register(postgresAdapter{}) }
 

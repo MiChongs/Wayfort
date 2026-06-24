@@ -1,6 +1,7 @@
 package dbquery
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"strings"
@@ -64,7 +65,7 @@ type Capabilities struct {
 	// VendorLabel is the Chinese-readable engine name shown in the UI
 	// (e.g. "达梦 DM8"). Empty falls back to the protocol id.
 
-	VendorLabel    string        `json:"vendor_label,omitempty"`
+	VendorLabel string `json:"vendor_label,omitempty"`
 
 	// Phase 1 新增：Navicat 平替能力旗
 	ObjectDesigner   ObjectKindSet `json:"object_designer"`
@@ -101,9 +102,9 @@ type Adapter interface {
 	// completion / modeler）。Phase 1 仅落接口与默认 nil，具体实现在
 	// sub-project B 落地。
 	Designer() designer.Designer
-	Planner() planner.Planner
-	Profiler() profiler.Profiler
-	Completion() completion.Provider
+	Planner(db *sql.DB) planner.Planner
+	Profiler(db *sql.DB) profiler.Profiler
+	Completion(db *sql.DB) completion.Provider
 	Modeler() modeler.Modeler
 }
 

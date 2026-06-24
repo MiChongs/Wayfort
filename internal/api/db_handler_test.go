@@ -1,6 +1,13 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+)
 
 func TestIsReadOnlySQL(t *testing.T) {
 	t.Parallel()
@@ -53,5 +60,50 @@ func TestSQLHead(t *testing.T) {
 	t.Parallel()
 	if got := sqlHead("/* comment */ EXPLAIN SELECT 1"); got != "EXPLAIN" {
 		t.Fatalf("sqlHead() = %q, want EXPLAIN", got)
+	}
+}
+
+// newNilSvcDBHandler builds a DBHandler with a nil *dbquery.Service so gate()
+// short-circuits to 503 — the smoke-level contract for "db browser disabled".
+func newNilSvcDBHandler() *DBHandler { return &DBHandler{} }
+
+// TestDBHandlerCompletionSnapshot_NilSvc verifies the completion endpoint
+// answers 503 (not 500/404) when the dbquery service is unconfigured.
+func TestDBHandlerCompletionSnapshot_NilSvc(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/nodes/:id/db/completion/snapshot", newNilSvcDBHandler().CompletionSnapshot)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/nodes/1/db/completion/snapshot", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Svc: expected 503, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDBHandlerPlan_NilSvc verifies the plan endpoint answers 503 with a nil
+// service before any request body is even read.
+func TestDBHandlerPlan_NilSvc(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/nodes/:id/db/plan", newNilSvcDBHandler().Plan)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/nodes/1/db/plan",
+		strings.NewReader(`{"sql":"SELECT 1"}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Svc: expected 503, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDBHandlerProfileStats_NilSvc verifies the profile/stats endpoint answers
+// 503 with a nil service even when valid schema/table/column params are present.
+func TestDBHandlerProfileStats_NilSvc(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/nodes/:id/db/profile/stats", newNilSvcDBHandler().ProfileStats)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/nodes/1/db/profile/stats?schema=s&table=t&column=c", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Svc: expected 503, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }

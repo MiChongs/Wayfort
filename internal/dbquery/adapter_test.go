@@ -125,9 +125,9 @@ func TestAllAdaptersImplementNewCapabilityFamilies(t *testing.T) {
 			}
 			// 仅断言"调用不 panic"。返回 nil 表示该 adapter 暂未支持该能力。
 			_ = ad.Designer()
-			_ = ad.Planner()
-			_ = ad.Profiler()
-			_ = ad.Completion()
+			_ = ad.Planner(nil)
+			_ = ad.Profiler(nil)
+			_ = ad.Completion(nil)
 			_ = ad.Modeler()
 		})
 	}

@@ -31,6 +31,9 @@ import (
 
 	"github.com/michongs/wayfort/internal/accesscontrol"
 	"github.com/michongs/wayfort/internal/asset"
+	"github.com/michongs/wayfort/internal/dbquery/completion"
+	"github.com/michongs/wayfort/internal/dbquery/planner"
+	"github.com/michongs/wayfort/internal/dbquery/profiler"
 	"github.com/michongs/wayfort/internal/model"
 	"github.com/michongs/wayfort/internal/webssh"
 	pkgcrypto "github.com/michongs/wayfort/pkg/crypto"
@@ -629,4 +632,54 @@ func dbNameFromOptions(raw string, p model.NodeProtocol) string {
 	}
 	_ = p
 	return ""
+}
+
+// ----- Phase 2 能力族 provider（Completion / Planner / Profiler）------------
+//
+// 三个 helper 复用既有 getOrOpen + adapterForPool：打开 (node,user,database)
+// 对应的共享连接池，返回绑定到 live *sql.DB 的能力族实现 + 该 *sql.DB 本身。
+// 返回 (nil, _, nil) 表示该 adapter 未实现该能力族（capability gate 据此关闭
+// 前端入口）。连接由 RunEvictor 统一回收，调用方无需 Release。
+
+// CompletionProvider 返回 schema 自动补全 provider。capability off 时第一个
+// 返回值为 nil，handler 据此回 501。
+func (s *Service) CompletionProvider(ctx context.Context, nodeID, userID uint64,
+	database string) (completion.Provider, *sql.DB, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
+	if err != nil {
+		return nil, nil, err
+	}
+	ad, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ad.Completion(pl.db), pl.db, nil
+}
+
+// PlannerProvider 返回可视化执行计划 planner。
+func (s *Service) PlannerProvider(ctx context.Context, nodeID, userID uint64,
+	database string) (planner.Planner, *sql.DB, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
+	if err != nil {
+		return nil, nil, err
+	}
+	ad, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ad.Planner(pl.db), pl.db, nil
+}
+
+// ProfilerProvider 返回数据画像 profiler。
+func (s *Service) ProfilerProvider(ctx context.Context, nodeID, userID uint64,
+	database string) (profiler.Profiler, *sql.DB, error) {
+	pl, err := s.getOrOpen(ctx, nodeID, userID, database)
+	if err != nil {
+		return nil, nil, err
+	}
+	ad, err := s.adapterForPool(pl)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ad.Profiler(pl.db), pl.db, nil
 }

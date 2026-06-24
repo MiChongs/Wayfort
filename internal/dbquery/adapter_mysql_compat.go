@@ -43,6 +43,9 @@ func (a mysqlCompatAdapter) Capabilities() Capabilities {
 	if extra := LookupNativeLabel(a.protocol); extra != "" {
 		caps.VendorLabel = caps.VendorLabel + " · " + extra
 	}
+	caps.SchemaCompletion = true
+	caps.VisualQueryPlan = true
+	caps.DataProfiling = true
 	return caps
 }
 
@@ -59,17 +62,17 @@ func (a mysqlCompatAdapter) Driver() Driver {
 	return mysqlCompatDriver{extras: a.dsnExtras}
 }
 
-	// Phase 1 baseline — each capability family is wired here as nil and lit
-	// up by its owning sub-project plan:
-	//   - Designer    → sub-project B (object designer)
-	//   - Planner     → sub-project A (visual execution plan)
-	//   - Profiler    → sub-project C (data profiling)
+// Phase 1 baseline — each capability family is wired here as nil and lit
+// up by its owning sub-project plan:
+//   - Designer    → sub-project B (object designer)
+//   - Planner     → sub-project A (visual execution plan)
+//   - Profiler    → sub-project C (data profiling)
 
-func (mysqlCompatAdapter) Designer() designer.Designer     { return nil }
-func (mysqlCompatAdapter) Planner() planner.Planner        { return nil }
-func (mysqlCompatAdapter) Profiler() profiler.Profiler     { return nil }
-func (mysqlCompatAdapter) Completion() completion.Provider { return nil }
-func (mysqlCompatAdapter) Modeler() modeler.Modeler        { return nil }
+func (mysqlCompatAdapter) Designer() designer.Designer               { return nil }
+func (mysqlCompatAdapter) Planner(db *sql.DB) planner.Planner        { return planner.NewMySQL(db) }
+func (mysqlCompatAdapter) Profiler(db *sql.DB) profiler.Profiler     { return profiler.NewMySQL(db) }
+func (mysqlCompatAdapter) Completion(db *sql.DB) completion.Provider { return completion.NewMySQL(db) }
+func (mysqlCompatAdapter) Modeler() modeler.Modeler                  { return nil }
 
 type mysqlCompatDriver struct{ extras string }
 

@@ -39,23 +39,26 @@ func (damengAdapter) Capabilities() Capabilities {
 		label = label + " · " + extra
 	}
 	return Capabilities{
-		ListDatabases:  true,
-		Schemas:        true, // DM schemas == users
-		RowEdits:       true,
-		Explain:        true,
-		ExplainAnalyze: false, // DM has EXPLAIN but not ANALYZE-with-execute
-		Processes:      true,  // SYS.DBA_DM_SESSIONS
-		KillProcess:    true,  // SP_KILL_SESSION
-		TableDDL:       true,  // DBMS_METADATA.GET_DDL
-		TableStats:     true,  // SYS.DBA_TABLES.NUM_ROWS
-		ForeignKeys:    true,
-		Export:         true,
-		LastInsertID:   false,
-		Sequences:      true, // CREATE SEQUENCE supported
-		Functions:      true,
-		Transactions:   true,
-		DatabaseScope:  DatabaseScopeSchema, // DM connects to one DB, browses schemas
-		VendorLabel:    label,
+		ListDatabases:    true,
+		Schemas:          true, // DM schemas == users
+		RowEdits:         true,
+		Explain:          true,
+		ExplainAnalyze:   false, // DM has EXPLAIN but not ANALYZE-with-execute
+		Processes:        true,  // SYS.DBA_DM_SESSIONS
+		KillProcess:      true,  // SP_KILL_SESSION
+		TableDDL:         true,  // DBMS_METADATA.GET_DDL
+		TableStats:       true,  // SYS.DBA_TABLES.NUM_ROWS
+		ForeignKeys:      true,
+		Export:           true,
+		LastInsertID:     false,
+		Sequences:        true, // CREATE SEQUENCE supported
+		Functions:        true,
+		Transactions:     true,
+		DatabaseScope:    DatabaseScopeSchema, // DM connects to one DB, browses schemas
+		VendorLabel:      label,
+		SchemaCompletion: true,
+		VisualQueryPlan:  true,
+		DataProfiling:    true,
 	}
 }
 
@@ -74,17 +77,17 @@ func (damengAdapter) Driver() Driver {
 	return damengDriver{}
 }
 
-	// Phase 1 baseline — each capability family is wired here as nil and lit
-	// up by its owning sub-project plan:
-	//   - Designer    → sub-project B (object designer)
-	//   - Planner     → sub-project A (visual execution plan)
-	//   - Profiler    → sub-project C (data profiling)
+// Phase 1 baseline — each capability family is wired here as nil and lit
+// up by its owning sub-project plan:
+//   - Designer    → sub-project B (object designer)
+//   - Planner     → sub-project A (visual execution plan)
+//   - Profiler    → sub-project C (data profiling)
 
-func (damengAdapter) Designer() designer.Designer     { return nil }
-func (damengAdapter) Planner() planner.Planner        { return nil }
-func (damengAdapter) Profiler() profiler.Profiler     { return nil }
-func (damengAdapter) Completion() completion.Provider { return nil }
-func (damengAdapter) Modeler() modeler.Modeler        { return nil }
+func (damengAdapter) Designer() designer.Designer               { return nil }
+func (damengAdapter) Planner(db *sql.DB) planner.Planner        { return planner.NewDameng(db) }
+func (damengAdapter) Profiler(db *sql.DB) profiler.Profiler     { return profiler.NewDameng(db) }
+func (damengAdapter) Completion(db *sql.DB) completion.Provider { return completion.NewDameng(db) }
+func (damengAdapter) Modeler() modeler.Modeler                  { return nil }
 
 func init() { register(damengAdapter{}) }
 

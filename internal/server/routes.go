@@ -906,7 +906,10 @@ func (rt *Routes) Mount(r *gin.Engine) {
 		// Plan 17 — new desktop backend (worker subprocess + browser viewer).
 		// Always registered for the same observability reason as insights:
 		// missing/stale config returns 503, not 404.
-		ops.POST("/desktop/sessions", feat(edition.FeatureDesktop), desktopControl(rt).Start)
+		// Desktop/RDP (FreeRDP + IronRDP) is a Community feature — intentionally
+		// NOT behind feat(edition.FeatureDesktop). Do not re-add an edition gate
+		// here; graphical sessions ship in the open-source build.
+		ops.POST("/desktop/sessions", desktopControl(rt).Start)
 		ops.DELETE("/desktop/sessions/:session_id", desktopControl(rt).End)
 		ops.GET("/desktop/stats", desktopControl(rt).Stats)
 		// Per-user file drive (redirected into RDP sessions). Each user only
@@ -1073,6 +1076,15 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			// Phase 20 — server-side process panel + cancel
 			ops.GET("/nodes/:id/db/processes", rt.DB.Processes)
 			ops.POST("/nodes/:id/db/kill", rt.DB.Kill)
+			// Phase 2 — capability families (Completion / Planner / Profiler).
+			// Each handler 503s when the service is disabled and 501s when the
+			// engine hasn't implemented the family.
+			ops.GET("/nodes/:id/db/completion/snapshot", rt.DB.CompletionSnapshot)
+			ops.POST("/nodes/:id/db/plan", rt.DB.Plan)
+			ops.GET("/nodes/:id/db/profile/stats", rt.DB.ProfileStats)
+			ops.GET("/nodes/:id/db/profile/distribution", rt.DB.ProfileDistribution)
+			ops.GET("/nodes/:id/db/profile/topn", rt.DB.ProfileTopN)
+			ops.GET("/nodes/:id/db/profile/patterns", rt.DB.ProfilePatterns)
 		}
 		// Phase 1 — cross-subproject Db Studio. parse-uri is the live
 		// (pure) endpoint backing the node-creation quick-connect form;

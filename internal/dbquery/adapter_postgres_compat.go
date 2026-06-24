@@ -46,6 +46,9 @@ func (a postgresCompatAdapter) Capabilities() Capabilities {
 	if extra := LookupNativeLabel(a.protocol); extra != "" {
 		caps.VendorLabel = caps.VendorLabel + " · " + extra
 	}
+	caps.SchemaCompletion = true
+	caps.VisualQueryPlan = true
+	caps.DataProfiling = true
 	return caps
 }
 
@@ -62,17 +65,19 @@ func (a postgresCompatAdapter) Driver() Driver {
 	return postgresCompatDriver{defaultDB: a.defaultDB, runtime: a.runtime}
 }
 
-	// Phase 1 baseline — each capability family is wired here as nil and lit
-	// up by its owning sub-project plan:
-	//   - Designer    → sub-project B (object designer)
-	//   - Planner     → sub-project A (visual execution plan)
-	//   - Profiler    → sub-project C (data profiling)
+// Phase 1 baseline — each capability family is wired here as nil and lit
+// up by its owning sub-project plan:
+//   - Designer    → sub-project B (object designer)
+//   - Planner     → sub-project A (visual execution plan)
+//   - Profiler    → sub-project C (data profiling)
 
-func (postgresCompatAdapter) Designer() designer.Designer     { return nil }
-func (postgresCompatAdapter) Planner() planner.Planner        { return nil }
-func (postgresCompatAdapter) Profiler() profiler.Profiler     { return nil }
-func (postgresCompatAdapter) Completion() completion.Provider { return nil }
-func (postgresCompatAdapter) Modeler() modeler.Modeler        { return nil }
+func (postgresCompatAdapter) Designer() designer.Designer           { return nil }
+func (postgresCompatAdapter) Planner(db *sql.DB) planner.Planner    { return planner.NewPostgres(db) }
+func (postgresCompatAdapter) Profiler(db *sql.DB) profiler.Profiler { return profiler.NewPostgres(db) }
+func (postgresCompatAdapter) Completion(db *sql.DB) completion.Provider {
+	return completion.NewPostgres(db)
+}
+func (postgresCompatAdapter) Modeler() modeler.Modeler { return nil }
 
 type postgresCompatDriver struct {
 	defaultDB string
