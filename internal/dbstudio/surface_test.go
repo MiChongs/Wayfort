@@ -1,6 +1,9 @@
 package dbstudio
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestExportedSurface references every exported type, function, variable
 // and method in the package so a rename/removal breaks compilation here
@@ -13,7 +16,7 @@ func TestExportedSurface(t *testing.T) {
 	var _ SavedQueriesStore
 	var _ SavedQuery
 	var _ PinnedResultsStore
-	var _ PinnedResult
+	var _ PinnedResultEntry
 	var _ QueryHistoryStore
 	var _ QueryHistoryEntry
 	var _ ViewProfilesStore
@@ -58,29 +61,28 @@ func TestStoresNilSafe(t *testing.T) {
 		name string
 		fn   func() error
 	}{
-		{"SavedQueries.List", func() error { _, err := s.SavedQueries().List(nil, "o"); return err }},
+		{"SavedQueries.List", func() error { _, err := s.SavedQueries().List(nil, 1); return err }},
 		{"SavedQueries.Get", func() error { _, err := s.SavedQueries().Get(nil, 1); return err }},
 		{"SavedQueries.Create", func() error { _, err := s.SavedQueries().Create(nil, SavedQuery{}); return err }},
 		{"SavedQueries.Update", func() error { _, err := s.SavedQueries().Update(nil, SavedQuery{}); return err }},
 		{"SavedQueries.Delete", func() error { return s.SavedQueries().Delete(nil, 1) }},
 
-		{"PinnedResults.List", func() error { _, err := s.PinnedResults().List(nil, "o"); return err }},
+		{"PinnedResults.List", func() error { _, err := s.PinnedResults().List(nil, 1); return err }},
 		{"PinnedResults.Get", func() error { _, err := s.PinnedResults().Get(nil, 1); return err }},
-		{"PinnedResults.Create", func() error { _, err := s.PinnedResults().Create(nil, PinnedResult{}); return err }},
-		{"PinnedResults.Update", func() error { _, err := s.PinnedResults().Update(nil, PinnedResult{}); return err }},
+		{"PinnedResults.Create", func() error { _, err := s.PinnedResults().Create(nil, PinnedResultEntry{}); return err }},
 		{"PinnedResults.Delete", func() error { return s.PinnedResults().Delete(nil, 1) }},
 
-		{"QueryHistory.List", func() error { _, err := s.QueryHistory().List(nil, "o"); return err }},
+		{"QueryHistory.List", func() error { _, err := s.QueryHistory().List(nil, 1, 0, 0, 0, time.Time{}); return err }},
 		{"QueryHistory.Get", func() error { _, err := s.QueryHistory().Get(nil, 1); return err }},
-		{"QueryHistory.Create", func() error { _, err := s.QueryHistory().Create(nil, QueryHistoryEntry{}); return err }},
-		{"QueryHistory.Update", func() error { _, err := s.QueryHistory().Update(nil, QueryHistoryEntry{}); return err }},
+		{"QueryHistory.Append", func() error { return s.QueryHistory().Append(nil, QueryHistoryEntry{}) }},
 		{"QueryHistory.Delete", func() error { return s.QueryHistory().Delete(nil, 1) }},
 
-		{"ViewProfiles.List", func() error { _, err := s.ViewProfiles().List(nil, "o"); return err }},
+		{"ViewProfiles.List", func() error { _, err := s.ViewProfiles().List(nil, 1, 1, "t"); return err }},
 		{"ViewProfiles.Get", func() error { _, err := s.ViewProfiles().Get(nil, 1); return err }},
 		{"ViewProfiles.Create", func() error { _, err := s.ViewProfiles().Create(nil, ViewProfile{}); return err }},
 		{"ViewProfiles.Update", func() error { _, err := s.ViewProfiles().Update(nil, ViewProfile{}); return err }},
 		{"ViewProfiles.Delete", func() error { return s.ViewProfiles().Delete(nil, 1) }},
+		{"ViewProfiles.SetDefault", func() error { return s.ViewProfiles().SetDefault(nil, 1) }},
 
 		{"ERModels.List", func() error { _, err := s.ERModels().List(nil, "o"); return err }},
 		{"ERModels.Get", func() error { _, err := s.ERModels().Get(nil, 1); return err }},

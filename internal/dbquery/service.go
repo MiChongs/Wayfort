@@ -683,3 +683,55 @@ func (s *Service) ProfilerProvider(ctx context.Context, nodeID, userID uint64,
 	}
 	return ad.Profiler(pl.db), pl.db, nil
 }
+
+// ForeignKeyTarget is the resolved destination of one outbound FK — the
+// (schema, table, columns) the referenced column points at, plus a
+// label_column the UI can render in an FK picker dropdown. It mirrors the
+// snake_case json tags the frontend ForeignKeyTarget type expects.
+type ForeignKeyTarget struct {
+	RefSchema   string   `json:"ref_schema"`
+	RefTable    string   `json:"ref_table"`
+	RefColumns  []string `json:"ref_columns"`
+	LabelColumn string   `json:"label_column"`
+}
+
+// ResolveForeignKeyTarget resolves the destination of the outbound FK on
+// (schema, table) whose source column matches `column`, reusing the engine's
+// existing LoadForeignKeys introspection. It returns the referenced
+// (schema, table, columns) plus a label column — the friendly column the FK
+// picker shows in its dropdown. label fallback is the first referenced
+// column when no friendlier one is available.
+//
+// Returns an error when no outbound FK references `column`.
+func (s *Service) ResolveForeignKeyTarget(ctx context.Context, nodeID, userID uint64, database, schema, table, column string) (ForeignKeyTarget, error) {
+	fks, err := s.LoadForeignKeys(ctx, nodeID, userID, database, schema, table)
+	if err != nil {
+		return ForeignKeyTarget{}, err
+	}
+	for _, fk := range fks {
+		if fk.Direction != "out" {
+			continue
+		}
+		match := false
+		for _, c := range fk.FromColumns {
+			if c == column {
+				match = true
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		label := ""
+		if len(fk.ToColumns) > 0 {
+			label = fk.ToColumns[0]
+		}
+		return ForeignKeyTarget{
+			RefSchema:   fk.ToSchema,
+			RefTable:    fk.ToTable,
+			RefColumns:  fk.ToColumns,
+			LabelColumn: label,
+		}, nil
+	}
+	return ForeignKeyTarget{}, fmt.Errorf("dbquery: no outbound foreign key on %s.%s referencing column %q", schema, table, column)
+}

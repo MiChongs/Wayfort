@@ -107,3 +107,18 @@ func TestDBHandlerProfileStats_NilSvc(t *testing.T) {
 		t.Fatalf("nil Svc: expected 503, got %d (%s)", rec.Code, rec.Body.String())
 	}
 }
+
+// TestDBHandlerForeignKeyTargets_NilSvc verifies the Phase 2C fk-targets
+// endpoint answers 503 (not 500/404) with a nil service, even when valid
+// schema/table/column query params are present.
+func TestDBHandlerForeignKeyTargets_NilSvc(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/nodes/:id/db/fk-targets", newNilSvcDBHandler().ForeignKeyTargets)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/nodes/1/db/fk-targets?schema=s&table=t&column=c", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Svc: expected 503, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}

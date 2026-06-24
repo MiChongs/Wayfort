@@ -1053,6 +1053,9 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			ops.GET("/nodes/:id/db/columns", rt.DB.Columns)
 			ops.GET("/nodes/:id/db/indexes", rt.DB.Indexes)
 			ops.GET("/nodes/:id/db/foreign_keys", rt.DB.ForeignKeys)
+			// Phase 2C (Task C1) — FK picker: resolve the target table +
+			// label column for an outbound FK on (schema, table, column).
+			ops.GET("/nodes/:id/db/fk-targets", rt.DB.ForeignKeyTargets)
 			ops.GET("/nodes/:id/db/stats", rt.DB.TableStats)
 			ops.GET("/nodes/:id/db/ddl", rt.DB.TableDDL)
 			ops.GET("/nodes/:id/db/rows", rt.DB.Rows)
@@ -1102,6 +1105,29 @@ func (rt *Routes) Mount(r *gin.Engine) {
 			erm.POST("/:id/reverse", rt.DbStudio.ERModelStub)
 			erm.POST("/:id/forward", rt.DbStudio.ERModelStub)
 			erm.POST("/:id/diff", rt.DbStudio.ERModelStub)
+			// Phase 2 W2 — dbstudio stores CRUD. Each group fronts one
+			// dbstudio store; owner comes from the JWT claims.
+			sq := ops.Group("/dbstudio/saved-queries")
+			sq.GET("", rt.DbStudio.SavedQueriesList)
+			sq.POST("", rt.DbStudio.SavedQueriesCreate)
+			sq.PUT("/:id", rt.DbStudio.SavedQueriesUpdate)
+			sq.DELETE("/:id", rt.DbStudio.SavedQueriesDelete)
+
+			pr := ops.Group("/dbstudio/pinned-results")
+			pr.GET("", rt.DbStudio.PinnedResultsList)
+			pr.POST("", rt.DbStudio.PinnedResultsCreate)
+			pr.GET("/:id", rt.DbStudio.PinnedResultsGet)
+			pr.DELETE("/:id", rt.DbStudio.PinnedResultsDelete)
+
+			vp := ops.Group("/dbstudio/view-profiles")
+			vp.GET("", rt.DbStudio.ViewProfilesList)
+			vp.POST("", rt.DbStudio.ViewProfilesCreate)
+			vp.GET("/:id", rt.DbStudio.ViewProfilesGet)
+			vp.PUT("/:id", rt.DbStudio.ViewProfilesUpdate)
+			vp.DELETE("/:id", rt.DbStudio.ViewProfilesDelete)
+			vp.POST("/:id/set-default", rt.DbStudio.ViewProfilesSetDefault)
+
+			ops.GET("/dbstudio/query-history", rt.DbStudio.QueryHistoryList)
 		}
 		if rt.TCPRelay != nil {
 			ops.GET("/ws/tcp/:node_id", rt.TCPRelay.Handle)

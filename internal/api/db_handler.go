@@ -180,6 +180,29 @@ func (h *DBHandler) ForeignKeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"foreign_keys": fks})
 }
 
+// ForeignKeyTargets — GET /api/v1/nodes/:id/db/fk-targets?schema=&table=&column=&database=
+// Resolves the destination of the outbound FK on (schema, table) whose
+// source column matches `column`. Powers the data-viewer's FK picker: given
+// a cell referencing another table, this returns that table + a label column
+// so the picker can render "Acme Corp (id=42)" style options.
+func (h *DBHandler) ForeignKeyTargets(c *gin.Context) {
+	nodeID, claims, ok := h.gate(c)
+	if !ok {
+		return
+	}
+	schema, table, column := c.Query("schema"), c.Query("table"), c.Query("column")
+	if schema == "" || table == "" || column == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "schema, table and column required"})
+		return
+	}
+	target, err := h.Svc.ResolveForeignKeyTarget(c.Request.Context(), nodeID, claims.UserID, c.Query("database"), schema, table, column)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, target)
+}
+
 // TableStats — GET /api/v1/nodes/:id/db/stats?database=...&schema=...&table=...
 func (h *DBHandler) TableStats(c *gin.Context) {
 	nodeID, claims, ok := h.gate(c)

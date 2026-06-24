@@ -8,7 +8,7 @@ func TestNewServiceWithNilDeps(t *testing.T) {
 	if s == nil {
 		t.Fatal("NewService returned nil")
 	}
-	if _, err := s.SavedQueries().List(nil, "owner-1"); err != ErrUnavailable {
+	if _, err := s.SavedQueries().List(nil, 1); err != ErrUnavailable {
 		t.Fatalf("expected ErrUnavailable, got %v", err)
 	}
 }

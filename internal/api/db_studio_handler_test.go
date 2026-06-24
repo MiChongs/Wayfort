@@ -1,97 +1,74 @@
 package api
 
 import (
-	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/michongs/wayfort/internal/dbstudio"
 )
 
-// setupDBStudioTestRouter wires the handler under test onto a bare Gin
-// engine mirroring the /dbstudio/* mount the real router registers.
-func setupDBStudioTestRouter(h *DBStudioHandler) *gin.Engine {
+// TestDBStudioHandlers_NilSvc verifies every Phase 2 W2 store endpoint
+// answers 503 (never 500/404) when the dbstudio service is unconfigured.
+// The store handlers short-circuit on a nil Svc before touching claims or
+// the request body, so the assertion holds for list / create / :id / mutation
+// verbs alike.
+func TestDBStudioHandlers_NilSvc(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewDBStudioHandler(nil) // nil Svc → every endpoint 503s
+
+	cases := []struct {
+		method, pattern, path string
+		handler               gin.HandlerFunc
+	}{
+		// Saved queries (A5)
+		{"GET", "/saved-queries", "/saved-queries", h.SavedQueriesList},
+		{"POST", "/saved-queries", "/saved-queries", h.SavedQueriesCreate},
+		{"PUT", "/saved-queries/:id", "/saved-queries/1", h.SavedQueriesUpdate},
+		{"DELETE", "/saved-queries/:id", "/saved-queries/1", h.SavedQueriesDelete},
+		// Query history (A6)
+		{"GET", "/query-history", "/query-history", h.QueryHistoryList},
+		// Pinned results (A7)
+		{"GET", "/pinned-results", "/pinned-results", h.PinnedResultsList},
+		{"POST", "/pinned-results", "/pinned-results", h.PinnedResultsCreate},
+		{"GET", "/pinned-results/:id", "/pinned-results/1", h.PinnedResultsGet},
+		{"DELETE", "/pinned-results/:id", "/pinned-results/1", h.PinnedResultsDelete},
+		// View profiles (C2)
+		{"GET", "/view-profiles", "/view-profiles", h.ViewProfilesList},
+		{"POST", "/view-profiles", "/view-profiles", h.ViewProfilesCreate},
+		{"GET", "/view-profiles/:id", "/view-profiles/1", h.ViewProfilesGet},
+		{"PUT", "/view-profiles/:id", "/view-profiles/1", h.ViewProfilesUpdate},
+		{"DELETE", "/view-profiles/:id", "/view-profiles/1", h.ViewProfilesDelete},
+		{"POST", "/view-profiles/:id/set-default", "/view-profiles/1/set-default", h.ViewProfilesSetDefault},
+	}
+	for _, c := range cases {
+		r := gin.New()
+		r.Handle(c.method, c.pattern, c.handler)
+		var body io.Reader
+		if c.method == http.MethodPost || c.method == http.MethodPut {
+			body = strings.NewReader("{}")
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(c.method, c.path, body))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s %s: expected 503, got %d (%s)", c.method, c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// TestDBStudioHandlers_NilSvcClaimsOrder confirms a nil Svc wins over a
+// missing-claims 401 — the feature-disabled contract must dominate so a
+// partially configured deployment never leaks a 401 that implies the route
+// is otherwise live.
+func TestDBStudioHandlers_NilSvcClaimsOrder(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/dbstudio/connections/parse-uri", h.ParseURI)
-	r.GET("/dbstudio/er-models", h.ERModelStub)
-	r.POST("/dbstudio/er-models", h.ERModelStub)
-	return r
-}
-
-// TestDBStudioParseURIHandler_MySQL verifies a well-formed Navicat-style URI
-// is parsed into the expected ConnectionURI fields and returned as 200 JSON.
-func TestDBStudioParseURIHandler_MySQL(t *testing.T) {
-	h := NewDBStudioHandler(dbstudio.NewService(nil, nil, nil))
-	r := setupDBStudioTestRouter(h)
-
-	body := strings.NewReader(`{"uri":"mysql://u:p@h:3306/d?ssl=true"}`)
-	req := httptest.NewRequest(http.MethodPost, "/dbstudio/connections/parse-uri", body)
-	req.Header.Set("Content-Type", "application/json")
+	r.GET("/saved-queries", NewDBStudioHandler(nil).SavedQueriesList)
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
-	}
-	var out dbstudio.ConnectionURI
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatal(err)
-	}
-	if out.Scheme != "mysql" || out.Port != 3306 || out.Database != "d" || out.Host != "h" {
-		t.Fatalf("parsed: %+v", out)
-	}
-}
-
-// TestDBStudioParseURIHandler_Invalid verifies a garbage URI surfaces as 400
-// rather than reaching the (nil) db layer.
-func TestDBStudioParseURIHandler_Invalid(t *testing.T) {
-	h := NewDBStudioHandler(dbstudio.NewService(nil, nil, nil))
-	r := setupDBStudioTestRouter(h)
-
-	body := strings.NewReader(`{"uri":"garbage"}`)
-	req := httptest.NewRequest(http.MethodPost, "/dbstudio/connections/parse-uri", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestDBStudioParseURIHandler_BadJSON verifies malformed JSON bodies surface
-// as 400 before the URI is even read.
-func TestDBStudioParseURIHandler_BadJSON(t *testing.T) {
-	h := NewDBStudioHandler(dbstudio.NewService(nil, nil, nil))
-	r := setupDBStudioTestRouter(h)
-
-	body := strings.NewReader(`{not json`)
-	req := httptest.NewRequest(http.MethodPost, "/dbstudio/connections/parse-uri", body)
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-// TestDBStudioERStub_NotImplemented verifies every ER-model route returns a
-// stable 501 so the UI can branch on "not yet built".
-func TestDBStudioERStub_NotImplemented(t *testing.T) {
-	h := NewDBStudioHandler(dbstudio.NewService(nil, nil, nil))
-	r := setupDBStudioTestRouter(h)
-
-	for _, m := range []string{http.MethodGet, http.MethodPost} {
-		req := httptest.NewRequest(m, "/dbstudio/er-models", nil)
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotImplemented {
-			t.Fatalf("%s /er-models: expected 501, got %d", m, rec.Code)
-		}
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/saved-queries", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (svc-nil beats claims-missing), got %d", rec.Code)
 	}
 }

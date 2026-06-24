@@ -2907,3 +2907,71 @@ export interface BreakGlassStats {
   revoked_total: number
   fail_open_total: number
 }
+
+// ----- Phase 2 W2 — DB Studio stores (saved queries / history / pinned /
+// view profiles) + FK target -----
+// All ids are uint64 on the Go side; the JSON number stays within
+// Number.MAX_SAFE_INTEGER for any real id, so `number` is safe here.
+
+/** Server-side SQL snippet a user/team can recall (GET/POST /dbstudio/saved-queries). */
+export interface SavedQuery {
+  id: number
+  owner_id: number
+  name: string
+  folder_path: string
+  sql: string
+  params_json?: string
+  shared_scope: "user" | "team" | "node"
+  updated_at: string
+}
+
+/** One executed-query audit row (GET /dbstudio/query-history). */
+export interface QueryHistory {
+  id: number
+  owner_id: number
+  node_id: number
+  sql: string
+  params_json?: string
+  executed_at: string
+  duration_ms: number
+  row_count?: number
+  status: "ok" | "error"
+  error_text?: string
+}
+
+/** A frozen query + result snapshot a user pinned for later comparison. */
+export interface PinnedResult {
+  id: number
+  owner_id: number
+  node_id: number
+  sql: string
+  params_json?: string
+  executed_at: string
+  row_count: number
+  truncated?: boolean
+  ttl: string
+  /** Decoded result rows; only present on GET /:id, omitted from list payloads. */
+  rows?: Record<string, unknown>[]
+}
+
+/** A named filter/sort/column combo for one table (GET/POST /dbstudio/view-profiles). */
+export interface ViewProfile {
+  id: number
+  owner_id: number
+  node_id: number
+  table_fqn: string
+  name: string
+  filter_json?: string
+  sort_json?: string
+  columns_json?: string
+  is_default: boolean
+  updated_at: string
+}
+
+/** Resolved destination of one outbound FK for the FK picker (GET /db/fk-targets). */
+export interface ForeignKeyTarget {
+  ref_schema: string
+  ref_table: string
+  ref_columns: string[]
+  label_column: string
+}

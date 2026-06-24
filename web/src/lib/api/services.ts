@@ -2026,6 +2026,16 @@ export const dbService = {
     api<{ foreign_keys: DBForeignKeyInfo[] }>("GET", `/nodes/${nodeId}/db/foreign_keys`, {
       query: { schema, table, database },
     }),
+  // Phase 2C (Task C1) — FK picker target resolution. Given a column that
+  // carries an outbound FK, returns the referenced table + a label column
+  // the picker renders in its dropdown options.
+  foreignKeyTargets: (
+    nodeId: number,
+    params: { schema: string; table: string; column: string; database?: string },
+  ) =>
+    api<import("./types").ForeignKeyTarget>("GET", `/nodes/${nodeId}/db/fk-targets`, {
+      query: params,
+    }),
   stats: (nodeId: number, schema: string, table: string, database?: string) =>
     api<DBTableStats>("GET", `/nodes/${nodeId}/db/stats`, {
       query: { schema, table, database },
@@ -2128,6 +2138,44 @@ export const dbStudioService = {
       Password: string
       Params: Record<string, string>
     }>("POST", "/dbstudio/connections/parse-uri", { body: { uri } }),
+
+  // ----- Phase 2 W2 — dbstudio stores -----
+  // owner_id is set server-side from the JWT; the client never sends it.
+  savedQueries: {
+    list: () => api<{ queries: import("./types").SavedQuery[] }>("GET", "/dbstudio/saved-queries"),
+    create: (body: Partial<import("./types").SavedQuery>) =>
+      api<import("./types").SavedQuery>("POST", "/dbstudio/saved-queries", { body }),
+    update: (id: number, body: Partial<import("./types").SavedQuery>) =>
+      api<import("./types").SavedQuery>("PUT", `/dbstudio/saved-queries/${id}`, { body }),
+    remove: (id: number) => api<{ ok: boolean }>("DELETE", `/dbstudio/saved-queries/${id}`),
+  },
+  queryHistory: {
+    list: (opts: { node_id?: number; limit?: number; offset?: number } = {}) =>
+      api<{ history: import("./types").QueryHistory[] }>("GET", "/dbstudio/query-history", {
+        query: opts as Record<string, number | undefined>,
+      }),
+  },
+  pinnedResults: {
+    list: () => api<{ pinned: import("./types").PinnedResult[] }>("GET", "/dbstudio/pinned-results"),
+    create: (body: Partial<import("./types").PinnedResult>) =>
+      api<import("./types").PinnedResult>("POST", "/dbstudio/pinned-results", { body }),
+    get: (id: number) => api<import("./types").PinnedResult>("GET", `/dbstudio/pinned-results/${id}`),
+    remove: (id: number) => api<{ ok: boolean }>("DELETE", `/dbstudio/pinned-results/${id}`),
+  },
+  viewProfiles: {
+    list: (nodeId: number, table: string) =>
+      api<{ profiles: import("./types").ViewProfile[] }>("GET", "/dbstudio/view-profiles", {
+        query: { node_id: nodeId, table },
+      }),
+    create: (body: Partial<import("./types").ViewProfile>) =>
+      api<import("./types").ViewProfile>("POST", "/dbstudio/view-profiles", { body }),
+    get: (id: number) => api<import("./types").ViewProfile>("GET", `/dbstudio/view-profiles/${id}`),
+    update: (id: number, body: Partial<import("./types").ViewProfile>) =>
+      api<import("./types").ViewProfile>("PUT", `/dbstudio/view-profiles/${id}`, { body }),
+    remove: (id: number) => api<{ ok: boolean }>("DELETE", `/dbstudio/view-profiles/${id}`),
+    setDefault: (id: number) =>
+      api<{ ok: boolean }>("POST", `/dbstudio/view-profiles/${id}/set-default`),
+  },
 };
 
 // ---------- System settings (super-admin runtime configuration) ----------
