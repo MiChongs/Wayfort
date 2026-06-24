@@ -1,0 +1,1 @@
+CREATE VIEW `public`.`active_users` AS SELECT id, email FROM `users` WHERE last_login_at > NOW() - INTERVAL 30 DAY

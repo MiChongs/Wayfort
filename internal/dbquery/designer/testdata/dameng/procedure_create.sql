@@ -1,0 +1,5 @@
+CREATE PROCEDURE "APP_USER"."ARCHIVE_USER"("P_USER_ID" IN NUMBER(19))
+IS
+BEGIN
+  UPDATE users SET archived = 1 WHERE id = p_user_id;
+END;
