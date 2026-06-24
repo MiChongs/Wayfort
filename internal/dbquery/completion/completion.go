@@ -2,7 +2,10 @@
 // Frontend's Monaco provider consumes Snapshot via the schema-cache.
 package completion
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 type Provider interface {
 	// Snapshot returns a flat schema snapshot scoped to the database.
@@ -39,3 +42,7 @@ type FunctionEntry struct {
 	ArgTypes   []string
 	ReturnType string
 }
+
+// errNoDB is returned by providers whose backing *sql.DB was never injected
+// (NewXxx(nil)) or whose receiver is nil.
+var errNoDB = errors.New("completion: backing *sql.DB is nil")
