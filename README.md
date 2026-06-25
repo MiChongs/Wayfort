@@ -11,6 +11,7 @@
 <br/>
 
 [![官网 Website](https://img.shields.io/badge/🌐_官网-wayfort.karpov.cn-6366F1?style=for-the-badge)](https://wayfort.karpov.cn/)
+[![Linux.do 社区](https://img.shields.io/badge/💬_Linux.do-社区讨论-F56040?style=for-the-badge)](https://linux.do/)
 
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white)](https://nextjs.org/)
@@ -28,7 +29,7 @@
 [![Docker](https://img.shields.io/badge/Container-Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 [![AI](https://img.shields.io/badge/AI-OpenAI%20%C2%B7%20Claude%20%C2%B7%20Gemini-10a37f?style=flat-square&logo=openai&logoColor=white)](#-ai-运维助手)
 
-[🌐 官网](https://wayfort.karpov.cn/) · [功能特性](#-功能特性) · [能力矩阵](#-协议与能力矩阵) · [架构](#-架构总览) · [快速开始](#-快速开始) · [配置](#-配置参考) · [API](#-api-概览) · [部署](#-部署)
+[🌐 官网](https://wayfort.karpov.cn/) · [💬 Linux.do 社区](https://linux.do/) · [功能特性](#-功能特性) · [能力矩阵](#-协议与能力矩阵) · [架构](#-架构总览) · [快速开始](#-快速开始) · [配置](#-配置参考) · [API](#-api-概览) · [部署](#-部署)
 
 </div>
 
@@ -614,7 +615,8 @@ cd web && pnpm typecheck
 <div align="center">
 
 **🌐 官网 · [wayfort.karpov.cn](https://wayfort.karpov.cn/)**
+**💬 社区 · [Linux.do](https://linux.do/)**
 
-如果 Wayfort 对你有帮助，欢迎点一个 ⭐ Star！
+如果 Wayfort 对你有帮助，欢迎点一个 ⭐ Star！欢迎到 [Linux.do 社区](https://linux.do/) 交流讨论！
 
 </div>
