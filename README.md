@@ -612,6 +612,8 @@ cd web && pnpm typecheck
 
 [Gin](https://github.com/gin-gonic/gin) · [GORM](https://gorm.io/) · [pion/webrtc](https://github.com/pion/webrtc) · [FreeRDP](https://www.freerdp.com/) · [IronRDP / Devolutions Gateway](https://github.com/Devolutions/IronRDP) · [Apache Guacamole](https://guacamole.apache.org/) · [Next.js](https://nextjs.org/) · [shadcn/ui](https://ui.shadcn.com/) · [xterm.js](https://xtermjs.org/) · [OnlyOffice](https://www.onlyoffice.com/) · [JumpServer](https://github.com/jumpserver/jumpserver)（设计思路参考）
 
+> 🏠 本项目由 [LINUX DO](https://linux.do/) 社区推荐与支持，感谢社区佬友们的关注、反馈与贡献！
+
 <div align="center">
 
 **🌐 官网 · [wayfort.karpov.cn](https://wayfort.karpov.cn/)**
